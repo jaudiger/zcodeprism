@@ -2,16 +2,19 @@ const std = @import("std");
 const ts = @import("tree-sitter");
 
 // --- Public module exports ---
+pub const binary_storage = @import("storage/binary.zig");
 pub const edge = @import("core/edge.zig");
 pub const generation = @import("core/generation.zig");
 pub const graph = @import("core/graph.zig");
 pub const indexer = @import("parser/indexer.zig");
+pub const jsonl_storage = @import("storage/jsonl.zig");
 pub const language = @import("languages/language.zig");
 pub const metrics_mod = @import("core/metrics.zig");
 pub const node = @import("core/node.zig");
 pub const phantom = @import("core/phantom.zig");
 pub const registry = @import("languages/registry.zig");
 pub const source_map = @import("parser/source_map.zig");
+pub const storage = @import("storage/storage.zig");
 pub const tree_sitter_api = @import("parser/tree_sitter_api.zig");
 pub const types = @import("core/types.zig");
 pub const visitor = @import("languages/zig/visitor.zig");
@@ -127,4 +130,7 @@ test {
     _ = @import("parser/indexer.zig");
     _ = @import("parser/source_map.zig");
     _ = @import("parser/tree_sitter_api.zig");
+    _ = @import("storage/binary.zig");
+    _ = @import("storage/jsonl.zig");
+    _ = @import("storage/storage.zig");
 }
