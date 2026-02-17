@@ -1,11 +1,12 @@
 //! Dump the raw tree-sitter AST for any supported source file.
-//! Usage: zig build dump-ast -- <path-to-source-file>
+//! Usage: zig build dump-ast -- <path-to-source-file> [--help]
 //!
 //! Outputs the full tree-sitter node tree with kinds, text excerpts,
 //! and line/column positions. Useful for understanding what the visitor
 //! receives from tree-sitter.
 
 const std = @import("std");
+const ts = @import("tree-sitter");
 const zcodeprism = @import("zcodeprism");
 
 const ts_api = zcodeprism.tree_sitter_api;
@@ -20,10 +21,14 @@ pub fn main() !void {
     var args = std.process.args();
     _ = args.next(); // skip program name
     const file_path = args.next() orelse {
-        try stdout.print("Usage: dump-ast <path-to-source-file>\n", .{});
-        try stdout.flush();
+        try printHelp(stdout);
         return;
     };
+
+    if (std.mem.eql(u8, file_path, "--help") or std.mem.eql(u8, file_path, "-h")) {
+        try printHelp(stdout);
+        return;
+    }
 
     // Determine language from extension.
     const ext = std.fs.path.extension(file_path);
@@ -59,7 +64,28 @@ pub fn main() !void {
     try stdout.flush();
 }
 
-fn dumpNode(stdout: *std.Io.Writer, source: []const u8, node: @import("tree-sitter").Node, depth: u32) !void {
+fn printHelp(stdout: *std.Io.Writer) !void {
+    try stdout.print(
+        \\dump-ast — Dump the raw tree-sitter AST for a source file.
+        \\
+        \\USAGE:
+        \\    zig build dump-ast -- <path-to-source-file>
+        \\
+        \\ARGUMENTS:
+        \\    <path-to-source-file>    Path to the source file to parse
+        \\
+        \\OPTIONS:
+        \\    -h, --help               Show this help message
+        \\
+        \\Shows every node kind, line/column positions, and text excerpts.
+        \\Useful for understanding what tree-sitter gives us before the
+        \\visitor interprets it.
+        \\
+    , .{});
+    try stdout.flush();
+}
+
+fn dumpNode(stdout: *std.Io.Writer, source: []const u8, node: ts.Node, depth: u32) !void {
     // Indent.
     var d: u32 = 0;
     while (d < depth) : (d += 1) {
@@ -72,7 +98,7 @@ fn dumpNode(stdout: *std.Io.Writer, source: []const u8, node: @import("tree-sitt
 
     // Show text excerpt for leaf/small nodes, truncated.
     const text = ts_api.nodeText(source, node);
-    if (text.len <= 60 and !containsNewline(text)) {
+    if (text.len <= 60 and std.mem.indexOfScalar(u8, text, '\n') == null) {
         try stdout.print("{s}  [{d}:{d}-{d}:{d}]  \"{s}\"\n", .{
             kind, start.row + 1, start.column, end.row + 1, end.column, text,
         });
@@ -88,11 +114,4 @@ fn dumpNode(stdout: *std.Io.Writer, source: []const u8, node: @import("tree-sitt
         const child = node.child(i) orelse continue;
         try dumpNode(stdout, source, child, depth + 1);
     }
-}
-
-fn containsNewline(s: []const u8) bool {
-    for (s) |c| {
-        if (c == '\n') return true;
-    }
-    return false;
 }

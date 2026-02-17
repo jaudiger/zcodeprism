@@ -1,36 +1,35 @@
-//! Quick standalone tool to test the single-file Zig visitor.
-//! Usage: zig build parse-file -- <path-to-zig-file> [--help]
+//! Standalone tool to test multi-file directory indexation.
+//! Usage: zig build parse-directory -- <directory> [--exclude path1,path2] [--help]
 //!
-//! Reads a .zig file, parses it with the visitor, and dumps all
-//! nodes and edges to stdout.
+//! Indexes all .zig files in the given directory, builds the full
+//! code graph (cross-file edges, phantom nodes, metrics), and dumps
+//! everything to stdout.
 
 const std = @import("std");
 const zcodeprism = @import("zcodeprism");
 
 const Graph = zcodeprism.Graph;
-const Node = zcodeprism.Node;
 const NodeKind = zcodeprism.NodeKind;
 const EdgeType = zcodeprism.EdgeType;
 const Visibility = zcodeprism.Visibility;
-const visitor = zcodeprism.visitor;
-const source_map = zcodeprism.source_map;
+const indexer = zcodeprism.indexer;
 
 fn printHelp(stdout: *std.Io.Writer) !void {
     try stdout.print(
-        \\parse-file — Parse a Zig source file and dump the semantic graph.
+        \\parse-directory — Index all .zig files in a directory and dump the code graph.
         \\
         \\USAGE:
-        \\    zig build parse-file -- <path-to-zig-file>
+        \\    zig build parse-directory -- <directory> [OPTIONS]
         \\
         \\ARGUMENTS:
-        \\    <path-to-zig-file>    Path to the .zig file to parse
+        \\    <directory>              Path to the directory to index
         \\
         \\OPTIONS:
-        \\    -h, --help            Show this help message
+        \\    --exclude path1,path2    Comma-separated paths to exclude from indexation
+        \\    -h, --help               Show this help message
         \\
-        \\Parses a source file through the visitor and dumps all nodes
-        \\(with kind, visibility, parent chain, doc, lang_meta) and all
-        \\edges (with source/target names and edge type).
+        \\Indexes all .zig files in the given directory, builds the full code graph
+        \\(cross-file edges, phantom nodes, metrics), and dumps everything to stdout.
         \\
     , .{});
     try stdout.flush();
@@ -45,40 +44,62 @@ pub fn main() !void {
     var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
     const stdout = &stdout_writer.interface;
 
-    // Get file path from args.
+    // Parse CLI arguments.
     var args = std.process.args();
     _ = args.next(); // skip program name
-    const file_path = args.next() orelse {
+    const dir_arg = args.next() orelse {
         try printHelp(stdout);
         return;
     };
 
-    if (std.mem.eql(u8, file_path, "--help") or std.mem.eql(u8, file_path, "-h")) {
+    if (std.mem.eql(u8, dir_arg, "--help") or std.mem.eql(u8, dir_arg, "-h")) {
         try printHelp(stdout);
         return;
     }
 
-    // Read the file.
-    const source = source_map.mmapFile(file_path) catch |err| {
-        try stdout.print("Error opening file '{s}': {}\n", .{ file_path, err });
+    // Resolve to absolute path.
+    const dir_path = std.fs.cwd().realpathAlloc(allocator, dir_arg) catch |err| {
+        try stdout.print("Error resolving path '{s}': {}\n", .{ dir_arg, err });
         try stdout.flush();
         return;
     };
-    defer source_map.unmapFile(source);
+    defer allocator.free(dir_path);
 
-    // Parse.
-    var graph = Graph.init(allocator, ".");
+    // Parse optional --exclude flag.
+    var exclude_list: std.ArrayListUnmanaged([]const u8) = .{};
+    defer exclude_list.deinit(allocator);
+
+    while (args.next()) |arg| {
+        if (std.mem.eql(u8, arg, "--exclude")) {
+            if (args.next()) |csv| {
+                var it = std.mem.splitScalar(u8, csv, ',');
+                while (it.next()) |path| {
+                    if (path.len > 0) {
+                        try exclude_list.append(allocator, path);
+                    }
+                }
+            }
+        }
+    }
+
+    const options = indexer.IndexOptions{
+        .exclude_paths = exclude_list.items,
+    };
+
+    // Index the directory.
+    var graph = Graph.init(allocator, dir_path);
     defer graph.deinit();
 
-    visitor.parse(source, &graph) catch |err| {
-        try stdout.print("Parse error: {}\n", .{err});
+    const result = indexer.indexDirectory(allocator, dir_path, &graph, options) catch |err| {
+        try stdout.print("Index error: {}\n", .{err});
         try stdout.flush();
         return;
     };
 
-    // Dump results.
-    try stdout.print("=== File: {s} ===\n", .{file_path});
-    try stdout.print("Source size: {} bytes\n", .{source.len});
+    // Summary.
+    try stdout.print("=== Directory: {s} ===\n", .{dir_path});
+    try stdout.print("Files indexed: {}\n", .{result.files_indexed});
+    try stdout.print("Files skipped: {}\n", .{result.files_skipped});
     try stdout.print("Nodes: {}\n", .{graph.nodes.items.len});
     try stdout.print("Edges: {}\n\n", .{graph.edges.items.len});
 
@@ -126,13 +147,29 @@ pub fn main() !void {
         if (n.parent_id) |pid| {
             try stdout.print("  parent={}", .{@intFromEnum(pid)});
         }
+        if (n.file_path) |fp| {
+            try stdout.print("  file=\"{s}\"", .{fp});
+        }
+        if (n.content_hash) |hash| {
+            try stdout.print("  hash=", .{});
+            for (hash) |byte| {
+                try stdout.print("{x:0>2}", .{byte});
+            }
+        }
+        switch (n.external) {
+            .stdlib => try stdout.print("  [phantom/stdlib]", .{}),
+            .dependency => try stdout.print("  [phantom/dep]", .{}),
+            .none => {},
+        }
+        if (n.metrics) |m| {
+            try stdout.print("  metrics(C={},L={})", .{ m.complexity, m.lines });
+        }
         if (n.doc != null) {
             try stdout.print("  [has doc]", .{});
         }
         if (n.signature) |sig| {
             try stdout.print("  sig=\"{s}\"", .{sig[0..@min(sig.len, 60)]});
         }
-        // Check lang_meta for comptime
         switch (n.lang_meta) {
             .zig => |zm| {
                 if (zm.is_comptime) try stdout.print("  [comptime]", .{});
@@ -146,7 +183,6 @@ pub fn main() !void {
     if (graph.edges.items.len > 0) {
         try stdout.print("\n--- All edges ---\n", .{});
         for (graph.edges.items) |e| {
-            // Get node names for readability.
             const src_name = if (graph.getNode(e.source_id)) |n| n.name else "?";
             const tgt_name = if (graph.getNode(e.target_id)) |n| n.name else "?";
             try stdout.print("  {d} ({s}) --[{s}/{s}]--> {d} ({s})\n", .{

@@ -57,27 +57,6 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run the CLI");
     run_step.dependOn(&run_cmd.step);
 
-    // --- Parse file tool ---
-
-    const parse_file_mod = b.createModule(.{
-        .root_source_file = b.path("tools/parse_file.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    parse_file_mod.addImport("zcodeprism", lib_mod);
-
-    const parse_file_exe = b.addExecutable(.{
-        .name = "parse-file",
-        .root_module = parse_file_mod,
-    });
-    b.installArtifact(parse_file_exe);
-
-    const run_parse_file = b.addRunArtifact(parse_file_exe);
-    run_parse_file.step.dependOn(b.getInstallStep());
-    if (b.args) |args| run_parse_file.addArgs(args);
-    const run_parse_file_step = b.step("parse-file", "Parse a single .zig file and dump the graph");
-    run_parse_file_step.dependOn(&run_parse_file.step);
-
     // --- Dump AST tool ---
 
     const dump_ast_mod = b.createModule(.{
@@ -99,6 +78,48 @@ pub fn build(b: *std.Build) void {
     if (b.args) |args| run_dump_ast.addArgs(args);
     const run_dump_ast_step = b.step("dump-ast", "Dump the raw tree-sitter AST for a source file");
     run_dump_ast_step.dependOn(&run_dump_ast.step);
+
+    // --- Parse directory tool ---
+
+    const parse_dir_mod = b.createModule(.{
+        .root_source_file = b.path("tools/parse_directory.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    parse_dir_mod.addImport("zcodeprism", lib_mod);
+
+    const parse_dir_exe = b.addExecutable(.{
+        .name = "parse-directory",
+        .root_module = parse_dir_mod,
+    });
+    b.installArtifact(parse_dir_exe);
+
+    const run_parse_dir = b.addRunArtifact(parse_dir_exe);
+    run_parse_dir.step.dependOn(b.getInstallStep());
+    if (b.args) |args| run_parse_dir.addArgs(args);
+    const run_parse_dir_step = b.step("parse-directory", "Index a directory and dump the full code graph");
+    run_parse_dir_step.dependOn(&run_parse_dir.step);
+
+    // --- Parse file tool ---
+
+    const parse_file_mod = b.createModule(.{
+        .root_source_file = b.path("tools/parse_file.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    parse_file_mod.addImport("zcodeprism", lib_mod);
+
+    const parse_file_exe = b.addExecutable(.{
+        .name = "parse-file",
+        .root_module = parse_file_mod,
+    });
+    b.installArtifact(parse_file_exe);
+
+    const run_parse_file = b.addRunArtifact(parse_file_exe);
+    run_parse_file.step.dependOn(b.getInstallStep());
+    if (b.args) |args| run_parse_file.addArgs(args);
+    const run_parse_file_step = b.step("parse-file", "Parse a single .zig file and dump the graph");
+    run_parse_file_step.dependOn(&run_parse_file.step);
 
     // --- Tests ---
 
