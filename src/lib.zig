@@ -11,6 +11,16 @@ pub const edge = @import("core/edge.zig");
 pub const graph = @import("core/graph.zig");
 pub const generation = @import("core/generation.zig");
 pub const registry = @import("languages/registry.zig");
+pub const visitor = @import("languages/zig/visitor.zig");
+pub const source_map = @import("parser/source_map.zig");
+pub const tree_sitter_api = @import("parser/tree_sitter_api.zig");
+
+// Convenience re-exports
+pub const Graph = graph.Graph;
+pub const Node = node.Node;
+pub const NodeKind = types.NodeKind;
+pub const EdgeType = types.EdgeType;
+pub const Visibility = types.Visibility;
 
 // Zig grammar provided by tree-sitter-zig C library linked in build.zig
 extern fn tree_sitter_zig() callconv(.c) *const ts.Language;
@@ -110,4 +120,7 @@ test {
     _ = @import("core/graph.zig");
     _ = @import("core/generation.zig");
     _ = @import("languages/registry.zig");
+    _ = @import("languages/zig/visitor.zig");
+    _ = @import("parser/source_map.zig");
+    _ = @import("parser/tree_sitter_api.zig");
 }

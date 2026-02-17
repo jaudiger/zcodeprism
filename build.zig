@@ -67,6 +67,12 @@ pub fn build(b: *std.Build) void {
     test_mod.addImport("tree-sitter", ts_dep.module("tree_sitter"));
     test_mod.linkLibrary(ts_zig_dep.artifact("tree-sitter-zig"));
 
+    // Test fixtures module
+    const fixture_mod = b.createModule(.{
+        .root_source_file = b.path("tests/fixture_data.zig"),
+    });
+    test_mod.addImport("test-fixtures", fixture_mod);
+
     const lib_unit_tests = b.addTest(.{
         .root_module = test_mod,
     });

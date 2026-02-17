@@ -1,12 +1,13 @@
 const std = @import("std");
 const lang = @import("language.zig");
+const visitor = @import("zig/visitor.zig");
 
 const LanguageSupport = lang.LanguageSupport;
 
 const zig_support = LanguageSupport{
     .name = "zig",
     .extensions = &.{".zig"},
-    .parseFn = null, // Zig visitor will provide the real parse function
+    .parseFn = &visitor.parse,
     .lsp_config = null,
 };
 
@@ -40,9 +41,18 @@ test "lookup by unknown extension returns null" {
 }
 
 test "lookup by .rs extension returns null" {
-    // Act — Rust not yet registered
+    // Act: Rust not yet registered
     const result = Registry.getByExtension(".rs");
 
     // Assert
     try std.testing.expectEqual(@as(?*const LanguageSupport, null), result);
+}
+
+test "zig language support has parseFn" {
+    // Act
+    const result = Registry.getByExtension(".zig");
+
+    // Assert: after visitor is registered, parseFn must not be null
+    try std.testing.expect(result != null);
+    try std.testing.expect(result.?.parseFn != null);
 }
