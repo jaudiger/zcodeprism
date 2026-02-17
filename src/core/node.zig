@@ -1,6 +1,7 @@
 const std = @import("std");
 const types = @import("types.zig");
 const lang = @import("../languages/language.zig");
+const metrics_mod = @import("metrics.zig");
 
 const NodeId = types.NodeId;
 const NodeKind = types.NodeKind;
@@ -23,6 +24,7 @@ pub const Node = struct {
     doc: ?[]const u8 = null,
     signature: ?[]const u8 = null,
     content_hash: ?[12]u8 = null,
+    metrics: ?metrics_mod.Metrics = null,
     lang_meta: LangMeta = .{ .none = {} },
     external: ExternalInfo = .{ .none = {} },
 };

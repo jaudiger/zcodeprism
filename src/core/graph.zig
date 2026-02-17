@@ -29,6 +29,9 @@ pub const Graph = struct {
     // Temporary scratch buffer for getChildren/neighbors results.
     // Will be replaced by pre-computed adjacency once the build→freeze→query lifecycle exists.
     scratch_buf: std.ArrayListUnmanaged(NodeId),
+    // Tracks allocated buffers (source files, duped strings) that node slices point into.
+    // Freed on deinit so that node name/doc/signature slices remain valid for the graph's lifetime.
+    owned_buffers: std.ArrayListUnmanaged([]const u8),
 
     pub fn init(allocator: std.mem.Allocator, project_root: []const u8) Graph {
         return .{
@@ -37,13 +40,25 @@ pub const Graph = struct {
             .edges = .{},
             .project_root = project_root,
             .scratch_buf = .{},
+            .owned_buffers = .{},
         };
     }
 
     pub fn deinit(self: *Graph) void {
+        // Free owned buffers before nodes/edges. Node name/doc/signature slices may point into these.
+        for (self.owned_buffers.items) |buf| {
+            self.allocator.free(buf);
+        }
+        self.owned_buffers.deinit(self.allocator);
         self.nodes.deinit(self.allocator);
         self.edges.deinit(self.allocator);
         self.scratch_buf.deinit(self.allocator);
+    }
+
+    /// Register a buffer to be freed when the graph is deinitialized.
+    /// Use this for source file contents or duped strings that node slices point into.
+    pub fn addOwnedBuffer(self: *Graph, buf: []const u8) !void {
+        try self.owned_buffers.append(self.allocator, buf);
     }
 
     /// Add a node to the graph and return its assigned NodeId.
@@ -70,7 +85,7 @@ pub const Graph = struct {
     }
 
     /// Get the direct children of a node (nodes whose parent_id equals the given id).
-    /// Returns a slice backed by an internal scratch buffer — the caller must
+    /// Returns a slice backed by an internal scratch buffer. The caller must
     /// consume the result before calling `getChildren` or `neighbors` again.
     pub fn getChildren(self: *Graph, parent_id: NodeId) []const NodeId {
         // Measure
@@ -105,7 +120,7 @@ pub const Graph = struct {
     }
 
     /// Get neighbors of a node in the given direction.
-    /// Returns a slice backed by an internal scratch buffer — the caller must
+    /// Returns a slice backed by an internal scratch buffer. The caller must
     /// consume the result before calling `getChildren` or `neighbors` again.
     pub fn neighbors(self: *Graph, node_id: NodeId, direction: Direction) []const NodeId {
         // Measure
@@ -165,7 +180,7 @@ pub const Graph = struct {
 
 // --- Tests ---
 
-// Nominal tests (FAIL — NotImplemented stubs)
+// Nominal tests (fail: NotImplemented stubs)
 
 test "addNode returns sequential ids" {
     // Arrange
@@ -311,7 +326,7 @@ test "neighbors both returns all edges" {
     try std.testing.expectEqual(@as(usize, 2), result.len);
 }
 
-// Empty/zero tests (PASS — stubs return null/empty)
+// Empty/zero tests (pass: stubs return null/empty)
 
 test "empty graph has zero nodes" {
     // Arrange
@@ -386,7 +401,7 @@ test "getNode with non-existent id returns null" {
     var g = Graph.init(std.testing.allocator, "/tmp/project");
     defer g.deinit();
 
-    // Act — id 99 does not exist
+    // Act: id 99 does not exist
     const result = g.getNode(@enumFromInt(99));
 
     // Assert
@@ -410,7 +425,7 @@ test "getParent on root node returns null" {
     var g = Graph.init(std.testing.allocator, "/tmp/project");
     defer g.deinit();
 
-    // Act — root node has no parent
+    // Act: root node has no parent
     const result = g.getParent(.root);
 
     // Assert
@@ -442,7 +457,7 @@ test "node with all optional fields null" {
     try std.testing.expectEqual(lang.LangMeta.none, result.?.lang_meta);
 }
 
-// Optional fields via graph (FAIL — needs addNode)
+// Optional fields via graph (fail: needs addNode)
 
 test "node stores doc via graph" {
     // Arrange

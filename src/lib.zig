@@ -2,18 +2,20 @@ const std = @import("std");
 const ts = @import("tree-sitter");
 
 // --- Public module exports ---
-pub const types = @import("core/types.zig");
-pub const metrics_mod = @import("core/metrics.zig");
-pub const language = @import("languages/language.zig");
-pub const zig_meta = @import("languages/zig/meta.zig");
-pub const node = @import("core/node.zig");
 pub const edge = @import("core/edge.zig");
-pub const graph = @import("core/graph.zig");
 pub const generation = @import("core/generation.zig");
+pub const graph = @import("core/graph.zig");
+pub const indexer = @import("parser/indexer.zig");
+pub const language = @import("languages/language.zig");
+pub const metrics_mod = @import("core/metrics.zig");
+pub const node = @import("core/node.zig");
+pub const phantom = @import("core/phantom.zig");
 pub const registry = @import("languages/registry.zig");
-pub const visitor = @import("languages/zig/visitor.zig");
 pub const source_map = @import("parser/source_map.zig");
 pub const tree_sitter_api = @import("parser/tree_sitter_api.zig");
+pub const types = @import("core/types.zig");
+pub const visitor = @import("languages/zig/visitor.zig");
+pub const zig_meta = @import("languages/zig/meta.zig");
 
 // Convenience re-exports
 pub const Graph = graph.Graph;
@@ -111,16 +113,18 @@ test "tree-sitter types are accessible" {
 
 // --- Test discovery for sub-modules ---
 test {
-    _ = @import("core/types.zig");
-    _ = @import("core/metrics.zig");
-    _ = @import("languages/language.zig");
-    _ = @import("languages/zig/meta.zig");
-    _ = @import("core/node.zig");
     _ = @import("core/edge.zig");
-    _ = @import("core/graph.zig");
     _ = @import("core/generation.zig");
+    _ = @import("core/graph.zig");
+    _ = @import("core/metrics.zig");
+    _ = @import("core/node.zig");
+    _ = @import("core/phantom.zig");
+    _ = @import("core/types.zig");
+    _ = @import("languages/language.zig");
     _ = @import("languages/registry.zig");
+    _ = @import("languages/zig/meta.zig");
     _ = @import("languages/zig/visitor.zig");
+    _ = @import("parser/indexer.zig");
     _ = @import("parser/source_map.zig");
     _ = @import("parser/tree_sitter_api.zig");
 }

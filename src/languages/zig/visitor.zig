@@ -18,6 +18,56 @@ const Visibility = types.Visibility;
 const Language = types.Language;
 const LangMeta = lang.LangMeta;
 
+// =========================================================================
+// Cross-file resolution context
+// =========================================================================
+
+/// Groups all context needed during edge creation for one file parse.
+/// Contains the file's node scope range and a map of project-file imports.
+const EdgeContext = struct {
+    scope_start: usize,
+    scope_end: usize,
+    import_names: [max_imports][]const u8 = undefined,
+    import_targets: [max_imports]NodeId = undefined,
+    import_count: usize = 0,
+
+    // Max number of tracked @import bindings per file for cross-file edge resolution.
+    const max_imports = 32;
+
+    fn findImportTarget(self: *const EdgeContext, name: []const u8) ?NodeId {
+        for (self.import_names[0..self.import_count], self.import_targets[0..self.import_count]) |iname, itarget| {
+            if (std.mem.eql(u8, iname, name)) return itarget;
+        }
+        return null;
+    }
+};
+
+/// Tracks per-function variable assignments from import-qualified expressions.
+/// Used to resolve method calls like `a.deinit()` where `a = alpha.Self.init(42)`.
+const VarTracker = struct {
+    var_names: [max_vars][]const u8 = undefined,
+    var_targets: [max_vars]NodeId = undefined,
+    var_count: usize = 0,
+
+    // Max number of tracked import-qualified variable bindings per function.
+    const max_vars = 32;
+
+    fn addBinding(self: *VarTracker, name: []const u8, target_file: NodeId) void {
+        // Graceful cap: silently skip excess bindings.
+        if (self.var_count >= max_vars) return;
+        self.var_names[self.var_count] = name;
+        self.var_targets[self.var_count] = target_file;
+        self.var_count += 1;
+    }
+
+    fn findTarget(self: *const VarTracker, name: []const u8) ?NodeId {
+        for (self.var_names[0..self.var_count], self.var_targets[0..self.var_count]) |vname, vtarget| {
+            if (std.mem.eql(u8, vname, name)) return vtarget;
+        }
+        return null;
+    }
+};
+
 /// Parse Zig source code and populate the graph with nodes and edges.
 /// This is the entry point used by the LanguageSupport registry.
 pub fn parse(source: []const u8, graph: *anyopaque) anyerror!void {
@@ -58,20 +108,27 @@ pub fn parse(source: []const u8, graph: *anyopaque) anyerror!void {
         .doc = module_doc,
     });
 
-    // Pass 1: create nodes from declarations.
+    // Create nodes from declarations.
     var i: u32 = 0;
     while (i < root.childCount()) : (i += 1) {
         const child = root.child(i) orelse continue;
         if (!child.isNamed()) continue;
-        processDeclaration(g, source, child, file_id) catch {};
+        try processDeclaration(g, source, child, file_id);
     }
 
-    // Pass 2: create edges (calls, uses_type).
-    walkForEdges(g, source, root);
+    // Build edge resolution context: scope range + import map.
+    var ctx = EdgeContext{
+        .scope_start = @intFromEnum(file_id),
+        .scope_end = g.nodeCount(),
+    };
+    buildImportMap(g, source, root, &ctx);
+
+    // Create edges (calls, uses_type) with cross-file resolution.
+    try walkForEdges(g, source, root, &ctx);
 }
 
 // =========================================================================
-// Pass 1 — Node creation
+// Node creation
 // =========================================================================
 
 fn processDeclaration(g: *Graph, source: []const u8, ts_node: ts.Node, parent_id: NodeId) anyerror!void {
@@ -103,6 +160,9 @@ fn processVariableDecl(g: *Graph, source: []const u8, ts_node: ts.Node, parent_i
         lang_meta = .{ .zig = .{ .is_comptime = true } };
     }
 
+    // For import declarations, store the import path extracted from the AST.
+    const sig: ?[]const u8 = if (kind == .import_decl) extractImportPath(source, ts_node) else null;
+
     const node_id = try g.addNode(.{
         .id = .root,
         .name = name,
@@ -111,6 +171,7 @@ fn processVariableDecl(g: *Graph, source: []const u8, ts_node: ts.Node, parent_i
         .parent_id = parent_id,
         .visibility = visibility,
         .doc = doc,
+        .signature = sig,
         .line_start = ts_node.startPoint().row + 1,
         .line_end = ts_node.endPoint().row + 1,
         .lang_meta = lang_meta,
@@ -122,7 +183,7 @@ fn processVariableDecl(g: *Graph, source: []const u8, ts_node: ts.Node, parent_i
         while (i < body.childCount()) : (i += 1) {
             const child = body.child(i) orelse continue;
             if (!child.isNamed()) continue;
-            processDeclaration(g, source, child, node_id) catch {};
+            try processDeclaration(g, source, child, node_id);
         }
     }
 }
@@ -153,7 +214,7 @@ fn processFunctionDecl(g: *Graph, source: []const u8, ts_node: ts.Node, parent_i
             while (i < body_info.body.childCount()) : (i += 1) {
                 const child = body_info.body.child(i) orelse continue;
                 if (!child.isNamed()) continue;
-                processDeclaration(g, source, child, node_id) catch {};
+                try processDeclaration(g, source, child, node_id);
             }
             return;
         }
@@ -206,120 +267,275 @@ fn processContainerField(g: *Graph, source: []const u8, ts_node: ts.Node, parent
 }
 
 // =========================================================================
-// Pass 2 — Edge creation
+// Edge creation
 // =========================================================================
 
-fn walkForEdges(g: *Graph, source: []const u8, ts_node: ts.Node) void {
+fn walkForEdges(g: *Graph, source: []const u8, ts_node: ts.Node, ctx: *const EdgeContext) !void {
     const kind_str = ts_node.kind();
 
     if (std.mem.eql(u8, kind_str, "function_declaration")) {
         if (getIdentifierName(source, ts_node)) |name| {
-            if (findFunctionByName(g, name)) |fn_id| {
+            // Look up the function node by name and line position to correctly
+            // identify which graph node corresponds to this AST declaration
+            // when multiple functions share the same name.
+            const decl_line = ts_node.startPoint().row + 1;
+            if (findFunctionByNameAndLine(g, name, decl_line, ctx.scope_start, ctx.scope_end)) |fn_id| {
+                const fn_node = g.getNode(fn_id);
+                const fn_parent_id = if (fn_node) |n| n.parent_id else null;
+
+                // For generic type-returning functions (stored as type_def or
+                // enum_def), inner declarations (Self, init, etc.) are children
+                // of fn_id itself, not of fn_parent_id. Use fn_id as the scope
+                // to prevent cross-scope Self resolution.
+                const is_type_scope = if (fn_node) |n|
+                    n.kind == .type_def or n.kind == .enum_def
+                else
+                    false;
+                const caller_scope_id = if (is_type_scope) fn_id else fn_parent_id;
+
+                // Build per-function variable tracker for import-assigned variables.
+                var var_tracker = VarTracker{};
+                prescanForVarBindings(source, ts_node, ctx, &var_tracker);
+
                 // Scan function body for call expressions.
-                scanForCalls(g, source, fn_id, ts_node);
+                try scanForCalls(g, source, fn_id, caller_scope_id, ts_node, ctx, &var_tracker, ts_node, 0);
 
                 // Scan function signature (excluding body) for type references.
-                scanSignatureForTypes(g, source, fn_id, ts_node);
+                try scanSignatureForTypes(g, source, fn_id, fn_node, caller_scope_id, ts_node, ctx.scope_start, ctx.scope_end);
 
                 // Scan function body for type references (struct literals, static
                 // method calls, comptime type arguments).
-                scanBodyForTypes(g, source, fn_id, ts_node);
+                try scanBodyForTypes(g, source, fn_id, caller_scope_id, ts_node, ctx.scope_start, ctx.scope_end);
             }
         }
     } else if (std.mem.eql(u8, kind_str, "test_declaration")) {
         const test_name = getTestName(source, ts_node);
-        if (findTestByName(g, test_name)) |test_id| {
-            scanForCalls(g, source, test_id, ts_node);
+        if (findTestByName(g, test_name, ctx.scope_start, ctx.scope_end)) |test_id| {
+            const test_node = g.getNode(test_id);
+            const test_parent_id = if (test_node) |n| n.parent_id else null;
+            var var_tracker = VarTracker{};
+            prescanForVarBindings(source, ts_node, ctx, &var_tracker);
+            try scanForCalls(g, source, test_id, test_parent_id, ts_node, ctx, &var_tracker, ts_node, 0);
+            try scanBodyForTypes(g, source, test_id, test_parent_id, ts_node, ctx.scope_start, ctx.scope_end);
         }
     }
 
-    // Recurse into all named children to find nested function declarations.
+    // Recurse into named children only. Declarations (fn, test, struct) are always
+    // named nodes in tree-sitter, so skipping anonymous nodes is safe and avoids
+    // descending into expression-level subtrees that walkForEdges doesn't handle.
     var i: u32 = 0;
     while (i < ts_node.namedChildCount()) : (i += 1) {
         const child = ts_node.namedChild(i) orelse continue;
-        walkForEdges(g, source, child);
+        try walkForEdges(g, source, child, ctx);
     }
 }
 
-fn scanForCalls(g: *Graph, source: []const u8, caller_id: NodeId, ts_node: ts.Node) void {
+fn scanForCalls(g: *Graph, source: []const u8, caller_id: NodeId, caller_parent_id: ?NodeId, ts_node: ts.Node, ctx: *const EdgeContext, tracker: *const VarTracker, fn_decl_node: ts.Node, depth: u32) !void {
+    // Graceful cap: stop descending, edges in deeper subtrees are skipped.
+    if (depth >= max_ast_scan_depth) return;
     if (std.mem.eql(u8, ts_node.kind(), "call_expression")) {
-        // The first named child of a call_expression is the function reference.
         if (ts_node.namedChild(0)) |fn_ref| {
-            const callee_name = extractCallTarget(source, fn_ref);
-            if (callee_name) |name| {
-                if (findFunctionByName(g, name)) |callee_id| {
+            const fn_ref_kind = fn_ref.kind();
+
+            if (std.mem.eql(u8, fn_ref_kind, "identifier")) {
+                // Bare call: foo(). Resolve within caller's scope.
+                const callee_name = ts_api.nodeText(source, fn_ref);
+                if (findFunctionByNameScoped(g, callee_name, ctx.scope_start, ctx.scope_end, caller_parent_id)) |callee_id| {
                     if (@intFromEnum(caller_id) != @intFromEnum(callee_id)) {
-                        addEdgeIfNew(g, caller_id, callee_id, .calls);
+                        try addEdgeIfNew(g, caller_id, callee_id, .calls);
+                    }
+                }
+            } else if (std.mem.eql(u8, fn_ref_kind, "field_expression")) {
+                // Qualified call: extract full chain from nested field_expression.
+                var chain: [max_chain_depth][]const u8 = undefined;
+                const chain_len = collectFieldExprChain(source, fn_ref, &chain);
+
+                if (chain_len >= 2) {
+                    const root_name = chain[0];
+
+                    if (ctx.findImportTarget(root_name)) |target_file_id| {
+                        // Import-qualified call: alpha.Self.init(42).
+                        try resolveQualifiedCall(g, caller_id, target_file_id, chain[1..chain_len], true);
+                    } else if (tracker.findTarget(root_name)) |target_file_id| {
+                        // Variable method call: a.deinit() where a was assigned from import.
+                        try resolveQualifiedCall(g, caller_id, target_file_id, chain[1..chain_len], true);
+                    } else {
+                        // Fallback: use the AST to determine if the receiver is
+                        // local (self or a known local type) vs external.
+                        const leaf_name = chain[chain_len - 1];
+                        const receiver = classifyReceiver(g, source, fn_ref, ctx.scope_start, ctx.scope_end, caller_parent_id, fn_decl_node);
+                        switch (receiver) {
+                            .self_receiver => {
+                                // self.method(). Resolve in caller's parent scope.
+                                if (findFunctionByNameScoped(g, leaf_name, ctx.scope_start, ctx.scope_end, caller_parent_id)) |callee_id| {
+                                    if (@intFromEnum(caller_id) != @intFromEnum(callee_id)) {
+                                        try addEdgeIfNew(g, caller_id, callee_id, .calls);
+                                    }
+                                }
+                            },
+                            .local_type => {
+                                // Type.staticMethod(). Resolve in caller's scope.
+                                if (findFunctionByNameScoped(g, leaf_name, ctx.scope_start, ctx.scope_end, caller_parent_id)) |callee_id| {
+                                    if (@intFromEnum(caller_id) != @intFromEnum(callee_id)) {
+                                        try addEdgeIfNew(g, caller_id, callee_id, .calls);
+                                    }
+                                }
+                            },
+                            .external => {
+                                // param.method() or var.method() where var holds
+                                // an external type. Do not create a local edge.
+                            },
+                        }
+                    }
+                } else if (chain_len == 1) {
+                    // Single-segment field expression, treat as bare call.
+                    if (findFunctionByNameScoped(g, chain[0], ctx.scope_start, ctx.scope_end, caller_parent_id)) |callee_id| {
+                        if (@intFromEnum(caller_id) != @intFromEnum(callee_id)) {
+                            try addEdgeIfNew(g, caller_id, callee_id, .calls);
+                        }
                     }
                 }
             }
         }
     }
 
-    // Recurse into all children, but stop at scope boundaries.
+    // Recurse into all children, not just named ones. Call expressions like
+    // `foo()` can appear inside anonymous nodes (e.g., assignment right-hand sides,
+    // return values) that namedChild() would skip. Stop at scope boundaries.
     var i: u32 = 0;
     while (i < ts_node.childCount()) : (i += 1) {
         const child = ts_node.child(i) orelse continue;
         const child_kind = child.kind();
         if (std.mem.eql(u8, child_kind, "function_declaration") or
             std.mem.eql(u8, child_kind, "test_declaration")) continue;
-        scanForCalls(g, source, caller_id, child);
+        try scanForCalls(g, source, caller_id, caller_parent_id, child, ctx, tracker, fn_decl_node, depth + 1);
     }
 }
 
-/// Extract the function name from a call target node.
-/// Handles both bare identifiers (`foo(...)`) and field access (`self.foo(...)`).
-fn extractCallTarget(source: []const u8, fn_ref: ts.Node) ?[]const u8 {
-    const kind = fn_ref.kind();
+/// Classify the receiver (first child) of a field_expression to determine
+/// whether it refers to `self`, a locally-defined type, or an external entity.
+const ReceiverKind = enum { self_receiver, local_type, external };
+
+fn classifyReceiver(g: *const Graph, source: []const u8, field_expr: ts.Node, scope_start: usize, scope_end: usize, caller_parent_id: ?NodeId, fn_decl_node: ts.Node) ReceiverKind {
+    // The receiver is the first named child of the outermost field_expression.
+    // For nested chains like `a.b.c()`, we want the leftmost identifier.
+    const receiver_node = getLeftmostIdentifier(field_expr) orelse return .external;
+    const receiver_name = ts_api.nodeText(source, receiver_node);
+
+    // Check if receiver is 'self', i.e. the identifier "self".
+    if (std.mem.eql(u8, receiver_name, "self")) {
+        return .self_receiver;
+    }
+
+    // Check if receiver matches a locally-defined type or type-alias constant.
+    if (findTypeByNameScoped(g, receiver_name, scope_start, scope_end, caller_parent_id) != null) {
+        return .local_type;
+    }
+
+    // Check if receiver matches a parameter whose type is a locally-defined type.
+    // For example: fn process(p: Point) void { p.method(); }. "p" is a parameter
+    // of type "Point", and Point is a local type, so p.method() should resolve locally.
+    if (findParamTypeName(source, fn_decl_node, receiver_name)) |type_name| {
+        if (findTypeByNameScoped(g, type_name, scope_start, scope_end, caller_parent_id) != null) {
+            return .local_type;
+        }
+    }
+
+    return .external;
+}
+
+/// Given a function_declaration AST node and a parameter name, return
+/// the type identifier if the parameter's type is a bare identifier
+/// (e.g. `p: Point` returns "Point"). Returns null for pointer types,
+/// optional types, or if the parameter is not found.
+fn findParamTypeName(source: []const u8, fn_decl_node: ts.Node, param_name: []const u8) ?[]const u8 {
+    // Find the "parameters" child of the function_declaration.
+    var i: u32 = 0;
+    while (i < fn_decl_node.childCount()) : (i += 1) {
+        const child = fn_decl_node.child(i) orelse continue;
+        if (!std.mem.eql(u8, child.kind(), "parameters")) continue;
+
+        // Iterate over named children of "parameters", each is a "parameter" node.
+        var j: u32 = 0;
+        while (j < child.namedChildCount()) : (j += 1) {
+            const param = child.namedChild(j) orelse continue;
+            if (!std.mem.eql(u8, param.kind(), "parameter")) continue;
+
+            // A parameter node has named children: identifier (name) and type node.
+            // The first named child is the identifier, the second is the type.
+            const name_node = param.namedChild(0) orelse continue;
+            if (!std.mem.eql(u8, name_node.kind(), "identifier")) continue;
+            const name = ts_api.nodeText(source, name_node);
+            if (!std.mem.eql(u8, name, param_name)) continue;
+
+            // Found the parameter. Get the type node (second named child).
+            const type_node = param.namedChild(1) orelse return null;
+            // Only handle bare identifier types (e.g. Point), not pointer (*Point)
+            // or optional (?Point).
+            if (std.mem.eql(u8, type_node.kind(), "identifier")) {
+                return ts_api.nodeText(source, type_node);
+            }
+            return null;
+        }
+        break;
+    }
+    return null;
+}
+
+/// Walk down the left spine of nested field_expressions to find the
+/// leftmost identifier node (the actual receiver).
+fn getLeftmostIdentifier(node: ts.Node) ?ts.Node {
+    const kind = node.kind();
     if (std.mem.eql(u8, kind, "identifier")) {
-        return ts_api.nodeText(source, fn_ref);
+        return node;
     }
     if (std.mem.eql(u8, kind, "field_expression")) {
-        // The last named child is the field/method name.
-        const count = fn_ref.namedChildCount();
-        if (count >= 1) {
-            if (fn_ref.namedChild(count - 1)) |field_name| {
-                return ts_api.nodeText(source, field_name);
-            }
+        if (node.namedChild(0)) |child| {
+            return getLeftmostIdentifier(child);
         }
     }
     return null;
 }
 
-fn scanSignatureForTypes(g: *Graph, source: []const u8, fn_id: NodeId, fn_node: ts.Node) void {
+fn scanSignatureForTypes(g: *Graph, source: []const u8, fn_id: NodeId, fn_graph_node: ?*const Node, caller_parent_id: ?NodeId, fn_node: ts.Node, scope_start: usize, scope_end: usize) !void {
+    _ = fn_graph_node;
     // Scan all children except the body block for type identifier references.
     var i: u32 = 0;
     while (i < fn_node.childCount()) : (i += 1) {
         const child = fn_node.child(i) orelse continue;
         if (std.mem.eql(u8, child.kind(), "block")) continue;
-        scanForTypeIdentifiers(g, source, fn_id, child);
+        try scanForTypeIdentifiersScoped(g, source, fn_id, child, scope_start, scope_end, caller_parent_id, 0);
     }
 }
 
-fn scanBodyForTypes(g: *Graph, source: []const u8, fn_id: NodeId, fn_node: ts.Node) void {
+fn scanBodyForTypes(g: *Graph, source: []const u8, fn_id: NodeId, caller_parent_id: ?NodeId, fn_node: ts.Node, scope_start: usize, scope_end: usize) !void {
     // Scan only the body block for type identifier references.
     var i: u32 = 0;
     while (i < fn_node.childCount()) : (i += 1) {
         const child = fn_node.child(i) orelse continue;
         if (std.mem.eql(u8, child.kind(), "block")) {
-            scanForTypeIdentifiers(g, source, fn_id, child);
+            try scanForTypeIdentifiersScoped(g, source, fn_id, child, scope_start, scope_end, caller_parent_id, 0);
             return;
         }
     }
 }
 
-fn scanForTypeIdentifiers(g: *Graph, source: []const u8, fn_id: NodeId, ts_node: ts.Node) void {
-    if (std.mem.eql(u8, ts_node.kind(), "identifier")) {
+fn scanForTypeIdentifiers(g: *Graph, source: []const u8, fn_id: NodeId, ts_node: ts.Node, scope_start: usize, scope_end: usize) !void {
+    try scanForTypeIdentifiersScoped(g, source, fn_id, ts_node, scope_start, scope_end, null, 0);
+}
+
+fn scanForTypeIdentifiersScoped(g: *Graph, source: []const u8, fn_id: NodeId, ts_node: ts.Node, scope_start: usize, scope_end: usize, caller_parent_id: ?NodeId, depth: u32) !void {
+    // Graceful cap: stop descending, type refs in deeper subtrees are skipped.
+    if (depth >= max_ast_scan_depth) return;
+    const kind_str = ts_node.kind();
+    if (std.mem.eql(u8, kind_str, "identifier") or std.mem.eql(u8, kind_str, "property_identifier")) {
         const name = ts_api.nodeText(source, ts_node);
-        for (g.nodes.items, 0..) |n, idx| {
-            const is_type = n.kind == .type_def or n.kind == .enum_def;
-            // Match PascalCase constants as type aliases (e.g. `const Bar = Foo;`).
-            // Lowercase constants like `const max = 100` are excluded.
-            const is_type_alias = n.kind == .constant and
-                n.name.len > 0 and n.name[0] >= 'A' and n.name[0] <= 'Z';
-            if ((is_type or is_type_alias) and std.mem.eql(u8, n.name, name)) {
-                addEdgeIfNew(g, fn_id, @enumFromInt(idx), .uses_type);
-                break;
+        if (findTypeByNameScoped(g, name, scope_start, scope_end, caller_parent_id)) |target_id| {
+            // Skip edges to direct children of fn_id (prevents type_def → own inner declarations).
+            const target_node = g.getNode(target_id);
+            const is_own_child = if (target_node) |tn| tn.parent_id != null and tn.parent_id.? == fn_id else false;
+            if (!is_own_child) {
+                try addEdgeIfNew(g, fn_id, target_id, .uses_type);
             }
         }
     }
@@ -331,21 +547,112 @@ fn scanForTypeIdentifiers(g: *Graph, source: []const u8, fn_id: NodeId, ts_node:
         const child_kind = child.kind();
         if (std.mem.eql(u8, child_kind, "function_declaration") or
             std.mem.eql(u8, child_kind, "test_declaration")) continue;
-        scanForTypeIdentifiers(g, source, fn_id, child);
+        try scanForTypeIdentifiersScoped(g, source, fn_id, child, scope_start, scope_end, caller_parent_id, depth + 1);
     }
 }
 
-fn findFunctionByName(g: *const Graph, name: []const u8) ?NodeId {
-    for (g.nodes.items, 0..) |n, i| {
+/// Find a type/constant node by name, with scope-aware resolution.
+/// Walks up the parent_id chain from caller_parent_id, preferring
+/// types in the narrowest scope first.
+fn findTypeByNameScoped(g: *const Graph, name: []const u8, scope_start: usize, scope_end: usize, caller_parent_id: ?NodeId) ?NodeId {
+    if (caller_parent_id) |cpid| {
+        var current_scope: ?NodeId = cpid;
+        var hops: usize = 0;
+        while (current_scope != null and hops < 100) : (hops += 1) {
+            const scope_id = current_scope.?;
+            const scoped_nodes = g.nodes.items[scope_start..scope_end];
+            for (scoped_nodes, scope_start..) |n, idx| {
+                if (n.parent_id == null or n.parent_id.? != scope_id) continue;
+                const is_type = n.kind == .type_def or n.kind == .enum_def;
+                const is_type_alias = n.kind == .constant and
+                    n.name.len > 0 and n.name[0] >= 'A' and n.name[0] <= 'Z';
+                if ((is_type or is_type_alias) and std.mem.eql(u8, n.name, name)) {
+                    return @enumFromInt(idx);
+                }
+            }
+            const scope_node = g.getNode(scope_id) orelse break;
+            current_scope = scope_node.parent_id;
+        }
+    }
+    // Fallback: flat file-scope search, return only if unambiguous.
+    const scoped_nodes = g.nodes.items[scope_start..scope_end];
+    var sole_match: ?NodeId = null;
+    var match_count: usize = 0;
+    for (scoped_nodes, scope_start..) |n, idx| {
+        const is_type = n.kind == .type_def or n.kind == .enum_def;
+        const is_type_alias = n.kind == .constant and
+            n.name.len > 0 and n.name[0] >= 'A' and n.name[0] <= 'Z';
+        if ((is_type or is_type_alias) and std.mem.eql(u8, n.name, name)) {
+            sole_match = @enumFromInt(idx);
+            match_count += 1;
+            if (match_count > 1) return null;
+        }
+    }
+    return sole_match;
+}
+
+fn findFunctionByNameScoped(g: *const Graph, name: []const u8, scope_start: usize, scope_end: usize, caller_parent_id: ?NodeId) ?NodeId {
+    if (caller_parent_id) |cpid| {
+        // Walk up the parent chain, searching at each scope level.
+        var current_scope: ?NodeId = cpid;
+        var hops: usize = 0;
+        while (current_scope != null and hops < 100) : (hops += 1) {
+            const scope_id = current_scope.?;
+            const scoped_nodes = g.nodes.items[scope_start..scope_end];
+            for (scoped_nodes, scope_start..) |n, i| {
+                if (n.kind == .function and std.mem.eql(u8, n.name, name) and
+                    n.parent_id != null and n.parent_id.? == scope_id)
+                {
+                    return @enumFromInt(i);
+                }
+            }
+            // Move up to the parent's parent.
+            const scope_node = g.getNode(scope_id) orelse break;
+            current_scope = scope_node.parent_id;
+        }
+    }
+    // Fallback: flat file-scope search, return only if unambiguous.
+    const scoped_nodes = g.nodes.items[scope_start..scope_end];
+    var sole_match: ?NodeId = null;
+    var match_count: usize = 0;
+    for (scoped_nodes, scope_start..) |n, i| {
         if (n.kind == .function and std.mem.eql(u8, n.name, name)) {
+            sole_match = @enumFromInt(i);
+            match_count += 1;
+            if (match_count > 1) return null;
+        }
+    }
+    return sole_match;
+}
+
+/// Find a function node by name and line number. Used by walkForEdges to
+/// identify the correct graph node when multiple functions share the same
+/// name (e.g. init in two different structs).
+fn findFunctionByNameAndLine(g: *const Graph, name: []const u8, line: u32, scope_start: usize, scope_end: usize) ?NodeId {
+    const scoped_nodes = g.nodes.items[scope_start..scope_end];
+    for (scoped_nodes, scope_start..) |n, i| {
+        if (n.kind == .function and std.mem.eql(u8, n.name, name) and
+            n.line_start != null and n.line_start.? == line)
+        {
+            return @enumFromInt(i);
+        }
+    }
+    // Fallback: for generic type-returning functions that are stored as
+    // type_def nodes, match by name and line.
+    for (scoped_nodes, scope_start..) |n, i| {
+        if ((n.kind == .type_def or n.kind == .enum_def) and
+            std.mem.eql(u8, n.name, name) and
+            n.line_start != null and n.line_start.? == line)
+        {
             return @enumFromInt(i);
         }
     }
     return null;
 }
 
-fn findTestByName(g: *const Graph, name: []const u8) ?NodeId {
-    for (g.nodes.items, 0..) |n, i| {
+fn findTestByName(g: *const Graph, name: []const u8, scope_start: usize, scope_end: usize) ?NodeId {
+    const scoped_nodes = g.nodes.items[scope_start..scope_end];
+    for (scoped_nodes, scope_start..) |n, i| {
         if (n.kind == .test_def and std.mem.eql(u8, n.name, name)) {
             return @enumFromInt(i);
         }
@@ -353,18 +660,334 @@ fn findTestByName(g: *const Graph, name: []const u8) ?NodeId {
     return null;
 }
 
-fn addEdgeIfNew(g: *Graph, source_id: NodeId, target_id: NodeId, edge_type: EdgeType) void {
+fn addEdgeIfNew(g: *Graph, source_id: NodeId, target_id: NodeId, edge_type: EdgeType) !void {
+    if (source_id == target_id) return;
     for (g.edges.items) |e| {
         if (e.source_id == source_id and e.target_id == target_id and e.edge_type == edge_type) {
             return;
         }
     }
-    _ = g.addEdge(.{
+    _ = try g.addEdge(.{
         .source_id = source_id,
         .target_id = target_id,
         .edge_type = edge_type,
         .source = .tree_sitter,
-    }) catch {};
+    });
+}
+
+// =========================================================================
+// Cross-file resolution helpers
+// =========================================================================
+
+/// Collect the chain of identifiers from a (possibly nested) field_expression.
+/// For `alpha.Self.init`, populates out with ["alpha", "Self", "init"] and returns 3.
+fn collectFieldExprChain(source: []const u8, node: ts.Node, out: *[max_chain_depth][]const u8) usize {
+    return collectChainRecursive(source, node, out, 0);
+}
+
+/// Maximum depth for field_expression chains like `a.b.c.d`.
+/// 8 covers realistic Zig qualified paths (e.g., `std.mem.Allocator.Error`)
+/// while bounding stack usage in the recursive descent.
+const max_chain_depth = 8;
+
+/// Maximum AST depth for scanForCalls and scanForTypeIdentifiersScoped.
+/// 256 covers any realistic Zig code while bounding stack usage.
+const max_ast_scan_depth: u32 = 256;
+
+/// Recursive helper for collectFieldExprChain. Descends into nested
+/// field_expression nodes, appending each identifier segment to `out`.
+fn collectChainRecursive(source: []const u8, node: ts.Node, out: *[max_chain_depth][]const u8, depth: usize) usize {
+    // Graceful cap: return truncated chain, remaining segments are ignored.
+    if (depth >= max_chain_depth) return depth;
+    const kind = node.kind();
+    if (std.mem.eql(u8, kind, "identifier")) {
+        out[depth] = ts_api.nodeText(source, node);
+        return depth + 1;
+    }
+    if (std.mem.eql(u8, kind, "field_expression")) {
+        var result = depth;
+        if (node.namedChild(0)) |obj| {
+            result = collectChainRecursive(source, obj, out, result);
+        }
+        const count = node.namedChildCount();
+        if (count >= 2) {
+            if (node.namedChild(count - 1)) |field| {
+                result = collectChainRecursive(source, field, out, result);
+            }
+        }
+        return result;
+    }
+    // Unwrap call_expression to reach the function reference (first named child).
+    if (std.mem.eql(u8, kind, "call_expression")) {
+        if (node.namedChild(0)) |fn_ref| {
+            return collectChainRecursive(source, fn_ref, out, depth);
+        }
+    }
+    return depth;
+}
+
+/// Extract the import path from a variable_declaration containing @import("...").
+/// For `const alpha = @import("alpha.zig")`, returns "alpha.zig".
+fn extractImportPath(source: []const u8, var_decl: ts.Node) ?[]const u8 {
+    return extractImportPathRecursive(source, var_decl, 0);
+}
+
+/// Maximum AST depth when searching for `@import` calls inside a declaration.
+/// A standard `const x = @import("path")` has the builtin_function at depth 1–2.
+/// Depth 5 covers realistic patterns (e.g., `@import` inside `if` or `orelse`)
+/// while bounding stack usage in the recursive descent.
+const max_import_search_depth = 5;
+
+/// Recursive helper for extractImportPath. Walks AST children looking for
+/// a builtin_function node containing `@import`, then extracts the string argument.
+fn extractImportPathRecursive(source: []const u8, node: ts.Node, depth: u32) ?[]const u8 {
+    // Graceful cap: deeply nested @import calls are not recorded.
+    if (depth > max_import_search_depth) return null;
+    var i: u32 = 0;
+    while (i < node.childCount()) : (i += 1) {
+        const child = node.child(i) orelse continue;
+        const kind = child.kind();
+        if (std.mem.eql(u8, kind, "builtin_function")) {
+            // Check if this is @import by looking for builtin_identifier.
+            var j: u32 = 0;
+            while (j < child.childCount()) : (j += 1) {
+                const bi = child.child(j) orelse continue;
+                if (std.mem.eql(u8, bi.kind(), "builtin_identifier")) {
+                    if (std.mem.eql(u8, ts_api.nodeText(source, bi), "@import")) {
+                        return findStringContent(source, child);
+                    }
+                }
+            }
+        }
+        if (extractImportPathRecursive(source, child, depth + 1)) |path| return path;
+    }
+    return null;
+}
+
+/// Walk an AST subtree looking for the first `string_content` node.
+/// Used to extract the path argument from `@import("path")`.
+fn findStringContent(source: []const u8, node: ts.Node) ?[]const u8 {
+    var i: u32 = 0;
+    while (i < node.childCount()) : (i += 1) {
+        const child = node.child(i) orelse continue;
+        if (std.mem.eql(u8, child.kind(), "string_content")) {
+            return ts_api.nodeText(source, child);
+        }
+        if (findStringContent(source, child)) |path| return path;
+    }
+    return null;
+}
+
+/// Find a file node in the graph by basename (e.g., "alpha.zig").
+fn findImportTargetFile(g: *const Graph, import_path: []const u8) ?NodeId {
+    for (g.nodes.items, 0..) |n, i| {
+        if (n.kind == .file and std.mem.eql(u8, n.name, import_path)) {
+            return @enumFromInt(i);
+        }
+    }
+    return null;
+}
+
+/// Build the import map in an EdgeContext by scanning root-level variable declarations.
+fn buildImportMap(g: *const Graph, source: []const u8, root: ts.Node, ctx: *EdgeContext) void {
+    var i: u32 = 0;
+    while (i < root.childCount()) : (i += 1) {
+        const child = root.child(i) orelse continue;
+        if (!child.isNamed()) continue;
+        if (!std.mem.eql(u8, child.kind(), "variable_declaration")) continue;
+        // Graceful cap: silently skip excess imports.
+        if (ctx.import_count >= EdgeContext.max_imports) break;
+
+        const name = getIdentifierName(source, child) orelse continue;
+
+        // Check if this variable was classified as import_decl during node creation.
+        const scoped_nodes = g.nodes.items[ctx.scope_start..ctx.scope_end];
+        var is_import = false;
+        for (scoped_nodes) |n| {
+            if (n.kind == .import_decl and std.mem.eql(u8, n.name, name)) {
+                is_import = true;
+                break;
+            }
+        }
+        if (!is_import) continue;
+
+        // Extract import path from AST.
+        const import_path = extractImportPath(source, child) orelse continue;
+
+        // Find the target file node in the graph.
+        if (findImportTargetFile(g, import_path)) |target_id| {
+            ctx.import_names[ctx.import_count] = name;
+            ctx.import_targets[ctx.import_count] = target_id;
+            ctx.import_count += 1;
+        }
+    }
+}
+
+/// Resolve an import-qualified chain against a target file.
+/// For chain ["MyType", "init"] with a target file:
+///   - "MyType" as type_def (direct child of file) creates uses_type edge
+///   - "init" as function (direct child of MyType) creates calls edge (if is_call)
+/// Each segment narrows the scope to direct children of the resolved node.
+fn resolveQualifiedCall(
+    g: *Graph,
+    caller_id: NodeId,
+    target_file_id: NodeId,
+    chain: []const []const u8,
+    is_call: bool,
+) !void {
+    var current_scope_id = target_file_id;
+
+    for (chain, 0..) |segment, seg_idx| {
+        const is_last = (seg_idx == chain.len - 1);
+
+        // Search direct children of the current scope first.
+        var matched_id: ?NodeId = null;
+        for (g.nodes.items, 0..) |n, idx| {
+            const nid: NodeId = @enumFromInt(idx);
+            if (n.parent_id == null or n.parent_id.? != current_scope_id) continue;
+            if (!std.mem.eql(u8, n.name, segment)) continue;
+            matched_id = nid;
+            break;
+        }
+
+        // If no direct child matched (e.g. var-tracked chains that skip the
+        // intermediate type), search all descendants but only resolve when
+        // exactly one matches.
+        if (matched_id == null) {
+            var match_count: usize = 0;
+            for (g.nodes.items, 0..) |n, idx| {
+                if (!std.mem.eql(u8, n.name, segment)) continue;
+                // Walk parent chain to verify this node is under current_scope_id.
+                var ancestor = n.parent_id;
+                var hops: usize = 0;
+                const is_under_scope = while (ancestor != null and hops < 100) : (hops += 1) {
+                    if (ancestor.? == current_scope_id) break true;
+                    const anc_node = g.getNode(ancestor.?) orelse break false;
+                    ancestor = anc_node.parent_id;
+                } else false;
+                if (!is_under_scope) continue;
+                matched_id = @enumFromInt(idx);
+                match_count += 1;
+                if (match_count > 1) {
+                    matched_id = null;
+                    break;
+                }
+            }
+        }
+
+        const resolved_id = matched_id orelse return;
+
+        const resolved_node = g.getNode(resolved_id) orelse return;
+
+        if (is_last and is_call and resolved_node.kind == .function) {
+            try addEdgeIfNew(g, caller_id, resolved_id, .calls);
+        } else {
+            const is_type = resolved_node.kind == .type_def or resolved_node.kind == .enum_def;
+            const is_type_alias = resolved_node.kind == .constant and
+                resolved_node.name.len > 0 and resolved_node.name[0] >= 'A' and resolved_node.name[0] <= 'Z';
+            if (is_type or is_type_alias) {
+                try addEdgeIfNew(g, caller_id, resolved_id, .uses_type);
+            }
+        }
+
+        // Narrow scope for next segment.
+        if (resolved_node.kind == .type_def or resolved_node.kind == .enum_def) {
+            // Type container: next segment is a child of this type.
+            current_scope_id = resolved_id;
+        } else {
+            // Constant/alias (e.g. Self): next segment is a sibling (same parent).
+            current_scope_id = resolved_node.parent_id orelse return;
+        }
+    }
+}
+
+/// Pre-scan a function body for variable assignments from import-qualified expressions.
+fn prescanForVarBindings(
+    source: []const u8,
+    fn_node: ts.Node,
+    ctx: *const EdgeContext,
+    tracker: *VarTracker,
+) void {
+    var i: u32 = 0;
+    while (i < fn_node.childCount()) : (i += 1) {
+        const child = fn_node.child(i) orelse continue;
+        if (std.mem.eql(u8, child.kind(), "block")) {
+            scanBlockForVarBindings(source, child, ctx, tracker);
+            return;
+        }
+    }
+}
+
+/// Scan a block's children for variable_declaration nodes whose initializer
+/// is rooted in an import-qualified expression. Recurses into nested blocks
+/// and control-flow statements (defer, if) to catch bindings at any depth.
+fn scanBlockForVarBindings(
+    source: []const u8,
+    block: ts.Node,
+    ctx: *const EdgeContext,
+    tracker: *VarTracker,
+) void {
+    var i: u32 = 0;
+    while (i < block.childCount()) : (i += 1) {
+        const child = block.child(i) orelse continue;
+        const kind = child.kind();
+
+        // Direct variable_declaration: `var a = alpha.Self.init(42);`
+        if (std.mem.eql(u8, kind, "variable_declaration")) {
+            const var_name = getIdentifierName(source, child) orelse continue;
+            if (findImportQualifiedRoot(source, child, ctx)) |target_file_id| {
+                tracker.addBinding(var_name, target_file_id);
+            }
+            continue;
+        }
+
+        // Recurse into blocks and statements that may contain variable declarations
+        // (e.g., defer_statement wrapping a variable_declaration).
+        if (std.mem.eql(u8, kind, "block") or
+            std.mem.eql(u8, kind, "defer_statement") or
+            std.mem.eql(u8, kind, "if_statement") or
+            std.mem.eql(u8, kind, "expression_statement"))
+        {
+            scanBlockForVarBindings(source, child, ctx, tracker);
+        }
+    }
+}
+
+/// Check if a variable_declaration's value is rooted in an import-qualified expression.
+/// Returns the target file NodeId if the value starts with an import name.
+fn findImportQualifiedRoot(
+    source: []const u8,
+    var_decl: ts.Node,
+    ctx: *const EdgeContext,
+) ?NodeId {
+    var i: u32 = 0;
+    while (i < var_decl.childCount()) : (i += 1) {
+        const child = var_decl.child(i) orelse continue;
+        if (extractExpressionImportRoot(source, child, ctx)) |target| return target;
+    }
+    return null;
+}
+
+/// Recursively extract the root import target from an expression.
+/// Handles call_expression, field_expression, and try_expression wrappers.
+fn extractExpressionImportRoot(source: []const u8, node: ts.Node, ctx: *const EdgeContext) ?NodeId {
+    const kind = node.kind();
+    if (std.mem.eql(u8, kind, "call_expression") or std.mem.eql(u8, kind, "field_expression")) {
+        var chain: [max_chain_depth][]const u8 = undefined;
+        const chain_len = collectFieldExprChain(source, node, &chain);
+        if (chain_len > 0) {
+            return ctx.findImportTarget(chain[0]);
+        }
+    }
+    // Unwrap try_expression: `try alpha.init()`
+    if (std.mem.eql(u8, kind, "try_expression")) {
+        var i: u32 = 0;
+        while (i < node.namedChildCount()) : (i += 1) {
+            const child = node.namedChild(i) orelse continue;
+            if (extractExpressionImportRoot(source, child, ctx)) |target| return target;
+        }
+    }
+    return null;
 }
 
 // =========================================================================
@@ -509,7 +1132,7 @@ fn collectModuleDocComment(source: []const u8, root: ts.Node) ?[]const u8 {
         if (!std.mem.eql(u8, child.kind(), "comment")) {
             // Skip anonymous non-comment tokens (e.g. punctuation).
             if (!child.isNamed()) continue;
-            // Hit a declaration — stop.
+            // Hit a declaration, stop.
             break;
         }
         const text = source[child.startByte()..child.endByte()];
@@ -517,7 +1140,7 @@ fn collectModuleDocComment(source: []const u8, root: ts.Node) ?[]const u8 {
             if (first_start == null) first_start = child.startByte();
             last_end = child.endByte();
         } else {
-            // Non-//! comment (e.g. /// or //) — stop collecting.
+            // Non-//! comment (e.g. /// or //), stop collecting.
             break;
         }
     }
@@ -611,7 +1234,7 @@ fn classifyRecursive(source: []const u8, ts_node: ts.Node, result: *Classificati
 }
 
 // =========================================================================
-// Nominal tests — parse tests/fixtures/simple.zig
+// Nominal tests: parse tests/fixtures/simple.zig
 // =========================================================================
 
 const fixtures = @import("test-fixtures");
@@ -624,7 +1247,7 @@ test "parses public function" {
     // Act
     try parse(fixtures.zig.simple, &g);
 
-    // Assert — at least one node with kind=function and visibility=public
+    // Assert: at least one node with kind=function and visibility=public
     var found = false;
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {
@@ -645,7 +1268,7 @@ test "parses private function" {
     // Act
     try parse(fixtures.zig.simple, &g);
 
-    // Assert — at least one node with kind=function and visibility=private
+    // Assert: at least one node with kind=function and visibility=private
     var found = false;
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {
@@ -666,7 +1289,7 @@ test "parses struct" {
     // Act
     try parse(fixtures.zig.simple, &g);
 
-    // Assert — at least one node with kind=type_def
+    // Assert: at least one node with kind=type_def
     var found = false;
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {
@@ -687,7 +1310,7 @@ test "parses enum" {
     // Act
     try parse(fixtures.zig.simple, &g);
 
-    // Assert — at least one node with kind=enum_def
+    // Assert: at least one node with kind=enum_def
     var found = false;
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {
@@ -708,7 +1331,7 @@ test "parses constant" {
     // Act
     try parse(fixtures.zig.simple, &g);
 
-    // Assert — at least one node with kind=constant
+    // Assert: at least one node with kind=constant
     var found = false;
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {
@@ -729,7 +1352,7 @@ test "parses test block" {
     // Act
     try parse(fixtures.zig.simple, &g);
 
-    // Assert — at least one node with kind=test_def
+    // Assert: at least one node with kind=test_def
     var found = false;
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {
@@ -750,7 +1373,7 @@ test "parses error set" {
     // Act
     try parse(fixtures.zig.simple, &g);
 
-    // Assert — at least one node with kind=error_def
+    // Assert: at least one node with kind=error_def
     var found = false;
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {
@@ -771,7 +1394,7 @@ test "attaches doc comment" {
     // Act
     try parse(fixtures.zig.simple, &g);
 
-    // Assert — the public function "defaultPoint" has doc != null
+    // Assert: the public function "defaultPoint" has doc != null
     var found = false;
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {
@@ -795,7 +1418,7 @@ test "sets parent_id for method" {
     // Act
     try parse(fixtures.zig.simple, &g);
 
-    // Assert — method "manhattan" has parent_id pointing to the struct "Point"
+    // Assert: method "manhattan" has parent_id pointing to the struct "Point"
     var method_node: ?*const Node = null;
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {
@@ -822,7 +1445,7 @@ test "sets parent_id for struct" {
     // Act
     try parse(fixtures.zig.simple, &g);
 
-    // Assert — struct "Point" has parent_id pointing to the file node
+    // Assert: struct "Point" has parent_id pointing to the file node
     var struct_node: ?*const Node = null;
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {
@@ -848,7 +1471,7 @@ test "sets parent_id for top-level function" {
     // Act
     try parse(fixtures.zig.simple, &g);
 
-    // Assert — top-level function "defaultPoint" has parent_id pointing to file node
+    // Assert: top-level function "defaultPoint" has parent_id pointing to file node
     var fn_node: ?*const Node = null;
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {
@@ -874,7 +1497,7 @@ test "populates ZigMeta for comptime" {
     // Act
     try parse(fixtures.zig.simple, &g);
 
-    // Assert — constant "buffer_size" has lang_meta.zig.is_comptime == true
+    // Assert: constant "buffer_size" has lang_meta.zig.is_comptime == true
     var found = false;
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {
@@ -901,7 +1524,7 @@ test "creates calls edge" {
     // Act
     try parse(fixtures.zig.simple, &g);
 
-    // Assert — at least one edge with edge_type=calls exists
+    // Assert: at least one edge with edge_type=calls exists
     //          (manhattan calls abs in the fixture)
     var found = false;
     for (g.edges.items) |e| {
@@ -921,7 +1544,7 @@ test "creates calls edge for method call via self" {
     // Act
     try parse(fixtures.zig.simple, &g);
 
-    // Assert — isWithinRadius calls manhattan via self.manhattan()
+    // Assert: isWithinRadius calls manhattan via self.manhattan()
     var caller_id: ?NodeId = null;
     var callee_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
@@ -953,7 +1576,7 @@ test "creates uses_type edge" {
     // Act
     try parse(fixtures.zig.simple, &g);
 
-    // Assert — at least one edge with edge_type=uses_type exists
+    // Assert: at least one edge with edge_type=uses_type exists
     //          (defaultPoint uses/returns Point in the fixture)
     var found = false;
     for (g.edges.items) |e| {
@@ -973,7 +1596,7 @@ test "all edges have source tree_sitter" {
     // Act
     try parse(fixtures.zig.simple, &g);
 
-    // Assert — every edge has source == .tree_sitter
+    // Assert: every edge has source == .tree_sitter
     try std.testing.expect(g.edgeCount() > 0);
     for (g.edges.items) |e| {
         try std.testing.expectEqual(EdgeSource.tree_sitter, e.source);
@@ -988,7 +1611,7 @@ test "all nodes have language zig" {
     // Act
     try parse(fixtures.zig.simple, &g);
 
-    // Assert — every node has language == .zig
+    // Assert: every node has language == .zig
     try std.testing.expect(g.nodeCount() > 0);
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {
@@ -1005,7 +1628,7 @@ test "file node has correct line count" {
     // Act
     try parse(fixtures.zig.simple, &g);
 
-    // Assert — file node (first node, kind=file) has line_end == 75
+    // Assert: file node (first node, kind=file) has line_end == 75
     //          (simple.zig has 75 lines of content)
     const file_node = g.getNode(@enumFromInt(0));
     try std.testing.expect(file_node != null);
@@ -1024,9 +1647,9 @@ test "empty file produces only file node" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.empty, &g);
+    try parse(fixtures.zig.edge_cases.empty, &g);
 
-    // Assert — exactly 1 node (kind=file), zero edges
+    // Assert: exactly 1 node (kind=file), zero edges
     try std.testing.expectEqual(@as(usize, 1), g.nodeCount());
     try std.testing.expectEqual(@as(usize, 0), g.edgeCount());
     const file_node = g.getNode(@enumFromInt(0));
@@ -1040,9 +1663,9 @@ test "only comments produces only file node" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.only_comments, &g);
+    try parse(fixtures.zig.edge_cases.only_comments, &g);
 
-    // Assert — exactly 1 node (kind=file), no declarations parsed
+    // Assert: exactly 1 node (kind=file), no declarations parsed
     try std.testing.expectEqual(@as(usize, 1), g.nodeCount());
     const file_node = g.getNode(@enumFromInt(0));
     try std.testing.expect(file_node != null);
@@ -1055,9 +1678,9 @@ test "no pub file has all private nodes" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.no_pub, &g);
+    try parse(fixtures.zig.edge_cases.no_pub, &g);
 
-    // Assert — all function nodes have visibility=private
+    // Assert: all function nodes have visibility=private
     var fn_count: usize = 0;
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {
@@ -1076,9 +1699,9 @@ test "deeply nested sets correct parent chain" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.deeply_nested, &g);
+    try parse(fixtures.zig.edge_cases.deeply_nested, &g);
 
-    // Assert — innerMethod → Inner → Middle → Outer → file
+    // Assert: innerMethod → Inner → Middle → Outer → file
     // Find "innerMethod"
     var inner_method: ?*const Node = null;
     var i: usize = 0;
@@ -1125,9 +1748,9 @@ test "many params function is parsed" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.many_params, &g);
+    try parse(fixtures.zig.edge_cases.many_params, &g);
 
-    // Assert — a function node named "manyParams" exists
+    // Assert: a function node named "manyParams" exists
     var found = false;
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {
@@ -1146,9 +1769,9 @@ test "unicode names are preserved" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.unicode_names, &g);
+    try parse(fixtures.zig.edge_cases.unicode_names, &g);
 
-    // Assert — a node named "café" or "résumé" exists (unicode identifiers preserved)
+    // Assert: a node named "café" or "résumé" exists (unicode identifiers preserved)
     var found_cafe = false;
     var found_resume = false;
     var i: usize = 0;
@@ -1161,7 +1784,7 @@ test "unicode names are preserved" {
 }
 
 // =========================================================================
-// Generic type-returning function tests — parse tests/fixtures/generic_type.zig
+// Generic type-returning function tests: parse tests/fixtures/generic_type.zig
 // =========================================================================
 
 test "generic type-returning function produces a type_def node" {
@@ -1172,7 +1795,7 @@ test "generic type-returning function produces a type_def node" {
     // Act
     try parse(fixtures.zig.generic_type, &g);
 
-    // Assert — a node named "Container" with kind=type_def exists
+    // Assert: a node named "Container" with kind=type_def exists
     var found = false;
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {
@@ -1193,7 +1816,7 @@ test "generic type-returning function has file as parent" {
     // Act
     try parse(fixtures.zig.generic_type, &g);
 
-    // Assert — Container's parent_id points to the file node
+    // Assert: Container's parent_id points to the file node
     var container_node: ?*const Node = null;
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {
@@ -1219,7 +1842,7 @@ test "generic type-returning function exposes inner public methods" {
     // Act
     try parse(fixtures.zig.generic_type, &g);
 
-    // Assert — public methods init, deinit, count, isEmpty exist as function nodes
+    // Assert: public methods init, deinit, count, isEmpty exist as function nodes
     var found_init = false;
     var found_deinit = false;
     var found_count = false;
@@ -1248,7 +1871,7 @@ test "generic type-returning function exposes inner private helper" {
     // Act
     try parse(fixtures.zig.generic_type, &g);
 
-    // Assert — private function "validate" exists with visibility=private
+    // Assert: private function "validate" exists with visibility=private
     var found = false;
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {
@@ -1271,7 +1894,7 @@ test "generic type-returning function inner method has correct parent" {
     // Act
     try parse(fixtures.zig.generic_type, &g);
 
-    // Assert — method "init" has parent_id pointing to Container (type_def)
+    // Assert: method "init" has parent_id pointing to Container (type_def)
     var init_node: ?*const Node = null;
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {
@@ -1298,7 +1921,7 @@ test "generic type-returning function inner type has correct parent" {
     // Act
     try parse(fixtures.zig.generic_type, &g);
 
-    // Assert — inner type "Entry" has parent_id pointing to Container (type_def)
+    // Assert: inner type "Entry" has parent_id pointing to Container (type_def)
     var entry_node: ?*const Node = null;
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {
@@ -1325,7 +1948,7 @@ test "generic type inner method call edge is detected" {
     // Act
     try parse(fixtures.zig.generic_type, &g);
 
-    // Assert — isEmpty calls count (via self.count())
+    // Assert: isEmpty calls count (via self.count())
     var caller_id: ?NodeId = null;
     var callee_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
@@ -1357,7 +1980,7 @@ test "generic type-returning function doc comment on inner method is captured" {
     // Act
     try parse(fixtures.zig.generic_type, &g);
 
-    // Assert — public method "count" inside Container has doc != null
+    // Assert: public method "count" inside Container has doc != null
     var found = false;
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {
@@ -1379,7 +2002,7 @@ test "generic union type-returning function produces nodes" {
     // Act
     try parse(fixtures.zig.generic_type, &g);
 
-    // Assert — a node named "Result" exists (type_def or enum_def for the union)
+    // Assert: a node named "Result" exists (type_def or enum_def for the union)
     //          and a method "isOk" exists inside it
     var found_result = false;
     var found_isOk = false;
@@ -1407,7 +2030,7 @@ test "non-generic struct still works alongside generic type" {
     // Act
     try parse(fixtures.zig.generic_type, &g);
 
-    // Assert — Config exists as type_def with file as parent, defaults method present
+    // Assert: Config exists as type_def with file as parent, defaults method present
     var config_node: ?*const Node = null;
     var found_defaults = false;
     var i: usize = 0;
@@ -1438,7 +2061,7 @@ test "generic type-returning function doc comment on outer function is captured"
     // Act
     try parse(fixtures.zig.generic_type, &g);
 
-    // Assert — Container node has doc != null
+    // Assert: Container node has doc != null
     var found = false;
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {
@@ -1453,7 +2076,7 @@ test "generic type-returning function doc comment on outer function is captured"
 }
 
 // =========================================================================
-// Union recognition tests — simple.zig unions
+// Union recognition tests: simple.zig unions
 // =========================================================================
 
 test "tagged union is classified as type_def" {
@@ -1464,7 +2087,7 @@ test "tagged union is classified as type_def" {
     // Act
     try parse(fixtures.zig.simple, &g);
 
-    // Assert — Shape node exists with kind=type_def, visibility=public, doc != null
+    // Assert: Shape node exists with kind=type_def, visibility=public, doc != null
     var found = false;
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {
@@ -1488,7 +2111,7 @@ test "plain union is classified as type_def" {
     // Act
     try parse(fixtures.zig.simple, &g);
 
-    // Assert — RawValue node exists with kind=type_def, visibility=private
+    // Assert: RawValue node exists with kind=type_def, visibility=private
     var found = false;
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {
@@ -1511,8 +2134,8 @@ test "tagged union with nested struct is still type_def" {
     // Act
     try parse(fixtures.zig.simple, &g);
 
-    // Assert — Shape (which has an anonymous struct in its rect variant)
-    //          is classified as type_def because it IS a union, not
+    // Assert: Shape (which has an anonymous struct in its rect variant)
+    //          is classified as type_def because it is a union, not
     //          accidentally via the nested struct
     var shape_node: ?*const Node = null;
     var i: usize = 0;
@@ -1534,7 +2157,7 @@ test "tagged union with nested struct is still type_def" {
 }
 
 // =========================================================================
-// Enum method extraction tests — simple.zig Color enum
+// Enum method extraction tests: simple.zig Color enum
 // =========================================================================
 
 test "enum method is extracted as function child" {
@@ -1545,7 +2168,7 @@ test "enum method is extracted as function child" {
     // Act
     try parse(fixtures.zig.simple, &g);
 
-    // Assert — Color exists as enum_def, isWarm exists as function with parent == Color
+    // Assert: Color exists as enum_def, isWarm exists as function with parent == Color
     var color_id: ?NodeId = null;
     var iswarm_node: ?*const Node = null;
     var i: usize = 0;
@@ -1573,7 +2196,7 @@ test "enum method has uses_type edge to parent enum" {
     // Act
     try parse(fixtures.zig.simple, &g);
 
-    // Assert — isWarm has a uses_type edge pointing to Color
+    // Assert: isWarm has a uses_type edge pointing to Color
     //          (its signature contains `self: Color`)
     var color_id: ?NodeId = null;
     var iswarm_id: ?NodeId = null;
@@ -1599,7 +2222,7 @@ test "enum method has uses_type edge to parent enum" {
 }
 
 // =========================================================================
-// @import detection tests — simple.zig imports
+// @import detection tests: simple.zig imports
 // =========================================================================
 
 test "import declaration is classified as import_decl" {
@@ -1610,7 +2233,7 @@ test "import declaration is classified as import_decl" {
     // Act
     try parse(fixtures.zig.simple, &g);
 
-    // Assert — node named "std" has kind=import_decl and visibility=private
+    // Assert: node named "std" has kind=import_decl and visibility=private
     var found = false;
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {
@@ -1633,7 +2256,7 @@ test "import with field access is classified as import_decl" {
     // Act
     try parse(fixtures.zig.simple, &g);
 
-    // Assert — node named "ZigMeta" (from `@import("zig/meta.zig").ZigMeta`)
+    // Assert: node named "ZigMeta" (from `@import("zig/meta.zig").ZigMeta`)
     //          has kind=import_decl
     var found = false;
     var i: usize = 0;
@@ -1656,7 +2279,7 @@ test "non-import constant is still constant" {
     // Act
     try parse(fixtures.zig.simple, &g);
 
-    // Assert — node named "max_iterations" has kind=constant (regression check)
+    // Assert: node named "max_iterations" has kind=constant (regression check)
     var found = false;
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {
@@ -1672,7 +2295,7 @@ test "non-import constant is still constant" {
 }
 
 // =========================================================================
-// @This() file-struct tests — file_struct.zig
+// @This() file-struct tests: file_struct.zig
 // =========================================================================
 
 test "file-struct methods are extracted as function nodes" {
@@ -1683,7 +2306,7 @@ test "file-struct methods are extracted as function nodes" {
     // Act
     try parse(fixtures.zig.file_struct, &g);
 
-    // Assert — init, getValue, validate, isValid exist as function nodes
+    // Assert: init, getValue, validate, isValid exist as function nodes
     //          with parent_id pointing to the file node
     var found_init = false;
     var found_getValue = false;
@@ -1719,7 +2342,7 @@ test "file-struct nested type is extracted" {
     // Act
     try parse(fixtures.zig.file_struct, &g);
 
-    // Assert — Config struct is detected as type_def with parent = file node
+    // Assert: Config struct is detected as type_def with parent = file node
     var found = false;
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {
@@ -1744,7 +2367,7 @@ test "file-struct call edge between methods" {
     // Act
     try parse(fixtures.zig.file_struct, &g);
 
-    // Assert — isValid has a calls edge to validate (via self.validate())
+    // Assert: isValid has a calls edge to validate (via self.validate())
     var isValid_id: ?NodeId = null;
     var validate_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
@@ -1776,9 +2399,9 @@ test "file-struct Self constant is detected" {
     // Act
     try parse(fixtures.zig.file_struct, &g);
 
-    // Assert — const Self = @This() is detected as a constant node
+    // Assert: const Self = @This() is detected as a constant node
     //          (@This() is not an import, it's a builtin that returns the
-    //          enclosing type — semantically a constant binding)
+    //          enclosing type, semantically a constant binding)
     var found = false;
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {
@@ -1807,7 +2430,7 @@ test "test block creates calls edge to local function" {
     // Act
     try parse(source, &g);
 
-    // Assert — the test_def node should have a calls edge to helper
+    // Assert: the test_def node should have a calls edge to helper
     var test_id: ?NodeId = null;
     var helper_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
@@ -1841,7 +2464,7 @@ test "test block creates calls edge to method via dot syntax" {
     // Act
     try parse(source, &g);
 
-    // Assert — the test_def node should have a calls edge to bar
+    // Assert: the test_def node should have a calls edge to bar
     var test_id: ?NodeId = null;
     var bar_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
@@ -1875,7 +2498,7 @@ test "test block with no local calls has no edges" {
     // Act
     try parse(source, &g);
 
-    // Assert — the test_def node has zero outgoing edges
+    // Assert: the test_def node has zero outgoing edges
     var test_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
         if (n.kind == .test_def) {
@@ -1911,7 +2534,7 @@ test "test block does not leak calls from nested function" {
     // Act
     try parse(source, &g);
 
-    // Assert — the test_def "outer" must NOT have a calls edge to "helper".
+    // Assert: the test_def "outer" must not have a calls edge to "helper".
     // Only the nested function inner() calls helper(); the test body does not.
     var test_id: ?NodeId = null;
     var helper_id: ?NodeId = null;
@@ -1949,7 +2572,7 @@ test "function does not leak calls from nested function" {
     // Act
     try parse(source, &g);
 
-    // Assert — function "outer" must NOT have a calls edge to "target".
+    // Assert: function "outer" must not have a calls edge to "target".
     // Only the nested function nested() calls target(); outer does not.
     var outer_id: ?NodeId = null;
     var target_id: ?NodeId = null;
@@ -1989,8 +2612,8 @@ test "nested function gets its own calls edge not parent's" {
     // Act
     try parse(source, &g);
 
-    // Assert — "parent" HAS a calls edge to "alpha" (direct call)
-    //          "parent" does NOT have a calls edge to "beta" (nested call)
+    // Assert: "parent" has a calls edge to "alpha" (direct call)
+    //          "parent" does not have a calls edge to "beta" (nested call)
     var parent_id: ?NodeId = null;
     var alpha_id: ?NodeId = null;
     var beta_id: ?NodeId = null;
@@ -2032,7 +2655,7 @@ test "function does not leak uses_type from nested function" {
     // Act
     try parse(source, &g);
 
-    // Assert — function "outer" must NOT have a uses_type edge to "MyType".
+    // Assert: function "outer" must not have a uses_type edge to "MyType".
     // The nested function's signature references MyType, but that should not
     // leak to the enclosing function.
     var outer_id: ?NodeId = null;
@@ -2068,7 +2691,7 @@ test "decl-reference test name is captured as identifier" {
     // Act
     try parse(source, &g);
 
-    // Assert — the test_def node's name should be "helper", not "test"
+    // Assert: the test_def node's name should be "helper", not "test"
     var found_test = false;
     for (g.nodes.items) |n| {
         if (n.kind == .test_def) {
@@ -2094,7 +2717,7 @@ test "decl-reference test name for type is captured" {
     // Act
     try parse(source, &g);
 
-    // Assert — the test_def node's name should be "Foo", not "test"
+    // Assert: the test_def node's name should be "Foo", not "test"
     var found_test = false;
     for (g.nodes.items) |n| {
         if (n.kind == .test_def) {
@@ -2120,7 +2743,7 @@ test "two decl-reference tests get distinct names" {
     // Act
     try parse(source, &g);
 
-    // Assert — exactly 2 test_def nodes, named "alpha" and "beta"
+    // Assert: exactly 2 test_def nodes, named "alpha" and "beta"
     var test_count: usize = 0;
     var found_alpha = false;
     var found_beta = false;
@@ -2152,7 +2775,7 @@ test "decl-reference test edges are attributed to correct node" {
     // Act
     try parse(source, &g);
 
-    // Assert — locate node ids
+    // Assert: locate node ids
     var test_alpha_id: ?NodeId = null;
     var test_beta_id: ?NodeId = null;
     var fn_alpha_id: ?NodeId = null;
@@ -2168,7 +2791,7 @@ test "decl-reference test edges are attributed to correct node" {
     try std.testing.expect(fn_alpha_id != null);
     try std.testing.expect(fn_beta_id != null);
 
-    // Assert — test "alpha" calls function "alpha"
+    // Assert: test "alpha" calls function "alpha"
     var alpha_calls_alpha = false;
     var alpha_calls_beta = false;
     var beta_calls_beta = false;
@@ -2198,7 +2821,7 @@ test "quoted identifier test name is stripped" {
     // Act
     try parse(source, &g);
 
-    // Assert — the test_def node's name should be "edge case name" (@ and quotes stripped)
+    // Assert: the test_def node's name should be "edge case name" (@ and quotes stripped)
     var found_test = false;
     for (g.nodes.items) |n| {
         if (n.kind == .test_def) {
@@ -2222,7 +2845,7 @@ test "string-literal test names still work" {
     // Act
     try parse(source, &g);
 
-    // Assert — the test_def node's name should be "calls foo"
+    // Assert: the test_def node's name should be "calls foo"
     var test_id: ?NodeId = null;
     var foo_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
@@ -2235,7 +2858,7 @@ test "string-literal test names still work" {
     try std.testing.expect(test_id != null);
     try std.testing.expect(foo_id != null);
 
-    // Assert — there is a calls edge from the test to foo
+    // Assert: there is a calls edge from the test to foo
     var found = false;
     for (g.edges.items) |e| {
         if (e.source_id == test_id.? and e.target_id == foo_id.? and e.edge_type == .calls) {
@@ -2256,7 +2879,7 @@ test "struct fields are emitted as field nodes" {
     // Act
     try parse(fixtures.zig.simple, &g);
 
-    // Assert — Point struct has two field children (x and y)
+    // Assert: Point struct has two field children (x and y)
     var point_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
         if (n.kind == .type_def and std.mem.eql(u8, n.name, "Point")) {
@@ -2283,7 +2906,7 @@ test "field node has correct name" {
     // Act
     try parse(fixtures.zig.simple, &g);
 
-    // Assert — Point's field nodes are named "x" and "y"
+    // Assert: Point's field nodes are named "x" and "y"
     var point_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
         if (n.kind == .type_def and std.mem.eql(u8, n.name, "Point")) {
@@ -2313,7 +2936,7 @@ test "field node visibility is private by default" {
     // Act
     try parse(fixtures.zig.simple, &g);
 
-    // Assert — Point's x and y fields have visibility == .private
+    // Assert: Point's x and y fields have visibility == .private
     //          (Zig struct fields do not support the pub modifier)
     var point_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
@@ -2331,7 +2954,7 @@ test "field node visibility is private by default" {
             checked += 1;
         }
     }
-    // Guard against vacuous pass — we must have checked at least 2 fields
+    // Guard against vacuous pass, we must have checked at least 2 fields
     try std.testing.expect(checked >= 2);
 }
 
@@ -2343,7 +2966,7 @@ test "enum variants are emitted as field nodes" {
     // Act
     try parse(fixtures.zig.simple, &g);
 
-    // Assert — Direction enum has three field children (north, south, east)
+    // Assert: Direction enum has three field children (north, south, east)
     var dir_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
         if (n.kind == .enum_def and std.mem.eql(u8, n.name, "Direction")) {
@@ -2380,7 +3003,7 @@ test "file node captures module doc comment" {
     // Act
     try parse(fixtures.zig.simple, &g);
 
-    // Assert — file node (node 0) has doc != null containing module doc text
+    // Assert: file node (node 0) has doc != null containing module doc text
     const file_node = g.getNode(@enumFromInt(0));
     try std.testing.expect(file_node != null);
     try std.testing.expectEqual(NodeKind.file, file_node.?.kind);
@@ -2389,7 +3012,7 @@ test "file node captures module doc comment" {
     const doc = file_node.?.doc.?;
     // Doc should contain the //! content
     try std.testing.expect(std.mem.indexOf(u8, doc, "Simple fixture") != null);
-    // Doc should NOT contain /// item doc comments from declarations
+    // Doc should not contain /// item doc comments from declarations
     try std.testing.expect(std.mem.indexOf(u8, doc, "Compute the Manhattan") == null);
 }
 
@@ -2402,7 +3025,7 @@ test "file node doc is null when no module doc comment" {
     // Act
     try parse(source, &g);
 
-    // Assert — file node has doc == null
+    // Assert: file node has doc == null
     const file_node = g.getNode(@enumFromInt(0));
     try std.testing.expect(file_node != null);
     try std.testing.expectEqual(NodeKind.file, file_node.?.kind);
@@ -2422,7 +3045,7 @@ test "module doc is separate from item doc" {
     // Act
     try parse(source, &g);
 
-    // Assert — file node doc contains "Module doc." but NOT "Item doc."
+    // Assert: file node doc contains "Module doc." but not "Item doc."
     const file_node = g.getNode(@enumFromInt(0));
     try std.testing.expect(file_node != null);
     try std.testing.expect(file_node.?.doc != null);
@@ -2430,7 +3053,7 @@ test "module doc is separate from item doc" {
     try std.testing.expect(std.mem.indexOf(u8, file_doc, "Module doc.") != null);
     try std.testing.expect(std.mem.indexOf(u8, file_doc, "Item doc.") == null);
 
-    // Assert — x node doc contains "Item doc." but NOT "Module doc."
+    // Assert: x node doc contains "Item doc." but not "Module doc."
     var x_node: ?*const Node = null;
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {
@@ -2464,7 +3087,7 @@ test "uses_type edge created for type alias in parameter" {
     // Act
     try parse(source, &g);
 
-    // Assert — useBar has a uses_type edge to Bar.
+    // Assert: useBar has a uses_type edge to Bar.
     // Rationale: Bar appears in the function signature as a type. Even though
     // Bar is classified as "constant" (it's an alias, not a struct literal),
     // the visitor should recognize that Bar is used as a type and create a
@@ -2505,7 +3128,7 @@ test "uses_type edge created for type alias in return type" {
     // Act
     try parse(source, &g);
 
-    // Assert — doStuff has a uses_type edge to Err.
+    // Assert: doStuff has a uses_type edge to Err.
     // Rationale: Err appears in the return type position. Even though Err is
     // classified as "constant" (alias to an error set), the visitor should
     // detect it as a type reference in the signature.
@@ -2545,7 +3168,7 @@ test "uses_type edge not created for non-type constant" {
     // Act
     try parse(source, &g);
 
-    // Assert — uses_type edge exists to Limit (type_def) but NOT to max
+    // Assert: uses_type edge exists to Limit (type_def) but not to max
     //          (numeric constant, not a type)
     var process_id: ?NodeId = null;
     var limit_id: ?NodeId = null;
@@ -2591,7 +3214,7 @@ test "uses_type edge for aliased type works alongside direct type" {
     // Act
     try parse(source, &g);
 
-    // Assert — both has uses_type edges to Direct (via type_def match) and to
+    // Assert: both has uses_type edges to Direct (via type_def match) and to
     // Alias (via alias match). Both types appear in the function signature.
     var both_id: ?NodeId = null;
     var direct_id: ?NodeId = null;
@@ -2624,7 +3247,7 @@ test "uses_type edge for aliased type works alongside direct type" {
 }
 
 // =========================================================================
-// Body type reference tests — struct literals, static method calls, comptime args
+// Body type reference tests: struct literals, static method calls, comptime args
 // =========================================================================
 
 test "uses_type edge for struct literal construction in body" {
@@ -2642,7 +3265,7 @@ test "uses_type edge for struct literal construction in body" {
     // Act
     try parse(source, &g);
 
-    // Assert — makeDefault has a uses_type edge to Config.
+    // Assert: makeDefault has a uses_type edge to Config.
     // Config appears only in the function body (as a struct literal), not in
     // the signature (return type is void). The visitor must detect type
     // references inside function bodies, not just signatures.
@@ -2689,7 +3312,7 @@ test "uses_type edge for static method call in body" {
     // Act
     try parse(source, &g);
 
-    // Assert — create has a uses_type edge to Builder.
+    // Assert: create has a uses_type edge to Builder.
     // The function body references Builder via `Builder.init(5)`. This is a
     // field_expression where the object is the type name. The visitor must
     // detect this as a type reference even though it also creates a calls edge
@@ -2731,7 +3354,7 @@ test "no duplicate uses_type edge when type in both signature and body" {
     // Act
     try parse(source, &g);
 
-    // Assert — process has exactly one uses_type edge to Item.
+    // Assert: process has exactly one uses_type edge to Item.
     // Item appears both in the signature (parameter type and return type) and
     // in the body (struct literal). addEdgeIfNew must deduplicate so that only
     // one uses_type edge exists.
@@ -2773,7 +3396,7 @@ test "uses_type edge for type passed as comptime argument" {
     // Act
     try parse(source, &g);
 
-    // Assert — doWork has a uses_type edge to Payload.
+    // Assert: doWork has a uses_type edge to Payload.
     // Payload is passed as a comptime type parameter in `serialize(Payload, p)`.
     // Even though it's a call argument (not a type annotation in the signature),
     // the identifier refers to a locally-defined struct and the visitor must
@@ -2818,7 +3441,7 @@ test "uses_type edge for type in generic container instantiation" {
     // Act
     try parse(source, &g);
 
-    // Assert — build has a uses_type edge to Element.
+    // Assert: build has a uses_type edge to Element.
     // Element is passed as a comptime argument in `Container(Element)`. The
     // visitor must detect identifiers in call arguments that refer to
     // locally-defined types, not just identifiers in type annotation positions.
@@ -2861,11 +3484,11 @@ test "no uses_type edge for non-type identifier argument" {
     // Act
     try parse(source, &g);
 
-    // Assert — run has NO uses_type edge to max. max is a numeric constant,
+    // Assert: run has no uses_type edge to max. max is a numeric constant,
     // not a type. The body scanner must not create uses_type edges for every
-    // identifier argument — only for identifiers that refer to type_def or
+    // identifier argument, only for identifiers that refer to type_def or
     // enum_def nodes.
-    // Also assert — run DOES have a calls edge to helper. This validates that
+    // Also assert: run does have a calls edge to helper. This validates that
     // call edges still work correctly even when identifier arguments are present.
     var run_id: ?NodeId = null;
     var helper_id: ?NodeId = null;
@@ -2904,4 +3527,1070 @@ test "no uses_type edge for non-type identifier argument" {
         }
     }
     try std.testing.expect(found_calls);
+}
+
+// =========================================================================
+// Scope-aware name resolution tests (intra-file)
+// =========================================================================
+
+test "duplicate structs each produce a distinct Self constant" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/project");
+    defer g.deinit();
+
+    // Act
+    try parse(fixtures.zig.edge_cases.duplicate_method_names, &g);
+
+    // Assert: there are exactly two constants named "Self" with different parent_ids
+    var self_count: usize = 0;
+    var first_parent: ?NodeId = null;
+    var second_parent: ?NodeId = null;
+    for (g.nodes.items) |n| {
+        if (n.kind == .constant and std.mem.eql(u8, n.name, "Self")) {
+            self_count += 1;
+            if (first_parent == null) {
+                first_parent = n.parent_id;
+            } else {
+                second_parent = n.parent_id;
+            }
+        }
+    }
+    try std.testing.expect(self_count == 2);
+    try std.testing.expect(first_parent != null);
+    try std.testing.expect(second_parent != null);
+    try std.testing.expect(first_parent.? != second_parent.?);
+}
+
+test "Alpha.Self has Alpha as parent" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/project");
+    defer g.deinit();
+
+    // Act
+    try parse(fixtures.zig.edge_cases.duplicate_method_names, &g);
+
+    // Assert: find Alpha type_def, then find the Self constant whose parent is Alpha
+    var alpha_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind == .type_def and std.mem.eql(u8, n.name, "Alpha")) {
+            alpha_id = @enumFromInt(idx);
+            break;
+        }
+    }
+    try std.testing.expect(alpha_id != null);
+
+    var found = false;
+    for (g.nodes.items) |n| {
+        if (n.kind == .constant and std.mem.eql(u8, n.name, "Self") and
+            n.parent_id != null and n.parent_id.? == alpha_id.?)
+        {
+            found = true;
+            break;
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "Beta.Self has Beta as parent" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/project");
+    defer g.deinit();
+
+    // Act
+    try parse(fixtures.zig.edge_cases.duplicate_method_names, &g);
+
+    // Assert: find Beta type_def, then find the Self constant whose parent is Beta
+    var beta_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind == .type_def and std.mem.eql(u8, n.name, "Beta")) {
+            beta_id = @enumFromInt(idx);
+            break;
+        }
+    }
+    try std.testing.expect(beta_id != null);
+
+    var found = false;
+    for (g.nodes.items) |n| {
+        if (n.kind == .constant and std.mem.eql(u8, n.name, "Self") and
+            n.parent_id != null and n.parent_id.? == beta_id.?)
+        {
+            found = true;
+            break;
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "Alpha.reset calls Alpha.deinit not Beta.deinit" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/project");
+    defer g.deinit();
+
+    // Act
+    try parse(fixtures.zig.edge_cases.duplicate_method_names, &g);
+
+    // Assert: find Alpha, Beta, their respective deinit methods, and reset
+    var alpha_id: ?NodeId = null;
+    var beta_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind == .type_def and std.mem.eql(u8, n.name, "Alpha")) {
+            alpha_id = @enumFromInt(idx);
+        }
+        if (n.kind == .type_def and std.mem.eql(u8, n.name, "Beta")) {
+            beta_id = @enumFromInt(idx);
+        }
+    }
+    try std.testing.expect(alpha_id != null);
+    try std.testing.expect(beta_id != null);
+
+    var alpha_deinit_id: ?NodeId = null;
+    var beta_deinit_id: ?NodeId = null;
+    var reset_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind == .function and std.mem.eql(u8, n.name, "deinit")) {
+            if (n.parent_id != null and n.parent_id.? == alpha_id.?) {
+                alpha_deinit_id = @enumFromInt(idx);
+            }
+            if (n.parent_id != null and n.parent_id.? == beta_id.?) {
+                beta_deinit_id = @enumFromInt(idx);
+            }
+        }
+        if (n.kind == .function and std.mem.eql(u8, n.name, "reset")) {
+            reset_id = @enumFromInt(idx);
+        }
+    }
+    try std.testing.expect(alpha_deinit_id != null);
+    try std.testing.expect(beta_deinit_id != null);
+    try std.testing.expect(reset_id != null);
+
+    // reset (in Alpha) should call Alpha.deinit, not Beta.deinit
+    var calls_alpha_deinit = false;
+    var calls_beta_deinit = false;
+    for (g.edges.items) |e| {
+        if (e.source_id == reset_id.? and e.edge_type == .calls) {
+            if (e.target_id == alpha_deinit_id.?) calls_alpha_deinit = true;
+            if (e.target_id == beta_deinit_id.?) calls_beta_deinit = true;
+        }
+    }
+    try std.testing.expect(calls_alpha_deinit);
+    try std.testing.expect(!calls_beta_deinit);
+}
+
+test "Beta.clear calls Beta.deinit not Alpha.deinit" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/project");
+    defer g.deinit();
+
+    // Act
+    try parse(fixtures.zig.edge_cases.duplicate_method_names, &g);
+
+    // Assert: find Alpha, Beta, their respective deinit methods, and clear
+    var alpha_id: ?NodeId = null;
+    var beta_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind == .type_def and std.mem.eql(u8, n.name, "Alpha")) {
+            alpha_id = @enumFromInt(idx);
+        }
+        if (n.kind == .type_def and std.mem.eql(u8, n.name, "Beta")) {
+            beta_id = @enumFromInt(idx);
+        }
+    }
+    try std.testing.expect(alpha_id != null);
+    try std.testing.expect(beta_id != null);
+
+    var alpha_deinit_id: ?NodeId = null;
+    var beta_deinit_id: ?NodeId = null;
+    var clear_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind == .function and std.mem.eql(u8, n.name, "deinit")) {
+            if (n.parent_id != null and n.parent_id.? == alpha_id.?) {
+                alpha_deinit_id = @enumFromInt(idx);
+            }
+            if (n.parent_id != null and n.parent_id.? == beta_id.?) {
+                beta_deinit_id = @enumFromInt(idx);
+            }
+        }
+        if (n.kind == .function and std.mem.eql(u8, n.name, "clear")) {
+            clear_id = @enumFromInt(idx);
+        }
+    }
+    try std.testing.expect(alpha_deinit_id != null);
+    try std.testing.expect(beta_deinit_id != null);
+    try std.testing.expect(clear_id != null);
+
+    // clear (in Beta) should call Beta.deinit, not Alpha.deinit
+    var calls_alpha_deinit = false;
+    var calls_beta_deinit = false;
+    for (g.edges.items) |e| {
+        if (e.source_id == clear_id.? and e.edge_type == .calls) {
+            if (e.target_id == alpha_deinit_id.?) calls_alpha_deinit = true;
+            if (e.target_id == beta_deinit_id.?) calls_beta_deinit = true;
+        }
+    }
+    try std.testing.expect(calls_beta_deinit);
+    try std.testing.expect(!calls_alpha_deinit);
+}
+
+test "Alpha.init has no uses_type edge to Beta-scoped node" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/project");
+    defer g.deinit();
+
+    // Act
+    try parse(fixtures.zig.edge_cases.duplicate_method_names, &g);
+
+    // Assert: Alpha.init's uses_type edges should not target any node whose
+    // parent_id is Beta. This catches the bug where Self in Alpha's return type
+    // resolves to Beta or Beta.Self instead of Alpha or Alpha.Self.
+    var alpha_id: ?NodeId = null;
+    var beta_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind == .type_def and std.mem.eql(u8, n.name, "Alpha")) {
+            alpha_id = @enumFromInt(idx);
+        }
+        if (n.kind == .type_def and std.mem.eql(u8, n.name, "Beta")) {
+            beta_id = @enumFromInt(idx);
+        }
+    }
+    try std.testing.expect(alpha_id != null);
+    try std.testing.expect(beta_id != null);
+
+    var alpha_init_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind == .function and std.mem.eql(u8, n.name, "init") and
+            n.parent_id != null and n.parent_id.? == alpha_id.?)
+        {
+            alpha_init_id = @enumFromInt(idx);
+            break;
+        }
+    }
+    try std.testing.expect(alpha_init_id != null);
+
+    // Check that no uses_type edge from Alpha.init targets Beta or any Beta-scoped node
+    for (g.edges.items) |e| {
+        if (e.source_id == alpha_init_id.? and e.edge_type == .uses_type) {
+            // The target should not be Beta itself
+            try std.testing.expect(e.target_id != beta_id.?);
+            // The target should not have Beta as parent
+            const target = g.getNode(e.target_id);
+            if (target) |t| {
+                if (t.parent_id) |pid| {
+                    try std.testing.expect(pid != beta_id.?);
+                }
+            }
+        }
+    }
+}
+
+test "generic dual Self constants have distinct parents" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/project");
+    defer g.deinit();
+
+    // Act
+    try parse(fixtures.zig.edge_cases.generic_dual_self, &g);
+
+    // Assert: two Self constants exist with distinct parent_ids (Stack vs Queue)
+    var self_count: usize = 0;
+    var first_parent: ?NodeId = null;
+    var second_parent: ?NodeId = null;
+    for (g.nodes.items) |n| {
+        if (n.kind == .constant and std.mem.eql(u8, n.name, "Self")) {
+            self_count += 1;
+            if (first_parent == null) {
+                first_parent = n.parent_id;
+            } else {
+                second_parent = n.parent_id;
+            }
+        }
+    }
+    try std.testing.expect(self_count == 2);
+    try std.testing.expect(first_parent != null);
+    try std.testing.expect(second_parent != null);
+    try std.testing.expect(first_parent.? != second_parent.?);
+}
+
+test "Stack.clear calls Stack.deinit not Queue.deinit" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/project");
+    defer g.deinit();
+
+    // Act
+    try parse(fixtures.zig.edge_cases.generic_dual_self, &g);
+
+    // Assert: find Stack and Queue type_defs, their deinit methods, and clear
+    var stack_id: ?NodeId = null;
+    var queue_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind == .type_def and std.mem.eql(u8, n.name, "Stack")) {
+            stack_id = @enumFromInt(idx);
+        }
+        if (n.kind == .type_def and std.mem.eql(u8, n.name, "Queue")) {
+            queue_id = @enumFromInt(idx);
+        }
+    }
+    try std.testing.expect(stack_id != null);
+    try std.testing.expect(queue_id != null);
+
+    var stack_deinit_id: ?NodeId = null;
+    var queue_deinit_id: ?NodeId = null;
+    var clear_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind == .function and std.mem.eql(u8, n.name, "deinit")) {
+            if (n.parent_id != null and n.parent_id.? == stack_id.?) {
+                stack_deinit_id = @enumFromInt(idx);
+            }
+            if (n.parent_id != null and n.parent_id.? == queue_id.?) {
+                queue_deinit_id = @enumFromInt(idx);
+            }
+        }
+        if (n.kind == .function and std.mem.eql(u8, n.name, "clear")) {
+            clear_id = @enumFromInt(idx);
+        }
+    }
+    try std.testing.expect(stack_deinit_id != null);
+    try std.testing.expect(queue_deinit_id != null);
+    try std.testing.expect(clear_id != null);
+
+    // clear (in Stack) should call Stack.deinit, not Queue.deinit
+    var calls_stack_deinit = false;
+    var calls_queue_deinit = false;
+    for (g.edges.items) |e| {
+        if (e.source_id == clear_id.? and e.edge_type == .calls) {
+            if (e.target_id == stack_deinit_id.?) calls_stack_deinit = true;
+            if (e.target_id == queue_deinit_id.?) calls_queue_deinit = true;
+        }
+    }
+    try std.testing.expect(calls_stack_deinit);
+    try std.testing.expect(!calls_queue_deinit);
+}
+
+test "Queue.flush calls Queue.deinit not Stack.deinit" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/project");
+    defer g.deinit();
+
+    // Act
+    try parse(fixtures.zig.edge_cases.generic_dual_self, &g);
+
+    // Assert: find Stack and Queue type_defs, their deinit methods, and flush
+    var stack_id: ?NodeId = null;
+    var queue_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind == .type_def and std.mem.eql(u8, n.name, "Stack")) {
+            stack_id = @enumFromInt(idx);
+        }
+        if (n.kind == .type_def and std.mem.eql(u8, n.name, "Queue")) {
+            queue_id = @enumFromInt(idx);
+        }
+    }
+    try std.testing.expect(stack_id != null);
+    try std.testing.expect(queue_id != null);
+
+    var stack_deinit_id: ?NodeId = null;
+    var queue_deinit_id: ?NodeId = null;
+    var flush_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind == .function and std.mem.eql(u8, n.name, "deinit")) {
+            if (n.parent_id != null and n.parent_id.? == stack_id.?) {
+                stack_deinit_id = @enumFromInt(idx);
+            }
+            if (n.parent_id != null and n.parent_id.? == queue_id.?) {
+                queue_deinit_id = @enumFromInt(idx);
+            }
+        }
+        if (n.kind == .function and std.mem.eql(u8, n.name, "flush")) {
+            flush_id = @enumFromInt(idx);
+        }
+    }
+    try std.testing.expect(stack_deinit_id != null);
+    try std.testing.expect(queue_deinit_id != null);
+    try std.testing.expect(flush_id != null);
+
+    // flush (in Queue) should call Queue.deinit, not Stack.deinit
+    var calls_stack_deinit = false;
+    var calls_queue_deinit = false;
+    for (g.edges.items) |e| {
+        if (e.source_id == flush_id.? and e.edge_type == .calls) {
+            if (e.target_id == stack_deinit_id.?) calls_stack_deinit = true;
+            if (e.target_id == queue_deinit_id.?) calls_queue_deinit = true;
+        }
+    }
+    try std.testing.expect(calls_queue_deinit);
+    try std.testing.expect(!calls_stack_deinit);
+}
+
+// =========================================================================
+// External method collision tests (no false call edges)
+// =========================================================================
+
+test "externalInit does not create false calls edge to local init" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/project");
+    defer g.deinit();
+
+    // Act
+    try parse(fixtures.zig.edge_cases.external_method_collision, &g);
+
+    // Assert: find Resource struct, Resource.init, and externalInit
+    var resource_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind == .type_def and std.mem.eql(u8, n.name, "Resource")) {
+            resource_id = @enumFromInt(idx);
+            break;
+        }
+    }
+    try std.testing.expect(resource_id != null);
+
+    var resource_init_id: ?NodeId = null;
+    var external_init_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind == .function and std.mem.eql(u8, n.name, "init") and
+            n.parent_id != null and n.parent_id.? == resource_id.?)
+        {
+            resource_init_id = @enumFromInt(idx);
+        }
+        if (n.kind == .function and std.mem.eql(u8, n.name, "externalInit")) {
+            external_init_id = @enumFromInt(idx);
+        }
+    }
+    try std.testing.expect(resource_init_id != null);
+    try std.testing.expect(external_init_id != null);
+
+    // externalInit should not have a calls edge to Resource.init
+    var found_false_edge = false;
+    for (g.edges.items) |e| {
+        if (e.source_id == external_init_id.? and e.target_id == resource_init_id.? and e.edge_type == .calls) {
+            found_false_edge = true;
+            break;
+        }
+    }
+    try std.testing.expect(!found_false_edge);
+}
+
+test "externalDeinit does not create false calls edge to local deinit" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/project");
+    defer g.deinit();
+
+    // Act
+    try parse(fixtures.zig.edge_cases.external_method_collision, &g);
+
+    // Assert: find Resource struct, Resource.deinit, and externalDeinit
+    var resource_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind == .type_def and std.mem.eql(u8, n.name, "Resource")) {
+            resource_id = @enumFromInt(idx);
+            break;
+        }
+    }
+    try std.testing.expect(resource_id != null);
+
+    var resource_deinit_id: ?NodeId = null;
+    var external_deinit_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind == .function and std.mem.eql(u8, n.name, "deinit") and
+            n.parent_id != null and n.parent_id.? == resource_id.?)
+        {
+            resource_deinit_id = @enumFromInt(idx);
+        }
+        if (n.kind == .function and std.mem.eql(u8, n.name, "externalDeinit")) {
+            external_deinit_id = @enumFromInt(idx);
+        }
+    }
+    try std.testing.expect(resource_deinit_id != null);
+    try std.testing.expect(external_deinit_id != null);
+
+    // externalDeinit should not have a calls edge to Resource.deinit
+    var found_false_edge = false;
+    for (g.edges.items) |e| {
+        if (e.source_id == external_deinit_id.? and e.target_id == resource_deinit_id.? and e.edge_type == .calls) {
+            found_false_edge = true;
+            break;
+        }
+    }
+    try std.testing.expect(!found_false_edge);
+}
+
+test "createLocalResource creates genuine calls edge to local init" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/project");
+    defer g.deinit();
+
+    // Act
+    try parse(fixtures.zig.edge_cases.external_method_collision, &g);
+
+    // Assert: find Resource struct, Resource.init, and createLocalResource
+    var resource_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind == .type_def and std.mem.eql(u8, n.name, "Resource")) {
+            resource_id = @enumFromInt(idx);
+            break;
+        }
+    }
+    try std.testing.expect(resource_id != null);
+
+    var resource_init_id: ?NodeId = null;
+    var create_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind == .function and std.mem.eql(u8, n.name, "init") and
+            n.parent_id != null and n.parent_id.? == resource_id.?)
+        {
+            resource_init_id = @enumFromInt(idx);
+        }
+        if (n.kind == .function and std.mem.eql(u8, n.name, "createLocalResource")) {
+            create_id = @enumFromInt(idx);
+        }
+    }
+    try std.testing.expect(resource_init_id != null);
+    try std.testing.expect(create_id != null);
+
+    // createLocalResource should have a calls edge to Resource.init
+    var found = false;
+    for (g.edges.items) |e| {
+        if (e.source_id == create_id.? and e.target_id == resource_init_id.? and e.edge_type == .calls) {
+            found = true;
+            break;
+        }
+    }
+    try std.testing.expect(found);
+}
+
+// =========================================================================
+// Outer generic declaration uses_type scope tests
+// =========================================================================
+
+test "Queue outer declaration has no uses_type edge to Stack-scoped Self" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/project");
+    defer g.deinit();
+
+    // Act
+    try parse(fixtures.zig.edge_cases.generic_dual_self, &g);
+
+    // Assert: find Stack and Queue type_defs
+    var stack_id: ?NodeId = null;
+    var queue_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind == .type_def and std.mem.eql(u8, n.name, "Stack")) {
+            stack_id = @enumFromInt(idx);
+        }
+        if (n.kind == .type_def and std.mem.eql(u8, n.name, "Queue")) {
+            queue_id = @enumFromInt(idx);
+        }
+    }
+    try std.testing.expect(stack_id != null);
+    try std.testing.expect(queue_id != null);
+
+    // Find Stack's Self constant
+    var stack_self_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind == .constant and std.mem.eql(u8, n.name, "Self") and
+            n.parent_id != null and n.parent_id.? == stack_id.?)
+        {
+            stack_self_id = @enumFromInt(idx);
+            break;
+        }
+    }
+    try std.testing.expect(stack_self_id != null);
+
+    // No uses_type edge from Queue should target Stack's Self
+    for (g.edges.items) |e| {
+        if (e.source_id == queue_id.? and e.edge_type == .uses_type) {
+            try std.testing.expect(e.target_id != stack_self_id.?);
+        }
+    }
+}
+
+test "Result outer declaration has no uses_type edge to Container-scoped Self" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/project");
+    defer g.deinit();
+
+    // Act
+    try parse(fixtures.zig.generic_type, &g);
+
+    // Assert: find Container and Result type_defs
+    var container_id: ?NodeId = null;
+    var result_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind == .type_def and std.mem.eql(u8, n.name, "Container")) {
+            container_id = @enumFromInt(idx);
+        }
+        if (n.kind == .type_def and std.mem.eql(u8, n.name, "Result")) {
+            result_id = @enumFromInt(idx);
+        }
+    }
+    try std.testing.expect(container_id != null);
+    try std.testing.expect(result_id != null);
+
+    // Find Container's Self constant
+    var container_self_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind == .constant and std.mem.eql(u8, n.name, "Self") and
+            n.parent_id != null and n.parent_id.? == container_id.?)
+        {
+            container_self_id = @enumFromInt(idx);
+            break;
+        }
+    }
+    try std.testing.expect(container_self_id != null);
+
+    // No uses_type edge from Result should target Container's Self
+    for (g.edges.items) |e| {
+        if (e.source_id == result_id.? and e.edge_type == .uses_type) {
+            try std.testing.expect(e.target_id != container_self_id.?);
+        }
+    }
+}
+
+// =========================================================================
+// Self-referencing uses_type on generic type-returning functions
+// =========================================================================
+
+test "Container has no self-referencing uses_type edge" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/project");
+    defer g.deinit();
+
+    // Act
+    try parse(fixtures.zig.generic_type, &g);
+
+    // Assert: no uses_type edge where source_id == target_id == Container
+    var container_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind == .type_def and std.mem.eql(u8, n.name, "Container")) {
+            container_id = @enumFromInt(idx);
+            break;
+        }
+    }
+    try std.testing.expect(container_id != null);
+
+    var has_self_loop = false;
+    for (g.edges.items) |e| {
+        if (e.source_id == container_id.? and e.target_id == container_id.? and e.edge_type == .uses_type) {
+            has_self_loop = true;
+            break;
+        }
+    }
+    try std.testing.expect(!has_self_loop);
+}
+
+test "Result has no self-referencing uses_type edge" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/project");
+    defer g.deinit();
+
+    // Act
+    try parse(fixtures.zig.generic_type, &g);
+
+    // Assert: no uses_type edge where source_id == target_id == Result
+    var result_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind == .type_def and std.mem.eql(u8, n.name, "Result")) {
+            result_id = @enumFromInt(idx);
+            break;
+        }
+    }
+    try std.testing.expect(result_id != null);
+
+    var has_self_loop = false;
+    for (g.edges.items) |e| {
+        if (e.source_id == result_id.? and e.target_id == result_id.? and e.edge_type == .uses_type) {
+            has_self_loop = true;
+            break;
+        }
+    }
+    try std.testing.expect(!has_self_loop);
+}
+
+test "Stack has no self-referencing uses_type edge" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/project");
+    defer g.deinit();
+
+    // Act
+    try parse(fixtures.zig.edge_cases.generic_dual_self, &g);
+
+    // Assert: no uses_type edge where source_id == target_id == Stack
+    var stack_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind == .type_def and std.mem.eql(u8, n.name, "Stack")) {
+            stack_id = @enumFromInt(idx);
+            break;
+        }
+    }
+    try std.testing.expect(stack_id != null);
+
+    var has_self_loop = false;
+    for (g.edges.items) |e| {
+        if (e.source_id == stack_id.? and e.target_id == stack_id.? and e.edge_type == .uses_type) {
+            has_self_loop = true;
+            break;
+        }
+    }
+    try std.testing.expect(!has_self_loop);
+}
+
+test "Queue has no self-referencing uses_type edge" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/project");
+    defer g.deinit();
+
+    // Act
+    try parse(fixtures.zig.edge_cases.generic_dual_self, &g);
+
+    // Assert: no uses_type edge where source_id == target_id == Queue
+    var queue_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind == .type_def and std.mem.eql(u8, n.name, "Queue")) {
+            queue_id = @enumFromInt(idx);
+            break;
+        }
+    }
+    try std.testing.expect(queue_id != null);
+
+    var has_self_loop = false;
+    for (g.edges.items) |e| {
+        if (e.source_id == queue_id.? and e.target_id == queue_id.? and e.edge_type == .uses_type) {
+            has_self_loop = true;
+            break;
+        }
+    }
+    try std.testing.expect(!has_self_loop);
+}
+
+// =========================================================================
+// Test blocks: body type scanning
+// =========================================================================
+
+test "test block has uses_type edge for struct literal in body" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/project");
+    defer g.deinit();
+
+    // Act
+    try parse(fixtures.zig.simple, &g);
+
+    // Assert: test "point manhattan distance" has a uses_type edge to Point
+    var test_id: ?NodeId = null;
+    var point_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind == .test_def and std.mem.eql(u8, n.name, "point manhattan distance")) {
+            test_id = @enumFromInt(idx);
+        }
+        if (n.kind == .type_def and std.mem.eql(u8, n.name, "Point")) {
+            point_id = @enumFromInt(idx);
+        }
+    }
+    try std.testing.expect(test_id != null);
+    try std.testing.expect(point_id != null);
+
+    var found = false;
+    for (g.edges.items) |e| {
+        if (e.source_id == test_id.? and e.target_id == point_id.? and e.edge_type == .uses_type) {
+            found = true;
+            break;
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "test block has uses_type edge for type-qualified call in body" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/project");
+    defer g.deinit();
+
+    // Act
+    try parse(fixtures.zig.file_struct, &g);
+
+    // Assert: test "basic" has a uses_type edge to Self constant
+    var test_id: ?NodeId = null;
+    var self_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind == .test_def and std.mem.eql(u8, n.name, "basic")) {
+            test_id = @enumFromInt(idx);
+        }
+        if (n.kind == .constant and std.mem.eql(u8, n.name, "Self")) {
+            self_id = @enumFromInt(idx);
+        }
+    }
+    try std.testing.expect(test_id != null);
+    try std.testing.expect(self_id != null);
+
+    var found = false;
+    for (g.edges.items) |e| {
+        if (e.source_id == test_id.? and e.target_id == self_id.? and e.edge_type == .uses_type) {
+            found = true;
+            break;
+        }
+    }
+    try std.testing.expect(found);
+}
+
+// =========================================================================
+// Spurious uses_type from type_def to its own inner declarations
+// =========================================================================
+
+test "generic type_def does not have uses_type edge to own Self constant" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/project");
+    defer g.deinit();
+
+    // Act
+    try parse(fixtures.zig.generic_type, &g);
+
+    // Assert: find Container type_def
+    var container_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind == .type_def and std.mem.eql(u8, n.name, "Container")) {
+            container_id = @enumFromInt(idx);
+            break;
+        }
+    }
+    try std.testing.expect(container_id != null);
+
+    // Find Self constant that is a direct child of Container
+    var self_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind == .constant and std.mem.eql(u8, n.name, "Self") and
+            n.parent_id != null and n.parent_id.? == container_id.?)
+        {
+            self_id = @enumFromInt(idx);
+            break;
+        }
+    }
+    try std.testing.expect(self_id != null);
+
+    // No uses_type edge from Container to its own Self
+    var has_spurious_edge = false;
+    for (g.edges.items) |e| {
+        if (e.source_id == container_id.? and e.target_id == self_id.? and e.edge_type == .uses_type) {
+            has_spurious_edge = true;
+            break;
+        }
+    }
+    try std.testing.expect(!has_spurious_edge);
+}
+
+test "generic type_def does not have uses_type edge to own nested type" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/project");
+    defer g.deinit();
+
+    // Act
+    try parse(fixtures.zig.generic_type, &g);
+
+    // Assert: find Container type_def
+    var container_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind == .type_def and std.mem.eql(u8, n.name, "Container")) {
+            container_id = @enumFromInt(idx);
+            break;
+        }
+    }
+    try std.testing.expect(container_id != null);
+
+    // Find Entry type_def that is a direct child of Container
+    var entry_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind == .type_def and std.mem.eql(u8, n.name, "Entry") and
+            n.parent_id != null and n.parent_id.? == container_id.?)
+        {
+            entry_id = @enumFromInt(idx);
+            break;
+        }
+    }
+    try std.testing.expect(entry_id != null);
+
+    // No uses_type edge from Container to its own Entry
+    var has_spurious_edge = false;
+    for (g.edges.items) |e| {
+        if (e.source_id == container_id.? and e.target_id == entry_id.? and e.edge_type == .uses_type) {
+            has_spurious_edge = true;
+            break;
+        }
+    }
+    try std.testing.expect(!has_spurious_edge);
+}
+
+test "inner method of generic type has uses_type edge to Self" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/project");
+    defer g.deinit();
+
+    // Act
+    try parse(fixtures.zig.generic_type, &g);
+
+    // Assert: find Container type_def
+    var container_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind == .type_def and std.mem.eql(u8, n.name, "Container")) {
+            container_id = @enumFromInt(idx);
+            break;
+        }
+    }
+    try std.testing.expect(container_id != null);
+
+    // Find init function that is a child of Container
+    var init_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind == .function and std.mem.eql(u8, n.name, "init") and
+            n.parent_id != null and n.parent_id.? == container_id.?)
+        {
+            init_id = @enumFromInt(idx);
+            break;
+        }
+    }
+    try std.testing.expect(init_id != null);
+
+    // Find Self constant that is a child of Container
+    var self_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind == .constant and std.mem.eql(u8, n.name, "Self") and
+            n.parent_id != null and n.parent_id.? == container_id.?)
+        {
+            self_id = @enumFromInt(idx);
+            break;
+        }
+    }
+    try std.testing.expect(self_id != null);
+
+    // init does have a uses_type edge to Self (positive control)
+    var found = false;
+    for (g.edges.items) |e| {
+        if (e.source_id == init_id.? and e.target_id == self_id.? and e.edge_type == .uses_type) {
+            found = true;
+            break;
+        }
+    }
+    try std.testing.expect(found);
+}
+
+// =========================================================================
+// Local-type parameter tests
+// =========================================================================
+
+test "local-type param creates calls edge to method" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/project");
+    defer g.deinit();
+
+    // Act
+    try parse(fixtures.zig.edge_cases.local_type_param, &g);
+
+    // Assert: processPoint should have a calls edge to manhattan
+    var caller_id: ?NodeId = null;
+    var callee_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind == .function and std.mem.eql(u8, n.name, "processPoint")) {
+            caller_id = @enumFromInt(idx);
+        }
+        if (n.kind == .function and std.mem.eql(u8, n.name, "manhattan")) {
+            callee_id = @enumFromInt(idx);
+        }
+    }
+    try std.testing.expect(caller_id != null);
+    try std.testing.expect(callee_id != null);
+
+    var found = false;
+    for (g.edges.items) |e| {
+        if (e.source_id == caller_id.? and e.target_id == callee_id.? and e.edge_type == .calls) {
+            found = true;
+            break;
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "multi-param function creates calls edge via local-type param" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/project");
+    defer g.deinit();
+
+    // Act
+    try parse(fixtures.zig.edge_cases.local_type_param, &g);
+
+    // Assert: multiParam should have a calls edge to manhattan
+    var caller_id: ?NodeId = null;
+    var callee_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind == .function and std.mem.eql(u8, n.name, "multiParam")) {
+            caller_id = @enumFromInt(idx);
+        }
+        if (n.kind == .function and std.mem.eql(u8, n.name, "manhattan")) {
+            callee_id = @enumFromInt(idx);
+        }
+    }
+    try std.testing.expect(caller_id != null);
+    try std.testing.expect(callee_id != null);
+
+    var found = false;
+    for (g.edges.items) |e| {
+        if (e.source_id == caller_id.? and e.target_id == callee_id.? and e.edge_type == .calls) {
+            found = true;
+            break;
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "pointer-type param does not create local calls edge" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/project");
+    defer g.deinit();
+
+    // Act
+    try parse(fixtures.zig.edge_cases.local_type_param, &g);
+
+    // Assert: pointerParam should NOT have a calls edge to scale
+    // (pointer types are not handled by the bare-identifier check)
+    var caller_id: ?NodeId = null;
+    var callee_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind == .function and std.mem.eql(u8, n.name, "pointerParam")) {
+            caller_id = @enumFromInt(idx);
+        }
+        if (n.kind == .function and std.mem.eql(u8, n.name, "scale")) {
+            callee_id = @enumFromInt(idx);
+        }
+    }
+    try std.testing.expect(caller_id != null);
+    try std.testing.expect(callee_id != null);
+
+    var found = false;
+    for (g.edges.items) |e| {
+        if (e.source_id == caller_id.? and e.target_id == callee_id.? and e.edge_type == .calls) {
+            found = true;
+            break;
+        }
+    }
+    try std.testing.expect(!found);
+}
+
+test "external-type param does not create local calls edge" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/project");
+    defer g.deinit();
+
+    // Act
+    try parse(fixtures.zig.edge_cases.local_type_param, &g);
+
+    // Assert: externalParam has no calls edges at all (allocator is external)
+    var caller_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind == .function and std.mem.eql(u8, n.name, "externalParam")) {
+            caller_id = @enumFromInt(idx);
+        }
+    }
+    try std.testing.expect(caller_id != null);
+
+    var found = false;
+    for (g.edges.items) |e| {
+        if (e.source_id == caller_id.? and e.edge_type == .calls) {
+            found = true;
+            break;
+        }
+    }
+    try std.testing.expect(!found);
 }
