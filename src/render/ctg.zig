@@ -1,38 +1,12 @@
 const std = @import("std");
 const graph_mod = @import("../core/graph.zig");
-const node_mod = @import("../core/node.zig");
-const edge_mod = @import("../core/edge.zig");
-const types = @import("../core/types.zig");
-const lang = @import("../languages/language.zig");
 const common = @import("common.zig");
+const sections = @import("ctg_sections.zig");
 
 const Graph = graph_mod.Graph;
-const Node = node_mod.Node;
-const Edge = edge_mod.Edge;
-const NodeId = types.NodeId;
-const NodeKind = types.NodeKind;
-const EdgeType = types.EdgeType;
-const Language = types.Language;
-const Visibility = types.Visibility;
-const ExternalInfo = lang.ExternalInfo;
 
-const IdEntry = common.IdEntry;
-const SortableNode = common.SortableNode;
-const PhantomPackage = common.PhantomPackage;
-const PhantomSymbol = common.PhantomSymbol;
-const PhantomNodeInfo = common.PhantomNodeInfo;
-
-const isInternal = common.isInternal;
-const inScope = common.inScope;
 const appendNum = common.appendNum;
-const appendU32 = common.appendU32;
 const appendCurrentTimestamp = common.appendCurrentTimestamp;
-const edgeTypeName = common.edgeTypeName;
-const prefixOrder = common.prefixOrder;
-const extractFnSignature = common.extractFnSignature;
-const stripConstPrefix = common.stripConstPrefix;
-const findFileId = common.findFileId;
-const findPhantomPackageForNode = common.findPhantomPackageForNode;
 
 /// Options controlling CTG rendering output.
 pub const RenderOptions = struct {
@@ -42,6 +16,7 @@ pub const RenderOptions = struct {
     scope: ?[]const u8 = null,
     /// For deterministic tests; null = use system clock.
     timestamp: ?[]const u8 = null,
+    filter: common.FilterOptions = .{},
 };
 
 /// Render the graph in Compact Text Graph (CTG) format.
@@ -54,7 +29,7 @@ pub fn renderCtg(
     options: RenderOptions,
     out: *std.ArrayListUnmanaged(u8),
 ) !void {
-    var assignment = try common.buildIdAssignment(allocator, g, options.scope);
+    var assignment = try common.buildIdAssignment(allocator, g, options.scope, options.filter);
     defer assignment.deinit(allocator);
 
     const ids = assignment.ids;
@@ -128,456 +103,60 @@ pub fn renderCtg(
         try out.append(allocator, '\n');
     }
 
-    // Sections.
+    // Sections — each renderer returns early if it has no content.
+    // A blank line separates the header from the first section and each section from the next.
     try out.append(allocator, '\n');
-    try renderFilesSection(out, allocator, g, assignment.file_indices.items, ids, &num_buf);
-    try out.append(allocator, '\n');
-    try renderStructsSection(out, allocator, g, assignment.struct_indices.items, ids, &num_buf);
-    try out.append(allocator, '\n');
-    try renderEnumsSection(out, allocator, g, assignment.enum_indices.items, ids, &num_buf);
-    try out.append(allocator, '\n');
-    try renderFunctionsSection(out, allocator, g, assignment.fn_indices.items, ids, &num_buf);
-    try out.append(allocator, '\n');
-    try renderConstantsSection(out, allocator, g, assignment.const_indices.items, ids, &num_buf);
-    try out.append(allocator, '\n');
-    try renderErrorsSection(out, allocator, g, assignment.err_indices.items, ids, &num_buf);
-    try out.append(allocator, '\n');
-    try renderTestsSection(out, allocator, g, assignment.test_indices.items, ids, &num_buf);
-    try out.append(allocator, '\n');
-    try renderExternalsSection(out, allocator, g, assignment.phantom_packages.items);
-    try out.append(allocator, '\n');
-    try renderEdgesSection(out, allocator, g, ids, assignment.phantom_packages.items, options.scope, &num_buf);
-}
+    var written = false;
 
-fn renderFilesSection(
-    out: *std.ArrayListUnmanaged(u8),
-    allocator: std.mem.Allocator,
-    g: *const Graph,
-    file_indices: []const usize,
-    ids: []const ?IdEntry,
-    num_buf: *[20]u8,
-) !void {
-    try out.appendSlice(allocator, "[files]\n");
-    for (file_indices) |fi| {
-        const n = g.nodes.items[fi];
-        const id = ids[fi].?;
-        try out.appendSlice(allocator, id.prefix);
-        try appendU32(out, allocator, id.num, num_buf);
-        try out.append(allocator, ' ');
-        try out.appendSlice(allocator, n.file_path orelse n.name);
-        try out.append(allocator, ' ');
-        try appendU32(out, allocator, n.line_end orelse 0, num_buf);
-        try out.appendSlice(allocator, "L\n");
+    if (assignment.file_indices.items.len > 0) {
+        try sections.renderFilesSection(out, allocator, g, assignment.file_indices.items, ids, &num_buf);
+        written = true;
     }
-}
-
-fn renderStructsSection(
-    out: *std.ArrayListUnmanaged(u8),
-    allocator: std.mem.Allocator,
-    g: *const Graph,
-    struct_indices: []const usize,
-    ids: []const ?IdEntry,
-    num_buf: *[20]u8,
-) !void {
-    try out.appendSlice(allocator, "[structs]\n");
-    for (struct_indices) |si| {
-        const n = g.nodes.items[si];
-        const id = ids[si].?;
-        const file_id = findFileId(g, n, ids);
-
-        try out.appendSlice(allocator, id.prefix);
-        try appendU32(out, allocator, id.num, num_buf);
-        try out.append(allocator, ' ');
-        try out.appendSlice(allocator, n.name);
-        if (file_id) |fid| {
-            try out.appendSlice(allocator, " f:");
-            try appendU32(out, allocator, fid, num_buf);
-            try out.append(allocator, ':');
-            try appendU32(out, allocator, n.line_start orelse 0, num_buf);
-        }
-        if (n.visibility == .public) {
-            try out.appendSlice(allocator, " pub");
-        }
-        try out.append(allocator, '\n');
-
-        try renderStructChildren(out, allocator, g, @enumFromInt(si));
-
-        try out.append(allocator, '\n');
+    if (assignment.struct_indices.items.len > 0) {
+        if (written) try out.append(allocator, '\n');
+        try sections.renderStructsSection(out, allocator, g, assignment.struct_indices.items, ids, &num_buf);
+        written = true;
     }
-}
-
-fn renderStructChildren(
-    out: *std.ArrayListUnmanaged(u8),
-    allocator: std.mem.Allocator,
-    g: *const Graph,
-    struct_id: NodeId,
-) !void {
-    var fields = std.ArrayListUnmanaged(SortableNode){};
-    defer fields.deinit(allocator);
-    var methods = std.ArrayListUnmanaged(SortableNode){};
-    defer methods.deinit(allocator);
-
-    for (g.nodes.items, 0..) |n, i| {
-        if (n.parent_id) |pid| {
-            if (pid == struct_id) {
-                const entry = SortableNode{
-                    .node_idx = i,
-                    .line_start = n.line_start orelse 0,
-                };
-                if (n.kind == .field) {
-                    try fields.append(allocator, entry);
-                } else if (n.kind == .function) {
-                    try methods.append(allocator, entry);
-                }
-            }
-        }
+    if (assignment.enum_indices.items.len > 0) {
+        if (written) try out.append(allocator, '\n');
+        try sections.renderEnumsSection(out, allocator, g, assignment.enum_indices.items, ids, &num_buf);
+        written = true;
+    }
+    if (assignment.fn_indices.items.len > 0) {
+        if (written) try out.append(allocator, '\n');
+        try sections.renderFunctionsSection(out, allocator, g, assignment.fn_indices.items, ids, &num_buf);
+        written = true;
+    }
+    if (assignment.const_indices.items.len > 0) {
+        if (written) try out.append(allocator, '\n');
+        try sections.renderConstantsSection(out, allocator, g, assignment.const_indices.items, ids, &num_buf);
+        written = true;
+    }
+    if (assignment.err_indices.items.len > 0) {
+        if (written) try out.append(allocator, '\n');
+        try sections.renderErrorsSection(out, allocator, g, assignment.err_indices.items, ids, &num_buf);
+        written = true;
+    }
+    if (assignment.test_indices.items.len > 0) {
+        if (written) try out.append(allocator, '\n');
+        try sections.renderTestsSection(out, allocator, g, assignment.test_indices.items, ids, &num_buf);
+        written = true;
+    }
+    if (assignment.phantom_packages.items.len > 0) {
+        if (written) try out.append(allocator, '\n');
+        try sections.renderExternalsSection(out, allocator, g, assignment.phantom_packages.items);
+        written = true;
     }
 
-    const sortFn = struct {
-        fn lessThan(_: void, a: SortableNode, b: SortableNode) bool {
-            return a.line_start < b.line_start;
+    // Edges: the renderer checks internally and writes nothing if all edges are filtered.
+    {
+        const mark = out.items.len;
+        if (written) try out.append(allocator, '\n');
+        const before_section = out.items.len;
+        try sections.renderEdgesSection(out, allocator, g, ids, assignment.phantom_packages.items, options.scope, options.filter, &num_buf);
+        if (out.items.len == before_section) {
+            out.shrinkRetainingCapacity(mark);
         }
-    }.lessThan;
-    std.mem.sort(SortableNode, fields.items, {}, sortFn);
-    std.mem.sort(SortableNode, methods.items, {}, sortFn);
-
-    for (fields.items) |f| {
-        const n = g.nodes.items[f.node_idx];
-        try out.appendSlice(allocator, "  .");
-        if (n.signature) |sig| {
-            try out.appendSlice(allocator, sig);
-        } else {
-            try out.appendSlice(allocator, n.name);
-        }
-        try out.append(allocator, '\n');
-    }
-
-    for (methods.items) |m| {
-        const n = g.nodes.items[m.node_idx];
-        try out.appendSlice(allocator, "  fn ");
-        if (n.signature) |sig| {
-            const fn_part = extractFnSignature(sig);
-            try out.appendSlice(allocator, fn_part);
-        } else {
-            try out.appendSlice(allocator, n.name);
-            try out.appendSlice(allocator, "()");
-        }
-        try out.append(allocator, '\n');
-    }
-}
-
-fn renderEnumsSection(
-    out: *std.ArrayListUnmanaged(u8),
-    allocator: std.mem.Allocator,
-    g: *const Graph,
-    enum_indices: []const usize,
-    ids: []const ?IdEntry,
-    num_buf: *[20]u8,
-) !void {
-    try out.appendSlice(allocator, "[enums]\n");
-    for (enum_indices) |ei| {
-        const n = g.nodes.items[ei];
-        const id = ids[ei].?;
-        const file_id = findFileId(g, n, ids);
-
-        try out.appendSlice(allocator, id.prefix);
-        try appendU32(out, allocator, id.num, num_buf);
-        try out.append(allocator, ' ');
-        try out.appendSlice(allocator, n.name);
-        if (file_id) |fid| {
-            try out.appendSlice(allocator, " f:");
-            try appendU32(out, allocator, fid, num_buf);
-            try out.append(allocator, ':');
-            try appendU32(out, allocator, n.line_start orelse 0, num_buf);
-        }
-        if (n.visibility == .public) {
-            try out.appendSlice(allocator, " pub");
-        }
-        try out.append(allocator, '\n');
-        try out.append(allocator, '\n');
-    }
-}
-
-fn renderFunctionsSection(
-    out: *std.ArrayListUnmanaged(u8),
-    allocator: std.mem.Allocator,
-    g: *const Graph,
-    fn_indices: []const usize,
-    ids: []const ?IdEntry,
-    num_buf: *[20]u8,
-) !void {
-    try out.appendSlice(allocator, "[functions]\n");
-    for (fn_indices) |fi| {
-        const n = g.nodes.items[fi];
-        const id = ids[fi].?;
-        const file_id = findFileId(g, n, ids);
-
-        try out.appendSlice(allocator, id.prefix);
-        try appendU32(out, allocator, id.num, num_buf);
-        try out.append(allocator, ' ');
-
-        if (n.signature) |sig| {
-            const fn_part = extractFnSignature(sig);
-            try out.appendSlice(allocator, fn_part);
-        } else {
-            try out.appendSlice(allocator, n.name);
-            try out.appendSlice(allocator, "()");
-        }
-
-        if (file_id) |fid| {
-            try out.appendSlice(allocator, " f:");
-            try appendU32(out, allocator, fid, num_buf);
-            try out.append(allocator, ':');
-            try appendU32(out, allocator, n.line_start orelse 0, num_buf);
-        }
-        if (n.visibility == .public) {
-            try out.appendSlice(allocator, " pub");
-        }
-        try out.append(allocator, '\n');
-
-        if (n.doc) |doc| {
-            var lines = std.mem.splitScalar(u8, doc, '\n');
-            while (lines.next()) |line| {
-                try out.appendSlice(allocator, "  ");
-                try out.appendSlice(allocator, line);
-                try out.append(allocator, '\n');
-            }
-        }
-
-        try out.append(allocator, '\n');
-    }
-}
-
-fn renderConstantsSection(
-    out: *std.ArrayListUnmanaged(u8),
-    allocator: std.mem.Allocator,
-    g: *const Graph,
-    const_indices: []const usize,
-    ids: []const ?IdEntry,
-    num_buf: *[20]u8,
-) !void {
-    try out.appendSlice(allocator, "[constants]\n");
-    for (const_indices) |ci| {
-        const n = g.nodes.items[ci];
-        const id = ids[ci].?;
-        const file_id = findFileId(g, n, ids);
-
-        try out.appendSlice(allocator, id.prefix);
-        try appendU32(out, allocator, id.num, num_buf);
-        try out.append(allocator, ' ');
-
-        if (n.signature) |sig| {
-            const stripped = stripConstPrefix(sig);
-            try out.appendSlice(allocator, stripped);
-        } else {
-            try out.appendSlice(allocator, n.name);
-        }
-
-        if (file_id) |fid| {
-            try out.appendSlice(allocator, " f:");
-            try appendU32(out, allocator, fid, num_buf);
-            try out.append(allocator, ':');
-            try appendU32(out, allocator, n.line_start orelse 0, num_buf);
-        }
-        if (n.visibility == .public) {
-            try out.appendSlice(allocator, " pub");
-        }
-        try out.append(allocator, '\n');
-    }
-}
-
-fn renderErrorsSection(
-    out: *std.ArrayListUnmanaged(u8),
-    allocator: std.mem.Allocator,
-    g: *const Graph,
-    err_indices: []const usize,
-    ids: []const ?IdEntry,
-    num_buf: *[20]u8,
-) !void {
-    try out.appendSlice(allocator, "[errors]\n");
-    for (err_indices) |ei| {
-        const n = g.nodes.items[ei];
-        const id = ids[ei].?;
-        const file_id = findFileId(g, n, ids);
-
-        try out.appendSlice(allocator, id.prefix);
-        try appendU32(out, allocator, id.num, num_buf);
-        try out.append(allocator, ' ');
-        try out.appendSlice(allocator, n.name);
-        if (file_id) |fid| {
-            try out.appendSlice(allocator, " f:");
-            try appendU32(out, allocator, fid, num_buf);
-            try out.append(allocator, ':');
-            try appendU32(out, allocator, n.line_start orelse 0, num_buf);
-        }
-        try out.append(allocator, '\n');
-        try out.append(allocator, '\n');
-    }
-}
-
-fn renderTestsSection(
-    out: *std.ArrayListUnmanaged(u8),
-    allocator: std.mem.Allocator,
-    g: *const Graph,
-    test_indices: []const usize,
-    ids: []const ?IdEntry,
-    num_buf: *[20]u8,
-) !void {
-    try out.appendSlice(allocator, "[tests]\n");
-    for (test_indices) |ti| {
-        const n = g.nodes.items[ti];
-        const id = ids[ti].?;
-        const file_id = findFileId(g, n, ids);
-
-        try out.appendSlice(allocator, id.prefix);
-        try appendU32(out, allocator, id.num, num_buf);
-        try out.appendSlice(allocator, " \"");
-        try out.appendSlice(allocator, n.name);
-        try out.append(allocator, '"');
-        if (file_id) |fid| {
-            try out.appendSlice(allocator, " f:");
-            try appendU32(out, allocator, fid, num_buf);
-            try out.append(allocator, ':');
-            try appendU32(out, allocator, n.line_start orelse 0, num_buf);
-        }
-        const lines = if (n.line_end != null and n.line_start != null)
-            n.line_end.? - n.line_start.? + 1
-        else
-            0;
-        try out.append(allocator, ' ');
-        try appendU32(out, allocator, lines, num_buf);
-        try out.appendSlice(allocator, "L\n");
-    }
-}
-
-fn renderExternalsSection(
-    out: *std.ArrayListUnmanaged(u8),
-    allocator: std.mem.Allocator,
-    g: *const Graph,
-    phantom_packages: []const PhantomPackage,
-) !void {
-    try out.appendSlice(allocator, "[externals]\n");
-    var num_buf: [20]u8 = undefined;
-    for (phantom_packages) |pkg| {
-        const n = g.nodes.items[pkg.root_idx];
-        try out.appendSlice(allocator, "x:");
-        try appendU32(out, allocator, pkg.x_num, &num_buf);
-        try out.append(allocator, ' ');
-        try out.appendSlice(allocator, n.name);
-        switch (n.external) {
-            .stdlib => try out.appendSlice(allocator, " (stdlib)"),
-            .dependency => |dep| {
-                try out.appendSlice(allocator, " (dependency)");
-                if (dep.version) |ver| {
-                    try out.append(allocator, ' ');
-                    try out.appendSlice(allocator, ver);
-                }
-            },
-            .none => {},
-        }
-        try out.append(allocator, '\n');
-        for (pkg.symbols.items) |sym| {
-            try out.appendSlice(allocator, "  ");
-            try out.appendSlice(allocator, sym.qualified_path);
-            try out.append(allocator, '\n');
-        }
-        try out.append(allocator, '\n');
-    }
-}
-
-fn renderEdgesSection(
-    out: *std.ArrayListUnmanaged(u8),
-    allocator: std.mem.Allocator,
-    g: *const Graph,
-    ids: []const ?IdEntry,
-    phantom_packages: []const PhantomPackage,
-    scope: ?[]const u8,
-    num_buf: *[20]u8,
-) !void {
-    try out.appendSlice(allocator, "[edges]\n");
-
-    const EdgeEntry = struct {
-        edge_type: EdgeType,
-        source_str_order: u64,
-        target_str_order: u64,
-        source_idx: usize,
-        target_idx: usize,
-    };
-
-    var entries = std.ArrayListUnmanaged(EdgeEntry){};
-    defer entries.deinit(allocator);
-
-    for (g.edges.items) |e| {
-        const src_idx = @intFromEnum(e.source_id);
-        const tgt_idx = @intFromEnum(e.target_id);
-        if (src_idx >= g.nodes.items.len or tgt_idx >= g.nodes.items.len) continue;
-
-        const src_id = ids[src_idx] orelse continue;
-        const tgt_has_id = ids[tgt_idx] != null;
-        const tgt_is_phantom = !isInternal(g.nodes.items[tgt_idx]);
-
-        if (!tgt_has_id and !tgt_is_phantom) continue;
-
-        if (scope) |s| {
-            if (!inScope(g.nodes.items[src_idx].file_path, s)) continue;
-        }
-
-        const src_order = prefixOrder(src_id.prefix) * @as(u64, 1 << 32) + src_id.num;
-        var tgt_order: u64 = 0;
-        if (ids[tgt_idx]) |tgt_id| {
-            tgt_order = prefixOrder(tgt_id.prefix) * @as(u64, 1 << 32) + tgt_id.num;
-        } else if (tgt_is_phantom) {
-            const pkg_info = findPhantomPackageForNode(g, tgt_idx, phantom_packages);
-            if (pkg_info) |pi| {
-                tgt_order = prefixOrder("x:") * @as(u64, 1 << 32) + pi.pkg_x_num;
-            }
-        }
-
-        try entries.append(allocator, .{
-            .edge_type = e.edge_type,
-            .source_str_order = src_order,
-            .target_str_order = tgt_order,
-            .source_idx = src_idx,
-            .target_idx = tgt_idx,
-        });
-    }
-
-    std.mem.sort(EdgeEntry, entries.items, {}, struct {
-        fn lessThan(_: void, a: EdgeEntry, b: EdgeEntry) bool {
-            const a_type = edgeTypeName(a.edge_type);
-            const b_type = edgeTypeName(b.edge_type);
-            const type_cmp = std.mem.order(u8, a_type, b_type);
-            if (type_cmp != .eq) return type_cmp == .lt;
-            if (a.source_str_order != b.source_str_order) return a.source_str_order < b.source_str_order;
-            return a.target_str_order < b.target_str_order;
-        }
-    }.lessThan);
-
-    for (entries.items) |entry| {
-        const src_id = ids[entry.source_idx].?;
-        try out.appendSlice(allocator, src_id.prefix);
-        try appendU32(out, allocator, src_id.num, num_buf);
-
-        try out.appendSlice(allocator, " -> ");
-
-        if (ids[entry.target_idx]) |tgt_id| {
-            try out.appendSlice(allocator, tgt_id.prefix);
-            try appendU32(out, allocator, tgt_id.num, num_buf);
-        } else {
-            const pkg_info = findPhantomPackageForNode(g, entry.target_idx, phantom_packages);
-            if (pkg_info) |pi| {
-                try out.appendSlice(allocator, "x:");
-                try appendU32(out, allocator, pi.pkg_x_num, num_buf);
-                try out.append(allocator, ':');
-                try out.appendSlice(allocator, pi.symbol_path);
-            } else {
-                try out.appendSlice(allocator, "x:?");
-            }
-        }
-
-        try out.append(allocator, ' ');
-        try out.appendSlice(allocator, edgeTypeName(entry.edge_type));
-        try out.append(allocator, '\n');
     }
 }
 
@@ -918,6 +497,7 @@ test "sections appear in correct order" {
     const options = RenderOptions{
         .project_name = "myproject",
         .timestamp = "2026-02-14T10:30:00Z",
+        .filter = .{ .include_test_nodes = true, .include_external_nodes = true },
     };
 
     // Act
@@ -925,7 +505,7 @@ test "sections appear in correct order" {
 
     // Assert: sections in order
     const output = out.items;
-    const sections = [_][]const u8{
+    const section_markers = [_][]const u8{
         "[files]",
         "[structs]",
         "[enums]",
@@ -938,7 +518,7 @@ test "sections appear in correct order" {
     };
 
     var last_pos: usize = 0;
-    for (sections) |section| {
+    for (section_markers) |section| {
         const pos = std.mem.indexOf(u8, output[last_pos..], section) orelse
             return error.MissingSection;
         last_pos = last_pos + pos + section.len;
@@ -1153,6 +733,7 @@ test "test IDs use t: prefix" {
     const options = RenderOptions{
         .project_name = "myproject",
         .timestamp = "2026-02-14T10:30:00Z",
+        .filter = .{ .include_test_nodes = true },
     };
 
     // Act
@@ -1185,6 +766,7 @@ test "external IDs use x: prefix" {
     const options = RenderOptions{
         .project_name = "myproject",
         .timestamp = "2026-02-14T10:30:00Z",
+        .filter = .{ .include_external_nodes = true },
     };
 
     // Act
@@ -1378,6 +960,7 @@ test "phantom nodes in externals section" {
     const options = RenderOptions{
         .project_name = "myproject",
         .timestamp = "2026-02-14T10:30:00Z",
+        .filter = .{ .include_external_nodes = true },
     };
 
     // Act

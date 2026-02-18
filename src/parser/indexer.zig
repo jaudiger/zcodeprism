@@ -7,6 +7,7 @@ const lang = @import("../languages/language.zig");
 const registry_mod = @import("../languages/registry.zig");
 const phantom_mod = @import("../core/phantom.zig");
 const metrics_mod = @import("../core/metrics.zig");
+const source_scan = @import("source_scan.zig");
 
 const Graph = graph_mod.Graph;
 const Node = node_mod.Node;
@@ -125,8 +126,30 @@ pub fn indexDirectory(
     if (file_entries.items.len == 0) return result;
 
     // Sort files so that imported files are parsed before their importers.
+    // Compute transitive import depth: depth = max(depth of each imported file) + 1.
+    // This handles chains like A→B→C where all three have the same direct
+    // import count but must be parsed in order C, B, A.
     for (file_entries.items) |*fe| {
-        fe.import_count = countProjectImports(fe.content, basenames_list.items);
+        fe.import_count = 0;
+    }
+    {
+        var iter_count: usize = 0;
+        while (iter_count < file_entries.items.len) : (iter_count += 1) {
+            var changed = false;
+            for (file_entries.items, 0..) |*fe, fi| {
+                var max_dep: usize = 0;
+                for (file_entries.items, 0..) |dep, di| {
+                    if (fi == di) continue;
+                    if (!importsBasename(fe.content, dep.basename)) continue;
+                    max_dep = @max(max_dep, dep.import_count + 1);
+                }
+                if (max_dep > fe.import_count) {
+                    fe.import_count = max_dep;
+                    changed = true;
+                }
+            }
+            if (!changed) break;
+        }
     }
 
     std.sort.block(FileEntry, file_entries.items, {}, struct {
@@ -185,7 +208,7 @@ pub fn indexDirectory(
 
     // Compute metrics for function nodes in each file.
     for (file_infos.items) |fi| {
-        computeMetricsForNodes(graph, fi.source, fi.idx);
+        source_scan.computeMetricsForNodes(graph, fi.source, fi.idx);
     }
 
     // Resolve inter-file imports and external (phantom) references.
@@ -204,7 +227,7 @@ pub fn indexDirectory(
             for (file_infos.items) |target_fi| {
                 const target_file = graph.nodes.items[target_fi.idx];
                 if (std.mem.eql(u8, target_file.name, import_path)) {
-                    try addEdgeIfNew(graph, file_id, @enumFromInt(target_fi.idx), .imports, .tree_sitter);
+                    try source_scan.addEdgeIfNew(graph, file_id, @enumFromInt(target_fi.idx), .imports, .tree_sitter);
                     break;
                 }
             }
@@ -227,13 +250,13 @@ pub fn indexDirectory(
             if (std.mem.eql(u8, import_path, "std")) {
                 std_import_name = n.name;
                 const std_id = try phantom.getOrCreate("std", .module);
-                try addEdgeIfNew(graph, file_id, std_id, .imports, .phantom);
+                try source_scan.addEdgeIfNew(graph, file_id, std_id, .imports, .phantom);
                 break;
             }
         }
 
         if (std_import_name) |sname| {
-            try resolveStdPhantoms(graph, fi.source, fi.idx, &phantom, sname);
+            try source_scan.resolveStdPhantoms(graph, fi.source, fi.idx, &phantom, sname);
         }
     }
 
@@ -250,35 +273,46 @@ fn computeContentHash(content: []const u8) [12]u8 {
     return full_hash[0..12].*;
 }
 
+/// Directories unconditionally excluded from indexation to not pollute the graph.
+const hardcoded_excludes = [_][]const u8{ ".zig-cache", "zig-out" };
+
 fn isExcluded(rel_path: []const u8, exclude_paths: []const []const u8) bool {
     const bn = std.fs.path.basename(rel_path);
     for (exclude_paths) |exc| {
         if (std.mem.eql(u8, rel_path, exc)) return true;
         if (std.mem.eql(u8, bn, exc)) return true;
+        if (pathHasComponent(rel_path, exc)) return true;
+    }
+    for (&hardcoded_excludes) |dir| {
+        if (pathHasComponent(rel_path, dir)) return true;
     }
     return false;
 }
 
-fn countProjectImports(content: []const u8, basenames: []const []const u8) usize {
-    var count: usize = 0;
-    const pattern = "@import(\"";
-    var search_from: usize = 0;
-    while (search_from + pattern.len <= content.len) {
-        const idx = std.mem.indexOf(u8, content[search_from..], pattern) orelse break;
-        const abs_idx = search_from + idx;
-        const path_start = abs_idx + pattern.len;
-        if (path_start >= content.len) break;
-        const path_end_rel = std.mem.indexOfScalar(u8, content[path_start..], '"') orelse break;
-        const import_path = content[path_start .. path_start + path_end_rel];
-        for (basenames) |bn| {
-            if (std.mem.eql(u8, import_path, bn)) {
-                count += 1;
-                break;
-            }
-        }
-        search_from = path_start + path_end_rel + 1;
+/// Returns true if any directory component of `path` equals `component`.
+fn pathHasComponent(path: []const u8, component: []const u8) bool {
+    var it = std.mem.splitScalar(u8, path, std.fs.path.sep);
+    while (it.next()) |seg| {
+        if (std.mem.eql(u8, seg, component)) return true;
     }
-    return count;
+    return false;
+}
+
+/// Returns true if `content` contains an @import("basename") reference.
+fn importsBasename(content: []const u8, basename: []const u8) bool {
+    const pattern = "@import(\"";
+    var pos: usize = 0;
+    while (pos + pattern.len <= content.len) {
+        const idx = std.mem.indexOf(u8, content[pos..], pattern) orelse return false;
+        const abs_idx = pos + idx;
+        const path_start = abs_idx + pattern.len;
+        if (path_start >= content.len) return false;
+        const end = std.mem.indexOfScalar(u8, content[path_start..], '"') orelse return false;
+        const import_path = content[path_start .. path_start + end];
+        if (std.mem.eql(u8, import_path, basename)) return true;
+        pos = path_start + end + 1;
+    }
+    return false;
 }
 
 fn findExistingFileNode(graph: *const Graph, basename: []const u8) ?usize {
@@ -290,177 +324,6 @@ fn findExistingFileNode(graph: *const Graph, basename: []const u8) ?usize {
     return null;
 }
 
-fn addEdgeIfNew(graph: *Graph, source_id: NodeId, target_id: NodeId, edge_type: EdgeType, edge_source: EdgeSource) !void {
-    for (graph.edges.items) |e| {
-        if (e.source_id == source_id and e.target_id == target_id and e.edge_type == edge_type) return;
-    }
-    _ = try graph.addEdge(.{
-        .source_id = source_id,
-        .target_id = target_id,
-        .edge_type = edge_type,
-        .source = edge_source,
-    });
-}
-
-fn isDescendantOf(graph: *const Graph, node_id: NodeId, ancestor_id: NodeId) bool {
-    var current = node_id;
-    var hops: usize = 0;
-    while (hops < 100) : (hops += 1) {
-        const node = graph.getNode(current) orelse return false;
-        const pid = node.parent_id orelse return false;
-        if (pid == ancestor_id) return true;
-        current = pid;
-    }
-    return false;
-}
-
-fn isIdentChar(c: u8) bool {
-    return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9') or c == '_';
-}
-
-fn matchKeyword(text: []const u8, keyword: []const u8) bool {
-    if (text.len < keyword.len) return false;
-    if (!std.mem.startsWith(u8, text, keyword)) return false;
-    if (text.len > keyword.len and isIdentChar(text[keyword.len])) return false;
-    return true;
-}
-
-fn extractLineRange(source: []const u8, line_start: u32, line_end: u32) []const u8 {
-    if (source.len == 0) return source;
-    var current_line: u32 = 1;
-    var start_byte: usize = 0;
-    var found_start: bool = (line_start <= 1);
-
-    for (source, 0..) |c, i| {
-        if (c == '\n') {
-            if (found_start and current_line >= line_end) {
-                return source[start_byte .. i + 1];
-            }
-            current_line += 1;
-            if (!found_start and current_line >= line_start) {
-                start_byte = i + 1;
-                found_start = true;
-            }
-        }
-    }
-
-    if (found_start) return source[start_byte..];
-    return source;
-}
-
-fn computeMetricsForNodes(graph: *Graph, source: []const u8, file_idx: usize) void {
-    const file_id: NodeId = @enumFromInt(file_idx);
-    var idx: usize = file_idx;
-    while (idx < graph.nodes.items.len) : (idx += 1) {
-        var n = &graph.nodes.items[idx];
-        if (n.kind != .function) continue;
-        if (!isDescendantOf(graph, @enumFromInt(idx), file_id)) continue;
-        const ls = n.line_start orelse continue;
-        const le = n.line_end orelse continue;
-
-        const lines: u32 = le - ls + 1;
-        const fn_source = extractLineRange(source, ls, le);
-
-        var complexity: u16 = 1; // base complexity
-        var pos: usize = 0;
-        while (pos < fn_source.len) : (pos += 1) {
-            if (pos > 0 and isIdentChar(fn_source[pos - 1])) continue;
-            const remaining = fn_source[pos..];
-            if (matchKeyword(remaining, "if") or
-                matchKeyword(remaining, "for") or
-                matchKeyword(remaining, "while") or
-                matchKeyword(remaining, "switch") or
-                matchKeyword(remaining, "catch"))
-            {
-                complexity += 1;
-            }
-        }
-
-        n.metrics = Metrics{ .complexity = complexity, .lines = lines };
-    }
-}
-
-fn countLinesUpTo(source: []const u8, byte_pos: usize) u32 {
-    var line: u32 = 1;
-    const end = @min(byte_pos, source.len);
-    for (source[0..end]) |c| {
-        if (c == '\n') line += 1;
-    }
-    return line;
-}
-
-fn findContainingFunction(graph: *const Graph, file_id: NodeId, line: u32) ?NodeId {
-    for (graph.nodes.items, 0..) |n, i| {
-        if (n.kind != .function) continue;
-        if (!isDescendantOf(graph, @enumFromInt(i), file_id)) continue;
-        const ls = n.line_start orelse continue;
-        const le = n.line_end orelse continue;
-        if (line >= ls and line <= le) return @enumFromInt(i);
-    }
-    return null;
-}
-
-fn resolveStdPhantoms(
-    graph: *Graph,
-    source: []const u8,
-    file_idx: usize,
-    phantom: *PhantomManager,
-    std_name: []const u8,
-) !void {
-    const file_id: NodeId = @enumFromInt(file_idx);
-
-    var pos: usize = 0;
-    while (pos < source.len) {
-        // Look for std_name followed by '.'
-        if (pos + std_name.len < source.len and
-            std.mem.startsWith(u8, source[pos..], std_name) and
-            source[pos + std_name.len] == '.')
-        {
-            // Check word boundary before.
-            if (pos > 0 and isIdentChar(source[pos - 1])) {
-                pos += 1;
-                continue;
-            }
-
-            // Collect the full chain: std.X.Y.Z
-            const chain_start = pos;
-            pos += std_name.len + 1; // skip "std."
-            while (pos < source.len and (isIdentChar(source[pos]) or source[pos] == '.')) {
-                pos += 1;
-            }
-            // Remove trailing dot if any.
-            var chain_end = pos;
-            if (chain_end > chain_start and source[chain_end - 1] == '.') {
-                chain_end -= 1;
-            }
-
-            const chain = source[chain_start..chain_end];
-
-            // Skip if just "std" with no further segments.
-            if (chain.len <= std_name.len + 1) continue;
-
-            // Determine the kind of the leaf segment.
-            const last_dot = std.mem.lastIndexOfScalar(u8, chain, '.') orelse continue;
-            const leaf = chain[last_dot + 1 ..];
-            if (leaf.len == 0) continue;
-
-            const kind: NodeKind = if (leaf[0] >= 'A' and leaf[0] <= 'Z') .type_def else .module;
-
-            const phantom_id = try phantom.getOrCreate(chain, kind);
-
-            // For type references (PascalCase leaf), create uses_type edge from
-            // the containing function.
-            if (kind == .type_def) {
-                const ref_line = countLinesUpTo(source, chain_start);
-                if (findContainingFunction(graph, file_id, ref_line)) |fn_id| {
-                    try addEdgeIfNew(graph, fn_id, phantom_id, .uses_type, .phantom);
-                }
-            }
-        } else {
-            pos += 1;
-        }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -1095,7 +958,7 @@ fn writeCollisionFixtures(dir: std.fs.Dir) !void {
 fn findNodeInFile(graph: *const Graph, name: []const u8, kind: NodeKind, ancestor_id: NodeId) ?NodeId {
     for (graph.nodes.items, 0..) |n, i| {
         const nid: NodeId = @enumFromInt(i);
-        if (n.kind == kind and std.mem.eql(u8, n.name, name) and isDescendantOf(graph, nid, ancestor_id)) return nid;
+        if (n.kind == kind and std.mem.eql(u8, n.name, name) and source_scan.isDescendantOf(graph, nid, ancestor_id)) return nid;
     }
     return null;
 }
@@ -1171,7 +1034,7 @@ test "cross-file init call to second file resolves correctly" {
 // Cross-file name collision: Self / uses_type resolution
 // ===========================================================================
 
-test "Self resolves to own struct not first struct in graph" {
+test "Self constants are filtered in cross-file indexation" {
     // Arrange
     var g = Graph.init(std.testing.allocator, "/tmp/collision");
     defer g.deinit();
@@ -1184,35 +1047,15 @@ test "Self resolves to own struct not first struct in graph" {
     // Act
     _ = indexDirectory(std.testing.allocator, project_root, &g, .{}) catch |err| return err;
 
-    // Assert: beta's init should have a uses_type edge to beta's Self, not alpha's
+    // Assert: @This() aliases are filtered — no Self constant nodes exist
     const alpha_file = findNode(&g, "alpha.zig", .file) orelse return error.TestExpectedEqual;
     const beta_file = findNode(&g, "beta.zig", .file) orelse return error.TestExpectedEqual;
-    const alpha_self = findNodeInFile(&g, "Self", .constant, alpha_file.id);
-    const beta_self = findNodeInFile(&g, "Self", .constant, beta_file.id);
-    const beta_init = findNodeInFile(&g, "init", .function, beta_file.id) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(@as(?NodeId, null), findNodeInFile(&g, "Self", .constant, alpha_file.id));
+    try std.testing.expectEqual(@as(?NodeId, null), findNodeInFile(&g, "Self", .constant, beta_file.id));
 
-    // beta's init must not have a uses_type edge to alpha's Self
-    if (alpha_self) |a_self| {
-        try std.testing.expect(!hasEdge(&g, beta_init, a_self, .uses_type));
-    }
-
-    // If beta's init has any uses_type edge to a Self, it must be beta's Self
-    if (beta_self) |b_self| {
-        // Check if there is any uses_type edge from beta_init to any Self node
-        var has_self_edge = false;
-        for (g.edges.items) |e| {
-            if (e.source_id == beta_init and e.edge_type == .uses_type) {
-                const target = g.getNode(e.target_id) orelse continue;
-                if (std.mem.eql(u8, target.name, "Self")) {
-                    has_self_edge = true;
-                    // It must point to beta's Self
-                    try std.testing.expectEqual(b_self, e.target_id);
-                }
-            }
-        }
-        // There should be at least one Self reference from init
-        try std.testing.expect(has_self_edge);
-    }
+    // Assert: init functions still exist in both files
+    try std.testing.expect(findNodeInFile(&g, "init", .function, alpha_file.id) != null);
+    try std.testing.expect(findNodeInFile(&g, "init", .function, beta_file.id) != null);
 }
 
 // ===========================================================================
@@ -1300,4 +1143,497 @@ test "test block resolves method call on import-assigned variable" {
     try std.testing.expect(test_id != null);
 
     try std.testing.expect(hasEdge(&g, test_id.?, increment_id, .calls));
+}
+
+// ===========================================================================
+// Parameter method call: fixture helpers
+// ===========================================================================
+
+/// Write the basic param_method_call fixtures (service.zig + consumer.zig) into
+/// a temporary directory. Returns the real project root path (caller must free).
+fn writeBasicParamFixtures(dir: std.fs.Dir) !void {
+    try dir.writeFile(.{ .sub_path = "service.zig", .data = fixtures.zig.param_method_call.service_zig });
+    try dir.writeFile(.{ .sub_path = "consumer.zig", .data = fixtures.zig.param_method_call.consumer_zig });
+}
+
+/// Write service.zig + pointer_param.zig fixtures.
+fn writePointerParamFixtures(dir: std.fs.Dir) !void {
+    try dir.writeFile(.{ .sub_path = "service.zig", .data = fixtures.zig.param_method_call.service_zig });
+    try dir.writeFile(.{ .sub_path = "pointer_param.zig", .data = fixtures.zig.param_method_call.pointer_param_zig });
+}
+
+/// Write service.zig + optional_param.zig fixtures.
+fn writeOptionalParamFixtures(dir: std.fs.Dir) !void {
+    try dir.writeFile(.{ .sub_path = "service.zig", .data = fixtures.zig.param_method_call.service_zig });
+    try dir.writeFile(.{ .sub_path = "optional_param.zig", .data = fixtures.zig.param_method_call.optional_param_zig });
+}
+
+/// Write service.zig + client.zig + service_with_client.zig + chained.zig fixtures.
+fn writeChainedParamFixtures(dir: std.fs.Dir) !void {
+    try dir.writeFile(.{ .sub_path = "client.zig", .data = fixtures.zig.param_method_call.client_zig });
+    try dir.writeFile(.{ .sub_path = "service_with_client.zig", .data = fixtures.zig.param_method_call.service_with_client_zig });
+    try dir.writeFile(.{ .sub_path = "chained.zig", .data = fixtures.zig.param_method_call.chained_zig });
+}
+
+/// Write service.zig + client.zig + multi_param.zig fixtures.
+fn writeMultiParamFixtures(dir: std.fs.Dir) !void {
+    try dir.writeFile(.{ .sub_path = "service.zig", .data = fixtures.zig.param_method_call.service_zig });
+    try dir.writeFile(.{ .sub_path = "client.zig", .data = fixtures.zig.param_method_call.client_zig });
+    try dir.writeFile(.{ .sub_path = "multi_param.zig", .data = fixtures.zig.param_method_call.multi_param_zig });
+}
+
+/// Write service.zig + self_calls_param.zig fixtures.
+fn writeSelfCallsParamFixtures(dir: std.fs.Dir) !void {
+    try dir.writeFile(.{ .sub_path = "service.zig", .data = fixtures.zig.param_method_call.service_zig });
+    try dir.writeFile(.{ .sub_path = "self_calls_param.zig", .data = fixtures.zig.param_method_call.self_calls_param_zig });
+}
+
+/// Write service.zig + factory.zig + return_value.zig fixtures.
+fn writeReturnValueFixtures(dir: std.fs.Dir) !void {
+    try dir.writeFile(.{ .sub_path = "service.zig", .data = fixtures.zig.param_method_call.service_zig });
+    try dir.writeFile(.{ .sub_path = "factory.zig", .data = fixtures.zig.param_method_call.factory_zig });
+    try dir.writeFile(.{ .sub_path = "return_value.zig", .data = fixtures.zig.param_method_call.return_value_zig });
+}
+
+/// Write service.zig + no_calls.zig fixtures (negative test).
+fn writeNoCallsFixtures(dir: std.fs.Dir) !void {
+    try dir.writeFile(.{ .sub_path = "service.zig", .data = fixtures.zig.param_method_call.service_zig });
+    try dir.writeFile(.{ .sub_path = "no_calls.zig", .data = fixtures.zig.param_method_call.no_calls_zig });
+}
+
+// ===========================================================================
+// Parameter method call: basic parameter
+// ===========================================================================
+
+test "parameter method call creates cross-file calls edge" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/param");
+    defer g.deinit();
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try writeBasicParamFixtures(tmp_dir.dir);
+    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(project_root);
+
+    // Act
+    _ = indexDirectory(std.testing.allocator, project_root, &g, .{}) catch |err| return err;
+
+    // Assert: handle() has a calls edge to Service.process()
+    const service_file = findNode(&g, "service.zig", .file) orelse return error.TestExpectedEqual;
+    const consumer_file = findNode(&g, "consumer.zig", .file) orelse return error.TestExpectedEqual;
+    const process_fn = findNodeInFile(&g, "process", .function, service_file.id) orelse return error.TestExpectedEqual;
+    const handle_fn = findNodeInFile(&g, "handle", .function, consumer_file.id) orelse return error.TestExpectedEqual;
+    try std.testing.expect(hasEdge(&g, handle_fn, process_fn, .calls));
+}
+
+test "parameter method call edge is calls not uses_type" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/param");
+    defer g.deinit();
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try writeBasicParamFixtures(tmp_dir.dir);
+    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(project_root);
+
+    // Act
+    _ = indexDirectory(std.testing.allocator, project_root, &g, .{}) catch |err| return err;
+
+    // Assert: the edge from handle to process is .calls, not .uses_type
+    const service_file = findNode(&g, "service.zig", .file) orelse return error.TestExpectedEqual;
+    const consumer_file = findNode(&g, "consumer.zig", .file) orelse return error.TestExpectedEqual;
+    const process_fn = findNodeInFile(&g, "process", .function, service_file.id) orelse return error.TestExpectedEqual;
+    const handle_fn = findNodeInFile(&g, "handle", .function, consumer_file.id) orelse return error.TestExpectedEqual;
+    try std.testing.expect(!hasEdge(&g, handle_fn, process_fn, .uses_type));
+}
+
+test "parameter method call coexists with uses_type edge to struct" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/param");
+    defer g.deinit();
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try writeBasicParamFixtures(tmp_dir.dir);
+    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(project_root);
+
+    // Act
+    _ = indexDirectory(std.testing.allocator, project_root, &g, .{}) catch |err| return err;
+
+    // Assert: handle() also has a uses_type edge to Service (the struct, not the method)
+    const service_file = findNode(&g, "service.zig", .file) orelse return error.TestExpectedEqual;
+    const consumer_file = findNode(&g, "consumer.zig", .file) orelse return error.TestExpectedEqual;
+    const service_type = findNodeInFile(&g, "Service", .type_def, service_file.id) orelse return error.TestExpectedEqual;
+    const handle_fn = findNodeInFile(&g, "handle", .function, consumer_file.id) orelse return error.TestExpectedEqual;
+    try std.testing.expect(hasEdge(&g, handle_fn, service_type, .uses_type));
+}
+
+test "parameter method call source is calling function" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/param");
+    defer g.deinit();
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try writeBasicParamFixtures(tmp_dir.dir);
+    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(project_root);
+
+    // Act
+    _ = indexDirectory(std.testing.allocator, project_root, &g, .{}) catch |err| return err;
+
+    // Assert: the calls edge direction is handle → process (not reverse)
+    const service_file = findNode(&g, "service.zig", .file) orelse return error.TestExpectedEqual;
+    const consumer_file = findNode(&g, "consumer.zig", .file) orelse return error.TestExpectedEqual;
+    const process_fn = findNodeInFile(&g, "process", .function, service_file.id) orelse return error.TestExpectedEqual;
+    const handle_fn = findNodeInFile(&g, "handle", .function, consumer_file.id) orelse return error.TestExpectedEqual;
+    try std.testing.expect(!hasEdge(&g, process_fn, handle_fn, .calls));
+}
+
+// ===========================================================================
+// Parameter method call: pointer parameter
+// ===========================================================================
+
+test "pointer parameter method call resolves through indirection" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/param");
+    defer g.deinit();
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try writePointerParamFixtures(tmp_dir.dir);
+    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(project_root);
+
+    // Act
+    _ = indexDirectory(std.testing.allocator, project_root, &g, .{}) catch |err| return err;
+
+    // Assert: handlePtr() has a calls edge to Service.reset()
+    const service_file = findNode(&g, "service.zig", .file) orelse return error.TestExpectedEqual;
+    const param_file = findNode(&g, "pointer_param.zig", .file) orelse return error.TestExpectedEqual;
+    const reset_fn = findNodeInFile(&g, "reset", .function, service_file.id) orelse return error.TestExpectedEqual;
+    const handle_ptr_fn = findNodeInFile(&g, "handlePtr", .function, param_file.id) orelse return error.TestExpectedEqual;
+    try std.testing.expect(hasEdge(&g, handle_ptr_fn, reset_fn, .calls));
+}
+
+test "pointer parameter method call has uses_type edge to struct" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/param");
+    defer g.deinit();
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try writePointerParamFixtures(tmp_dir.dir);
+    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(project_root);
+
+    // Act
+    _ = indexDirectory(std.testing.allocator, project_root, &g, .{}) catch |err| return err;
+
+    // Assert: handlePtr() has a uses_type edge to Service
+    const service_file = findNode(&g, "service.zig", .file) orelse return error.TestExpectedEqual;
+    const param_file = findNode(&g, "pointer_param.zig", .file) orelse return error.TestExpectedEqual;
+    const service_type = findNodeInFile(&g, "Service", .type_def, service_file.id) orelse return error.TestExpectedEqual;
+    const handle_ptr_fn = findNodeInFile(&g, "handlePtr", .function, param_file.id) orelse return error.TestExpectedEqual;
+    try std.testing.expect(hasEdge(&g, handle_ptr_fn, service_type, .uses_type));
+}
+
+// ===========================================================================
+// Parameter method call: optional parameter
+// ===========================================================================
+
+test "optional parameter method call resolves through unwrap" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/param");
+    defer g.deinit();
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try writeOptionalParamFixtures(tmp_dir.dir);
+    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(project_root);
+
+    // Act
+    _ = indexDirectory(std.testing.allocator, project_root, &g, .{}) catch |err| return err;
+
+    // Assert: handleOpt() has a calls edge to Service.process()
+    const service_file = findNode(&g, "service.zig", .file) orelse return error.TestExpectedEqual;
+    const param_file = findNode(&g, "optional_param.zig", .file) orelse return error.TestExpectedEqual;
+    const process_fn = findNodeInFile(&g, "process", .function, service_file.id) orelse return error.TestExpectedEqual;
+    const handle_opt_fn = findNodeInFile(&g, "handleOpt", .function, param_file.id) orelse return error.TestExpectedEqual;
+    try std.testing.expect(hasEdge(&g, handle_opt_fn, process_fn, .calls));
+}
+
+// ===========================================================================
+// Parameter method call: chained cross-file call
+// ===========================================================================
+
+test "chained cross-file method call creates calls edge to first method" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/param");
+    defer g.deinit();
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try writeChainedParamFixtures(tmp_dir.dir);
+    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(project_root);
+
+    // Act
+    _ = indexDirectory(std.testing.allocator, project_root, &g, .{}) catch |err| return err;
+
+    // Assert: handleChained() has a calls edge to ServiceWithClient.getClient()
+    const swc_file = findNode(&g, "service_with_client.zig", .file) orelse return error.TestExpectedEqual;
+    const chained_file = findNode(&g, "chained.zig", .file) orelse return error.TestExpectedEqual;
+    const get_client_fn = findNodeInFile(&g, "getClient", .function, swc_file.id) orelse return error.TestExpectedEqual;
+    const handle_chained_fn = findNodeInFile(&g, "handleChained", .function, chained_file.id) orelse return error.TestExpectedEqual;
+    try std.testing.expect(hasEdge(&g, handle_chained_fn, get_client_fn, .calls));
+}
+
+test "chained cross-file method call creates transitive calls edge" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/param");
+    defer g.deinit();
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try writeChainedParamFixtures(tmp_dir.dir);
+    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(project_root);
+
+    // Act
+    _ = indexDirectory(std.testing.allocator, project_root, &g, .{}) catch |err| return err;
+
+    // Assert: handleChained() has a calls edge to Client.send() (transitive through getClient())
+    const client_file = findNode(&g, "client.zig", .file) orelse return error.TestExpectedEqual;
+    const chained_file = findNode(&g, "chained.zig", .file) orelse return error.TestExpectedEqual;
+    const send_fn = findNodeInFile(&g, "send", .function, client_file.id) orelse return error.TestExpectedEqual;
+    const handle_chained_fn = findNodeInFile(&g, "handleChained", .function, chained_file.id) orelse return error.TestExpectedEqual;
+    try std.testing.expect(hasEdge(&g, handle_chained_fn, send_fn, .calls));
+}
+
+// ===========================================================================
+// Parameter method call: multiple parameters from different files
+// ===========================================================================
+
+test "multiple cross-file parameters each get calls edges" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/param");
+    defer g.deinit();
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try writeMultiParamFixtures(tmp_dir.dir);
+    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(project_root);
+
+    // Act
+    _ = indexDirectory(std.testing.allocator, project_root, &g, .{}) catch |err| return err;
+
+    // Assert: handleMulti() has calls edges to both Service.process() and Client.send()
+    const service_file = findNode(&g, "service.zig", .file) orelse return error.TestExpectedEqual;
+    const client_file = findNode(&g, "client.zig", .file) orelse return error.TestExpectedEqual;
+    const multi_file = findNode(&g, "multi_param.zig", .file) orelse return error.TestExpectedEqual;
+    const process_fn = findNodeInFile(&g, "process", .function, service_file.id) orelse return error.TestExpectedEqual;
+    const send_fn = findNodeInFile(&g, "send", .function, client_file.id) orelse return error.TestExpectedEqual;
+    const handle_multi_fn = findNodeInFile(&g, "handleMulti", .function, multi_file.id) orelse return error.TestExpectedEqual;
+    try std.testing.expect(hasEdge(&g, handle_multi_fn, process_fn, .calls));
+    try std.testing.expect(hasEdge(&g, handle_multi_fn, send_fn, .calls));
+}
+
+test "multiple cross-file parameters each get uses_type edges" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/param");
+    defer g.deinit();
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try writeMultiParamFixtures(tmp_dir.dir);
+    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(project_root);
+
+    // Act
+    _ = indexDirectory(std.testing.allocator, project_root, &g, .{}) catch |err| return err;
+
+    // Assert: handleMulti() has uses_type edges to both Service and Client
+    const service_file = findNode(&g, "service.zig", .file) orelse return error.TestExpectedEqual;
+    const client_file = findNode(&g, "client.zig", .file) orelse return error.TestExpectedEqual;
+    const multi_file = findNode(&g, "multi_param.zig", .file) orelse return error.TestExpectedEqual;
+    const service_type = findNodeInFile(&g, "Service", .type_def, service_file.id) orelse return error.TestExpectedEqual;
+    const client_type = findNodeInFile(&g, "Client", .type_def, client_file.id) orelse return error.TestExpectedEqual;
+    const handle_multi_fn = findNodeInFile(&g, "handleMulti", .function, multi_file.id) orelse return error.TestExpectedEqual;
+    try std.testing.expect(hasEdge(&g, handle_multi_fn, service_type, .uses_type));
+    try std.testing.expect(hasEdge(&g, handle_multi_fn, client_type, .uses_type));
+}
+
+test "multiple cross-file parameters do not create spurious calls edges" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/param");
+    defer g.deinit();
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try writeMultiParamFixtures(tmp_dir.dir);
+    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(project_root);
+
+    // Act
+    _ = indexDirectory(std.testing.allocator, project_root, &g, .{}) catch |err| return err;
+
+    // Assert: handleMulti() does NOT have calls edges to uncalled methods
+    const client_file = findNode(&g, "client.zig", .file) orelse return error.TestExpectedEqual;
+    const multi_file = findNode(&g, "multi_param.zig", .file) orelse return error.TestExpectedEqual;
+    const disconnect_fn = findNodeInFile(&g, "disconnect", .function, client_file.id) orelse return error.TestExpectedEqual;
+    const handle_multi_fn = findNodeInFile(&g, "handleMulti", .function, multi_file.id) orelse return error.TestExpectedEqual;
+    try std.testing.expect(!hasEdge(&g, handle_multi_fn, disconnect_fn, .calls));
+}
+
+// ===========================================================================
+// Parameter method call: self method calling parameter method
+// ===========================================================================
+
+test "struct method resolves parameter method call across files" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/param");
+    defer g.deinit();
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try writeSelfCallsParamFixtures(tmp_dir.dir);
+    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(project_root);
+
+    // Act
+    _ = indexDirectory(std.testing.allocator, project_root, &g, .{}) catch |err| return err;
+
+    // Assert: Handler.execute() has a calls edge to Service.process()
+    const service_file = findNode(&g, "service.zig", .file) orelse return error.TestExpectedEqual;
+    const self_file = findNode(&g, "self_calls_param.zig", .file) orelse return error.TestExpectedEqual;
+    const process_fn = findNodeInFile(&g, "process", .function, service_file.id) orelse return error.TestExpectedEqual;
+    const execute_fn = findNodeInFile(&g, "execute", .function, self_file.id) orelse return error.TestExpectedEqual;
+    try std.testing.expect(hasEdge(&g, execute_fn, process_fn, .calls));
+}
+
+test "struct method has uses_type edge to parameter type from another file" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/param");
+    defer g.deinit();
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try writeSelfCallsParamFixtures(tmp_dir.dir);
+    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(project_root);
+
+    // Act
+    _ = indexDirectory(std.testing.allocator, project_root, &g, .{}) catch |err| return err;
+
+    // Assert: Handler.execute() has a uses_type edge to Service
+    const service_file = findNode(&g, "service.zig", .file) orelse return error.TestExpectedEqual;
+    const self_file = findNode(&g, "self_calls_param.zig", .file) orelse return error.TestExpectedEqual;
+    const service_type = findNodeInFile(&g, "Service", .type_def, service_file.id) orelse return error.TestExpectedEqual;
+    const execute_fn = findNodeInFile(&g, "execute", .function, self_file.id) orelse return error.TestExpectedEqual;
+    try std.testing.expect(hasEdge(&g, execute_fn, service_type, .uses_type));
+}
+
+// ===========================================================================
+// Parameter method call: return value from imported function
+// ===========================================================================
+
+test "return value from imported function gets calls edge for method" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/param");
+    defer g.deinit();
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try writeReturnValueFixtures(tmp_dir.dir);
+    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(project_root);
+
+    // Act
+    _ = indexDirectory(std.testing.allocator, project_root, &g, .{}) catch |err| return err;
+
+    // Assert: useFactory() has a calls edge to factory.create()
+    const factory_file = findNode(&g, "factory.zig", .file) orelse return error.TestExpectedEqual;
+    const rv_file = findNode(&g, "return_value.zig", .file) orelse return error.TestExpectedEqual;
+    const create_fn = findNodeInFile(&g, "create", .function, factory_file.id) orelse return error.TestExpectedEqual;
+    const use_factory_fn = findNodeInFile(&g, "useFactory", .function, rv_file.id) orelse return error.TestExpectedEqual;
+    try std.testing.expect(hasEdge(&g, use_factory_fn, create_fn, .calls));
+}
+
+test "return value from imported function resolves method on result" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/param");
+    defer g.deinit();
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try writeReturnValueFixtures(tmp_dir.dir);
+    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(project_root);
+
+    // Act
+    _ = indexDirectory(std.testing.allocator, project_root, &g, .{}) catch |err| return err;
+
+    // Assert: useFactory() has a calls edge to Service.process() (via return type of create())
+    const service_file = findNode(&g, "service.zig", .file) orelse return error.TestExpectedEqual;
+    const rv_file = findNode(&g, "return_value.zig", .file) orelse return error.TestExpectedEqual;
+    const process_fn = findNodeInFile(&g, "process", .function, service_file.id) orelse return error.TestExpectedEqual;
+    const use_factory_fn = findNodeInFile(&g, "useFactory", .function, rv_file.id) orelse return error.TestExpectedEqual;
+    try std.testing.expect(hasEdge(&g, use_factory_fn, process_fn, .calls));
+}
+
+// ===========================================================================
+// Parameter method call: negative tests (no false positives)
+// ===========================================================================
+
+test "no calls edge when parameter method is not called" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/param");
+    defer g.deinit();
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try writeNoCallsFixtures(tmp_dir.dir);
+    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(project_root);
+
+    // Act
+    _ = indexDirectory(std.testing.allocator, project_root, &g, .{}) catch |err| return err;
+
+    // Assert: noMethodCalls() has NO calls edge to Service.process()
+    const service_file = findNode(&g, "service.zig", .file) orelse return error.TestExpectedEqual;
+    const no_calls_file = findNode(&g, "no_calls.zig", .file) orelse return error.TestExpectedEqual;
+    const process_fn = findNodeInFile(&g, "process", .function, service_file.id) orelse return error.TestExpectedEqual;
+    const no_calls_fn = findNodeInFile(&g, "noMethodCalls", .function, no_calls_file.id) orelse return error.TestExpectedEqual;
+    try std.testing.expect(!hasEdge(&g, no_calls_fn, process_fn, .calls));
+}
+
+test "no calls edge when parameter method is not called but uses_type exists" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/param");
+    defer g.deinit();
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try writeNoCallsFixtures(tmp_dir.dir);
+    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(project_root);
+
+    // Act
+    _ = indexDirectory(std.testing.allocator, project_root, &g, .{}) catch |err| return err;
+
+    // Assert: noMethodCalls() still has a uses_type edge to Service even without calls
+    const service_file = findNode(&g, "service.zig", .file) orelse return error.TestExpectedEqual;
+    const no_calls_file = findNode(&g, "no_calls.zig", .file) orelse return error.TestExpectedEqual;
+    const service_type = findNodeInFile(&g, "Service", .type_def, service_file.id) orelse return error.TestExpectedEqual;
+    const no_calls_fn = findNodeInFile(&g, "noMethodCalls", .function, no_calls_file.id) orelse return error.TestExpectedEqual;
+    try std.testing.expect(hasEdge(&g, no_calls_fn, service_type, .uses_type));
+}
+
+test "uncalled method in provider does not get spurious calls edge" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/param");
+    defer g.deinit();
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try writeBasicParamFixtures(tmp_dir.dir);
+    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(project_root);
+
+    // Act
+    _ = indexDirectory(std.testing.allocator, project_root, &g, .{}) catch |err| return err;
+
+    // Assert: handle() does NOT have a calls edge to Service.reset() (only process() is called)
+    const service_file = findNode(&g, "service.zig", .file) orelse return error.TestExpectedEqual;
+    const consumer_file = findNode(&g, "consumer.zig", .file) orelse return error.TestExpectedEqual;
+    const reset_fn = findNodeInFile(&g, "reset", .function, service_file.id) orelse return error.TestExpectedEqual;
+    const handle_fn = findNodeInFile(&g, "handle", .function, consumer_file.id) orelse return error.TestExpectedEqual;
+    try std.testing.expect(!hasEdge(&g, handle_fn, reset_fn, .calls));
 }

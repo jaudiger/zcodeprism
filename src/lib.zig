@@ -21,6 +21,9 @@ pub const storage = @import("storage/storage.zig");
 pub const tree_sitter_api = @import("parser/tree_sitter_api.zig");
 pub const types = @import("core/types.zig");
 pub const visitor = @import("languages/zig/visitor.zig");
+pub const zig_ast_analysis = @import("languages/zig/ast_analysis.zig");
+pub const zig_cross_file = @import("languages/zig/cross_file.zig");
+pub const zig_edge_builder = @import("languages/zig/edge_builder.zig");
 pub const zig_meta = @import("languages/zig/meta.zig");
 
 // Convenience re-exports
@@ -128,13 +131,18 @@ test {
     _ = @import("core/types.zig");
     _ = @import("languages/language.zig");
     _ = @import("languages/registry.zig");
+    _ = @import("languages/zig/ast_analysis.zig");
+    _ = @import("languages/zig/cross_file.zig");
+    _ = @import("languages/zig/edge_builder.zig");
     _ = @import("languages/zig/meta.zig");
     _ = @import("languages/zig/visitor.zig");
     _ = @import("parser/indexer.zig");
     _ = @import("parser/source_map.zig");
     _ = @import("render/common.zig");
     _ = @import("render/ctg.zig");
+    _ = @import("render/ctg_sections.zig");
     _ = @import("render/mermaid.zig");
+    _ = @import("render/mermaid_sections.zig");
     _ = @import("parser/tree_sitter_api.zig");
     _ = @import("storage/binary.zig");
     _ = @import("storage/jsonl.zig");

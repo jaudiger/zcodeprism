@@ -27,6 +27,21 @@ pub const zig = struct {
         pub const consumer_zig = @embedFile("fixtures/zig/name_collision/consumer.zig");
     };
 
+    pub const param_method_call = struct {
+        pub const chained_zig = @embedFile("fixtures/zig/param_method_call/chained.zig");
+        pub const client_zig = @embedFile("fixtures/zig/param_method_call/client.zig");
+        pub const consumer_zig = @embedFile("fixtures/zig/param_method_call/consumer.zig");
+        pub const factory_zig = @embedFile("fixtures/zig/param_method_call/factory.zig");
+        pub const multi_param_zig = @embedFile("fixtures/zig/param_method_call/multi_param.zig");
+        pub const no_calls_zig = @embedFile("fixtures/zig/param_method_call/no_calls.zig");
+        pub const optional_param_zig = @embedFile("fixtures/zig/param_method_call/optional_param.zig");
+        pub const pointer_param_zig = @embedFile("fixtures/zig/param_method_call/pointer_param.zig");
+        pub const return_value_zig = @embedFile("fixtures/zig/param_method_call/return_value.zig");
+        pub const self_calls_param_zig = @embedFile("fixtures/zig/param_method_call/self_calls_param.zig");
+        pub const service_zig = @embedFile("fixtures/zig/param_method_call/service.zig");
+        pub const service_with_client_zig = @embedFile("fixtures/zig/param_method_call/service_with_client.zig");
+    };
+
     pub const project = struct {
         pub const main_zig = @embedFile("fixtures/zig/project/main.zig");
         pub const parser_zig = @embedFile("fixtures/zig/project/parser.zig");

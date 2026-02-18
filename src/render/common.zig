@@ -79,11 +79,6 @@ pub fn appendNum(out: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator,
     try out.appendSlice(allocator, s);
 }
 
-pub fn appendU32(out: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, val: u32, buf: *[20]u8) !void {
-    const s = std.fmt.bufPrint(buf, "{d}", .{val}) catch unreachable;
-    try out.appendSlice(allocator, s);
-}
-
 pub fn appendCurrentTimestamp(out: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator) !void {
     const epoch = std.time.timestamp();
     const es = std.time.epoch.EpochSeconds{ .secs = @intCast(@max(0, epoch)) };
