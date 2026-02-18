@@ -3,16 +3,19 @@ const ts = @import("tree-sitter");
 
 // --- Public module exports ---
 pub const binary_storage = @import("storage/binary.zig");
+pub const ctg = @import("render/ctg.zig");
 pub const edge = @import("core/edge.zig");
 pub const generation = @import("core/generation.zig");
 pub const graph = @import("core/graph.zig");
 pub const indexer = @import("parser/indexer.zig");
 pub const jsonl_storage = @import("storage/jsonl.zig");
 pub const language = @import("languages/language.zig");
+pub const mermaid = @import("render/mermaid.zig");
 pub const metrics_mod = @import("core/metrics.zig");
 pub const node = @import("core/node.zig");
 pub const phantom = @import("core/phantom.zig");
 pub const registry = @import("languages/registry.zig");
+pub const render_common = @import("render/common.zig");
 pub const source_map = @import("parser/source_map.zig");
 pub const storage = @import("storage/storage.zig");
 pub const tree_sitter_api = @import("parser/tree_sitter_api.zig");
@@ -87,7 +90,7 @@ test "parse invalid syntax returns tree with error nodes" {
 
     const root = tree.rootNode();
 
-    // Assert — tree-sitter always returns a tree, even for invalid syntax
+    // Assert: tree-sitter always returns a tree, even for invalid syntax
     try std.testing.expectEqualStrings("source_file", root.kind());
 
     // Walk direct children to find at least one ERROR node
@@ -129,6 +132,9 @@ test {
     _ = @import("languages/zig/visitor.zig");
     _ = @import("parser/indexer.zig");
     _ = @import("parser/source_map.zig");
+    _ = @import("render/common.zig");
+    _ = @import("render/ctg.zig");
+    _ = @import("render/mermaid.zig");
     _ = @import("parser/tree_sitter_api.zig");
     _ = @import("storage/binary.zig");
     _ = @import("storage/jsonl.zig");

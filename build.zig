@@ -121,6 +121,27 @@ pub fn build(b: *std.Build) void {
     const run_parse_file_step = b.step("parse-file", "Parse a single .zig file and dump the graph");
     run_parse_file_step.dependOn(&run_parse_file.step);
 
+    // --- Render graph tool ---
+
+    const render_graph_mod = b.createModule(.{
+        .root_source_file = b.path("tools/render_graph.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    render_graph_mod.addImport("zcodeprism", lib_mod);
+
+    const render_graph_exe = b.addExecutable(.{
+        .name = "render-graph",
+        .root_module = render_graph_mod,
+    });
+    b.installArtifact(render_graph_exe);
+
+    const run_render_graph = b.addRunArtifact(render_graph_exe);
+    run_render_graph.step.dependOn(b.getInstallStep());
+    if (b.args) |args| run_render_graph.addArgs(args);
+    const run_render_graph_step = b.step("render-graph", "Index a directory and render the code graph as CTG or Mermaid");
+    run_render_graph_step.dependOn(&run_render_graph.step);
+
     // --- Tests ---
 
     const test_mod = b.createModule(.{
