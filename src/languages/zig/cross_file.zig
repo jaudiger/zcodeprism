@@ -1,11 +1,15 @@
 const std = @import("std");
 const graph_mod = @import("../../core/graph.zig");
+const logging = @import("../../logging.zig");
 const node_mod = @import("../../core/node.zig");
 const edge_mod = @import("../../core/edge.zig");
 const types = @import("../../core/types.zig");
 const ts = @import("tree-sitter");
 const ts_api = @import("../../parser/tree_sitter_api.zig");
 const ast = @import("ast_analysis.zig");
+
+const Field = logging.Field;
+const Logger = logging.Logger;
 
 const Graph = graph_mod.Graph;
 const Node = node_mod.Node;
@@ -50,9 +54,12 @@ pub const VarTracker = struct {
     // Max number of tracked import-qualified variable bindings per function.
     pub const max_vars = 32;
 
-    pub fn addBinding(self: *VarTracker, name: []const u8, target_file: NodeId) void {
+    pub fn addBinding(self: *VarTracker, name: []const u8, target_file: NodeId, log: Logger) void {
         // Graceful cap: silently skip excess bindings.
-        if (self.var_count >= max_vars) return;
+        if (self.var_count >= max_vars) {
+            log.trace("var tracker at capacity", &.{Field.string("name", name)});
+            return;
+        }
         self.var_names[self.var_count] = name;
         self.var_targets[self.var_count] = target_file;
         self.var_count += 1;
@@ -89,10 +96,14 @@ pub const max_import_search_depth = 5;
 // Edge utility
 // =========================================================================
 
-pub fn addEdgeIfNew(g: *Graph, source_id: NodeId, target_id: NodeId, edge_type: EdgeType) !void {
+pub fn addEdgeIfNew(g: *Graph, source_id: NodeId, target_id: NodeId, edge_type: EdgeType, log: Logger) !void {
     if (source_id == target_id) return;
     for (g.edges.items) |e| {
         if (e.source_id == source_id and e.target_id == target_id and e.edge_type == edge_type) {
+            log.trace("duplicate edge skipped", &.{
+                Field.uint("source", @intFromEnum(source_id)),
+                Field.uint("target", @intFromEnum(target_id)),
+            });
             return;
         }
     }
@@ -203,14 +214,17 @@ pub fn findImportTargetFile(g: *const Graph, import_path: []const u8) ?NodeId {
 }
 
 /// Build the import map in an EdgeContext by scanning root-level variable declarations.
-pub fn buildImportMap(g: *const Graph, source: []const u8, root: ts.Node, ctx: *EdgeContext) void {
+pub fn buildImportMap(g: *const Graph, source: []const u8, root: ts.Node, ctx: *EdgeContext, log: Logger) void {
     var i: u32 = 0;
     while (i < root.childCount()) : (i += 1) {
         const child = root.child(i) orelse continue;
         if (!child.isNamed()) continue;
         if (!std.mem.eql(u8, child.kind(), "variable_declaration")) continue;
         // Graceful cap: silently skip excess imports.
-        if (ctx.import_count >= EdgeContext.max_imports) break;
+        if (ctx.import_count >= EdgeContext.max_imports) {
+            log.debug("import map at capacity", &.{});
+            break;
+        }
 
         const name = ast.getIdentifierName(source, child) orelse continue;
 
@@ -226,13 +240,18 @@ pub fn buildImportMap(g: *const Graph, source: []const u8, root: ts.Node, ctx: *
         if (!is_import) continue;
 
         // Extract import path from AST.
-        const import_path = extractImportPath(source, child) orelse continue;
+        const import_path = extractImportPath(source, child) orelse {
+            log.trace("import path extraction failed", &.{});
+            continue;
+        };
 
         // Find the target file node in the graph.
         if (findImportTargetFile(g, import_path)) |target_id| {
             ctx.import_names[ctx.import_count] = name;
             ctx.import_targets[ctx.import_count] = target_id;
             ctx.import_count += 1;
+        } else {
+            log.trace("import target file not found", &.{Field.string("path", import_path)});
         }
     }
 }
@@ -248,6 +267,7 @@ pub fn resolveQualifiedCall(
     target_file_id: NodeId,
     chain: []const []const u8,
     is_call: bool,
+    log: Logger,
 ) !void {
     var current_scope_id = target_file_id;
 
@@ -301,29 +321,33 @@ pub fn resolveQualifiedCall(
             return; // Unknown scope kind, resolution fails.
         }
 
-        const resolved_id = matched_id orelse return;
+        const resolved_id = matched_id orelse {
+            log.trace("qualified call: segment not found", &.{Field.string("segment", segment)});
+            return;
+        };
 
         const resolved_node = g.getNode(resolved_id) orelse return;
 
         if (is_last and is_call and resolved_node.kind == .function) {
-            try addEdgeIfNew(g, caller_id, resolved_id, .calls);
+            try addEdgeIfNew(g, caller_id, resolved_id, .calls, log);
         } else if (!is_last and resolved_node.kind == .function) {
             // Mid-chain function call (e.g., getClient() in svc.getClient().send()).
             // Create calls edge and follow the function's return type.
             if (is_call) {
-                try addEdgeIfNew(g, caller_id, resolved_id, .calls);
+                try addEdgeIfNew(g, caller_id, resolved_id, .calls, log);
             }
             if (resolveReturnTypeScope(g, resolved_id)) |return_type_id| {
                 current_scope_id = return_type_id;
                 continue;
             }
+            log.trace("qualified call: return type unresolvable", &.{});
             return; // Cannot resolve return type; stop chain.
         } else {
             const is_type = resolved_node.kind == .type_def or resolved_node.kind == .enum_def;
             const is_type_alias = resolved_node.kind == .constant and
                 resolved_node.name.len > 0 and resolved_node.name[0] >= 'A' and resolved_node.name[0] <= 'Z';
             if (is_type or is_type_alias) {
-                try addEdgeIfNew(g, caller_id, resolved_id, .uses_type);
+                try addEdgeIfNew(g, caller_id, resolved_id, .uses_type, log);
             }
         }
 
@@ -345,12 +369,13 @@ pub fn prescanForVarBindings(
     fn_node: ts.Node,
     ctx: *const EdgeContext,
     tracker: *VarTracker,
+    log: Logger,
 ) void {
     var i: u32 = 0;
     while (i < fn_node.childCount()) : (i += 1) {
         const child = fn_node.child(i) orelse continue;
         if (std.mem.eql(u8, child.kind(), "block")) {
-            scanBlockForVarBindings(g, source, child, ctx, tracker);
+            scanBlockForVarBindings(g, source, child, ctx, tracker, log);
             return;
         }
     }
@@ -365,6 +390,7 @@ fn scanBlockForVarBindings(
     block: ts.Node,
     ctx: *const EdgeContext,
     tracker: *VarTracker,
+    log: Logger,
 ) void {
     var i: u32 = 0;
     while (i < block.childCount()) : (i += 1) {
@@ -378,8 +404,8 @@ fn scanBlockForVarBindings(
                 // Try to resolve through the called function's return type so that
                 // the tracker points to the file containing the result type, not
                 // the file containing the called function.
-                const resolved = resolveVarTargetThroughReturnType(g, source, child, ctx, target_file_id) orelse target_file_id;
-                tracker.addBinding(var_name, resolved);
+                const resolved = resolveVarTargetThroughReturnType(g, source, child, ctx, target_file_id, log) orelse target_file_id;
+                tracker.addBinding(var_name, resolved, log);
             }
             continue;
         }
@@ -391,7 +417,7 @@ fn scanBlockForVarBindings(
             std.mem.eql(u8, kind, "if_statement") or
             std.mem.eql(u8, kind, "expression_statement"))
         {
-            scanBlockForVarBindings(g, source, child, ctx, tracker);
+            scanBlockForVarBindings(g, source, child, ctx, tracker, log);
         }
     }
 }
@@ -547,6 +573,7 @@ fn resolveVarTargetThroughReturnType(
     var_decl: ts.Node,
     ctx: *const EdgeContext,
     import_file_id: NodeId,
+    log: Logger,
 ) ?NodeId {
     // Extract the full chain from the assignment expression.
     var chain: [max_chain_depth][]const u8 = undefined;
@@ -574,7 +601,10 @@ fn resolveVarTargetThroughReturnType(
         }
     }
 
-    if (chain_len < 2) return null;
+    if (chain_len < 2) {
+        log.trace("var target: chain extraction failed", &.{});
+        return null;
+    }
     // Verify the root is the import that resolved to import_file_id.
     if (ctx.findImportTarget(chain[0]) == null) return null;
 
@@ -627,7 +657,7 @@ test "duplicate structs have zero Self constants after filtering" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.edge_cases.duplicate_method_names, &g);
+    try parse(fixtures.zig.edge_cases.duplicate_method_names, &g, Logger.noop);
 
     // Assert: @This() aliases are filtered — no Self constants exist
     var self_count: usize = 0;
@@ -645,7 +675,7 @@ test "Alpha type_def exists without Self constant child" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.edge_cases.duplicate_method_names, &g);
+    try parse(fixtures.zig.edge_cases.duplicate_method_names, &g, Logger.noop);
 
     // Assert: Alpha type_def exists but has no Self constant child
     var alpha_id: ?NodeId = null;
@@ -675,7 +705,7 @@ test "Beta type_def exists without Self constant child" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.edge_cases.duplicate_method_names, &g);
+    try parse(fixtures.zig.edge_cases.duplicate_method_names, &g, Logger.noop);
 
     // Assert: Beta type_def exists but has no Self constant child
     var beta_id: ?NodeId = null;
@@ -705,7 +735,7 @@ test "Alpha.reset calls Alpha.deinit not Beta.deinit" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.edge_cases.duplicate_method_names, &g);
+    try parse(fixtures.zig.edge_cases.duplicate_method_names, &g, Logger.noop);
 
     // Assert: find Alpha, Beta, their respective deinit methods, and reset
     var alpha_id: ?NodeId = null;
@@ -760,7 +790,7 @@ test "Beta.clear calls Beta.deinit not Alpha.deinit" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.edge_cases.duplicate_method_names, &g);
+    try parse(fixtures.zig.edge_cases.duplicate_method_names, &g, Logger.noop);
 
     // Assert: find Alpha, Beta, their respective deinit methods, and clear
     var alpha_id: ?NodeId = null;
@@ -815,7 +845,7 @@ test "Alpha.init has no uses_type edge to Beta-scoped node" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.edge_cases.duplicate_method_names, &g);
+    try parse(fixtures.zig.edge_cases.duplicate_method_names, &g, Logger.noop);
 
     // Assert: Alpha.init's uses_type edges should not target any node whose
     // parent_id is Beta. This catches the bug where Self in Alpha's return type
@@ -866,7 +896,7 @@ test "generic dual Self constants are filtered out" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.edge_cases.generic_dual_self, &g);
+    try parse(fixtures.zig.edge_cases.generic_dual_self, &g, Logger.noop);
 
     // Assert: @This() aliases are filtered — no Self constants exist
     var self_count: usize = 0;
@@ -884,7 +914,7 @@ test "Stack.clear calls Stack.deinit not Queue.deinit" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.edge_cases.generic_dual_self, &g);
+    try parse(fixtures.zig.edge_cases.generic_dual_self, &g, Logger.noop);
 
     // Assert: find Stack and Queue type_defs, their deinit methods, and clear
     var stack_id: ?NodeId = null;
@@ -939,7 +969,7 @@ test "Queue.flush calls Queue.deinit not Stack.deinit" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.edge_cases.generic_dual_self, &g);
+    try parse(fixtures.zig.edge_cases.generic_dual_self, &g, Logger.noop);
 
     // Assert: find Stack and Queue type_defs, their deinit methods, and flush
     var stack_id: ?NodeId = null;
@@ -998,7 +1028,7 @@ test "externalInit does not create false calls edge to local init" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.edge_cases.external_method_collision, &g);
+    try parse(fixtures.zig.edge_cases.external_method_collision, &g, Logger.noop);
 
     // Assert: find Resource struct, Resource.init, and externalInit
     var resource_id: ?NodeId = null;
@@ -1042,7 +1072,7 @@ test "externalDeinit does not create false calls edge to local deinit" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.edge_cases.external_method_collision, &g);
+    try parse(fixtures.zig.edge_cases.external_method_collision, &g, Logger.noop);
 
     // Assert: find Resource struct, Resource.deinit, and externalDeinit
     var resource_id: ?NodeId = null;
@@ -1086,7 +1116,7 @@ test "createLocalResource creates genuine calls edge to local init" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.edge_cases.external_method_collision, &g);
+    try parse(fixtures.zig.edge_cases.external_method_collision, &g, Logger.noop);
 
     // Assert: find Resource struct, Resource.init, and createLocalResource
     var resource_id: ?NodeId = null;
@@ -1134,7 +1164,7 @@ test "Queue has no Self constant after filtering" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.edge_cases.generic_dual_self, &g);
+    try parse(fixtures.zig.edge_cases.generic_dual_self, &g, Logger.noop);
 
     // Assert: no Self constants exist anywhere (all @This() aliases filtered)
     for (g.nodes.items) |n| {
@@ -1150,7 +1180,7 @@ test "Result has no Self constant after filtering" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.generic_type, &g);
+    try parse(fixtures.zig.generic_type, &g, Logger.noop);
 
     // Assert: no Self constants exist (all @This() aliases filtered)
     for (g.nodes.items) |n| {
@@ -1170,7 +1200,7 @@ test "Container has no self-referencing uses_type edge" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.generic_type, &g);
+    try parse(fixtures.zig.generic_type, &g, Logger.noop);
 
     // Assert: no uses_type edge where source_id == target_id == Container
     var container_id: ?NodeId = null;
@@ -1198,7 +1228,7 @@ test "Result has no self-referencing uses_type edge" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.generic_type, &g);
+    try parse(fixtures.zig.generic_type, &g, Logger.noop);
 
     // Assert: no uses_type edge where source_id == target_id == Result
     var result_id: ?NodeId = null;
@@ -1226,7 +1256,7 @@ test "Stack has no self-referencing uses_type edge" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.edge_cases.generic_dual_self, &g);
+    try parse(fixtures.zig.edge_cases.generic_dual_self, &g, Logger.noop);
 
     // Assert: no uses_type edge where source_id == target_id == Stack
     var stack_id: ?NodeId = null;
@@ -1254,7 +1284,7 @@ test "Queue has no self-referencing uses_type edge" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.edge_cases.generic_dual_self, &g);
+    try parse(fixtures.zig.edge_cases.generic_dual_self, &g, Logger.noop);
 
     // Assert: no uses_type edge where source_id == target_id == Queue
     var queue_id: ?NodeId = null;

@@ -1,5 +1,6 @@
 const std = @import("std");
 const graph_mod = @import("../core/graph.zig");
+const logging = @import("../logging.zig");
 const node_mod = @import("../core/node.zig");
 const edge_mod = @import("../core/edge.zig");
 const types = @import("../core/types.zig");
@@ -8,6 +9,9 @@ const registry_mod = @import("../languages/registry.zig");
 const phantom_mod = @import("../core/phantom.zig");
 const metrics_mod = @import("../core/metrics.zig");
 const source_scan = @import("source_scan.zig");
+
+const Field = logging.Field;
+const Logger = logging.Logger;
 
 const Graph = graph_mod.Graph;
 const Node = node_mod.Node;
@@ -27,6 +31,7 @@ const Metrics = metrics_mod.Metrics;
 pub const IndexOptions = struct {
     exclude_paths: []const []const u8 = &.{},
     incremental: bool = false,
+    logger: Logger = Logger.noop,
 };
 
 /// Result of indexing a directory.
@@ -61,6 +66,7 @@ pub fn indexDirectory(
     options: IndexOptions,
 ) !IndexResult {
     var result = IndexResult{};
+    const log = options.logger.withScope("indexer");
 
     // Discover .zig files in the project directory.
     var dir = try std.fs.openDirAbsolute(project_root, .{ .iterate = true });
@@ -85,6 +91,7 @@ pub fn indexDirectory(
             if (isExcluded(entry.path, options.exclude_paths)) continue;
 
             const file = dir.openFile(entry.path, .{}) catch {
+                log.warn("file read error", &.{Field.string("path", entry.path)});
                 result.files_errored += 1;
                 continue;
             };
@@ -123,7 +130,15 @@ pub fn indexDirectory(
         }
     }
 
-    if (file_entries.items.len == 0) return result;
+    log.info("discovered files", &.{
+        Field.uint("count", file_entries.items.len),
+        Field.string("root", project_root),
+    });
+
+    if (file_entries.items.len == 0) {
+        log.debug("no files to index", &.{});
+        return result;
+    }
 
     // Sort files so that imported files are parsed before their importers.
     // Compute transitive import depth: depth = max(depth of each imported file) + 1.
@@ -173,6 +188,7 @@ pub fn indexDirectory(
                 const existing = graph.nodes.items[existing_idx];
                 if (existing.content_hash) |old_hash| {
                     if (std.mem.eql(u8, &old_hash, &fe.content_hash)) {
+                        log.debug("skipping unchanged file", &.{Field.string("path", fe.rel_path)});
                         result.files_skipped += 1;
                         continue;
                     }
@@ -183,7 +199,9 @@ pub fn indexDirectory(
         const before_count = graph.nodeCount();
 
         // Call visitor via registry. Creates file node + children + edges.
-        parse_fn(fe.content, @ptrCast(graph)) catch {
+        log.debug("parsing file", &.{Field.string("path", fe.rel_path)});
+        parse_fn(fe.content, @ptrCast(graph), log) catch {
+            log.warn("file parse error", &.{Field.string("path", fe.rel_path)});
             result.files_errored += 1;
             continue;
         };
@@ -200,6 +218,10 @@ pub fn indexDirectory(
             file_node.file_path = fe.rel_path;
             file_node.content_hash = fe.content_hash;
 
+            if (graph.nodeCount() == before_count + 1) {
+                log.trace("file produced no nodes", &.{Field.string("path", fe.rel_path)});
+            }
+
             try file_infos.append(allocator, .{ .idx = before_count, .source = fe.content });
         }
 
@@ -212,8 +234,8 @@ pub fn indexDirectory(
     }
 
     // Resolve inter-file imports and external (phantom) references.
-
     // Import edges between project files.
+    log.debug("resolving cross-file edges", &.{Field.uint("file_count", file_infos.items.len)});
     for (file_infos.items) |fi| {
         const file_id: NodeId = @enumFromInt(fi.idx);
 
@@ -235,6 +257,7 @@ pub fn indexDirectory(
     }
 
     // Phantom nodes for std references.
+    log.debug("resolving phantom nodes", &.{Field.uint("file_count", file_infos.items.len)});
     var phantom = PhantomManager.init(allocator, graph);
     defer phantom.deinit();
 
@@ -259,6 +282,14 @@ pub fn indexDirectory(
             try source_scan.resolveStdPhantoms(graph, fi.source, fi.idx, &phantom, sname);
         }
     }
+
+    log.info("indexing complete", &.{
+        Field.uint("files_indexed", result.files_indexed),
+        Field.uint("files_skipped", result.files_skipped),
+        Field.uint("files_errored", result.files_errored),
+        Field.uint("nodes", graph.nodeCount()),
+        Field.uint("edges", graph.edgeCount()),
+    });
 
     return result;
 }

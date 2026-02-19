@@ -1,4 +1,5 @@
 const std = @import("std");
+const logging = @import("../logging.zig");
 const ZigMeta = @import("zig/meta.zig").ZigMeta;
 
 /// Language-specific metadata union. Each language variant carries
@@ -25,7 +26,7 @@ pub const ExternalInfo = union(enum) {
 pub const LanguageSupport = struct {
     name: []const u8,
     extensions: []const []const u8,
-    parseFn: ?*const fn (source: []const u8, graph: *anyopaque) anyerror!void,
+    parseFn: ?*const fn (source: []const u8, graph: *anyopaque, logger: logging.Logger) anyerror!void,
     lsp_config: ?LspConfig,
 };
 

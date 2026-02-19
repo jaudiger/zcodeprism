@@ -1,11 +1,15 @@
 const std = @import("std");
 const graph_mod = @import("../../core/graph.zig");
+const logging = @import("../../logging.zig");
 const edge_mod = @import("../../core/edge.zig");
 const types = @import("../../core/types.zig");
 const ts = @import("tree-sitter");
 const ts_api = @import("../../parser/tree_sitter_api.zig");
 const ast = @import("ast_analysis.zig");
 const cf = @import("cross_file.zig");
+
+const Field = logging.Field;
+const Logger = logging.Logger;
 
 const Graph = graph_mod.Graph;
 const NodeId = types.NodeId;
@@ -87,7 +91,7 @@ const ParamTypeTracker = struct {
 // Edge creation
 // =========================================================================
 
-pub fn walkForEdges(g: *Graph, source: []const u8, ts_node: ts.Node, ctx: *const EdgeContext) !void {
+pub fn walkForEdges(g: *Graph, source: []const u8, ts_node: ts.Node, ctx: *const EdgeContext, log: Logger) !void {
     const kind_str = ts_node.kind();
 
     if (std.mem.eql(u8, kind_str, "function_declaration")) {
@@ -112,7 +116,7 @@ pub fn walkForEdges(g: *Graph, source: []const u8, ts_node: ts.Node, ctx: *const
 
                 // Build per-function variable tracker for import-assigned variables.
                 var var_tracker = VarTracker{};
-                cf.prescanForVarBindings(g, source, ts_node, ctx, &var_tracker);
+                cf.prescanForVarBindings(g, source, ts_node, ctx, &var_tracker, log);
 
                 // Build per-function local type tracker for struct-literal bindings.
                 var local_type_tracker = LocalTypeTracker{};
@@ -124,14 +128,19 @@ pub fn walkForEdges(g: *Graph, source: []const u8, ts_node: ts.Node, ctx: *const
                 prescanForIfCaptures(source, ts_node, &param_type_tracker);
 
                 // Scan function body for call expressions.
-                try scanForCalls(g, source, fn_id, caller_scope_id, ts_node, ctx, &var_tracker, &local_type_tracker, &param_type_tracker, ts_node, 0);
+                try scanForCalls(g, source, fn_id, caller_scope_id, ts_node, ctx, &var_tracker, &local_type_tracker, &param_type_tracker, ts_node, 0, log);
 
                 // Scan function signature (excluding body) for type references.
-                try scanSignatureForTypes(g, source, fn_id, caller_scope_id, ts_node, ctx);
+                try scanSignatureForTypes(g, source, fn_id, caller_scope_id, ts_node, ctx, log);
 
                 // Scan function body for type references (struct literals, static
                 // method calls, comptime type arguments).
-                try scanBodyForTypes(g, source, fn_id, caller_scope_id, ts_node, ctx);
+                try scanBodyForTypes(g, source, fn_id, caller_scope_id, ts_node, ctx, log);
+            } else {
+                log.trace("function not found in graph", &.{
+                    Field.string("name", name),
+                    Field.uint("line", decl_line),
+                });
             }
         }
     } else if (std.mem.eql(u8, kind_str, "test_declaration")) {
@@ -140,14 +149,16 @@ pub fn walkForEdges(g: *Graph, source: []const u8, ts_node: ts.Node, ctx: *const
             const test_node = g.getNode(test_id);
             const test_parent_id = if (test_node) |n| n.parent_id else null;
             var var_tracker = VarTracker{};
-            cf.prescanForVarBindings(g, source, ts_node, ctx, &var_tracker);
+            cf.prescanForVarBindings(g, source, ts_node, ctx, &var_tracker, log);
             var local_type_tracker = LocalTypeTracker{};
             prescanForLocalTypeBindings(source, ts_node, &local_type_tracker);
             var param_type_tracker = ParamTypeTracker{};
             prescanForParamTypeBindings(source, ts_node, ctx, &param_type_tracker);
             prescanForIfCaptures(source, ts_node, &param_type_tracker);
-            try scanForCalls(g, source, test_id, test_parent_id, ts_node, ctx, &var_tracker, &local_type_tracker, &param_type_tracker, ts_node, 0);
-            try scanBodyForTypes(g, source, test_id, test_parent_id, ts_node, ctx);
+            try scanForCalls(g, source, test_id, test_parent_id, ts_node, ctx, &var_tracker, &local_type_tracker, &param_type_tracker, ts_node, 0, log);
+            try scanBodyForTypes(g, source, test_id, test_parent_id, ts_node, ctx, log);
+        } else {
+            log.trace("test not found in graph", &.{Field.string("name", test_name)});
         }
     }
 
@@ -157,13 +168,16 @@ pub fn walkForEdges(g: *Graph, source: []const u8, ts_node: ts.Node, ctx: *const
     var i: u32 = 0;
     while (i < ts_node.namedChildCount()) : (i += 1) {
         const child = ts_node.namedChild(i) orelse continue;
-        try walkForEdges(g, source, child, ctx);
+        try walkForEdges(g, source, child, ctx, log);
     }
 }
 
-fn scanForCalls(g: *Graph, source: []const u8, caller_id: NodeId, caller_parent_id: ?NodeId, ts_node: ts.Node, ctx: *const EdgeContext, tracker: *const VarTracker, local_tracker: *const LocalTypeTracker, param_tracker: *const ParamTypeTracker, fn_decl_node: ts.Node, depth: u32) !void {
+fn scanForCalls(g: *Graph, source: []const u8, caller_id: NodeId, caller_parent_id: ?NodeId, ts_node: ts.Node, ctx: *const EdgeContext, tracker: *const VarTracker, local_tracker: *const LocalTypeTracker, param_tracker: *const ParamTypeTracker, fn_decl_node: ts.Node, depth: u32, log: Logger) !void {
     // Graceful cap: stop descending, edges in deeper subtrees are skipped.
-    if (depth >= cf.max_ast_scan_depth) return;
+    if (depth >= cf.max_ast_scan_depth) {
+        log.trace("scan depth cap reached", &.{Field.uint("depth", depth)});
+        return;
+    }
     if (std.mem.eql(u8, ts_node.kind(), "call_expression")) {
         if (ts_node.namedChild(0)) |fn_ref| {
             const fn_ref_kind = fn_ref.kind();
@@ -173,8 +187,10 @@ fn scanForCalls(g: *Graph, source: []const u8, caller_id: NodeId, caller_parent_
                 const callee_name = ts_api.nodeText(source, fn_ref);
                 if (findFunctionByNameScoped(g, callee_name, ctx.scope_start, ctx.scope_end, caller_parent_id)) |callee_id| {
                     if (@intFromEnum(caller_id) != @intFromEnum(callee_id)) {
-                        try cf.addEdgeIfNew(g, caller_id, callee_id, .calls);
+                        try cf.addEdgeIfNew(g, caller_id, callee_id, .calls, log);
                     }
+                } else {
+                    log.trace("bare call unresolved", &.{Field.string("callee", callee_name)});
                 }
             } else if (std.mem.eql(u8, fn_ref_kind, "field_expression")) {
                 // Qualified call: extract full chain from nested field_expression.
@@ -186,10 +202,10 @@ fn scanForCalls(g: *Graph, source: []const u8, caller_id: NodeId, caller_parent_
 
                     if (ctx.findImportTarget(root_name)) |target_file_id| {
                         // Import-qualified call: alpha.Self.init(42).
-                        try cf.resolveQualifiedCall(g, caller_id, target_file_id, chain[1..chain_len], true);
+                        try cf.resolveQualifiedCall(g, caller_id, target_file_id, chain[1..chain_len], true, log);
                     } else if (tracker.findTarget(root_name)) |target_file_id| {
                         // Variable method call: a.deinit() where a was assigned from import.
-                        try cf.resolveQualifiedCall(g, caller_id, target_file_id, chain[1..chain_len], true);
+                        try cf.resolveQualifiedCall(g, caller_id, target_file_id, chain[1..chain_len], true, log);
                     } else if (local_tracker.findTypeName(root_name)) |type_name| {
                         // Struct-literal local variable: p.method() where const p = Point{...}.
                         // Resolve method as a child of the type.
@@ -201,7 +217,7 @@ fn scanForCalls(g: *Graph, source: []const u8, caller_id: NodeId, caller_parent_
                                     n.parent_id != null and n.parent_id.? == type_id and
                                     std.mem.eql(u8, n.name, leaf_name))
                                 {
-                                    try cf.addEdgeIfNew(g, caller_id, @enumFromInt(idx), .calls);
+                                    try cf.addEdgeIfNew(g, caller_id, @enumFromInt(idx), .calls, log);
                                     break;
                                 }
                             }
@@ -222,7 +238,7 @@ fn scanForCalls(g: *Graph, source: []const u8, caller_id: NodeId, caller_parent_
                             resolve_chain[resolve_len] = seg;
                             resolve_len += 1;
                         }
-                        try cf.resolveQualifiedCall(g, caller_id, origin.target_file, resolve_chain[0..resolve_len], true);
+                        try cf.resolveQualifiedCall(g, caller_id, origin.target_file, resolve_chain[0..resolve_len], true, log);
                     } else {
                         // Fallback: use the AST to determine if the receiver is
                         // local (self or a known local type) vs external.
@@ -233,7 +249,7 @@ fn scanForCalls(g: *Graph, source: []const u8, caller_id: NodeId, caller_parent_
                                 // self.method(). Resolve in caller's parent scope.
                                 if (findFunctionByNameScoped(g, leaf_name, ctx.scope_start, ctx.scope_end, caller_parent_id)) |callee_id| {
                                     if (@intFromEnum(caller_id) != @intFromEnum(callee_id)) {
-                                        try cf.addEdgeIfNew(g, caller_id, callee_id, .calls);
+                                        try cf.addEdgeIfNew(g, caller_id, callee_id, .calls, log);
                                     }
                                 }
                             },
@@ -241,13 +257,17 @@ fn scanForCalls(g: *Graph, source: []const u8, caller_id: NodeId, caller_parent_
                                 // Type.staticMethod(). Resolve in caller's scope.
                                 if (findFunctionByNameScoped(g, leaf_name, ctx.scope_start, ctx.scope_end, caller_parent_id)) |callee_id| {
                                     if (@intFromEnum(caller_id) != @intFromEnum(callee_id)) {
-                                        try cf.addEdgeIfNew(g, caller_id, callee_id, .calls);
+                                        try cf.addEdgeIfNew(g, caller_id, callee_id, .calls, log);
                                     }
                                 }
                             },
                             .external => {
                                 // param.method() or var.method() where var holds
                                 // an external type. Do not create a local edge.
+                                log.trace("external receiver, skipping edge", &.{
+                                    Field.string("root", root_name),
+                                    Field.string("leaf", leaf_name),
+                                });
                             },
                         }
                     }
@@ -255,7 +275,7 @@ fn scanForCalls(g: *Graph, source: []const u8, caller_id: NodeId, caller_parent_
                     // Single-segment field expression, treat as bare call.
                     if (findFunctionByNameScoped(g, chain[0], ctx.scope_start, ctx.scope_end, caller_parent_id)) |callee_id| {
                         if (@intFromEnum(caller_id) != @intFromEnum(callee_id)) {
-                            try cf.addEdgeIfNew(g, caller_id, callee_id, .calls);
+                            try cf.addEdgeIfNew(g, caller_id, callee_id, .calls, log);
                         }
                     }
                 }
@@ -272,7 +292,7 @@ fn scanForCalls(g: *Graph, source: []const u8, caller_id: NodeId, caller_parent_
         const child_kind = child.kind();
         if (std.mem.eql(u8, child_kind, "function_declaration") or
             std.mem.eql(u8, child_kind, "test_declaration")) continue;
-        try scanForCalls(g, source, caller_id, caller_parent_id, child, ctx, tracker, local_tracker, param_tracker, fn_decl_node, depth + 1);
+        try scanForCalls(g, source, caller_id, caller_parent_id, child, ctx, tracker, local_tracker, param_tracker, fn_decl_node, depth + 1, log);
     }
 }
 
@@ -361,23 +381,23 @@ fn getLeftmostIdentifier(node: ts.Node) ?ts.Node {
     return null;
 }
 
-fn scanSignatureForTypes(g: *Graph, source: []const u8, fn_id: NodeId, caller_parent_id: ?NodeId, fn_node: ts.Node, ctx: *const EdgeContext) !void {
+fn scanSignatureForTypes(g: *Graph, source: []const u8, fn_id: NodeId, caller_parent_id: ?NodeId, fn_node: ts.Node, ctx: *const EdgeContext, log: Logger) !void {
     // Scan all children except the body block for type identifier references.
     var i: u32 = 0;
     while (i < fn_node.childCount()) : (i += 1) {
         const child = fn_node.child(i) orelse continue;
         if (std.mem.eql(u8, child.kind(), "block")) continue;
-        try scanForTypeIdentifiersScoped(g, source, fn_id, child, caller_parent_id, ctx, 0);
+        try scanForTypeIdentifiersScoped(g, source, fn_id, child, caller_parent_id, ctx, 0, log);
     }
 }
 
-fn scanBodyForTypes(g: *Graph, source: []const u8, fn_id: NodeId, caller_parent_id: ?NodeId, fn_node: ts.Node, ctx: *const EdgeContext) !void {
+fn scanBodyForTypes(g: *Graph, source: []const u8, fn_id: NodeId, caller_parent_id: ?NodeId, fn_node: ts.Node, ctx: *const EdgeContext, log: Logger) !void {
     // Scan only the body block for type identifier references.
     var i: u32 = 0;
     while (i < fn_node.childCount()) : (i += 1) {
         const child = fn_node.child(i) orelse continue;
         if (std.mem.eql(u8, child.kind(), "block")) {
-            try scanForTypeIdentifiersScoped(g, source, fn_id, child, caller_parent_id, ctx, 0);
+            try scanForTypeIdentifiersScoped(g, source, fn_id, child, caller_parent_id, ctx, 0, log);
             return;
         }
     }
@@ -680,7 +700,7 @@ fn scanBlockForIfCaptures(
     }
 }
 
-fn scanForTypeIdentifiersScoped(g: *Graph, source: []const u8, fn_id: NodeId, ts_node: ts.Node, caller_parent_id: ?NodeId, ctx: *const EdgeContext, depth: u32) !void {
+fn scanForTypeIdentifiersScoped(g: *Graph, source: []const u8, fn_id: NodeId, ts_node: ts.Node, caller_parent_id: ?NodeId, ctx: *const EdgeContext, depth: u32, log: Logger) !void {
     // Graceful cap: stop descending, type refs in deeper subtrees are skipped.
     if (depth >= cf.max_ast_scan_depth) return;
     const kind_str = ts_node.kind();
@@ -695,7 +715,7 @@ fn scanForTypeIdentifiersScoped(g: *Graph, source: []const u8, fn_id: NodeId, ts
         const target_node = g.getNode(target_id);
         const is_own_child = if (target_node) |tn| tn.parent_id != null and tn.parent_id.? == fn_id else false;
         if (!is_own_child) {
-            try cf.addEdgeIfNew(g, fn_id, target_id, .uses_type);
+            try cf.addEdgeIfNew(g, fn_id, target_id, .uses_type, log);
         }
     }
 
@@ -706,7 +726,7 @@ fn scanForTypeIdentifiersScoped(g: *Graph, source: []const u8, fn_id: NodeId, ts
         const child_kind = child.kind();
         if (std.mem.eql(u8, child_kind, "function_declaration") or
             std.mem.eql(u8, child_kind, "test_declaration")) continue;
-        try scanForTypeIdentifiersScoped(g, source, fn_id, child, caller_parent_id, ctx, depth + 1);
+        try scanForTypeIdentifiersScoped(g, source, fn_id, child, caller_parent_id, ctx, depth + 1, log);
     }
 }
 
@@ -861,7 +881,7 @@ test "creates calls edge" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.simple, &g);
+    try parse(fixtures.zig.simple, &g, Logger.noop);
 
     // Assert: at least one edge with edge_type=calls exists
     //          (manhattan calls abs in the fixture)
@@ -881,7 +901,7 @@ test "creates calls edge for method call via self" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.simple, &g);
+    try parse(fixtures.zig.simple, &g, Logger.noop);
 
     // Assert: isWithinRadius calls manhattan via self.manhattan()
     var caller_id: ?NodeId = null;
@@ -913,7 +933,7 @@ test "creates uses_type edge" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.simple, &g);
+    try parse(fixtures.zig.simple, &g, Logger.noop);
 
     // Assert: at least one edge with edge_type=uses_type exists
     //          (defaultPoint uses/returns Point in the fixture)
@@ -933,7 +953,7 @@ test "all edges have source tree_sitter" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.simple, &g);
+    try parse(fixtures.zig.simple, &g, Logger.noop);
 
     // Assert: every edge has source == .tree_sitter
     try std.testing.expect(g.edgeCount() > 0);
@@ -948,7 +968,7 @@ test "generic type inner method call edge is detected" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.generic_type, &g);
+    try parse(fixtures.zig.generic_type, &g, Logger.noop);
 
     // Assert: isEmpty calls count (via self.count())
     var caller_id: ?NodeId = null;
@@ -980,7 +1000,7 @@ test "enum method has uses_type edge to parent enum" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.simple, &g);
+    try parse(fixtures.zig.simple, &g, Logger.noop);
 
     // Assert: isWarm has a uses_type edge pointing to Color
     //          (its signature contains `self: Color`)
@@ -1015,7 +1035,7 @@ test "file-struct call edge between methods" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.file_struct, &g);
+    try parse(fixtures.zig.file_struct, &g, Logger.noop);
 
     // Assert: isValid has a calls edge to validate (via self.validate())
     var isValid_id: ?NodeId = null;
@@ -1053,7 +1073,7 @@ test "test block creates calls edge to local function" {
     ;
 
     // Act
-    try parse(source, &g);
+    try parse(source, &g, Logger.noop);
 
     // Assert: the test_def node should have a calls edge to helper
     var test_id: ?NodeId = null;
@@ -1087,7 +1107,7 @@ test "test block creates calls edge to method via dot syntax" {
     ;
 
     // Act
-    try parse(source, &g);
+    try parse(source, &g, Logger.noop);
 
     // Assert: the test_def node should have a calls edge to bar
     var test_id: ?NodeId = null;
@@ -1121,7 +1141,7 @@ test "test block with no local calls has no edges" {
     ;
 
     // Act
-    try parse(source, &g);
+    try parse(source, &g, Logger.noop);
 
     // Assert: the test_def node has zero outgoing edges
     var test_id: ?NodeId = null;
@@ -1157,7 +1177,7 @@ test "test block does not leak calls from nested function" {
     ;
 
     // Act
-    try parse(source, &g);
+    try parse(source, &g, Logger.noop);
 
     // Assert: the test_def "outer" must not have a calls edge to "helper".
     // Only the nested function inner() calls helper(); the test body does not.
@@ -1195,7 +1215,7 @@ test "function does not leak calls from nested function" {
     ;
 
     // Act
-    try parse(source, &g);
+    try parse(source, &g, Logger.noop);
 
     // Assert: function "outer" must not have a calls edge to "target".
     // Only the nested function nested() calls target(); outer does not.
@@ -1235,7 +1255,7 @@ test "nested function gets its own calls edge not parent's" {
     ;
 
     // Act
-    try parse(source, &g);
+    try parse(source, &g, Logger.noop);
 
     // Assert: "parent" has a calls edge to "alpha" (direct call)
     //          "parent" does not have a calls edge to "beta" (nested call)
@@ -1278,7 +1298,7 @@ test "function does not leak uses_type from nested function" {
     ;
 
     // Act
-    try parse(source, &g);
+    try parse(source, &g, Logger.noop);
 
     // Assert: function "outer" must not have a uses_type edge to "MyType".
     // The nested function's signature references MyType, but that should not
@@ -1316,7 +1336,7 @@ test "decl-reference test edges are attributed to correct node" {
     ;
 
     // Act
-    try parse(source, &g);
+    try parse(source, &g, Logger.noop);
 
     // Assert: locate node ids
     var test_alpha_id: ?NodeId = null;
@@ -1368,7 +1388,7 @@ test "uses_type edge created for type alias in parameter" {
     ;
 
     // Act
-    try parse(source, &g);
+    try parse(source, &g, Logger.noop);
 
     // Assert: useBar has a uses_type edge to Bar.
     var useBar_id: ?NodeId = null;
@@ -1405,7 +1425,7 @@ test "uses_type edge created for type alias in return type" {
     ;
 
     // Act
-    try parse(source, &g);
+    try parse(source, &g, Logger.noop);
 
     // Assert: doStuff has a uses_type edge to Err.
     var doStuff_id: ?NodeId = null;
@@ -1442,7 +1462,7 @@ test "uses_type edge not created for non-type constant" {
     ;
 
     // Act
-    try parse(source, &g);
+    try parse(source, &g, Logger.noop);
 
     // Assert: uses_type edge exists to Limit (type_def) but not to max
     var process_id: ?NodeId = null;
@@ -1487,7 +1507,7 @@ test "uses_type edge for aliased type works alongside direct type" {
     ;
 
     // Act
-    try parse(source, &g);
+    try parse(source, &g, Logger.noop);
 
     // Assert: both has uses_type edges to Direct and Alias
     var both_id: ?NodeId = null;
@@ -1537,7 +1557,7 @@ test "uses_type edge for struct literal construction in body" {
     ;
 
     // Act
-    try parse(source, &g);
+    try parse(source, &g, Logger.noop);
 
     // Assert: makeDefault has a uses_type edge to Config.
     var makeDefault_id: ?NodeId = null;
@@ -1581,7 +1601,7 @@ test "uses_type edge for static method call in body" {
     ;
 
     // Act
-    try parse(source, &g);
+    try parse(source, &g, Logger.noop);
 
     // Assert: create has a uses_type edge to Builder.
     var create_id: ?NodeId = null;
@@ -1619,7 +1639,7 @@ test "no duplicate uses_type edge when type in both signature and body" {
     ;
 
     // Act
-    try parse(source, &g);
+    try parse(source, &g, Logger.noop);
 
     // Assert: process has exactly one uses_type edge to Item.
     var process_id: ?NodeId = null;
@@ -1658,7 +1678,7 @@ test "uses_type edge for type passed as comptime argument" {
     ;
 
     // Act
-    try parse(source, &g);
+    try parse(source, &g, Logger.noop);
 
     // Assert: doWork has a uses_type edge to Payload.
     var doWork_id: ?NodeId = null;
@@ -1699,7 +1719,7 @@ test "uses_type edge for type in generic container instantiation" {
     ;
 
     // Act
-    try parse(source, &g);
+    try parse(source, &g, Logger.noop);
 
     // Assert: build has a uses_type edge to Element.
     var build_id: ?NodeId = null;
@@ -1739,7 +1759,7 @@ test "no uses_type edge for non-type identifier argument" {
     ;
 
     // Act
-    try parse(source, &g);
+    try parse(source, &g, Logger.noop);
 
     // Assert: run has no uses_type edge to max.
     var run_id: ?NodeId = null;
@@ -1789,7 +1809,7 @@ test "test block has uses_type edge for struct literal in body" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.simple, &g);
+    try parse(fixtures.zig.simple, &g, Logger.noop);
 
     // Assert: test "point manhattan distance" has a uses_type edge to Point
     var test_id: ?NodeId = null;
@@ -1821,7 +1841,7 @@ test "test block in file-struct has no uses_type to filtered Self" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.file_struct, &g);
+    try parse(fixtures.zig.file_struct, &g, Logger.noop);
 
     // Assert: Self constant is filtered; no Self node exists
     for (g.nodes.items) |n| {
@@ -1850,7 +1870,7 @@ test "generic type has no Self constant after filtering" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.generic_type, &g);
+    try parse(fixtures.zig.generic_type, &g, Logger.noop);
 
     // Assert: no Self constants exist (all @This() aliases filtered)
     for (g.nodes.items) |n| {
@@ -1866,7 +1886,7 @@ test "generic type_def does not have uses_type edge to own nested type" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.generic_type, &g);
+    try parse(fixtures.zig.generic_type, &g, Logger.noop);
 
     var container_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
@@ -1904,7 +1924,7 @@ test "inner method of generic type has no uses_type edge to Self after filtering
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.generic_type, &g);
+    try parse(fixtures.zig.generic_type, &g, Logger.noop);
 
     // Assert: Self is filtered, so no uses_type edges target a Self node
     for (g.nodes.items) |n| {
@@ -1945,7 +1965,7 @@ test "local-type param creates calls edge to method" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.edge_cases.local_type_param, &g);
+    try parse(fixtures.zig.edge_cases.local_type_param, &g, Logger.noop);
 
     // Assert: processPoint should have a calls edge to manhattan
     var caller_id: ?NodeId = null;
@@ -1977,7 +1997,7 @@ test "multi-param function creates calls edge via local-type param" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.edge_cases.local_type_param, &g);
+    try parse(fixtures.zig.edge_cases.local_type_param, &g, Logger.noop);
 
     // Assert: multiParam should have a calls edge to manhattan
     var caller_id: ?NodeId = null;
@@ -2009,7 +2029,7 @@ test "pointer-type param does not create local calls edge" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.edge_cases.local_type_param, &g);
+    try parse(fixtures.zig.edge_cases.local_type_param, &g, Logger.noop);
 
     // Assert: pointerParam should NOT have a calls edge to scale
     var caller_id: ?NodeId = null;
@@ -2041,7 +2061,7 @@ test "external-type param does not create local calls edge" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.edge_cases.local_type_param, &g);
+    try parse(fixtures.zig.edge_cases.local_type_param, &g, Logger.noop);
 
     // Assert: externalParam has no calls edges at all (allocator is external)
     var caller_id: ?NodeId = null;

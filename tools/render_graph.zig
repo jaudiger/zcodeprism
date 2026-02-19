@@ -10,9 +10,21 @@ const zcodeprism = @import("zcodeprism");
 const Graph = zcodeprism.Graph;
 const indexer = zcodeprism.indexer;
 const ctg = zcodeprism.ctg;
+const logging = zcodeprism.logging;
 const mermaid = zcodeprism.mermaid;
 
 const Format = enum { ctg, mermaid_fmt };
+
+fn countVerbosity(arg: []const u8) u8 {
+    if (std.mem.eql(u8, arg, "--verbose")) return 1;
+    if (arg.len >= 2 and arg[0] == '-' and arg[1] != '-') {
+        for (arg[1..]) |c| {
+            if (c != 'v') return 0;
+        }
+        return @intCast(arg.len - 1);
+    }
+    return 0;
+}
 
 fn printHelp(stdout: *std.Io.Writer) !void {
     try stdout.print(
@@ -30,6 +42,8 @@ fn printHelp(stdout: *std.Io.Writer) !void {
         \\    --exclude path1,path2    Comma-separated paths to exclude from indexation
         \\    --test-nodes             Include test nodes in output
         \\    --external-nodes         Include external nodes in output
+        \\    -v                       Increase verbosity (-v info, -vv debug, -vvv trace)
+        \\    --verbose                Same as -v
         \\    -h, --help               Show this help message
         \\
     , .{});
@@ -54,6 +68,7 @@ pub fn main() !void {
     var project_name: ?[]const u8 = null;
     var include_test_nodes: bool = false;
     var include_external_nodes: bool = false;
+    var verbosity: u8 = 0;
     var exclude_list: std.ArrayListUnmanaged([]const u8) = .{};
     defer exclude_list.deinit(allocator);
 
@@ -96,7 +111,12 @@ pub fn main() !void {
             try printHelp(stdout);
             return;
         } else {
-            dir_arg = arg;
+            const v = countVerbosity(arg);
+            if (v > 0) {
+                verbosity +|= v;
+            } else {
+                dir_arg = arg;
+            }
         }
     }
 
@@ -120,8 +140,18 @@ pub fn main() !void {
     var graph = Graph.init(allocator, dir_path);
     defer graph.deinit();
 
+    const min_level: logging.Level = switch (verbosity) {
+        0 => .warn,
+        1 => .info,
+        2 => .debug,
+        else => .trace,
+    };
+    var text_logger = logging.TextStderrLogger.init(min_level);
+    const log = if (verbosity > 0) text_logger.logger() else logging.Logger.noop;
+
     _ = indexer.indexDirectory(allocator, dir_path, &graph, .{
         .exclude_paths = exclude_list.items,
+        .logger = log,
     }) catch |err| {
         try stdout.print("Index error: {}\n", .{err});
         try stdout.flush();

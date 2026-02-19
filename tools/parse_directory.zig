@@ -13,6 +13,18 @@ const NodeKind = zcodeprism.NodeKind;
 const EdgeType = zcodeprism.EdgeType;
 const Visibility = zcodeprism.Visibility;
 const indexer = zcodeprism.indexer;
+const logging = zcodeprism.logging;
+
+fn countVerbosity(arg: []const u8) u8 {
+    if (std.mem.eql(u8, arg, "--verbose")) return 1;
+    if (arg.len >= 2 and arg[0] == '-' and arg[1] != '-') {
+        for (arg[1..]) |c| {
+            if (c != 'v') return 0;
+        }
+        return @intCast(arg.len - 1);
+    }
+    return 0;
+}
 
 fn printHelp(stdout: *std.Io.Writer) !void {
     try stdout.print(
@@ -26,6 +38,8 @@ fn printHelp(stdout: *std.Io.Writer) !void {
         \\
         \\OPTIONS:
         \\    --exclude path1,path2    Comma-separated paths to exclude from indexation
+        \\    -v                       Increase verbosity (-v info, -vv debug, -vvv trace)
+        \\    --verbose                Same as -v
         \\    -h, --help               Show this help message
         \\
         \\Indexes all .zig files in the given directory, builds the full code graph
@@ -65,25 +79,41 @@ pub fn main() !void {
     };
     defer allocator.free(dir_path);
 
-    // Parse optional --exclude flag.
+    // Parse optional flags.
     var exclude_list: std.ArrayListUnmanaged([]const u8) = .{};
     defer exclude_list.deinit(allocator);
+    var verbosity: u8 = 0;
 
     while (args.next()) |arg| {
         if (std.mem.eql(u8, arg, "--exclude")) {
             if (args.next()) |csv| {
                 var it = std.mem.splitScalar(u8, csv, ',');
-                while (it.next()) |path| {
-                    if (path.len > 0) {
-                        try exclude_list.append(allocator, path);
+                while (it.next()) |p| {
+                    if (p.len > 0) {
+                        try exclude_list.append(allocator, p);
                     }
                 }
+            }
+        } else {
+            const v = countVerbosity(arg);
+            if (v > 0) {
+                verbosity +|= v;
             }
         }
     }
 
+    const min_level: logging.Level = switch (verbosity) {
+        0 => .warn,
+        1 => .info,
+        2 => .debug,
+        else => .trace,
+    };
+    var text_logger = logging.TextStderrLogger.init(min_level);
+    const log = if (verbosity > 0) text_logger.logger() else logging.Logger.noop;
+
     const options = indexer.IndexOptions{
         .exclude_paths = exclude_list.items,
+        .logger = log,
     };
 
     // Index the directory.

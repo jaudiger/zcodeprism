@@ -10,6 +10,7 @@ pub const graph = @import("core/graph.zig");
 pub const indexer = @import("parser/indexer.zig");
 pub const jsonl_storage = @import("storage/jsonl.zig");
 pub const language = @import("languages/language.zig");
+pub const logging = @import("logging.zig");
 pub const mermaid = @import("render/mermaid.zig");
 pub const metrics_mod = @import("core/metrics.zig");
 pub const node = @import("core/node.zig");
@@ -31,6 +32,7 @@ pub const Graph = graph.Graph;
 pub const Node = node.Node;
 pub const NodeKind = types.NodeKind;
 pub const EdgeType = types.EdgeType;
+pub const Logger = logging.Logger;
 pub const Visibility = types.Visibility;
 
 // Zig grammar provided by tree-sitter-zig C library linked in build.zig
@@ -136,6 +138,7 @@ test {
     _ = @import("languages/zig/edge_builder.zig");
     _ = @import("languages/zig/meta.zig");
     _ = @import("languages/zig/visitor.zig");
+    _ = @import("logging.zig");
     _ = @import("parser/indexer.zig");
     _ = @import("parser/source_map.zig");
     _ = @import("render/common.zig");

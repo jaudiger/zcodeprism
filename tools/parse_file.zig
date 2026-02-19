@@ -15,6 +15,19 @@ const Visibility = zcodeprism.Visibility;
 const visitor = zcodeprism.visitor;
 const source_map = zcodeprism.source_map;
 
+const logging = zcodeprism.logging;
+
+fn countVerbosity(arg: []const u8) u8 {
+    if (std.mem.eql(u8, arg, "--verbose")) return 1;
+    if (arg.len >= 2 and arg[0] == '-' and arg[1] != '-') {
+        for (arg[1..]) |c| {
+            if (c != 'v') return 0;
+        }
+        return @intCast(arg.len - 1);
+    }
+    return 0;
+}
+
 fn printHelp(stdout: *std.Io.Writer) !void {
     try stdout.print(
         \\parse-file — Parse a Zig source file and dump the semantic graph.
@@ -26,6 +39,8 @@ fn printHelp(stdout: *std.Io.Writer) !void {
         \\    <path-to-zig-file>    Path to the .zig file to parse
         \\
         \\OPTIONS:
+        \\    -v                    Increase verbosity (-v info, -vv debug, -vvv trace)
+        \\    --verbose             Same as -v
         \\    -h, --help            Show this help message
         \\
         \\Parses a source file through the visitor and dumps all nodes
@@ -48,19 +63,32 @@ pub fn main() !void {
     // Get file path from args.
     var args = std.process.args();
     _ = args.next(); // skip program name
-    const file_path = args.next() orelse {
+
+    var file_path: ?[]const u8 = null;
+    var verbosity: u8 = 0;
+
+    while (args.next()) |arg| {
+        if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
+            try printHelp(stdout);
+            return;
+        } else {
+            const v = countVerbosity(arg);
+            if (v > 0) {
+                verbosity +|= v;
+            } else {
+                file_path = arg;
+            }
+        }
+    }
+
+    const path = file_path orelse {
         try printHelp(stdout);
         return;
     };
 
-    if (std.mem.eql(u8, file_path, "--help") or std.mem.eql(u8, file_path, "-h")) {
-        try printHelp(stdout);
-        return;
-    }
-
     // Read the file.
-    const source = source_map.mmapFile(file_path) catch |err| {
-        try stdout.print("Error opening file '{s}': {}\n", .{ file_path, err });
+    const source = source_map.mmapFile(path) catch |err| {
+        try stdout.print("Error opening file '{s}': {}\n", .{ path, err });
         try stdout.flush();
         return;
     };
@@ -70,14 +98,23 @@ pub fn main() !void {
     var graph = Graph.init(allocator, ".");
     defer graph.deinit();
 
-    visitor.parse(source, &graph) catch |err| {
+    const min_level: logging.Level = switch (verbosity) {
+        0 => .warn,
+        1 => .info,
+        2 => .debug,
+        else => .trace,
+    };
+    var text_logger = logging.TextStderrLogger.init(min_level);
+    const log = if (verbosity > 0) text_logger.logger() else logging.Logger.noop;
+
+    visitor.parse(source, &graph, log) catch |err| {
         try stdout.print("Parse error: {}\n", .{err});
         try stdout.flush();
         return;
     };
 
     // Dump results.
-    try stdout.print("=== File: {s} ===\n", .{file_path});
+    try stdout.print("=== File: {s} ===\n", .{path});
     try stdout.print("Source size: {} bytes\n", .{source.len});
     try stdout.print("Nodes: {}\n", .{graph.nodes.items.len});
     try stdout.print("Edges: {}\n\n", .{graph.edges.items.len});

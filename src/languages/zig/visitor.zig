@@ -1,5 +1,6 @@
 const std = @import("std");
 const graph_mod = @import("../../core/graph.zig");
+const logging = @import("../../logging.zig");
 const node_mod = @import("../../core/node.zig");
 const types = @import("../../core/types.zig");
 const lang = @import("../language.zig");
@@ -8,6 +9,9 @@ const ts_api = @import("../../parser/tree_sitter_api.zig");
 const ast = @import("ast_analysis.zig");
 const cf = @import("cross_file.zig");
 const eb = @import("edge_builder.zig");
+
+const Field = logging.Field;
+const Logger = logging.Logger;
 
 const Graph = graph_mod.Graph;
 const Node = node_mod.Node;
@@ -19,13 +23,17 @@ const LangMeta = lang.LangMeta;
 
 /// Parse Zig source code and populate the graph with nodes and edges.
 /// This is the entry point used by the LanguageSupport registry.
-pub fn parse(source: []const u8, graph: *anyopaque) anyerror!void {
+pub fn parse(source: []const u8, graph: *anyopaque, logger: Logger) anyerror!void {
     const g: *Graph = @ptrCast(@alignCast(graph));
+    const log = logger.withScope("zig-visitor");
+
+    log.debug("parsing source", &.{Field.uint("bytes", source.len)});
 
     const line_count = ts_api.countLines(source);
 
     // Parse source with tree-sitter first so we can collect module doc comments.
     const tree = ts_api.parseSource(ts_api.zigLanguage(), source) orelse {
+        log.warn("tree-sitter parse failed", &.{});
         // If tree-sitter parsing fails, create a bare file node.
         _ = try g.addNode(.{
             .id = .root,
@@ -62,7 +70,7 @@ pub fn parse(source: []const u8, graph: *anyopaque) anyerror!void {
     while (i < root.childCount()) : (i += 1) {
         const child = root.child(i) orelse continue;
         if (!child.isNamed()) continue;
-        try processDeclaration(g, source, child, file_id);
+        try processDeclaration(g, source, child, file_id, log);
     }
 
     // Build edge resolution context: scope range + import map.
@@ -70,32 +78,36 @@ pub fn parse(source: []const u8, graph: *anyopaque) anyerror!void {
         .scope_start = @intFromEnum(file_id),
         .scope_end = g.nodeCount(),
     };
-    cf.buildImportMap(g, source, root, &ctx);
+    cf.buildImportMap(g, source, root, &ctx, log);
 
     // Create edges (calls, uses_type) with cross-file resolution.
-    try eb.walkForEdges(g, source, root, &ctx);
+    log.debug("building edges", &.{});
+    try eb.walkForEdges(g, source, root, &ctx, log);
 }
 
 // =========================================================================
 // Node creation
 // =========================================================================
 
-fn processDeclaration(g: *Graph, source: []const u8, ts_node: ts.Node, parent_id: NodeId) anyerror!void {
+fn processDeclaration(g: *Graph, source: []const u8, ts_node: ts.Node, parent_id: NodeId, log: Logger) anyerror!void {
     const kind_str = ts_node.kind();
 
     if (std.mem.eql(u8, kind_str, "variable_declaration")) {
-        try processVariableDecl(g, source, ts_node, parent_id);
+        try processVariableDecl(g, source, ts_node, parent_id, log);
     } else if (std.mem.eql(u8, kind_str, "function_declaration")) {
-        try processFunctionDecl(g, source, ts_node, parent_id);
+        try processFunctionDecl(g, source, ts_node, parent_id, log);
     } else if (std.mem.eql(u8, kind_str, "test_declaration")) {
         try processTestDecl(g, source, ts_node, parent_id);
     } else if (std.mem.eql(u8, kind_str, "container_field")) {
-        try processContainerField(g, source, ts_node, parent_id);
+        try processContainerField(g, source, ts_node, parent_id, log);
     }
 }
 
-fn processVariableDecl(g: *Graph, source: []const u8, ts_node: ts.Node, parent_id: NodeId) anyerror!void {
-    const name = ast.getIdentifierName(source, ts_node) orelse return;
+fn processVariableDecl(g: *Graph, source: []const u8, ts_node: ts.Node, parent_id: NodeId, log: Logger) anyerror!void {
+    const name = ast.getIdentifierName(source, ts_node) orelse {
+        log.trace("skipping variable: no identifier", &.{});
+        return;
+    };
     const visibility = ast.detectVisibility(ts_node);
     const doc = ast.collectDocComment(source, ts_node);
 
@@ -106,12 +118,18 @@ fn processVariableDecl(g: *Graph, source: []const u8, ts_node: ts.Node, parent_i
     // Filter noise constants that produce no useful graph information.
     if (kind == .constant) {
         // Skip @This() aliases (e.g., `const Self = @This()`).
-        if (ast.isThisBuiltin(source, ts_node)) return;
+        if (ast.isThisBuiltin(source, ts_node)) {
+            log.trace("skipping @This() alias", &.{Field.string("name", name)});
+            return;
+        }
 
         // Skip same-name re-exports from imports (e.g., `const Graph = graph_mod.Graph`).
         if (ast.getFieldExprRootAndLeaf(source, ts_node)) |info| {
             if (std.mem.eql(u8, info.leaf, name)) {
-                if (isImportSibling(g, parent_id, info.root)) return;
+                if (isImportSibling(g, parent_id, info.root)) {
+                    log.trace("skipping re-export", &.{Field.string("name", name)});
+                    return;
+                }
             }
         }
     }
@@ -145,13 +163,16 @@ fn processVariableDecl(g: *Graph, source: []const u8, ts_node: ts.Node, parent_i
         while (i < body.childCount()) : (i += 1) {
             const child = body.child(i) orelse continue;
             if (!child.isNamed()) continue;
-            try processDeclaration(g, source, child, node_id);
+            try processDeclaration(g, source, child, node_id, log);
         }
     }
 }
 
-fn processFunctionDecl(g: *Graph, source: []const u8, ts_node: ts.Node, parent_id: NodeId) anyerror!void {
-    const name = ast.getIdentifierName(source, ts_node) orelse return;
+fn processFunctionDecl(g: *Graph, source: []const u8, ts_node: ts.Node, parent_id: NodeId, log: Logger) anyerror!void {
+    const name = ast.getIdentifierName(source, ts_node) orelse {
+        log.trace("skipping function: no identifier", &.{});
+        return;
+    };
     const visibility = ast.detectVisibility(ts_node);
     const doc = ast.collectDocComment(source, ts_node);
 
@@ -175,9 +196,11 @@ fn processFunctionDecl(g: *Graph, source: []const u8, ts_node: ts.Node, parent_i
             while (i < body_info.body.childCount()) : (i += 1) {
                 const child = body_info.body.child(i) orelse continue;
                 if (!child.isNamed()) continue;
-                try processDeclaration(g, source, child, type_id);
+                try processDeclaration(g, source, child, type_id, log);
             }
             return;
+        } else {
+            log.debug("type-returning function: body not found", &.{Field.string("name", name)});
         }
     }
 
@@ -230,8 +253,11 @@ fn processTestDecl(g: *Graph, source: []const u8, ts_node: ts.Node, parent_id: N
     });
 }
 
-fn processContainerField(g: *Graph, source: []const u8, ts_node: ts.Node, parent_id: NodeId) anyerror!void {
-    const name = ast.getIdentifierName(source, ts_node) orelse return;
+fn processContainerField(g: *Graph, source: []const u8, ts_node: ts.Node, parent_id: NodeId, log: Logger) anyerror!void {
+    const name = ast.getIdentifierName(source, ts_node) orelse {
+        log.trace("skipping field: no identifier", &.{});
+        return;
+    };
     const doc = ast.collectDocComment(source, ts_node);
 
     _ = try g.addNode(.{
@@ -274,7 +300,7 @@ test "parses public function" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.simple, &g);
+    try parse(fixtures.zig.simple, &g, Logger.noop);
 
     // Assert: at least one node with kind=function and visibility=public
     var found = false;
@@ -295,7 +321,7 @@ test "parses private function" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.simple, &g);
+    try parse(fixtures.zig.simple, &g, Logger.noop);
 
     // Assert: at least one node with kind=function and visibility=private
     var found = false;
@@ -316,7 +342,7 @@ test "parses struct" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.simple, &g);
+    try parse(fixtures.zig.simple, &g, Logger.noop);
 
     // Assert: at least one node with kind=type_def
     var found = false;
@@ -337,7 +363,7 @@ test "parses enum" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.simple, &g);
+    try parse(fixtures.zig.simple, &g, Logger.noop);
 
     // Assert: at least one node with kind=enum_def
     var found = false;
@@ -358,7 +384,7 @@ test "parses constant" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.simple, &g);
+    try parse(fixtures.zig.simple, &g, Logger.noop);
 
     // Assert: at least one node with kind=constant
     var found = false;
@@ -379,7 +405,7 @@ test "parses test block" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.simple, &g);
+    try parse(fixtures.zig.simple, &g, Logger.noop);
 
     // Assert: at least one node with kind=test_def
     var found = false;
@@ -400,7 +426,7 @@ test "parses error set" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.simple, &g);
+    try parse(fixtures.zig.simple, &g, Logger.noop);
 
     // Assert: at least one node with kind=error_def
     var found = false;
@@ -421,7 +447,7 @@ test "attaches doc comment" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.simple, &g);
+    try parse(fixtures.zig.simple, &g, Logger.noop);
 
     // Assert: the public function "defaultPoint" has doc != null
     var found = false;
@@ -445,7 +471,7 @@ test "sets parent_id for method" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.simple, &g);
+    try parse(fixtures.zig.simple, &g, Logger.noop);
 
     // Assert: method "manhattan" has parent_id pointing to the struct "Point"
     var method_node: ?*const Node = null;
@@ -472,7 +498,7 @@ test "sets parent_id for struct" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.simple, &g);
+    try parse(fixtures.zig.simple, &g, Logger.noop);
 
     // Assert: struct "Point" has parent_id pointing to the file node
     var struct_node: ?*const Node = null;
@@ -498,7 +524,7 @@ test "sets parent_id for top-level function" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.simple, &g);
+    try parse(fixtures.zig.simple, &g, Logger.noop);
 
     // Assert: top-level function "defaultPoint" has parent_id pointing to file node
     var fn_node: ?*const Node = null;
@@ -524,7 +550,7 @@ test "populates ZigMeta for comptime" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.simple, &g);
+    try parse(fixtures.zig.simple, &g, Logger.noop);
 
     // Assert: constant "buffer_size" has lang_meta.zig.is_comptime == true
     var found = false;
@@ -551,7 +577,7 @@ test "all nodes have language zig" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.simple, &g);
+    try parse(fixtures.zig.simple, &g, Logger.noop);
 
     // Assert: every node has language == .zig
     try std.testing.expect(g.nodeCount() > 0);
@@ -568,7 +594,7 @@ test "file node has correct line count" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.simple, &g);
+    try parse(fixtures.zig.simple, &g, Logger.noop);
 
     // Assert: file node (first node, kind=file) has line_end == 75
     const file_node = g.getNode(@enumFromInt(0));
@@ -588,7 +614,7 @@ test "empty file produces only file node" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.edge_cases.empty, &g);
+    try parse(fixtures.zig.edge_cases.empty, &g, Logger.noop);
 
     // Assert: exactly 1 node (kind=file), zero edges
     try std.testing.expectEqual(@as(usize, 1), g.nodeCount());
@@ -604,7 +630,7 @@ test "only comments produces only file node" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.edge_cases.only_comments, &g);
+    try parse(fixtures.zig.edge_cases.only_comments, &g, Logger.noop);
 
     // Assert: exactly 1 node (kind=file), no declarations parsed
     try std.testing.expectEqual(@as(usize, 1), g.nodeCount());
@@ -619,7 +645,7 @@ test "no pub file has all private nodes" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.edge_cases.no_pub, &g);
+    try parse(fixtures.zig.edge_cases.no_pub, &g, Logger.noop);
 
     // Assert: all function nodes have visibility=private
     var fn_count: usize = 0;
@@ -640,7 +666,7 @@ test "deeply nested sets correct parent chain" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.edge_cases.deeply_nested, &g);
+    try parse(fixtures.zig.edge_cases.deeply_nested, &g, Logger.noop);
 
     // Assert: innerMethod → Inner → Middle → Outer → file
     var inner_method: ?*const Node = null;
@@ -684,7 +710,7 @@ test "many params function is parsed" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.edge_cases.many_params, &g);
+    try parse(fixtures.zig.edge_cases.many_params, &g, Logger.noop);
 
     // Assert: a function node named "manyParams" exists
     var found = false;
@@ -705,7 +731,7 @@ test "unicode names are preserved" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.edge_cases.unicode_names, &g);
+    try parse(fixtures.zig.edge_cases.unicode_names, &g, Logger.noop);
 
     // Assert: a node named "café" or "résumé" exists
     var found_cafe = false;
@@ -729,7 +755,7 @@ test "generic type-returning function produces a type_def node" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.generic_type, &g);
+    try parse(fixtures.zig.generic_type, &g, Logger.noop);
 
     // Assert: a node named "Container" with kind=type_def exists
     var found = false;
@@ -750,7 +776,7 @@ test "generic type-returning function has file as parent" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.generic_type, &g);
+    try parse(fixtures.zig.generic_type, &g, Logger.noop);
 
     // Assert: Container's parent_id points to the file node
     var container_node: ?*const Node = null;
@@ -776,7 +802,7 @@ test "generic type-returning function exposes inner public methods" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.generic_type, &g);
+    try parse(fixtures.zig.generic_type, &g, Logger.noop);
 
     // Assert: public methods init, deinit, count, isEmpty exist as function nodes
     var found_init = false;
@@ -805,7 +831,7 @@ test "generic type-returning function exposes inner private helper" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.generic_type, &g);
+    try parse(fixtures.zig.generic_type, &g, Logger.noop);
 
     // Assert: private function "validate" exists with visibility=private
     var found = false;
@@ -828,7 +854,7 @@ test "generic type-returning function inner method has correct parent" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.generic_type, &g);
+    try parse(fixtures.zig.generic_type, &g, Logger.noop);
 
     // Assert: method "init" has parent_id pointing to Container (type_def)
     var init_node: ?*const Node = null;
@@ -855,7 +881,7 @@ test "generic type-returning function inner type has correct parent" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.generic_type, &g);
+    try parse(fixtures.zig.generic_type, &g, Logger.noop);
 
     // Assert: inner type "Entry" has parent_id pointing to Container (type_def)
     var entry_node: ?*const Node = null;
@@ -882,7 +908,7 @@ test "generic type-returning function doc comment on inner method is captured" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.generic_type, &g);
+    try parse(fixtures.zig.generic_type, &g, Logger.noop);
 
     // Assert: public method "count" inside Container has doc != null
     var found = false;
@@ -904,7 +930,7 @@ test "generic union type-returning function produces nodes" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.generic_type, &g);
+    try parse(fixtures.zig.generic_type, &g, Logger.noop);
 
     // Assert: a node named "Result" exists and a method "isOk" exists inside it
     var found_result = false;
@@ -931,7 +957,7 @@ test "non-generic struct still works alongside generic type" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.generic_type, &g);
+    try parse(fixtures.zig.generic_type, &g, Logger.noop);
 
     // Assert: Config exists as type_def with file as parent, defaults method present
     var config_node: ?*const Node = null;
@@ -961,7 +987,7 @@ test "generic type-returning function doc comment on outer function is captured"
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.generic_type, &g);
+    try parse(fixtures.zig.generic_type, &g, Logger.noop);
 
     // Assert: Container node has doc != null
     var found = false;
@@ -987,7 +1013,7 @@ test "tagged union is classified as type_def" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.simple, &g);
+    try parse(fixtures.zig.simple, &g, Logger.noop);
 
     // Assert: Shape node exists with kind=type_def, visibility=public, doc != null
     var found = false;
@@ -1011,7 +1037,7 @@ test "plain union is classified as type_def" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.simple, &g);
+    try parse(fixtures.zig.simple, &g, Logger.noop);
 
     // Assert: RawValue node exists with kind=type_def, visibility=private
     var found = false;
@@ -1034,7 +1060,7 @@ test "tagged union with nested struct is still type_def" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.simple, &g);
+    try parse(fixtures.zig.simple, &g, Logger.noop);
 
     // Assert: Shape is classified as type_def
     var shape_node: ?*const Node = null;
@@ -1065,7 +1091,7 @@ test "enum method is extracted as function child" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.simple, &g);
+    try parse(fixtures.zig.simple, &g, Logger.noop);
 
     // Assert: Color exists as enum_def, isWarm exists as function with parent == Color
     var color_id: ?NodeId = null;
@@ -1097,7 +1123,7 @@ test "import declaration is classified as import_decl" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.simple, &g);
+    try parse(fixtures.zig.simple, &g, Logger.noop);
 
     // Assert: node named "std" has kind=import_decl and visibility=private
     var found = false;
@@ -1120,7 +1146,7 @@ test "import with field access is classified as import_decl" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.simple, &g);
+    try parse(fixtures.zig.simple, &g, Logger.noop);
 
     // Assert: node named "ZigMeta" has kind=import_decl
     var found = false;
@@ -1142,7 +1168,7 @@ test "non-import constant is still constant" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.simple, &g);
+    try parse(fixtures.zig.simple, &g, Logger.noop);
 
     // Assert: node named "max_iterations" has kind=constant
     var found = false;
@@ -1169,7 +1195,7 @@ test "file-struct methods are extracted as function nodes" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.file_struct, &g);
+    try parse(fixtures.zig.file_struct, &g, Logger.noop);
 
     // Assert: init, getValue, validate, isValid exist as function nodes
     var found_init = false;
@@ -1203,7 +1229,7 @@ test "file-struct nested type is extracted" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.file_struct, &g);
+    try parse(fixtures.zig.file_struct, &g, Logger.noop);
 
     // Assert: Config struct is detected as type_def with parent = file node
     var found = false;
@@ -1228,7 +1254,7 @@ test "file-struct Self constant is filtered out" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.file_struct, &g);
+    try parse(fixtures.zig.file_struct, &g, Logger.noop);
 
     // Assert: const Self = @This() is filtered at parse time — no Self node exists
     var found = false;
@@ -1257,7 +1283,7 @@ test "decl-reference test name is captured as identifier" {
     ;
 
     // Act
-    try parse(source, &g);
+    try parse(source, &g, Logger.noop);
 
     // Assert: the test_def node's name should be "helper", not "test"
     var found_test = false;
@@ -1283,7 +1309,7 @@ test "decl-reference test name for type is captured" {
     ;
 
     // Act
-    try parse(source, &g);
+    try parse(source, &g, Logger.noop);
 
     // Assert: the test_def node's name should be "Foo", not "test"
     var found_test = false;
@@ -1309,7 +1335,7 @@ test "two decl-reference tests get distinct names" {
     ;
 
     // Act
-    try parse(source, &g);
+    try parse(source, &g, Logger.noop);
 
     // Assert: exactly 2 test_def nodes, named "alpha" and "beta"
     var test_count: usize = 0;
@@ -1337,7 +1363,7 @@ test "quoted identifier test name is stripped" {
     ;
 
     // Act
-    try parse(source, &g);
+    try parse(source, &g, Logger.noop);
 
     // Assert: the test_def node's name should be "edge case name"
     var found_test = false;
@@ -1361,7 +1387,7 @@ test "string-literal test names still work" {
     ;
 
     // Act
-    try parse(source, &g);
+    try parse(source, &g, Logger.noop);
 
     // Assert: the test_def node's name should be "calls foo"
     var test_id: ?NodeId = null;
@@ -1396,7 +1422,7 @@ test "struct fields are emitted as field nodes" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.simple, &g);
+    try parse(fixtures.zig.simple, &g, Logger.noop);
 
     // Assert: Point struct has two field children (x and y)
     var point_id: ?NodeId = null;
@@ -1423,7 +1449,7 @@ test "field node has correct name" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.simple, &g);
+    try parse(fixtures.zig.simple, &g, Logger.noop);
 
     // Assert: Point's field nodes are named "x" and "y"
     var point_id: ?NodeId = null;
@@ -1453,7 +1479,7 @@ test "field node visibility is private by default" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.simple, &g);
+    try parse(fixtures.zig.simple, &g, Logger.noop);
 
     // Assert: Point's x and y fields have visibility == .private
     var point_id: ?NodeId = null;
@@ -1481,7 +1507,7 @@ test "enum variants are emitted as field nodes" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.simple, &g);
+    try parse(fixtures.zig.simple, &g, Logger.noop);
 
     // Assert: Direction enum has three field children (north, south, east)
     var dir_id: ?NodeId = null;
@@ -1518,7 +1544,7 @@ test "file node captures module doc comment" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.simple, &g);
+    try parse(fixtures.zig.simple, &g, Logger.noop);
 
     // Assert: file node (node 0) has doc != null containing module doc text
     const file_node = g.getNode(@enumFromInt(0));
@@ -1538,7 +1564,7 @@ test "file node doc is null when no module doc comment" {
     const source = "const x = 42;\n";
 
     // Act
-    try parse(source, &g);
+    try parse(source, &g, Logger.noop);
 
     // Assert: file node has doc == null
     const file_node = g.getNode(@enumFromInt(0));
@@ -1558,7 +1584,7 @@ test "module doc is separate from item doc" {
     ;
 
     // Act
-    try parse(source, &g);
+    try parse(source, &g, Logger.noop);
 
     // Assert: file node doc contains "Module doc." but not "Item doc."
     const file_node = g.getNode(@enumFromInt(0));
