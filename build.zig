@@ -154,7 +154,7 @@ pub fn build(b: *std.Build) void {
 
     // Test fixtures module
     const fixture_mod = b.createModule(.{
-        .root_source_file = b.path("tests/fixture_data.zig"),
+        .root_source_file = b.path("test/fixture_data.zig"),
     });
     test_mod.addImport("test-fixtures", fixture_mod);
 

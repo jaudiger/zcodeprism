@@ -39,7 +39,7 @@ test "mmap reads file content" {
     const expected = fixtures.zig.simple;
 
     // Act
-    const content = try mmapFile("tests/fixtures/zig/simple.zig");
+    const content = try mmapFile("test/fixtures/zig/simple.zig");
     defer unmapFile(content);
 
     // Assert
@@ -48,7 +48,7 @@ test "mmap reads file content" {
 
 test "mmap on empty file" {
     // Act
-    const content = try mmapFile("tests/fixtures/zig/edge_cases/empty.zig");
+    const content = try mmapFile("test/fixtures/zig/edge_cases/empty.zig");
     defer unmapFile(content);
 
     // Assert: empty slice, no crash

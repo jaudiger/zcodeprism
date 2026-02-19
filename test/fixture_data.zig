@@ -1,6 +1,6 @@
 //! Compile-time access to test fixture files.
 //! Organized by language. Each language gets its own namespace struct.
-//! This module is rooted in `tests/`, so @embedFile can reach `tests/fixtures/`.
+//! This module is rooted in `test/`, so @embedFile can reach `test/fixtures/`.
 
 pub const zig = struct {
     pub const file_struct = @embedFile("fixtures/zig/file_struct.zig");

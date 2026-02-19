@@ -263,7 +263,7 @@ fn isImportSibling(g: *const Graph, parent_id: NodeId, name: []const u8) bool {
 }
 
 // =========================================================================
-// Nominal tests: parse tests/fixtures/simple.zig
+// Nominal tests: parse test/fixtures/simple.zig
 // =========================================================================
 
 const fixtures = @import("test-fixtures");
