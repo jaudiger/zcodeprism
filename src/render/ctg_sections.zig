@@ -15,9 +15,11 @@ const isInternal = common.isInternal;
 const inScope = common.inScope;
 const appendNum = common.appendNum;
 const edgeTypeName = common.edgeTypeName;
+const edgeTypeSortKey = common.edgeTypeSortKey;
 const prefixOrder = common.prefixOrder;
 const findFileId = common.findFileId;
-const findPhantomPackageForNode = common.findPhantomPackageForNode;
+const ChildrenIndex = common.ChildrenIndex;
+const PhantomNodeInfo = common.PhantomNodeInfo;
 
 pub fn renderFilesSection(
     out: *std.ArrayListUnmanaged(u8),
@@ -49,6 +51,7 @@ pub fn renderStructsSection(
     struct_indices: []const usize,
     ids: []const ?IdEntry,
     num_buf: *[20]u8,
+    children_index: *const ChildrenIndex,
 ) !void {
     if (struct_indices.len == 0) return;
     try out.appendSlice(allocator, "[structs]\n");
@@ -72,7 +75,7 @@ pub fn renderStructsSection(
         }
         try out.append(allocator, '\n');
 
-        try renderStructChildren(out, allocator, g, @enumFromInt(si));
+        try renderStructChildren(out, allocator, g, si, children_index);
     }
 }
 
@@ -80,59 +83,45 @@ fn renderStructChildren(
     out: *std.ArrayListUnmanaged(u8),
     allocator: std.mem.Allocator,
     g: *const Graph,
-    struct_id: NodeId,
+    struct_idx: usize,
+    children_index: *const ChildrenIndex,
 ) !void {
-    var fields = std.ArrayListUnmanaged(SortableNode){};
-    defer fields.deinit(allocator);
-    var methods = std.ArrayListUnmanaged(SortableNode){};
-    defer methods.deinit(allocator);
+    // Children are already sorted by line_start in the index.
+    const children = children_index.childrenOf(struct_idx);
 
-    for (g.nodes.items, 0..) |n, i| {
-        if (n.parent_id) |pid| {
-            if (pid == struct_id) {
-                const entry = SortableNode{
-                    .node_idx = i,
-                    .line_start = n.line_start orelse 0,
-                };
-                if (n.kind == .field) {
-                    try fields.append(allocator, entry);
-                } else if (n.kind == .function) {
-                    try methods.append(allocator, entry);
-                }
-            }
+    var has_fields = false;
+    var has_methods = false;
+
+    // Render fields line.
+    for (children) |ci| {
+        const n = g.nodes.items[ci];
+        if (n.kind != .field) continue;
+        if (!has_fields) {
+            try out.appendSlice(allocator, "  ");
+            has_fields = true;
+        } else {
+            try out.append(allocator, ' ');
         }
+        try out.append(allocator, '.');
+        try out.appendSlice(allocator, n.name);
     }
+    if (has_fields) try out.append(allocator, '\n');
 
-    const sortFn = struct {
-        fn lessThan(_: void, a: SortableNode, b: SortableNode) bool {
-            return a.line_start < b.line_start;
+    // Render methods line.
+    for (children) |ci| {
+        const n = g.nodes.items[ci];
+        if (n.kind != .function) continue;
+        if (!has_methods) {
+            try out.appendSlice(allocator, "  ");
+            has_methods = true;
+        } else {
+            try out.append(allocator, ' ');
         }
-    }.lessThan;
-    std.mem.sort(SortableNode, fields.items, {}, sortFn);
-    std.mem.sort(SortableNode, methods.items, {}, sortFn);
-
-    if (fields.items.len > 0) {
-        try out.appendSlice(allocator, "  ");
-        for (fields.items, 0..) |f, i| {
-            const n = g.nodes.items[f.node_idx];
-            if (i > 0) try out.append(allocator, ' ');
-            try out.append(allocator, '.');
-            try out.appendSlice(allocator, n.name);
-        }
-        try out.append(allocator, '\n');
+        try out.appendSlice(allocator, "fn ");
+        try out.appendSlice(allocator, n.name);
+        try out.appendSlice(allocator, "()");
     }
-
-    if (methods.items.len > 0) {
-        try out.appendSlice(allocator, "  ");
-        for (methods.items, 0..) |m, i| {
-            const n = g.nodes.items[m.node_idx];
-            if (i > 0) try out.append(allocator, ' ');
-            try out.appendSlice(allocator, "fn ");
-            try out.appendSlice(allocator, n.name);
-            try out.appendSlice(allocator, "()");
-        }
-        try out.append(allocator, '\n');
-    }
+    if (has_methods) try out.append(allocator, '\n');
 }
 
 pub fn renderEnumsSection(
@@ -339,7 +328,7 @@ pub fn renderEdgesSection(
     allocator: std.mem.Allocator,
     g: *const Graph,
     ids: []const ?IdEntry,
-    phantom_packages: []const PhantomPackage,
+    phantom_lookup: *const std.AutoHashMapUnmanaged(usize, PhantomNodeInfo),
     scope: ?[]const u8,
     filter: common.FilterOptions,
     num_buf: *[20]u8,
@@ -380,8 +369,7 @@ pub fn renderEdgesSection(
         if (ids[tgt_idx]) |tgt_id| {
             tgt_order = prefixOrder(tgt_id.prefix) * @as(u64, 1 << 32) + tgt_id.num;
         } else if (tgt_is_phantom) {
-            const pkg_info = findPhantomPackageForNode(g, tgt_idx, phantom_packages);
-            if (pkg_info) |pi| {
+            if (phantom_lookup.get(tgt_idx)) |pi| {
                 tgt_order = prefixOrder("x:") * @as(u64, 1 << 32) + pi.pkg_x_num;
             }
         }
@@ -397,10 +385,9 @@ pub fn renderEdgesSection(
 
     std.mem.sort(EdgeEntry, entries.items, {}, struct {
         fn lessThan(_: void, a: EdgeEntry, b: EdgeEntry) bool {
-            const a_type = edgeTypeName(a.edge_type);
-            const b_type = edgeTypeName(b.edge_type);
-            const type_cmp = std.mem.order(u8, a_type, b_type);
-            if (type_cmp != .eq) return type_cmp == .lt;
+            const a_key = edgeTypeSortKey(a.edge_type);
+            const b_key = edgeTypeSortKey(b.edge_type);
+            if (a_key != b_key) return a_key < b_key;
             if (a.source_str_order != b.source_str_order) return a.source_str_order < b.source_str_order;
             return a.target_str_order < b.target_str_order;
         }
@@ -433,8 +420,7 @@ pub fn renderEdgesSection(
                 try out.appendSlice(allocator, tgt_id.prefix);
                 try appendNum(out, allocator, tgt_id.num, num_buf);
             } else {
-                const pkg_info = findPhantomPackageForNode(g, entry.target_idx, phantom_packages);
-                if (pkg_info) |pi| {
+                if (phantom_lookup.get(entry.target_idx)) |pi| {
                     try out.appendSlice(allocator, "x:");
                     try appendNum(out, allocator, pi.pkg_x_num, num_buf);
                     try out.append(allocator, ':');

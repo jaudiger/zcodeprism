@@ -20,245 +20,130 @@ const ExternalInfo = lang.ExternalInfo;
 
 // --- JSON writing helpers ---
 
-fn appendStr(out: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, str: []const u8) !void {
-    try out.append(allocator, '"');
-    for (str) |c| {
-        switch (c) {
-            '"' => try out.appendSlice(allocator, "\\\""),
-            '\\' => try out.appendSlice(allocator, "\\\\"),
-            '\n' => try out.appendSlice(allocator, "\\n"),
-            '\r' => try out.appendSlice(allocator, "\\r"),
-            '\t' => try out.appendSlice(allocator, "\\t"),
-            else => {
-                if (c < 0x20) {
-                    var esc_buf: [6]u8 = undefined;
-                    _ = std.fmt.bufPrint(&esc_buf, "\\u{x:0>4}", .{c}) catch unreachable;
-                    try out.appendSlice(allocator, &esc_buf);
-                } else {
-                    try out.append(allocator, c);
-                }
-            },
+fn writeStr(writer: *std.Io.Writer, str: []const u8) !void {
+    try writer.writeByte('"');
+    var start: usize = 0;
+    for (str, 0..) |c, i| {
+        const esc: ?[]const u8 = switch (c) {
+            '"' => "\\\"",
+            '\\' => "\\\\",
+            '\n' => "\\n",
+            '\r' => "\\r",
+            '\t' => "\\t",
+            else => null,
+        };
+        if (esc) |e| {
+            if (i > start) try writer.writeAll(str[start..i]);
+            try writer.writeAll(e);
+            start = i + 1;
+        } else if (c < 0x20) {
+            if (i > start) try writer.writeAll(str[start..i]);
+            try writer.print("\\u{x:0>4}", .{c});
+            start = i + 1;
         }
     }
-    try out.append(allocator, '"');
+    if (start < str.len) try writer.writeAll(str[start..]);
+    try writer.writeByte('"');
 }
 
-fn appendKey(out: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, key: []const u8) !void {
-    try appendStr(out, allocator, key);
-    try out.append(allocator, ':');
-}
-
-fn appendInt(out: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, val: u64) !void {
-    var num_buf: [20]u8 = undefined;
-    const num = std.fmt.bufPrint(&num_buf, "{d}", .{val}) catch unreachable;
-    try out.appendSlice(allocator, num);
-}
-
-fn appendOptStr(out: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, val: ?[]const u8) !void {
+fn writeOptStr(writer: *std.Io.Writer, val: ?[]const u8) !void {
     if (val) |s| {
-        try appendStr(out, allocator, s);
+        try writeStr(writer, s);
     } else {
-        try out.appendSlice(allocator, "null");
+        try writer.writeAll("null");
     }
 }
 
-fn appendOptInt(out: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, val: ?u32) !void {
+fn writeOptInt(writer: *std.Io.Writer, val: ?u32) !void {
     if (val) |v| {
-        try appendInt(out, allocator, v);
+        try writer.print("{d}", .{@as(u64, v)});
     } else {
-        try out.appendSlice(allocator, "null");
+        try writer.writeAll("null");
     }
 }
 
-fn appendOptNodeId(out: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, val: ?NodeId) !void {
+fn writeOptNodeId(writer: *std.Io.Writer, val: ?NodeId) !void {
     if (val) |v| {
-        try appendInt(out, allocator, @intFromEnum(v));
+        try writer.print("{d}", .{@intFromEnum(v)});
     } else {
-        try out.appendSlice(allocator, "null");
+        try writer.writeAll("null");
     }
-}
-
-fn appendBool(out: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, val: bool) !void {
-    try out.appendSlice(allocator, if (val) "true" else "false");
 }
 
 // --- Node serialization ---
 
-fn writeNodeLine(out: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, n: Node) !void {
-    try out.append(allocator, '{');
-
-    // _type
-    try appendKey(out, allocator, "_type");
-    try appendStr(out, allocator, "node");
-
-    // id
-    try out.append(allocator, ',');
-    try appendKey(out, allocator, "id");
-    try appendInt(out, allocator, @intFromEnum(n.id));
-
-    // name
-    try out.append(allocator, ',');
-    try appendKey(out, allocator, "name");
-    try appendStr(out, allocator, n.name);
-
-    // kind
-    try out.append(allocator, ',');
-    try appendKey(out, allocator, "kind");
-    try appendStr(out, allocator, @tagName(n.kind));
-
-    // language
-    try out.append(allocator, ',');
-    try appendKey(out, allocator, "language");
-    try appendStr(out, allocator, @tagName(n.language));
-
-    // file_path
-    try out.append(allocator, ',');
-    try appendKey(out, allocator, "file_path");
-    try appendOptStr(out, allocator, n.file_path);
-
-    // line_start
-    try out.append(allocator, ',');
-    try appendKey(out, allocator, "line_start");
-    try appendOptInt(out, allocator, n.line_start);
-
-    // line_end
-    try out.append(allocator, ',');
-    try appendKey(out, allocator, "line_end");
-    try appendOptInt(out, allocator, n.line_end);
-
-    // visibility
-    try out.append(allocator, ',');
-    try appendKey(out, allocator, "visibility");
-    try appendStr(out, allocator, @tagName(n.visibility));
-
-    // parent_id
-    try out.append(allocator, ',');
-    try appendKey(out, allocator, "parent_id");
-    try appendOptNodeId(out, allocator, n.parent_id);
-
-    // doc
-    try out.append(allocator, ',');
-    try appendKey(out, allocator, "doc");
-    try appendOptStr(out, allocator, n.doc);
-
-    // signature
-    try out.append(allocator, ',');
-    try appendKey(out, allocator, "signature");
-    try appendOptStr(out, allocator, n.signature);
-
+fn writeNodeLine(writer: *std.Io.Writer, n: Node) !void {
+    try writer.print("{{\"_type\":\"node\",\"id\":{d},\"name\":", .{@intFromEnum(n.id)});
+    try writeStr(writer, n.name);
+    try writer.print(",\"kind\":\"{t}\",\"language\":\"{t}\",\"file_path\":", .{ n.kind, n.language });
+    try writeOptStr(writer, n.file_path);
+    try writer.writeAll(",\"line_start\":");
+    try writeOptInt(writer, n.line_start);
+    try writer.writeAll(",\"line_end\":");
+    try writeOptInt(writer, n.line_end);
+    try writer.print(",\"visibility\":\"{t}\",\"parent_id\":", .{n.visibility});
+    try writeOptNodeId(writer, n.parent_id);
+    try writer.writeAll(",\"doc\":");
+    try writeOptStr(writer, n.doc);
+    try writer.writeAll(",\"signature\":");
+    try writeOptStr(writer, n.signature);
     // content_hash
-    try out.append(allocator, ',');
-    try appendKey(out, allocator, "content_hash");
+    try writer.writeAll(",\"content_hash\":");
     if (n.content_hash) |ch| {
-        try out.append(allocator, '"');
+        try writer.writeByte('"');
         for (ch) |byte| {
-            var hex_buf: [2]u8 = undefined;
-            _ = std.fmt.bufPrint(&hex_buf, "{x:0>2}", .{byte}) catch unreachable;
-            try out.appendSlice(allocator, &hex_buf);
+            try writer.print("{x:0>2}", .{byte});
         }
-        try out.append(allocator, '"');
+        try writer.writeByte('"');
     } else {
-        try out.appendSlice(allocator, "null");
+        try writer.writeAll("null");
     }
-
     // external
-    try out.append(allocator, ',');
-    try appendKey(out, allocator, "external");
+    try writer.writeAll(",\"external\":");
     switch (n.external) {
-        .none => try out.appendSlice(allocator, "null"),
-        .stdlib => try appendStr(out, allocator, "stdlib"),
+        .none => try writer.writeAll("null"),
+        .stdlib => try writer.writeAll("\"stdlib\""),
         .dependency => |d| {
-            try out.appendSlice(allocator, "{\"type\":\"dependency\",\"version\":");
-            try appendOptStr(out, allocator, d.version);
-            try out.append(allocator, '}');
+            try writer.writeAll("{\"type\":\"dependency\",\"version\":");
+            try writeOptStr(writer, d.version);
+            try writer.writeByte('}');
         },
     }
-
     // lang_meta
-    try out.append(allocator, ',');
-    try appendKey(out, allocator, "lang_meta");
+    try writer.writeAll(",\"lang_meta\":");
     switch (n.lang_meta) {
-        .none => try out.appendSlice(allocator, "null"),
+        .none => try writer.writeAll("null"),
         .zig => |zm| {
-            try out.appendSlice(allocator, "{\"type\":\"zig\"");
-            try out.appendSlice(allocator, ",\"is_comptime\":");
-            try appendBool(out, allocator, zm.is_comptime);
-            try out.appendSlice(allocator, ",\"is_inline\":");
-            try appendBool(out, allocator, zm.is_inline);
-            try out.appendSlice(allocator, ",\"is_extern\":");
-            try appendBool(out, allocator, zm.is_extern);
-            try out.appendSlice(allocator, ",\"comptime_conditional\":");
-            try appendBool(out, allocator, zm.comptime_conditional);
-            try out.append(allocator, '}');
+            try writer.writeAll("{\"type\":\"zig\"");
+            try writer.print(",\"is_comptime\":{s}", .{if (zm.is_comptime) "true" else "false"});
+            try writer.print(",\"is_inline\":{s}", .{if (zm.is_inline) "true" else "false"});
+            try writer.print(",\"is_extern\":{s}", .{if (zm.is_extern) "true" else "false"});
+            try writer.print(",\"comptime_conditional\":{s}", .{if (zm.comptime_conditional) "true" else "false"});
+            try writer.writeByte('}');
         },
     }
-
     // metrics
-    try out.append(allocator, ',');
-    try appendKey(out, allocator, "metrics");
+    try writer.writeAll(",\"metrics\":");
     if (n.metrics) |m| {
-        try out.append(allocator, '{');
-        try appendKey(out, allocator, "complexity");
-        try appendInt(out, allocator, m.complexity);
-        try out.append(allocator, ',');
-        try appendKey(out, allocator, "lines");
-        try appendInt(out, allocator, m.lines);
-        try out.append(allocator, ',');
-        try appendKey(out, allocator, "fan_in");
-        try appendInt(out, allocator, m.fan_in);
-        try out.append(allocator, ',');
-        try appendKey(out, allocator, "fan_out");
-        try appendInt(out, allocator, m.fan_out);
-        try out.append(allocator, ',');
-        try appendKey(out, allocator, "branches");
-        try appendInt(out, allocator, m.branches);
-        try out.append(allocator, ',');
-        try appendKey(out, allocator, "loops");
-        try appendInt(out, allocator, m.loops);
-        try out.append(allocator, ',');
-        try appendKey(out, allocator, "error_paths");
-        try appendInt(out, allocator, m.error_paths);
-        try out.append(allocator, ',');
-        try appendKey(out, allocator, "nesting_depth_max");
-        try appendInt(out, allocator, m.nesting_depth_max);
-        try out.append(allocator, ',');
-        try appendKey(out, allocator, "structural_hash");
-        try appendInt(out, allocator, m.structural_hash);
-        try out.append(allocator, '}');
+        try writer.print("{{\"complexity\":{d},\"lines\":{d},\"fan_in\":{d},\"fan_out\":{d},\"branches\":{d},\"loops\":{d},\"error_paths\":{d},\"nesting_depth_max\":{d},\"structural_hash\":{d}}}", .{
+            m.complexity, m.lines, m.fan_in, m.fan_out,
+            m.branches, m.loops, m.error_paths, m.nesting_depth_max, m.structural_hash,
+        });
     } else {
-        try out.appendSlice(allocator, "null");
+        try writer.writeAll("null");
     }
-
-    try out.append(allocator, '}');
-    try out.append(allocator, '\n');
+    try writer.writeAll("}\n");
 }
 
 // --- Edge serialization ---
 
-fn writeEdgeLine(out: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, e: Edge) !void {
-    try out.append(allocator, '{');
-
-    try appendKey(out, allocator, "_type");
-    try appendStr(out, allocator, "edge");
-
-    try out.append(allocator, ',');
-    try appendKey(out, allocator, "source_id");
-    try appendInt(out, allocator, @intFromEnum(e.source_id));
-
-    try out.append(allocator, ',');
-    try appendKey(out, allocator, "target_id");
-    try appendInt(out, allocator, @intFromEnum(e.target_id));
-
-    try out.append(allocator, ',');
-    try appendKey(out, allocator, "edge_type");
-    try appendStr(out, allocator, @tagName(e.edge_type));
-
-    try out.append(allocator, ',');
-    try appendKey(out, allocator, "source");
-    try appendStr(out, allocator, @tagName(e.source));
-
-    try out.append(allocator, '}');
-    try out.append(allocator, '\n');
+fn writeEdgeLine(writer: *std.Io.Writer, e: Edge) !void {
+    try writer.print("{{\"_type\":\"edge\",\"source_id\":{d},\"target_id\":{d},\"edge_type\":\"{t}\",\"source\":\"{t}\"}}\n", .{
+        @intFromEnum(e.source_id),
+        @intFromEnum(e.target_id),
+        e.edge_type,
+        e.source,
+    });
 }
 
 // --- Import helpers ---
@@ -393,27 +278,43 @@ fn parseMetrics(val: std.json.Value) ?Metrics {
     }
 }
 
-/// Canonical edge ordering: by edge_type name, then source_id, then target_id.
+/// Comptime lookup table mapping EdgeType integer value to alphabetical rank.
+const edge_type_sort_rank = blk: {
+    const fields = @typeInfo(EdgeType).@"enum".fields;
+    const n = fields.len;
+    var ranks: [n]u8 = undefined;
+    for (fields, 0..) |f, i| {
+        var rank: u8 = 0;
+        for (fields) |other| {
+            if (std.mem.order(u8, other.name, f.name) == .lt) {
+                rank += 1;
+            }
+        }
+        ranks[i] = rank;
+    }
+    break :blk ranks;
+};
+
+/// Canonical edge ordering: by edge_type alphabetical rank, then source_id, then target_id.
 fn edgeLessThan(_: void, a: Edge, b: Edge) bool {
-    const a_type = @tagName(a.edge_type);
-    const b_type = @tagName(b.edge_type);
-    const type_cmp = std.mem.order(u8, a_type, b_type);
-    if (type_cmp != .eq) return type_cmp == .lt;
-    const a_src = @intFromEnum(a.source_id);
-    const b_src = @intFromEnum(b.source_id);
-    if (a_src != b_src) return a_src < b_src;
+    const ra = edge_type_sort_rank[@intFromEnum(a.edge_type)];
+    const rb = edge_type_sort_rank[@intFromEnum(b.edge_type)];
+    if (ra != rb) return ra < rb;
+    const as = @intFromEnum(a.source_id);
+    const bs = @intFromEnum(b.source_id);
+    if (as != bs) return as < bs;
     return @intFromEnum(a.target_id) < @intFromEnum(b.target_id);
 }
 
 // --- Public API ---
 
-/// Export a graph to JSONL format, writing into the provided buffer.
+/// Export a graph to JSONL format, writing to the provided writer.
 /// Each line is a self-contained JSON object with a `_type` field
 /// indicating whether it's a "node" or "edge".
-pub fn exportJsonl(allocator: std.mem.Allocator, g: *const Graph, out: *std.ArrayListUnmanaged(u8)) !void {
+pub fn exportJsonl(allocator: std.mem.Allocator, g: *const Graph, writer: *std.Io.Writer) !void {
     // Nodes (already sorted by id, sequential in the graph)
     for (g.nodes.items) |n| {
-        try writeNodeLine(out, allocator, n);
+        try writeNodeLine(writer, n);
     }
 
     // Edges (sorted by edge_type alphabetically, then source_id, then target_id)
@@ -425,7 +326,7 @@ pub fn exportJsonl(allocator: std.mem.Allocator, g: *const Graph, out: *std.Arra
         std.sort.block(Edge, sorted_edges, {}, edgeLessThan);
 
         for (sorted_edges) |e| {
-            try writeEdgeLine(out, allocator, e);
+            try writeEdgeLine(writer, e);
         }
     }
 }
@@ -434,6 +335,16 @@ pub fn exportJsonl(allocator: std.mem.Allocator, g: *const Graph, out: *std.Arra
 pub fn importJsonl(allocator: std.mem.Allocator, data: []const u8) !Graph {
     var g = Graph.init(allocator, "");
     errdefer g.deinit();
+
+    // Pre-count lines for capacity hint (upper bound: not all lines are nodes or edges)
+    var line_count: usize = 0;
+    for (data) |c| {
+        if (c == '\n') line_count += 1;
+    }
+    // Account for possible final line without trailing newline
+    if (data.len > 0 and data[data.len - 1] != '\n') line_count += 1;
+    try g.nodes.ensureTotalCapacity(allocator, line_count);
+    try g.edges.ensureTotalCapacity(allocator, line_count);
 
     var line_iter = std.mem.splitScalar(u8, data, '\n');
     while (line_iter.next()) |line| {
@@ -547,6 +458,7 @@ pub fn importJsonl(allocator: std.mem.Allocator, data: []const u8) !Graph {
         }
     }
 
+    try g.rebuildEdgeIndex();
     return g;
 }
 
@@ -628,12 +540,13 @@ test "jsonl round-trip preserves nodes" {
     var g = try createTestGraph(std.testing.allocator);
     defer g.deinit();
 
-    var buf: std.ArrayListUnmanaged(u8) = .{};
-    defer buf.deinit(std.testing.allocator);
+    var aw = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer aw.deinit();
 
     // Act
-    try exportJsonl(std.testing.allocator, &g, &buf);
-    var loaded = try importJsonl(std.testing.allocator, buf.items);
+    try exportJsonl(std.testing.allocator, &g, &aw.writer);
+    try aw.writer.flush();
+    var loaded = try importJsonl(std.testing.allocator, aw.written());
     defer loaded.deinit();
 
     // Assert
@@ -651,12 +564,13 @@ test "jsonl round-trip preserves edges" {
     var g = try createTestGraph(std.testing.allocator);
     defer g.deinit();
 
-    var buf: std.ArrayListUnmanaged(u8) = .{};
-    defer buf.deinit(std.testing.allocator);
+    var aw = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer aw.deinit();
 
     // Act
-    try exportJsonl(std.testing.allocator, &g, &buf);
-    var loaded = try importJsonl(std.testing.allocator, buf.items);
+    try exportJsonl(std.testing.allocator, &g, &aw.writer);
+    try aw.writer.flush();
+    var loaded = try importJsonl(std.testing.allocator, aw.written());
     defer loaded.deinit();
 
     // Assert: compare as sets: sort both sides by canonical edge order
@@ -686,14 +600,15 @@ test "jsonl lines are valid json" {
     var g = try createTestGraph(std.testing.allocator);
     defer g.deinit();
 
-    var buf: std.ArrayListUnmanaged(u8) = .{};
-    defer buf.deinit(std.testing.allocator);
+    var aw = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer aw.deinit();
 
     // Act
-    try exportJsonl(std.testing.allocator, &g, &buf);
+    try exportJsonl(std.testing.allocator, &g, &aw.writer);
+    try aw.writer.flush();
 
     // Assert: each non-empty line parses as JSON
-    var line_iter = std.mem.splitScalar(u8, buf.items, '\n');
+    var line_iter = std.mem.splitScalar(u8, aw.written(), '\n');
     while (line_iter.next()) |line| {
         if (line.len == 0) continue;
         const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, line, .{});
@@ -707,14 +622,15 @@ test "jsonl nodes have _type node" {
     var g = try createTestGraph(std.testing.allocator);
     defer g.deinit();
 
-    var buf: std.ArrayListUnmanaged(u8) = .{};
-    defer buf.deinit(std.testing.allocator);
+    var aw = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer aw.deinit();
 
     // Act
-    try exportJsonl(std.testing.allocator, &g, &buf);
+    try exportJsonl(std.testing.allocator, &g, &aw.writer);
+    try aw.writer.flush();
 
     // Assert: node lines have _type "node"
-    var line_iter = std.mem.splitScalar(u8, buf.items, '\n');
+    var line_iter = std.mem.splitScalar(u8, aw.written(), '\n');
     var node_count: usize = 0;
     while (line_iter.next()) |line| {
         if (line.len == 0) continue;
@@ -735,14 +651,15 @@ test "jsonl edges have _type edge" {
     var g = try createTestGraph(std.testing.allocator);
     defer g.deinit();
 
-    var buf: std.ArrayListUnmanaged(u8) = .{};
-    defer buf.deinit(std.testing.allocator);
+    var aw = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer aw.deinit();
 
     // Act
-    try exportJsonl(std.testing.allocator, &g, &buf);
+    try exportJsonl(std.testing.allocator, &g, &aw.writer);
+    try aw.writer.flush();
 
     // Assert: edge lines have _type "edge"
-    var line_iter = std.mem.splitScalar(u8, buf.items, '\n');
+    var line_iter = std.mem.splitScalar(u8, aw.written(), '\n');
     var edge_count: usize = 0;
     while (line_iter.next()) |line| {
         if (line.len == 0) continue;
@@ -763,14 +680,15 @@ test "jsonl nodes sorted by id" {
     var g = try createTestGraph(std.testing.allocator);
     defer g.deinit();
 
-    var buf: std.ArrayListUnmanaged(u8) = .{};
-    defer buf.deinit(std.testing.allocator);
+    var aw = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer aw.deinit();
 
     // Act
-    try exportJsonl(std.testing.allocator, &g, &buf);
+    try exportJsonl(std.testing.allocator, &g, &aw.writer);
+    try aw.writer.flush();
 
     // Assert: node ids are in ascending order
-    var line_iter = std.mem.splitScalar(u8, buf.items, '\n');
+    var line_iter = std.mem.splitScalar(u8, aw.written(), '\n');
     var prev_id: ?i64 = null;
     while (line_iter.next()) |line| {
         if (line.len == 0) continue;
@@ -792,18 +710,19 @@ test "jsonl edges sorted by type then source then target" {
     var g = try createTestGraph(std.testing.allocator);
     defer g.deinit();
 
-    var buf: std.ArrayListUnmanaged(u8) = .{};
-    defer buf.deinit(std.testing.allocator);
+    var aw = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer aw.deinit();
 
     // Act
-    try exportJsonl(std.testing.allocator, &g, &buf);
+    try exportJsonl(std.testing.allocator, &g, &aw.writer);
+    try aw.writer.flush();
 
     // Assert: edges are sorted by edge_type alphabetically, then source_id, then target_id
     const EdgeKey = struct { edge_type: []const u8, source_id: i64, target_id: i64 };
     var edges: std.ArrayListUnmanaged(EdgeKey) = .{};
     defer edges.deinit(std.testing.allocator);
 
-    var line_iter = std.mem.splitScalar(u8, buf.items, '\n');
+    var line_iter = std.mem.splitScalar(u8, aw.written(), '\n');
     while (line_iter.next()) |line| {
         if (line.len == 0) continue;
         const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, line, .{});
@@ -842,22 +761,23 @@ test "jsonl empty graph" {
     var g = Graph.init(std.testing.allocator, "/tmp/test-project");
     defer g.deinit();
 
-    var buf: std.ArrayListUnmanaged(u8) = .{};
-    defer buf.deinit(std.testing.allocator);
+    var aw = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer aw.deinit();
 
     // Act
-    try exportJsonl(std.testing.allocator, &g, &buf);
+    try exportJsonl(std.testing.allocator, &g, &aw.writer);
+    try aw.writer.flush();
 
     // Assert: no output lines
     var line_count: usize = 0;
-    var line_iter = std.mem.splitScalar(u8, buf.items, '\n');
+    var line_iter = std.mem.splitScalar(u8, aw.written(), '\n');
     while (line_iter.next()) |line| {
         if (line.len > 0) line_count += 1;
     }
     try std.testing.expectEqual(@as(usize, 0), line_count);
 
     // Import the empty output → empty graph
-    var loaded = try importJsonl(std.testing.allocator, buf.items);
+    var loaded = try importJsonl(std.testing.allocator, aw.written());
     defer loaded.deinit();
     try std.testing.expectEqual(@as(usize, 0), loaded.nodeCount());
     try std.testing.expectEqual(@as(usize, 0), loaded.edgeCount());
@@ -876,14 +796,15 @@ test "jsonl preserves null fields as explicit null" {
         // doc, signature, content_hash all null by default
     });
 
-    var buf: std.ArrayListUnmanaged(u8) = .{};
-    defer buf.deinit(std.testing.allocator);
+    var aw = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer aw.deinit();
 
     // Act
-    try exportJsonl(std.testing.allocator, &g, &buf);
+    try exportJsonl(std.testing.allocator, &g, &aw.writer);
+    try aw.writer.flush();
 
     // Assert: null fields are serialized as explicit JSON null, not omitted
-    var line_iter = std.mem.splitScalar(u8, buf.items, '\n');
+    var line_iter = std.mem.splitScalar(u8, aw.written(), '\n');
     while (line_iter.next()) |line| {
         if (line.len == 0) continue;
         const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, line, .{});
@@ -913,12 +834,13 @@ test "jsonl preserves phantom nodes" {
         .external = .{ .stdlib = {} },
     });
 
-    var buf: std.ArrayListUnmanaged(u8) = .{};
-    defer buf.deinit(std.testing.allocator);
+    var aw = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer aw.deinit();
 
     // Act
-    try exportJsonl(std.testing.allocator, &g, &buf);
-    var loaded = try importJsonl(std.testing.allocator, buf.items);
+    try exportJsonl(std.testing.allocator, &g, &aw.writer);
+    try aw.writer.flush();
+    var loaded = try importJsonl(std.testing.allocator, aw.written());
     defer loaded.deinit();
 
     // Assert

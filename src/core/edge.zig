@@ -5,12 +5,23 @@ const NodeId = types.NodeId;
 const EdgeType = types.EdgeType;
 const EdgeSource = types.EdgeSource;
 
+/// Composite key for edge deduplication: (source, target, type) triple.
+pub const EdgeKey = struct {
+    source_id: NodeId,
+    target_id: NodeId,
+    edge_type: EdgeType,
+};
+
 /// An edge in the code graph representing a relationship between two nodes.
 pub const Edge = struct {
     source_id: NodeId,
     target_id: NodeId,
     edge_type: EdgeType,
     source: EdgeSource = .tree_sitter,
+
+    pub fn key(self: Edge) EdgeKey {
+        return .{ .source_id = self.source_id, .target_id = self.target_id, .edge_type = self.edge_type };
+    }
 };
 
 // --- Tests ---

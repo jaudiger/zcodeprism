@@ -30,6 +30,14 @@ pub fn renderMermaid(
     var assignment = try common.buildIdAssignment(allocator, g, options.scope, options.filter);
     defer assignment.deinit(allocator);
 
+    const bytes_per_node = 120; // subgraph nesting + shape syntax + label + class assignment
+    const bytes_per_edge = 50; // indentation + source ID + arrow + target ID + newline
+    const header_overhead = 1024; // header lines + classDef block + section markers
+    try out.ensureTotalCapacity(allocator, out.items.len +
+        g.nodes.items.len * bytes_per_node +
+        g.edges.items.len * bytes_per_edge +
+        header_overhead);
+
     const ids = assignment.ids;
     const file_count = assignment.file_indices.items.len;
     const fn_count = assignment.fn_indices.items.len;
@@ -86,7 +94,7 @@ pub fn renderMermaid(
 
     // File subgraphs.
     try out.appendSlice(allocator, "\n    %% === File subgraphs ===\n");
-    try sections.renderFileSubgraphs(out, allocator, g, assignment.file_indices.items, ids, &num_buf);
+    try sections.renderFileSubgraphs(out, allocator, g, assignment.file_indices.items, ids, &num_buf, &assignment.children_index);
 
     // Phantom subgraphs.
     try out.appendSlice(allocator, "\n    %% === Phantom subgraphs ===\n");
@@ -103,7 +111,7 @@ pub fn renderMermaid(
 
     // Edges.
     try out.appendSlice(allocator, "\n    %% === Edges ===\n");
-    try sections.renderEdges(out, allocator, g, ids, assignment.phantom_packages.items, options.scope, options.filter, &ghost_map, &num_buf);
+    try sections.renderEdges(out, allocator, g, ids, &assignment.phantom_lookup, options.scope, options.filter, &ghost_map, &num_buf);
 
     // Class assignments.
     try out.appendSlice(allocator, "\n    %% === Class assignments ===\n");

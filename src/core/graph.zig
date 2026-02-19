@@ -11,6 +11,7 @@ const Language = types.Language;
 const Visibility = types.Visibility;
 const Node = node_mod.Node;
 const Edge = edge_mod.Edge;
+const EdgeKey = edge_mod.EdgeKey;
 
 /// Traversal direction for neighbor queries.
 pub const Direction = enum {
@@ -32,6 +33,8 @@ pub const Graph = struct {
     // Tracks allocated buffers (source files, duped strings) that node slices point into.
     // Freed on deinit so that node name/doc/signature slices remain valid for the graph's lifetime.
     owned_buffers: std.ArrayListUnmanaged([]const u8),
+    // Hash index for edge deduplication. Maps (source, target, type) to void.
+    edge_index: std.AutoHashMapUnmanaged(EdgeKey, void),
 
     pub fn init(allocator: std.mem.Allocator, project_root: []const u8) Graph {
         return .{
@@ -41,6 +44,7 @@ pub const Graph = struct {
             .project_root = project_root,
             .scratch_buf = .{},
             .owned_buffers = .{},
+            .edge_index = .{},
         };
     }
 
@@ -53,6 +57,7 @@ pub const Graph = struct {
         self.nodes.deinit(self.allocator);
         self.edges.deinit(self.allocator);
         self.scratch_buf.deinit(self.allocator);
+        self.edge_index.deinit(self.allocator);
     }
 
     /// Register a buffer to be freed when the graph is deinitialized.
@@ -71,10 +76,32 @@ pub const Graph = struct {
     }
 
     /// Add an edge to the graph and return its assigned EdgeId.
+    /// Also updates the edge_index for deduplication tracking.
     pub fn addEdge(self: *Graph, edge: Edge) !EdgeId {
         const id: EdgeId = @enumFromInt(self.edges.items.len);
         try self.edges.append(self.allocator, edge);
+        try self.edge_index.put(self.allocator, edge.key(), {});
         return id;
+    }
+
+    /// Add an edge only if no edge with the same (source, target, type) triple
+    /// already exists. Returns true if the edge was added, false if duplicate.
+    pub fn addEdgeIfNew(self: *Graph, edge: Edge) !bool {
+        const k = edge.key();
+        const gop = try self.edge_index.getOrPut(self.allocator, k);
+        if (gop.found_existing) return false;
+        try self.edges.append(self.allocator, edge);
+        return true;
+    }
+
+    /// Rebuild the edge_index from the current edges list. Call this after
+    /// bulk-loading edges (e.g. from storage) that bypassed addEdge.
+    pub fn rebuildEdgeIndex(self: *Graph) !void {
+        self.edge_index.clearRetainingCapacity();
+        try self.edge_index.ensureTotalCapacity(self.allocator, @intCast(self.edges.items.len));
+        for (self.edges.items) |e| {
+            self.edge_index.putAssumeCapacity(e.key(), {});
+        }
     }
 
     /// Get a node by its id, or null if not found.

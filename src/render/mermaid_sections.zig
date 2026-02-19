@@ -17,8 +17,10 @@ const isInternal = common.isInternal;
 const inScope = common.inScope;
 const appendNum = common.appendNum;
 const edgeTypeName = common.edgeTypeName;
+const edgeTypeSortKey = common.edgeTypeSortKey;
 const prefixOrder = common.prefixOrder;
-const findPhantomPackageForNode = common.findPhantomPackageForNode;
+const ChildrenIndex = common.ChildrenIndex;
+const PhantomNodeInfo = common.PhantomNodeInfo;
 
 // ---------------------------------------------------------------------------
 // File subgraph rendering
@@ -31,6 +33,7 @@ pub fn renderFileSubgraphs(
     file_indices: []const usize,
     ids: []const ?IdEntry,
     num_buf: *[20]u8,
+    children_index: *const ChildrenIndex,
 ) !void {
     for (file_indices) |fi| {
         const file_node = g.nodes.items[fi];
@@ -43,24 +46,10 @@ pub fn renderFileSubgraphs(
         try out.appendSlice(allocator, file_node.file_path orelse file_node.name);
         try out.appendSlice(allocator, "\"]\n");
 
-        // Collect all nodes belonging to this file (direct children and nested).
+        // Collect all descendants of this file that have IDs.
         var file_members = std.ArrayListUnmanaged(MermaidNode){};
         defer file_members.deinit(allocator);
-
-        for (g.nodes.items, 0..) |n, i| {
-            if (!isInternal(n)) continue;
-            if (n.kind == .file) continue;
-            if (n.kind == .field or n.kind == .import_decl) continue;
-            const id_entry = ids[i] orelse continue;
-
-            // Check if this node belongs to this file by walking parent chain.
-            if (belongsToFile(g, @enumFromInt(i), @enumFromInt(fi))) {
-                try file_members.append(allocator, .{
-                    .node_idx = i,
-                    .id = id_entry,
-                });
-            }
-        }
+        try collectDescendants(g, ids, children_index, fi, &file_members, allocator);
 
         // Sort by ID: prefix order then num.
         std.mem.sort(MermaidNode, file_members.items, {}, struct {
@@ -88,19 +77,24 @@ const MermaidNode = struct {
     id: IdEntry,
 };
 
-/// Check if a node ultimately belongs to a given file by walking its parent chain.
-fn belongsToFile(g: *const Graph, node_id: NodeId, file_id: NodeId) bool {
-    var current = node_id;
-    while (true) {
-        if (current == file_id) return true;
-        const idx = @intFromEnum(current);
-        if (idx >= g.nodes.items.len) return false;
-        const n = g.nodes.items[idx];
-        if (n.parent_id) |pid| {
-            current = pid;
-        } else {
-            return false;
+/// Recursively collect renderable descendants of a parent via the children index.
+fn collectDescendants(
+    g: *const Graph,
+    ids: []const ?IdEntry,
+    children_index: *const ChildrenIndex,
+    parent_idx: usize,
+    result: *std.ArrayListUnmanaged(MermaidNode),
+    allocator: std.mem.Allocator,
+) !void {
+    for (children_index.childrenOf(parent_idx)) |ci| {
+        const n = g.nodes.items[ci];
+        if (!isInternal(n)) continue;
+        if (n.kind == .file or n.kind == .field or n.kind == .import_decl) continue;
+        if (ids[ci]) |id_entry| {
+            try result.append(allocator, .{ .node_idx = ci, .id = id_entry });
         }
+        // Recurse into children (e.g. struct methods).
+        try collectDescendants(g, ids, children_index, ci, result, allocator);
     }
 }
 
@@ -319,7 +313,7 @@ pub fn renderEdges(
     allocator: std.mem.Allocator,
     g: *const Graph,
     ids: []const ?IdEntry,
-    phantom_packages: []const PhantomPackage,
+    phantom_lookup: *const std.AutoHashMapUnmanaged(usize, PhantomNodeInfo),
     scope: ?[]const u8,
     filter: common.FilterOptions,
     ghost_map: *const std.AutoHashMapUnmanaged(usize, u32),
@@ -376,8 +370,7 @@ pub fn renderEdges(
         } else if (ids[tgt_idx]) |tgt_id| {
             tgt_order = prefixOrder(tgt_id.prefix) * @as(u64, 1 << 32) + tgt_id.num;
         } else if (tgt_is_phantom) {
-            const pkg_info = findPhantomPackageForNode(g, tgt_idx, phantom_packages);
-            if (pkg_info) |pi| {
+            if (phantom_lookup.get(tgt_idx)) |pi| {
                 tgt_order = prefixOrder("x:") * @as(u64, 1 << 32) + pi.pkg_x_num;
             }
         }
@@ -396,10 +389,9 @@ pub fn renderEdges(
     // Sort: type (alpha) → source → target.
     std.mem.sort(MermaidEdge, entries.items, {}, struct {
         fn lessThan(_: void, a: MermaidEdge, b: MermaidEdge) bool {
-            const a_type = edgeTypeName(a.edge_type);
-            const b_type = edgeTypeName(b.edge_type);
-            const type_cmp = std.mem.order(u8, a_type, b_type);
-            if (type_cmp != .eq) return type_cmp == .lt;
+            const a_key = edgeTypeSortKey(a.edge_type);
+            const b_key = edgeTypeSortKey(b.edge_type);
+            if (a_key != b_key) return a_key < b_key;
             if (a.source_order != b.source_order) return a.source_order < b.source_order;
             return a.target_order < b.target_order;
         }
@@ -427,8 +419,7 @@ pub fn renderEdges(
         } else if (ids[entry.target_idx]) |tgt_id| {
             try appendMermaidId(out, allocator, tgt_id.prefix, tgt_id.num, num_buf);
         } else if (entry.target_is_phantom) {
-            const pkg_info = findPhantomPackageForNode(g, entry.target_idx, phantom_packages);
-            if (pkg_info) |pi| {
+            if (phantom_lookup.get(entry.target_idx)) |pi| {
                 try out.appendSlice(allocator, "x_");
                 try appendNum(out, allocator, pi.pkg_x_num, num_buf);
                 try out.append(allocator, '_');
@@ -631,23 +622,32 @@ fn appendMermaidId(out: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocato
 
 /// Append a string with Mermaid-special characters escaped.
 fn appendEscaped(out: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, s: []const u8) !void {
-    for (s) |c| {
-        switch (c) {
-            '"' => try out.appendSlice(allocator, "&quot;"),
-            '<' => try out.appendSlice(allocator, "&lt;"),
-            '>' => try out.appendSlice(allocator, "&gt;"),
-            else => try out.append(allocator, c),
+    var start: usize = 0;
+    for (s, 0..) |c, i| {
+        const replacement: ?[]const u8 = switch (c) {
+            '"' => "&quot;",
+            '<' => "&lt;",
+            '>' => "&gt;",
+            else => null,
+        };
+        if (replacement) |r| {
+            if (i > start) try out.appendSlice(allocator, s[start..i]);
+            try out.appendSlice(allocator, r);
+            start = i + 1;
         }
     }
+    if (start < s.len) try out.appendSlice(allocator, s[start..]);
 }
 
 /// Append a string but replace dots with underscores (for Mermaid IDs).
 fn appendDotToUnderscore(out: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, s: []const u8) !void {
-    for (s) |c| {
+    var start: usize = 0;
+    for (s, 0..) |c, i| {
         if (c == '.') {
+            if (i > start) try out.appendSlice(allocator, s[start..i]);
             try out.append(allocator, '_');
-        } else {
-            try out.append(allocator, c);
+            start = i + 1;
         }
     }
+    if (start < s.len) try out.appendSlice(allocator, s[start..]);
 }

@@ -32,6 +32,14 @@ pub fn renderCtg(
     var assignment = try common.buildIdAssignment(allocator, g, options.scope, options.filter);
     defer assignment.deinit(allocator);
 
+    const bytes_per_node = 80; // ID + name + location + visibility + newline
+    const bytes_per_edge = 40; // source ID + type + target ID + newline
+    const header_overhead = 512; // header lines + section markers + separators
+    try out.ensureTotalCapacity(allocator, out.items.len +
+        g.nodes.items.len * bytes_per_node +
+        g.edges.items.len * bytes_per_edge +
+        header_overhead);
+
     const ids = assignment.ids;
     const file_count = assignment.file_indices.items.len;
     const fn_count = assignment.fn_indices.items.len;
@@ -41,7 +49,7 @@ pub fn renderCtg(
     const test_count = assignment.test_indices.items.len;
     const external_count = assignment.phantom_packages.items.len;
 
-    const langs = common.collectLanguages(g, options.scope);
+    const langs = assignment.languages;
 
     // Header line 1: project name with em dash (U+2014).
     try out.appendSlice(allocator, "# zcodeprism graph \xe2\x80\x94 ");
@@ -114,7 +122,7 @@ pub fn renderCtg(
     }
     if (assignment.struct_indices.items.len > 0) {
         if (written) try out.append(allocator, '\n');
-        try sections.renderStructsSection(out, allocator, g, assignment.struct_indices.items, ids, &num_buf);
+        try sections.renderStructsSection(out, allocator, g, assignment.struct_indices.items, ids, &num_buf, &assignment.children_index);
         written = true;
     }
     if (assignment.enum_indices.items.len > 0) {
@@ -153,7 +161,7 @@ pub fn renderCtg(
         const mark = out.items.len;
         if (written) try out.append(allocator, '\n');
         const before_section = out.items.len;
-        try sections.renderEdgesSection(out, allocator, g, ids, assignment.phantom_packages.items, options.scope, options.filter, &num_buf);
+        try sections.renderEdgesSection(out, allocator, g, ids, &assignment.phantom_lookup, options.scope, options.filter, &num_buf);
         if (out.items.len == before_section) {
             out.shrinkRetainingCapacity(mark);
         }

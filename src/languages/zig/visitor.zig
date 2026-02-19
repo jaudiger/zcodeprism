@@ -9,6 +9,11 @@ const ts_api = @import("../../parser/tree_sitter_api.zig");
 const ast = @import("ast_analysis.zig");
 const cf = @import("cross_file.zig");
 const eb = @import("edge_builder.zig");
+const pc = @import("parse_context.zig");
+
+const KindIds = pc.KindIds;
+const ScopeIndex = pc.ScopeIndex;
+const FileIndex = pc.FileIndex;
 
 const Field = logging.Field;
 const Logger = logging.Logger;
@@ -30,9 +35,11 @@ pub fn parse(source: []const u8, graph: *anyopaque, logger: Logger) anyerror!voi
     log.debug("parsing source", &.{Field.uint("bytes", source.len)});
 
     const line_count = ts_api.countLines(source);
+    const ts_lang = ts_api.zigLanguage();
+    const k = KindIds.init(ts_lang);
 
     // Parse source with tree-sitter first so we can collect module doc comments.
-    const tree = ts_api.parseSource(ts_api.zigLanguage(), source) orelse {
+    const tree = ts_api.parseSource(ts_lang, source) orelse {
         log.warn("tree-sitter parse failed", &.{});
         // If tree-sitter parsing fails, create a bare file node.
         _ = try g.addNode(.{
@@ -51,7 +58,7 @@ pub fn parse(source: []const u8, graph: *anyopaque, logger: Logger) anyerror!voi
     const root = tree.rootNode();
 
     // Collect module doc comments (//!) from the beginning of the file.
-    const module_doc = ast.collectModuleDocComment(source, root);
+    const module_doc = ast.collectModuleDocComment(source, root, &k);
 
     // Create file node (always the first node).
     const file_id = try g.addNode(.{
@@ -70,7 +77,7 @@ pub fn parse(source: []const u8, graph: *anyopaque, logger: Logger) anyerror!voi
     while (i < root.childCount()) : (i += 1) {
         const child = root.child(i) orelse continue;
         if (!child.isNamed()) continue;
-        try processDeclaration(g, source, child, file_id, log);
+        try processDeclaration(g, source, child, file_id, &k, log);
     }
 
     // Build edge resolution context: scope range + import map.
@@ -78,53 +85,61 @@ pub fn parse(source: []const u8, graph: *anyopaque, logger: Logger) anyerror!voi
         .scope_start = @intFromEnum(file_id),
         .scope_end = g.nodeCount(),
     };
-    cf.buildImportMap(g, source, root, &ctx, log);
+
+    // Build lookup indices for scope-based and file-based resolution.
+    var file_index = try FileIndex.build(g.allocator, g.nodes.items);
+    defer file_index.deinit(g.allocator);
+
+    var scope_index = try ScopeIndex.build(g.allocator, g.nodes.items, 0);
+    defer scope_index.deinit(g.allocator);
+
+    cf.buildImportMap(g, source, root, &ctx, &file_index, &k, log);
 
     // Create edges (calls, uses_type) with cross-file resolution.
     log.debug("building edges", &.{});
-    try eb.walkForEdges(g, source, root, &ctx, log);
+    try eb.walkForEdges(g, source, root, &ctx, &k, &scope_index, &file_index, log);
 }
 
 // =========================================================================
 // Node creation
 // =========================================================================
 
-fn processDeclaration(g: *Graph, source: []const u8, ts_node: ts.Node, parent_id: NodeId, log: Logger) anyerror!void {
-    const kind_str = ts_node.kind();
+fn processDeclaration(g: *Graph, source: []const u8, ts_node: ts.Node, parent_id: NodeId, k: *const KindIds, log: Logger) anyerror!void {
+    const kid = ts_node.kindId();
 
-    if (std.mem.eql(u8, kind_str, "variable_declaration")) {
-        try processVariableDecl(g, source, ts_node, parent_id, log);
-    } else if (std.mem.eql(u8, kind_str, "function_declaration")) {
-        try processFunctionDecl(g, source, ts_node, parent_id, log);
-    } else if (std.mem.eql(u8, kind_str, "test_declaration")) {
-        try processTestDecl(g, source, ts_node, parent_id);
-    } else if (std.mem.eql(u8, kind_str, "container_field")) {
-        try processContainerField(g, source, ts_node, parent_id, log);
+    if (kid == k.variable_declaration) {
+        try processVariableDecl(g, source, ts_node, parent_id, k, log);
+    } else if (kid == k.function_declaration) {
+        try processFunctionDecl(g, source, ts_node, parent_id, k, log);
+    } else if (kid == k.test_declaration) {
+        try processTestDecl(g, source, ts_node, parent_id, k);
+    } else if (kid == k.container_field) {
+        try processContainerField(g, source, ts_node, parent_id, k, log);
     }
 }
 
-fn processVariableDecl(g: *Graph, source: []const u8, ts_node: ts.Node, parent_id: NodeId, log: Logger) anyerror!void {
-    const name = ast.getIdentifierName(source, ts_node) orelse {
+fn processVariableDecl(g: *Graph, source: []const u8, ts_node: ts.Node, parent_id: NodeId, k: *const KindIds, log: Logger) anyerror!void {
+    const name = ast.getIdentifierName(source, ts_node, k) orelse {
         log.trace("skipping variable: no identifier", &.{});
         return;
     };
-    const visibility = ast.detectVisibility(ts_node);
-    const doc = ast.collectDocComment(source, ts_node);
+    const visibility = ast.detectVisibility(ts_node, k);
+    const doc = ast.collectDocComment(source, ts_node, k);
 
     // Classify the value: struct, enum, error set, import, or plain constant.
-    const classification = ast.classifyVariableValue(source, ts_node);
+    const classification = ast.classifyVariableValue(source, ts_node, k);
     const kind = classification.kind;
 
     // Filter noise constants that produce no useful graph information.
     if (kind == .constant) {
         // Skip @This() aliases (e.g., `const Self = @This()`).
-        if (ast.isThisBuiltin(source, ts_node)) {
+        if (ast.isThisBuiltin(source, ts_node, k)) {
             log.trace("skipping @This() alias", &.{Field.string("name", name)});
             return;
         }
 
         // Skip same-name re-exports from imports (e.g., `const Graph = graph_mod.Graph`).
-        if (ast.getFieldExprRootAndLeaf(source, ts_node)) |info| {
+        if (ast.getFieldExprRootAndLeaf(source, ts_node, k)) |info| {
             if (std.mem.eql(u8, info.leaf, name)) {
                 if (isImportSibling(g, parent_id, info.root)) {
                     log.trace("skipping re-export", &.{Field.string("name", name)});
@@ -136,12 +151,12 @@ fn processVariableDecl(g: *Graph, source: []const u8, ts_node: ts.Node, parent_i
 
     // Comptime detection: constants with explicit type annotation are comptime-known.
     var lang_meta: LangMeta = .{ .none = {} };
-    if (kind == .constant and ast.hasTypeAnnotation(ts_node)) {
+    if (kind == .constant and ast.hasTypeAnnotation(ts_node, k)) {
         lang_meta = .{ .zig = .{ .is_comptime = true } };
     }
 
     // For import declarations, store the import path extracted from the AST.
-    const sig: ?[]const u8 = if (kind == .import_decl) cf.extractImportPath(source, ts_node) else null;
+    const sig: ?[]const u8 = if (kind == .import_decl) cf.extractImportPath(source, ts_node, k) else null;
 
     const node_id = try g.addNode(.{
         .id = .root,
@@ -163,22 +178,22 @@ fn processVariableDecl(g: *Graph, source: []const u8, ts_node: ts.Node, parent_i
         while (i < body.childCount()) : (i += 1) {
             const child = body.child(i) orelse continue;
             if (!child.isNamed()) continue;
-            try processDeclaration(g, source, child, node_id, log);
+            try processDeclaration(g, source, child, node_id, k, log);
         }
     }
 }
 
-fn processFunctionDecl(g: *Graph, source: []const u8, ts_node: ts.Node, parent_id: NodeId, log: Logger) anyerror!void {
-    const name = ast.getIdentifierName(source, ts_node) orelse {
+fn processFunctionDecl(g: *Graph, source: []const u8, ts_node: ts.Node, parent_id: NodeId, k: *const KindIds, log: Logger) anyerror!void {
+    const name = ast.getIdentifierName(source, ts_node, k) orelse {
         log.trace("skipping function: no identifier", &.{});
         return;
     };
-    const visibility = ast.detectVisibility(ts_node);
-    const doc = ast.collectDocComment(source, ts_node);
+    const visibility = ast.detectVisibility(ts_node, k);
+    const doc = ast.collectDocComment(source, ts_node, k);
 
     // Detect type-returning generic functions: `fn Foo(comptime T: type) type { return struct { ... }; }`
-    if (ast.returnsType(source, ts_node)) {
-        if (ast.findReturnedTypeBody(ts_node)) |body_info| {
+    if (ast.returnsType(source, ts_node, k)) {
+        if (ast.findReturnedTypeBody(ts_node, k)) |body_info| {
             const kind: NodeKind = if (body_info.is_enum) .enum_def else .type_def;
             const type_id = try g.addNode(.{
                 .id = .root,
@@ -196,7 +211,7 @@ fn processFunctionDecl(g: *Graph, source: []const u8, ts_node: ts.Node, parent_i
             while (i < body_info.body.childCount()) : (i += 1) {
                 const child = body_info.body.child(i) orelse continue;
                 if (!child.isNamed()) continue;
-                try processDeclaration(g, source, child, type_id, log);
+                try processDeclaration(g, source, child, type_id, k, log);
             }
             return;
         } else {
@@ -212,7 +227,7 @@ fn processFunctionDecl(g: *Graph, source: []const u8, ts_node: ts.Node, parent_i
         .parent_id = parent_id,
         .visibility = visibility,
         .doc = doc,
-        .signature = extractFunctionSignature(source, ts_node),
+        .signature = extractFunctionSignature(source, ts_node, k),
         .line_start = ts_node.startPoint().row + 1,
         .line_end = ts_node.endPoint().row + 1,
     });
@@ -220,12 +235,12 @@ fn processFunctionDecl(g: *Graph, source: []const u8, ts_node: ts.Node, parent_i
 
 /// Extract the function header text (from "fn" keyword to the body block start).
 /// For `pub fn create() svc_mod.Service { ... }`, returns `pub fn create() svc_mod.Service`.
-fn extractFunctionSignature(source: []const u8, ts_node: ts.Node) ?[]const u8 {
+fn extractFunctionSignature(source: []const u8, ts_node: ts.Node, k: *const KindIds) ?[]const u8 {
     const start = ts_node.startByte();
     var i: u32 = 0;
     while (i < ts_node.childCount()) : (i += 1) {
         const child = ts_node.child(i) orelse continue;
-        if (std.mem.eql(u8, child.kind(), "block")) {
+        if (child.kindId() == k.block) {
             const end = child.startByte();
             if (end > start and end <= source.len) {
                 return std.mem.trimRight(u8, source[start..end], " \t\n\r");
@@ -236,9 +251,9 @@ fn extractFunctionSignature(source: []const u8, ts_node: ts.Node) ?[]const u8 {
     return null;
 }
 
-fn processTestDecl(g: *Graph, source: []const u8, ts_node: ts.Node, parent_id: NodeId) anyerror!void {
-    const name = ast.getTestName(source, ts_node);
-    const doc = ast.collectDocComment(source, ts_node);
+fn processTestDecl(g: *Graph, source: []const u8, ts_node: ts.Node, parent_id: NodeId, k: *const KindIds) anyerror!void {
+    const name = ast.getTestName(source, ts_node, k);
+    const doc = ast.collectDocComment(source, ts_node, k);
 
     _ = try g.addNode(.{
         .id = .root,
@@ -253,12 +268,12 @@ fn processTestDecl(g: *Graph, source: []const u8, ts_node: ts.Node, parent_id: N
     });
 }
 
-fn processContainerField(g: *Graph, source: []const u8, ts_node: ts.Node, parent_id: NodeId, log: Logger) anyerror!void {
-    const name = ast.getIdentifierName(source, ts_node) orelse {
+fn processContainerField(g: *Graph, source: []const u8, ts_node: ts.Node, parent_id: NodeId, k: *const KindIds, log: Logger) anyerror!void {
+    const name = ast.getIdentifierName(source, ts_node, k) orelse {
         log.trace("skipping field: no identifier", &.{});
         return;
     };
-    const doc = ast.collectDocComment(source, ts_node);
+    const doc = ast.collectDocComment(source, ts_node, k);
 
     _ = try g.addNode(.{
         .id = .root,
@@ -1256,7 +1271,7 @@ test "file-struct Self constant is filtered out" {
     // Act
     try parse(fixtures.zig.file_struct, &g, Logger.noop);
 
-    // Assert: const Self = @This() is filtered at parse time — no Self node exists
+    // Assert: const Self = @This() is filtered at parse time, no Self node exists
     var found = false;
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {

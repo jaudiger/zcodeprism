@@ -49,6 +49,21 @@ pub const PhantomNodeInfo = struct {
     symbol_path: []const u8,
 };
 
+/// Pre-built index mapping parent node indices to their sorted children.
+pub const ChildrenIndex = struct {
+    map: std.AutoHashMapUnmanaged(usize, []const usize),
+    storage: []usize,
+
+    pub fn deinit(self: *ChildrenIndex, allocator: std.mem.Allocator) void {
+        self.map.deinit(allocator);
+        allocator.free(self.storage);
+    }
+
+    pub fn childrenOf(self: *const ChildrenIndex, parent_idx: usize) []const usize {
+        return self.map.get(parent_idx) orelse &.{};
+    }
+};
+
 /// Controls which nodes and edges are included in rendered output.
 /// Both fields default to `false` — the common case is architecture-focused
 /// output that excludes test noise and external dependency clutter.
@@ -112,16 +127,31 @@ pub fn edgeTypeName(et: EdgeType) []const u8 {
 
 /// Numeric order for prefix-based sorting of IDs.
 pub fn prefixOrder(prefix: []const u8) u64 {
-    if (std.mem.eql(u8, prefix, "c:")) return 0;
-    if (std.mem.eql(u8, prefix, "en:")) return 1;
-    if (std.mem.eql(u8, prefix, "err:")) return 2;
-    if (std.mem.eql(u8, prefix, "f:")) return 3;
-    if (std.mem.eql(u8, prefix, "fn:")) return 4;
-    if (std.mem.eql(u8, prefix, "m:")) return 5;
-    if (std.mem.eql(u8, prefix, "st:")) return 6;
-    if (std.mem.eql(u8, prefix, "t:")) return 7;
-    if (std.mem.eql(u8, prefix, "x:")) return 8;
-    return 9;
+    if (prefix.len < 2) return 9;
+    return switch ((@as(u16, prefix[0]) << 8) | prefix[1]) {
+        'c' << 8 | ':' => 0, // "c:"
+        'e' << 8 | 'n' => 1, // "en:"
+        'e' << 8 | 'r' => 2, // "err:"
+        'f' << 8 | ':' => 3, // "f:"
+        'f' << 8 | 'n' => 4, // "fn:"
+        'm' << 8 | ':' => 5, // "m:"
+        's' << 8 | 't' => 6, // "st:"
+        't' << 8 | ':' => 7, // "t:"
+        'x' << 8 | ':' => 8, // "x:"
+        else => 9,
+    };
+}
+
+/// Numeric sort key for edge types, matching alphabetical order of their names.
+pub fn edgeTypeSortKey(et: EdgeType) u8 {
+    return switch (et) {
+        .calls => 0,
+        .exports => 1,
+        .implements => 2,
+        .imports => 3,
+        .similar_to => 4,
+        .uses_type => 5,
+    };
 }
 
 /// Walk up the parent chain to find the file node and return its assigned ID number.
@@ -140,140 +170,112 @@ pub fn findFileId(g: *const Graph, n: Node, ids: []const ?IdEntry) ?u32 {
     return null;
 }
 
-/// Find which phantom package a node belongs to and return its info.
-pub fn findPhantomPackageForNode(
-    g: *const Graph,
-    node_idx: usize,
-    phantom_packages: []const PhantomPackage,
-) ?PhantomNodeInfo {
-    for (phantom_packages) |pkg| {
-        if (pkg.root_idx == node_idx) {
-            return .{ .pkg_x_num = pkg.x_num, .symbol_path = g.nodes.items[node_idx].name };
-        }
-        for (pkg.symbols.items) |sym| {
-            if (sym.node_idx == node_idx) {
-                return .{ .pkg_x_num = pkg.x_num, .symbol_path = sym.qualified_path };
-            }
-        }
-    }
-    return null;
-}
-
 /// Recursively collect phantom child nodes with their qualified paths.
 pub fn collectPhantomSymbols(
     allocator: std.mem.Allocator,
     g: *const Graph,
-    parent_id: NodeId,
+    parent_idx: usize,
     parent_path: []const u8,
     symbols: *std.ArrayListUnmanaged(PhantomSymbol),
+    children_index: *const ChildrenIndex,
 ) !void {
-    for (g.nodes.items, 0..) |n, i| {
-        if (n.parent_id) |pid| {
-            if (pid == parent_id) {
-                var path_buf = std.ArrayListUnmanaged(u8){};
-                defer path_buf.deinit(allocator);
-                if (parent_path.len > 0) {
-                    try path_buf.appendSlice(allocator, parent_path);
-                    try path_buf.append(allocator, '.');
-                }
-                try path_buf.appendSlice(allocator, n.name);
-                const path = try allocator.dupe(u8, path_buf.items);
-                try symbols.append(allocator, .{
-                    .node_idx = i,
-                    .qualified_path = path,
-                });
-                try collectPhantomSymbols(allocator, g, @enumFromInt(i), path, symbols);
-            }
+    for (children_index.childrenOf(parent_idx)) |child_idx| {
+        const n = g.nodes.items[child_idx];
+        var path_buf = std.ArrayListUnmanaged(u8){};
+        defer path_buf.deinit(allocator);
+        if (parent_path.len > 0) {
+            try path_buf.appendSlice(allocator, parent_path);
+            try path_buf.append(allocator, '.');
         }
+        try path_buf.appendSlice(allocator, n.name);
+        const path = try allocator.dupe(u8, path_buf.items);
+        try symbols.append(allocator, .{
+            .node_idx = child_idx,
+            .qualified_path = path,
+        });
+        try collectPhantomSymbols(allocator, g, child_idx, path, symbols, children_index);
     }
 }
+
+/// Mutable state carried through the recursive ID assignment walk.
+pub const IdWalkState = struct {
+    st_counter: u32 = 0,
+    en_counter: u32 = 0,
+    fn_counter: u32 = 0,
+    c_counter: u32 = 0,
+    err_counter: u32 = 0,
+    t_counter: u32 = 0,
+    m_counter: u32 = 0,
+    struct_indices: std.ArrayListUnmanaged(usize) = .{},
+    enum_indices: std.ArrayListUnmanaged(usize) = .{},
+    fn_indices: std.ArrayListUnmanaged(usize) = .{},
+    const_indices: std.ArrayListUnmanaged(usize) = .{},
+    err_indices: std.ArrayListUnmanaged(usize) = .{},
+    test_indices: std.ArrayListUnmanaged(usize) = .{},
+
+    pub fn deinit(self: *IdWalkState, allocator: std.mem.Allocator) void {
+        self.struct_indices.deinit(allocator);
+        self.enum_indices.deinit(allocator);
+        self.fn_indices.deinit(allocator);
+        self.const_indices.deinit(allocator);
+        self.err_indices.deinit(allocator);
+        self.test_indices.deinit(allocator);
+    }
+};
 
 /// Recursively assign IDs to children of a parent node, collecting indices per section.
 pub fn assignChildrenIds(
     allocator: std.mem.Allocator,
     g: *const Graph,
-    parent_id: NodeId,
+    parent_idx: usize,
     ids: []?IdEntry,
-    scope: ?[]const u8,
     filter: FilterOptions,
-    st_counter: *u32,
-    en_counter: *u32,
-    fn_counter: *u32,
-    c_counter: *u32,
-    err_counter: *u32,
-    t_counter: *u32,
-    m_counter: *u32,
-    struct_indices: *std.ArrayListUnmanaged(usize),
-    enum_indices: *std.ArrayListUnmanaged(usize),
-    fn_indices: *std.ArrayListUnmanaged(usize),
-    const_indices: *std.ArrayListUnmanaged(usize),
-    err_indices: *std.ArrayListUnmanaged(usize),
-    test_indices: *std.ArrayListUnmanaged(usize),
+    children_index: *const ChildrenIndex,
+    state: *IdWalkState,
 ) !void {
-    var children = std.ArrayListUnmanaged(SortableNode){};
-    defer children.deinit(allocator);
-    for (g.nodes.items, 0..) |n, i| {
-        if (n.parent_id) |pid| {
-            if (pid == parent_id) {
-                if (scope) |s| {
-                    if (!inScope(n.file_path, s)) continue;
-                }
-                try children.append(allocator, .{
-                    .node_idx = i,
-                    .line_start = n.line_start orelse 0,
-                });
-            }
-        }
-    }
-    std.mem.sort(SortableNode, children.items, {}, struct {
-        fn lessThan(_: void, a: SortableNode, b: SortableNode) bool {
-            return a.line_start < b.line_start;
-        }
-    }.lessThan);
-
-    for (children.items) |child| {
-        const n = g.nodes.items[child.node_idx];
+    for (children_index.childrenOf(parent_idx)) |child_idx| {
+        const n = g.nodes.items[child_idx];
         switch (n.kind) {
             .type_def => {
-                st_counter.* += 1;
-                ids[child.node_idx] = .{ .prefix = "st:", .num = st_counter.* };
-                try struct_indices.append(allocator, child.node_idx);
-                try assignChildrenIds(allocator, g, @enumFromInt(child.node_idx), ids, scope, filter, st_counter, en_counter, fn_counter, c_counter, err_counter, t_counter, m_counter, struct_indices, enum_indices, fn_indices, const_indices, err_indices, test_indices);
+                state.st_counter += 1;
+                ids[child_idx] = .{ .prefix = "st:", .num = state.st_counter };
+                try state.struct_indices.append(allocator, child_idx);
+                try assignChildrenIds(allocator, g, child_idx, ids, filter, children_index, state);
             },
             .enum_def => {
-                en_counter.* += 1;
-                ids[child.node_idx] = .{ .prefix = "en:", .num = en_counter.* };
-                try enum_indices.append(allocator, child.node_idx);
+                state.en_counter += 1;
+                ids[child_idx] = .{ .prefix = "en:", .num = state.en_counter };
+                try state.enum_indices.append(allocator, child_idx);
             },
             .function => {
-                fn_counter.* += 1;
-                ids[child.node_idx] = .{ .prefix = "fn:", .num = fn_counter.* };
-                const parent_node = g.nodes.items[@intFromEnum(parent_id)];
+                state.fn_counter += 1;
+                ids[child_idx] = .{ .prefix = "fn:", .num = state.fn_counter };
+                const parent_node = g.nodes.items[parent_idx];
                 if (parent_node.kind == .file or parent_node.kind == .module) {
-                    try fn_indices.append(allocator, child.node_idx);
+                    try state.fn_indices.append(allocator, child_idx);
                 }
             },
             .constant => {
-                c_counter.* += 1;
-                ids[child.node_idx] = .{ .prefix = "c:", .num = c_counter.* };
-                try const_indices.append(allocator, child.node_idx);
+                state.c_counter += 1;
+                ids[child_idx] = .{ .prefix = "c:", .num = state.c_counter };
+                try state.const_indices.append(allocator, child_idx);
             },
             .error_def => {
-                err_counter.* += 1;
-                ids[child.node_idx] = .{ .prefix = "err:", .num = err_counter.* };
-                try err_indices.append(allocator, child.node_idx);
+                state.err_counter += 1;
+                ids[child_idx] = .{ .prefix = "err:", .num = state.err_counter };
+                try state.err_indices.append(allocator, child_idx);
             },
             .test_def => {
                 if (filter.include_test_nodes) {
-                    t_counter.* += 1;
-                    ids[child.node_idx] = .{ .prefix = "t:", .num = t_counter.* };
-                    try test_indices.append(allocator, child.node_idx);
+                    state.t_counter += 1;
+                    ids[child_idx] = .{ .prefix = "t:", .num = state.t_counter };
+                    try state.test_indices.append(allocator, child_idx);
                 }
             },
             .module => {
-                m_counter.* += 1;
-                ids[child.node_idx] = .{ .prefix = "m:", .num = m_counter.* };
-                try assignChildrenIds(allocator, g, @enumFromInt(child.node_idx), ids, scope, filter, st_counter, en_counter, fn_counter, c_counter, err_counter, t_counter, m_counter, struct_indices, enum_indices, fn_indices, const_indices, err_indices, test_indices);
+                state.m_counter += 1;
+                ids[child_idx] = .{ .prefix = "m:", .num = state.m_counter };
+                try assignChildrenIds(allocator, g, child_idx, ids, filter, children_index, state);
             },
             .field, .import_decl, .file => {},
         }
@@ -292,6 +294,9 @@ pub const IdAssignment = struct {
     err_indices: std.ArrayListUnmanaged(usize),
     test_indices: std.ArrayListUnmanaged(usize),
     phantom_packages: std.ArrayListUnmanaged(PhantomPackage),
+    children_index: ChildrenIndex,
+    phantom_lookup: std.AutoHashMapUnmanaged(usize, PhantomNodeInfo),
+    languages: LanguageSet,
 
     pub fn deinit(self: *IdAssignment, allocator: std.mem.Allocator) void {
         allocator.free(self.ids);
@@ -304,6 +309,8 @@ pub const IdAssignment = struct {
         self.test_indices.deinit(allocator);
         for (self.phantom_packages.items) |*pkg| pkg.deinit(allocator);
         self.phantom_packages.deinit(allocator);
+        self.children_index.deinit(allocator);
+        self.phantom_lookup.deinit(allocator);
     }
 };
 
@@ -317,37 +324,103 @@ pub fn buildIdAssignment(
     const ids = try allocator.alloc(?IdEntry, node_count);
     @memset(ids, null);
 
-    var file_indices = std.ArrayListUnmanaged(usize){};
-    var struct_indices = std.ArrayListUnmanaged(usize){};
-    var enum_indices = std.ArrayListUnmanaged(usize){};
-    var fn_indices = std.ArrayListUnmanaged(usize){};
-    var const_indices = std.ArrayListUnmanaged(usize){};
-    var err_indices = std.ArrayListUnmanaged(usize){};
-    var test_indices = std.ArrayListUnmanaged(usize){};
-
-    var f_counter: u32 = 0;
-    var st_counter: u32 = 0;
-    var en_counter: u32 = 0;
-    var fn_counter: u32 = 0;
-    var c_counter: u32 = 0;
-    var err_counter: u32 = 0;
-    var t_counter: u32 = 0;
-    var m_counter: u32 = 0;
-    var x_counter: u32 = 0;
-
-    var phantom_packages = std.ArrayListUnmanaged(PhantomPackage){};
-
-    // Collect and sort file nodes by path.
+    // Count children per parent and collect file nodes + languages in one scan.
+    var child_counts = std.AutoHashMapUnmanaged(usize, u32){};
+    defer child_counts.deinit(allocator);
+    var total_children: usize = 0;
+    var languages = LanguageSet{ .has_zig = false, .has_rust = false };
     var file_nodes = std.ArrayListUnmanaged(usize){};
     defer file_nodes.deinit(allocator);
+
     for (g.nodes.items, 0..) |n, i| {
-        if (n.kind == .file and isInternal(n)) {
+        if (isInternal(n)) {
+            const in_s = if (scope) |s| inScope(n.file_path, s) else true;
+            if (in_s) {
+                switch (n.language) {
+                    .zig => languages.has_zig = true,
+                    .rust => languages.has_rust = true,
+                }
+            }
+            if (n.kind == .file and in_s) {
+                try file_nodes.append(allocator, i);
+            }
+        }
+
+        if (n.parent_id) |pid| {
+            const parent_idx = @intFromEnum(pid);
             if (scope) |s| {
                 if (!inScope(n.file_path, s)) continue;
             }
-            try file_nodes.append(allocator, i);
+            const gop = try child_counts.getOrPut(allocator, parent_idx);
+            if (!gop.found_existing) gop.value_ptr.* = 0;
+            gop.value_ptr.* += 1;
+            total_children += 1;
         }
     }
+
+    // Allocate flat storage for the children index.
+    const storage = try allocator.alloc(usize, total_children);
+    var map = std.AutoHashMapUnmanaged(usize, []const usize){};
+
+    // Compute offsets: each parent gets a contiguous slice in storage.
+    var offsets = std.AutoHashMapUnmanaged(usize, usize){};
+    defer offsets.deinit(allocator);
+    var offset: usize = 0;
+    {
+        var it = child_counts.iterator();
+        while (it.next()) |entry| {
+            try offsets.put(allocator, entry.key_ptr.*, offset);
+            offset += entry.value_ptr.*;
+        }
+    }
+
+    // Fill storage with child indices.
+    var write_pos = std.AutoHashMapUnmanaged(usize, usize){};
+    defer write_pos.deinit(allocator);
+    {
+        var it = offsets.iterator();
+        while (it.next()) |entry| {
+            try write_pos.put(allocator, entry.key_ptr.*, entry.value_ptr.*);
+        }
+    }
+    for (g.nodes.items, 0..) |n, i| {
+        if (n.parent_id) |pid| {
+            const parent_idx = @intFromEnum(pid);
+            if (scope) |s| {
+                if (!inScope(n.file_path, s)) continue;
+            }
+            if (write_pos.getPtr(parent_idx)) |pos| {
+                storage[pos.*] = i;
+                pos.* += 1;
+            }
+        }
+    }
+
+    // Sort each parent's children by line_start for deterministic ordering,
+    // then record the slice in the map.
+    {
+        var it = offsets.iterator();
+        while (it.next()) |entry| {
+            const pidx = entry.key_ptr.*;
+            const start = entry.value_ptr.*;
+            const count = child_counts.get(pidx).?;
+            const slice = storage[start .. start + count];
+
+            std.mem.sort(usize, slice, g, struct {
+                fn lessThan(graph: *const Graph, a: usize, b: usize) bool {
+                    const la = graph.nodes.items[a].line_start orelse 0;
+                    const lb = graph.nodes.items[b].line_start orelse 0;
+                    return la < lb;
+                }
+            }.lessThan);
+
+            try map.put(allocator, pidx, slice);
+        }
+    }
+
+    var children_index = ChildrenIndex{ .map = map, .storage = storage };
+
+    // Sort file nodes by path.
     std.mem.sort(usize, file_nodes.items, g, struct {
         fn lessThan(graph: *const Graph, a: usize, b: usize) bool {
             const pa = graph.nodes.items[a].file_path orelse "";
@@ -357,15 +430,21 @@ pub fn buildIdAssignment(
     }.lessThan);
 
     // Assign file IDs and walk children.
+    var file_indices = std.ArrayListUnmanaged(usize){};
+    var state = IdWalkState{};
+    var f_counter: u32 = 0;
+
     for (file_nodes.items) |fi| {
         f_counter += 1;
         ids[fi] = .{ .prefix = "f:", .num = f_counter };
         try file_indices.append(allocator, fi);
-
-        try assignChildrenIds(allocator, g, @enumFromInt(fi), ids, scope, filter, &st_counter, &en_counter, &fn_counter, &c_counter, &err_counter, &t_counter, &m_counter, &struct_indices, &enum_indices, &fn_indices, &const_indices, &err_indices, &test_indices);
+        try assignChildrenIds(allocator, g, fi, ids, filter, &children_index, &state);
     }
 
     // Collect phantom packages (only when external nodes are included).
+    var phantom_packages = std.ArrayListUnmanaged(PhantomPackage){};
+    var x_counter: u32 = 0;
+
     if (filter.include_external_nodes) {
         for (g.nodes.items, 0..) |n, i| {
             if (!isInternal(n)) {
@@ -379,7 +458,7 @@ pub fn buildIdAssignment(
                         .x_num = x_counter,
                         .symbols = .{},
                     };
-                    try collectPhantomSymbols(allocator, g, @enumFromInt(i), "", &pkg.symbols);
+                    try collectPhantomSymbols(allocator, g, i, "", &pkg.symbols, &children_index);
                     std.mem.sort(PhantomSymbol, pkg.symbols.items, {}, struct {
                         fn lessThan(_: void, a: PhantomSymbol, b: PhantomSymbol) bool {
                             return std.mem.order(u8, a.qualified_path, b.qualified_path) == .lt;
@@ -391,37 +470,38 @@ pub fn buildIdAssignment(
         }
     }
 
+    // Build phantom lookup HashMap.
+    var phantom_lookup = std.AutoHashMapUnmanaged(usize, PhantomNodeInfo){};
+    for (phantom_packages.items) |pkg| {
+        try phantom_lookup.put(allocator, pkg.root_idx, .{
+            .pkg_x_num = pkg.x_num,
+            .symbol_path = g.nodes.items[pkg.root_idx].name,
+        });
+        for (pkg.symbols.items) |sym| {
+            try phantom_lookup.put(allocator, sym.node_idx, .{
+                .pkg_x_num = pkg.x_num,
+                .symbol_path = sym.qualified_path,
+            });
+        }
+    }
+
     return .{
         .ids = ids,
         .file_indices = file_indices,
-        .struct_indices = struct_indices,
-        .enum_indices = enum_indices,
-        .fn_indices = fn_indices,
-        .const_indices = const_indices,
-        .err_indices = err_indices,
-        .test_indices = test_indices,
+        .struct_indices = state.struct_indices,
+        .enum_indices = state.enum_indices,
+        .fn_indices = state.fn_indices,
+        .const_indices = state.const_indices,
+        .err_indices = state.err_indices,
+        .test_indices = state.test_indices,
         .phantom_packages = phantom_packages,
+        .children_index = children_index,
+        .phantom_lookup = phantom_lookup,
+        .languages = languages,
     };
 }
 
-/// Collect unique languages from in-scope internal nodes.
 pub const LanguageSet = struct {
     has_zig: bool,
     has_rust: bool,
 };
-
-pub fn collectLanguages(g: *const Graph, scope: ?[]const u8) LanguageSet {
-    var has_zig = false;
-    var has_rust = false;
-    for (g.nodes.items) |n| {
-        if (!isInternal(n)) continue;
-        if (scope) |s| {
-            if (!inScope(n.file_path, s)) continue;
-        }
-        switch (n.language) {
-            .zig => has_zig = true,
-            .rust => has_rust = true,
-        }
-    }
-    return .{ .has_zig = has_zig, .has_rust = has_rust };
-}

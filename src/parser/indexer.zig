@@ -48,11 +48,13 @@ const FileEntry = struct {
     content: []const u8,
     content_hash: [12]u8,
     import_count: usize = 0,
+    consumed: bool = false,
 };
 
 /// Tracks a parsed file's node index and source for post-processing.
 const FileInfo = struct {
     idx: usize,
+    scope_end: usize,
     source: []const u8,
 };
 
@@ -74,12 +76,6 @@ pub fn indexDirectory(
 
     var file_entries = std.ArrayListUnmanaged(FileEntry){};
     defer file_entries.deinit(allocator);
-
-    var basenames_list = std.ArrayListUnmanaged([]const u8){};
-    defer basenames_list.deinit(allocator);
-
-    var consumed = std.ArrayListUnmanaged(bool){};
-    defer consumed.deinit(allocator);
 
     {
         var walker = try dir.walk(allocator);
@@ -114,16 +110,14 @@ pub fn indexDirectory(
                 .content = content,
                 .content_hash = hash,
             });
-            try basenames_list.append(allocator, basename);
-            try consumed.append(allocator, false);
         }
     }
 
     // Cleanup non-consumed entries (skipped or error). This defer runs before
     // the deinit defers above (reverse declaration order), so items are valid.
     defer {
-        for (file_entries.items, 0..) |fe, i| {
-            if (i < consumed.items.len and !consumed.items[i]) {
+        for (file_entries.items) |fe| {
+            if (!fe.consumed) {
                 allocator.free(fe.content);
                 allocator.free(fe.rel_path);
             }
@@ -140,39 +134,17 @@ pub fn indexDirectory(
         return result;
     }
 
-    // Sort files so that imported files are parsed before their importers.
-    // Compute transitive import depth: depth = max(depth of each imported file) + 1.
-    // This handles chains like A→B→C where all three have the same direct
-    // import count but must be parsed in order C, B, A.
-    for (file_entries.items) |*fe| {
-        fe.import_count = 0;
-    }
+    // Pre-allocate graph capacity: rough estimate of ~30 nodes and ~20 edges per file.
     {
-        var iter_count: usize = 0;
-        while (iter_count < file_entries.items.len) : (iter_count += 1) {
-            var changed = false;
-            for (file_entries.items, 0..) |*fe, fi| {
-                var max_dep: usize = 0;
-                for (file_entries.items, 0..) |dep, di| {
-                    if (fi == di) continue;
-                    if (!importsBasename(fe.content, dep.basename)) continue;
-                    max_dep = @max(max_dep, dep.import_count + 1);
-                }
-                if (max_dep > fe.import_count) {
-                    fe.import_count = max_dep;
-                    changed = true;
-                }
-            }
-            if (!changed) break;
-        }
+        const est_nodes: u32 = @intCast(file_entries.items.len * 30);
+        const est_edges: u32 = @intCast(file_entries.items.len * 20);
+        try graph.nodes.ensureTotalCapacity(graph.allocator, est_nodes);
+        try graph.edges.ensureTotalCapacity(graph.allocator, est_edges);
+        try graph.edge_index.ensureTotalCapacity(graph.allocator, est_edges);
     }
 
-    std.sort.block(FileEntry, file_entries.items, {}, struct {
-        fn lessThan(_: void, a: FileEntry, b: FileEntry) bool {
-            if (a.import_count != b.import_count) return a.import_count < b.import_count;
-            return std.mem.order(u8, a.basename, b.basename) == .lt;
-        }
-    }.lessThan);
+    // Topological sort: imported files are parsed before their importers.
+    try topoSortFiles(allocator, file_entries.items);
 
     // Parse each file through the visitor in dependency order.
     const lang_support = Registry.getByExtension(".zig") orelse return error.UnsupportedLanguage;
@@ -209,7 +181,7 @@ pub fn indexDirectory(
         // Transfer ownership of content and path to graph.
         try graph.addOwnedBuffer(fe.content);
         try graph.addOwnedBuffer(fe.rel_path);
-        consumed.items[entry_idx] = true;
+        file_entries.items[entry_idx].consumed = true;
 
         // Patch the file node (visitor creates it at before_count with name="").
         if (before_count < graph.nodeCount()) {
@@ -222,7 +194,11 @@ pub fn indexDirectory(
                 log.trace("file produced no nodes", &.{Field.string("path", fe.rel_path)});
             }
 
-            try file_infos.append(allocator, .{ .idx = before_count, .source = fe.content });
+            try file_infos.append(allocator, .{
+                .idx = before_count,
+                .scope_end = graph.nodeCount(),
+                .source = fe.content,
+            });
         }
 
         result.files_indexed += 1;
@@ -230,28 +206,33 @@ pub fn indexDirectory(
 
     // Compute metrics for function nodes in each file.
     for (file_infos.items) |fi| {
-        source_scan.computeMetricsForNodes(graph, fi.source, fi.idx);
+        source_scan.computeMetricsForNodes(graph, fi.source, fi.idx, fi.scope_end);
     }
 
     // Resolve inter-file imports and external (phantom) references.
-    // Import edges between project files.
+    // Build basename-to-FileInfo-index map for cross-file lookup.
     log.debug("resolving cross-file edges", &.{Field.uint("file_count", file_infos.items.len)});
+    var basename_map = std.StringHashMapUnmanaged(usize){};
+    defer basename_map.deinit(allocator);
+    try basename_map.ensureTotalCapacity(allocator, @intCast(file_infos.items.len));
+    for (file_infos.items, 0..) |fi, i| {
+        const name = graph.nodes.items[fi.idx].name;
+        basename_map.putAssumeCapacity(name, i);
+    }
+
+    // Import edges between project files.
     for (file_infos.items) |fi| {
         const file_id: NodeId = @enumFromInt(fi.idx);
 
-        for (graph.nodes.items) |n| {
+        // Only scan import_decl nodes within this file's node range.
+        for (graph.nodes.items[fi.idx..fi.scope_end]) |n| {
             if (n.kind != .import_decl) continue;
             if (n.parent_id == null or n.parent_id.? != file_id) continue;
 
             const import_path = n.signature orelse continue;
 
-            // Find target file node by matching import path to file basenames.
-            for (file_infos.items) |target_fi| {
-                const target_file = graph.nodes.items[target_fi.idx];
-                if (std.mem.eql(u8, target_file.name, import_path)) {
-                    try source_scan.addEdgeIfNew(graph, file_id, @enumFromInt(target_fi.idx), .imports, .tree_sitter);
-                    break;
-                }
+            if (basename_map.get(import_path)) |target_idx| {
+                try source_scan.addEdgeIfNew(graph, file_id, @enumFromInt(file_infos.items[target_idx].idx), .imports, .tree_sitter);
             }
         }
     }
@@ -266,7 +247,7 @@ pub fn indexDirectory(
 
         // Find the std import variable name in this file (usually "std").
         var std_import_name: ?[]const u8 = null;
-        for (graph.nodes.items) |n| {
+        for (graph.nodes.items[fi.idx..fi.scope_end]) |n| {
             if (n.kind != .import_decl) continue;
             if (n.parent_id == null or n.parent_id.? != file_id) continue;
             const import_path = n.signature orelse continue;
@@ -279,7 +260,7 @@ pub fn indexDirectory(
         }
 
         if (std_import_name) |sname| {
-            try source_scan.resolveStdPhantoms(graph, fi.source, fi.idx, &phantom, sname);
+            try source_scan.resolveStdPhantoms(graph, fi.source, fi.idx, fi.scope_end, &phantom, sname);
         }
     }
 
@@ -299,9 +280,12 @@ pub fn indexDirectory(
 // ---------------------------------------------------------------------------
 
 fn computeContentHash(content: []const u8) [12]u8 {
-    var full_hash: [32]u8 = undefined;
-    std.crypto.hash.sha2.Sha256.hash(content, &full_hash, .{});
-    return full_hash[0..12].*;
+    const h1 = std.hash.XxHash3.hash(0, content);
+    const h2 = std.hash.XxHash3.hash(1, content);
+    var result: [12]u8 = undefined;
+    std.mem.writeInt(u64, result[0..8], h1, .little);
+    std.mem.writeInt(u32, result[8..12], @truncate(h2), .little);
+    return result;
 }
 
 /// Directories unconditionally excluded from indexation to not pollute the graph.
@@ -329,21 +313,117 @@ fn pathHasComponent(path: []const u8, component: []const u8) bool {
     return false;
 }
 
-/// Returns true if `content` contains an @import("basename") reference.
-fn importsBasename(content: []const u8, basename: []const u8) bool {
+/// Extract all @import("...") basenames from source content as zero-copy
+/// slices into `content`. Returns the number of basenames found.
+fn extractImportBasenames(content: []const u8, out: [][]const u8) usize {
     const pattern = "@import(\"";
     var pos: usize = 0;
+    var count: usize = 0;
     while (pos + pattern.len <= content.len) {
-        const idx = std.mem.indexOf(u8, content[pos..], pattern) orelse return false;
+        const idx = std.mem.indexOf(u8, content[pos..], pattern) orelse break;
         const abs_idx = pos + idx;
         const path_start = abs_idx + pattern.len;
-        if (path_start >= content.len) return false;
-        const end = std.mem.indexOfScalar(u8, content[path_start..], '"') orelse return false;
-        const import_path = content[path_start .. path_start + end];
-        if (std.mem.eql(u8, import_path, basename)) return true;
+        if (path_start >= content.len) break;
+        const end = std.mem.indexOfScalar(u8, content[path_start..], '"') orelse break;
+        if (count < out.len) {
+            out[count] = content[path_start .. path_start + end];
+            count += 1;
+        }
         pos = path_start + end + 1;
     }
-    return false;
+    return count;
+}
+
+/// Topological sort of file entries using Kahn's algorithm.
+/// Files with no imports come first; files that import others come after
+/// their dependencies. Handles cycles gracefully by appending remaining files.
+fn topoSortFiles(allocator: std.mem.Allocator, entries: []FileEntry) !void {
+    const n = entries.len;
+    if (n <= 1) return;
+
+    // Build basename-to-index map.
+    var name_map = std.StringHashMapUnmanaged(usize){};
+    defer name_map.deinit(allocator);
+    try name_map.ensureTotalCapacity(allocator, @intCast(n));
+    for (entries, 0..) |fe, i| {
+        name_map.putAssumeCapacity(fe.basename, i);
+    }
+
+    // Compute in-degrees and adjacency (importer -> importee).
+    var in_degree = try allocator.alloc(usize, n);
+    defer allocator.free(in_degree);
+    @memset(in_degree, 0);
+
+    // Adjacency: for each file, which files import it (reverse edges for Kahn's).
+    var adj = try allocator.alloc(std.ArrayListUnmanaged(usize), n);
+    defer {
+        for (adj) |*a| a.deinit(allocator);
+        allocator.free(adj);
+    }
+    for (adj) |*a| a.* = .{};
+
+    var import_buf: [256][]const u8 = undefined;
+    for (entries, 0..) |fe, i| {
+        const count = extractImportBasenames(fe.content, &import_buf);
+        for (import_buf[0..count]) |imp| {
+            if (name_map.get(imp)) |dep_idx| {
+                if (dep_idx != i) {
+                    // i imports dep_idx, so dep_idx must come before i.
+                    // Edge: dep_idx -> i in Kahn's sense.
+                    try adj[dep_idx].append(allocator, i);
+                    in_degree[i] += 1;
+                }
+            }
+        }
+    }
+
+    // BFS queue: start with all files that have no dependencies.
+    var queue = try allocator.alloc(usize, n);
+    defer allocator.free(queue);
+    var q_head: usize = 0;
+    var q_tail: usize = 0;
+    for (in_degree, 0..) |deg, i| {
+        if (deg == 0) {
+            queue[q_tail] = i;
+            q_tail += 1;
+        }
+    }
+
+    // Kahn's BFS produces topological order.
+    var order = try allocator.alloc(usize, n);
+    defer allocator.free(order);
+    var order_len: usize = 0;
+    while (q_head < q_tail) {
+        const u = queue[q_head];
+        q_head += 1;
+        order[order_len] = u;
+        order_len += 1;
+        for (adj[u].items) |v| {
+            in_degree[v] -= 1;
+            if (in_degree[v] == 0) {
+                queue[q_tail] = v;
+                q_tail += 1;
+            }
+        }
+    }
+
+    // Append any remaining files (cycles) in original order.
+    if (order_len < n) {
+        for (0..n) |i| {
+            if (in_degree[i] > 0) {
+                order[order_len] = i;
+                order_len += 1;
+            }
+        }
+    }
+
+    // Reorder entries in-place using the computed order.
+    var tmp = try allocator.alloc(FileEntry, n);
+    defer allocator.free(tmp);
+    for (order[0..n], 0..) |src_idx, dst| {
+        tmp[dst] = entries[src_idx];
+    }
+    @memcpy(entries, tmp);
 }
 
 fn findExistingFileNode(graph: *const Graph, basename: []const u8) ?usize {

@@ -2,25 +2,27 @@ const std = @import("std");
 const types = @import("../../core/types.zig");
 const ts = @import("tree-sitter");
 const ts_api = @import("../../parser/tree_sitter_api.zig");
+const pc = @import("parse_context.zig");
 
 const NodeKind = types.NodeKind;
 const Visibility = types.Visibility;
+const KindIds = pc.KindIds;
 
 // =========================================================================
 // Return type analysis
 // =========================================================================
 
 /// Check if a function_declaration has `type` as its return type.
-pub fn returnsType(source: []const u8, fn_node: ts.Node) bool {
+pub fn returnsType(source: []const u8, fn_node: ts.Node, k: *const KindIds) bool {
     // The return type appears as a `builtin_type` child with text "type",
     // positioned before the block. We check non-named children too since
     // `builtin_type` is a named child.
     var i: u32 = 0;
     while (i < fn_node.childCount()) : (i += 1) {
         const child = fn_node.child(i) orelse continue;
-        const kind = child.kind();
-        if (std.mem.eql(u8, kind, "block")) break;
-        if (std.mem.eql(u8, kind, "builtin_type")) {
+        const kid = child.kindId();
+        if (kid == k.block) break;
+        if (kid == k.builtin_type) {
             const text = ts_api.nodeText(source, child);
             if (std.mem.eql(u8, text, "type")) return true;
         }
@@ -35,37 +37,37 @@ pub const ReturnedTypeBody = struct {
 
 /// Search a function body for `return struct { ... }`, `return union { ... }`, or `return enum { ... }`.
 /// Returns the struct/union/enum body node if found.
-pub fn findReturnedTypeBody(fn_node: ts.Node) ?ReturnedTypeBody {
-    // Path: function_declaration → block → expression_statement → return_expression → struct/union/enum_declaration
+pub fn findReturnedTypeBody(fn_node: ts.Node, k: *const KindIds) ?ReturnedTypeBody {
+    // Path: function_declaration -> block -> expression_statement -> return_expression -> struct/union/enum_declaration
     var i: u32 = 0;
     while (i < fn_node.childCount()) : (i += 1) {
         const child = fn_node.child(i) orelse continue;
-        if (!std.mem.eql(u8, child.kind(), "block")) continue;
+        if (child.kindId() != k.block) continue;
 
         // Search block children for expression_statement containing a return.
         var j: u32 = 0;
         while (j < child.childCount()) : (j += 1) {
             const stmt = child.child(j) orelse continue;
-            if (!std.mem.eql(u8, stmt.kind(), "expression_statement")) continue;
+            if (stmt.kindId() != k.expression_statement) continue;
 
             // Look for return_expression inside the expression_statement.
-            var k: u32 = 0;
-            while (k < stmt.childCount()) : (k += 1) {
-                const ret = stmt.child(k) orelse continue;
-                if (!std.mem.eql(u8, ret.kind(), "return_expression")) continue;
+            var ki: u32 = 0;
+            while (ki < stmt.childCount()) : (ki += 1) {
+                const ret = stmt.child(ki) orelse continue;
+                if (ret.kindId() != k.return_expression) continue;
 
                 // The returned value is a named child of return_expression (after "return").
                 var l: u32 = 0;
                 while (l < ret.namedChildCount()) : (l += 1) {
                     const val = ret.namedChild(l) orelse continue;
-                    const val_kind = val.kind();
-                    if (std.mem.eql(u8, val_kind, "struct_declaration")) {
+                    const val_kid = val.kindId();
+                    if (val_kid == k.struct_declaration) {
                         return .{ .body = val, .is_enum = false };
                     }
-                    if (std.mem.eql(u8, val_kind, "union_declaration")) {
+                    if (val_kid == k.union_declaration) {
                         return .{ .body = val, .is_enum = false };
                     }
-                    if (std.mem.eql(u8, val_kind, "enum_declaration")) {
+                    if (val_kid == k.enum_declaration) {
                         return .{ .body = val, .is_enum = true };
                     }
                 }
@@ -79,11 +81,11 @@ pub fn findReturnedTypeBody(fn_node: ts.Node) ?ReturnedTypeBody {
 // Identifier and name extraction
 // =========================================================================
 
-pub fn getIdentifierName(source: []const u8, ts_node: ts.Node) ?[]const u8 {
+pub fn getIdentifierName(source: []const u8, ts_node: ts.Node, k: *const KindIds) ?[]const u8 {
     var i: u32 = 0;
     while (i < ts_node.namedChildCount()) : (i += 1) {
         const child = ts_node.namedChild(i) orelse continue;
-        if (std.mem.eql(u8, child.kind(), "identifier")) {
+        if (child.kindId() == k.identifier) {
             const raw = ts_api.nodeText(source, child);
             return stripQuotedIdentifier(raw);
         }
@@ -99,17 +101,18 @@ pub fn stripQuotedIdentifier(raw: []const u8) []const u8 {
     return raw;
 }
 
-pub fn getTestName(source: []const u8, ts_node: ts.Node) []const u8 {
+pub fn getTestName(source: []const u8, ts_node: ts.Node, k: *const KindIds) []const u8 {
     var i: u32 = 0;
     while (i < ts_node.namedChildCount()) : (i += 1) {
         const child = ts_node.namedChild(i) orelse continue;
-        if (std.mem.eql(u8, child.kind(), "string")) {
+        const kid = child.kindId();
+        if (kid == k.string) {
             // String-literal test name: test "name" { }
             // Look for string_content inside the string node.
             var j: u32 = 0;
             while (j < child.namedChildCount()) : (j += 1) {
                 const sc = child.namedChild(j) orelse continue;
-                if (std.mem.eql(u8, sc.kind(), "string_content")) {
+                if (sc.kindId() == k.string_content) {
                     return ts_api.nodeText(source, sc);
                 }
             }
@@ -120,7 +123,7 @@ pub fn getTestName(source: []const u8, ts_node: ts.Node) []const u8 {
             }
             return text;
         }
-        if (std.mem.eql(u8, child.kind(), "identifier")) {
+        if (kid == k.identifier) {
             // Decl-reference test name: test Value { } or test @"edge case" { }
             const text = ts_api.nodeText(source, child);
             return stripQuotedIdentifier(text);
@@ -133,12 +136,12 @@ pub fn getTestName(source: []const u8, ts_node: ts.Node) []const u8 {
 // Visibility and doc comments
 // =========================================================================
 
-pub fn detectVisibility(ts_node: ts.Node) Visibility {
+pub fn detectVisibility(ts_node: ts.Node, k: *const KindIds) Visibility {
     // Check all children (including anonymous) for "pub" keyword.
     var i: u32 = 0;
     while (i < ts_node.childCount()) : (i += 1) {
         const child = ts_node.child(i) orelse continue;
-        if (std.mem.eql(u8, child.kind(), "pub")) return .public;
+        if (child.kindId() == k.pub_kw) return .public;
     }
     return .private;
 }
@@ -146,14 +149,14 @@ pub fn detectVisibility(ts_node: ts.Node) Visibility {
 /// Collect module-level doc comments (//!) from the beginning of a source file.
 /// Scans direct children of the root node for consecutive comment nodes whose
 /// text starts with "//!". Stops at the first non-//! child.
-pub fn collectModuleDocComment(source: []const u8, root: ts.Node) ?[]const u8 {
+pub fn collectModuleDocComment(source: []const u8, root: ts.Node, k: *const KindIds) ?[]const u8 {
     var first_start: ?u32 = null;
     var last_end: ?u32 = null;
 
     var i: u32 = 0;
     while (i < root.childCount()) : (i += 1) {
         const child = root.child(i) orelse continue;
-        if (!std.mem.eql(u8, child.kind(), "comment")) {
+        if (child.kindId() != k.comment) {
             // Skip anonymous non-comment tokens (e.g. punctuation).
             if (!child.isNamed()) continue;
             // Hit a declaration, stop.
@@ -175,13 +178,13 @@ pub fn collectModuleDocComment(source: []const u8, root: ts.Node) ?[]const u8 {
     return null;
 }
 
-pub fn collectDocComment(source: []const u8, ts_node: ts.Node) ?[]const u8 {
+pub fn collectDocComment(source: []const u8, ts_node: ts.Node, k: *const KindIds) ?[]const u8 {
     // Walk previous siblings to collect consecutive doc comment lines.
     var first_doc_start: ?u32 = null;
     var last_doc_end: ?u32 = null;
     var current = ts_node.prevSibling();
     while (current) |sib| {
-        if (std.mem.eql(u8, sib.kind(), "comment")) {
+        if (sib.kindId() == k.comment) {
             const text = source[sib.startByte()..sib.endByte()];
             if (text.len >= 3 and text[0] == '/' and text[1] == '/' and text[2] == '/') {
                 first_doc_start = sib.startByte();
@@ -205,21 +208,20 @@ pub fn collectDocComment(source: []const u8, ts_node: ts.Node) ?[]const u8 {
 
 /// Check if a variable_declaration's value contains `@This()`.
 /// Detects all aliases regardless of name (not just "Self").
-pub fn isThisBuiltin(source: []const u8, var_decl: ts.Node) bool {
-    return isThisRecursive(source, var_decl, 0);
+pub fn isThisBuiltin(source: []const u8, var_decl: ts.Node, k: *const KindIds) bool {
+    return isThisRecursive(source, var_decl, k, 0);
 }
 
-fn isThisRecursive(source: []const u8, node: ts.Node, depth: u32) bool {
+fn isThisRecursive(source: []const u8, node: ts.Node, k: *const KindIds, depth: u32) bool {
     if (depth > 5) return false;
     var i: u32 = 0;
     while (i < node.childCount()) : (i += 1) {
         const child = node.child(i) orelse continue;
-        const kind = child.kind();
-        if (std.mem.eql(u8, kind, "builtin_identifier")) {
+        if (child.kindId() == k.builtin_identifier) {
             const text = ts_api.nodeText(source, child);
             if (std.mem.eql(u8, text, "@This")) return true;
         }
-        if (isThisRecursive(source, child, depth + 1)) return true;
+        if (isThisRecursive(source, child, k, depth + 1)) return true;
     }
     return false;
 }
@@ -233,43 +235,42 @@ pub const FieldExprParts = struct {
 /// the root (leftmost identifier) and leaf (rightmost field_identifier).
 /// Returns null if the value is not a field_expression.
 /// Handles nested chains like `std.mem.Allocator` (root="std", leaf="Allocator").
-pub fn getFieldExprRootAndLeaf(source: []const u8, var_decl: ts.Node) ?FieldExprParts {
+pub fn getFieldExprRootAndLeaf(source: []const u8, var_decl: ts.Node, k: *const KindIds) ?FieldExprParts {
     // Find the value expression in the variable_declaration.
     // Scan named children for a field_expression (skipping identifier, type, etc.)
     var i: u32 = 0;
     while (i < var_decl.namedChildCount()) : (i += 1) {
         const child = var_decl.namedChild(i) orelse continue;
-        if (std.mem.eql(u8, child.kind(), "field_expression")) {
-            const root = getLeftmostIdent(source, child) orelse return null;
-            const leaf = getRightmostField(source, child) orelse return null;
+        if (child.kindId() == k.field_expression) {
+            const root = getLeftmostIdent(source, child, k) orelse return null;
+            const leaf = getRightmostField(source, child, k) orelse return null;
             return .{ .root = root, .leaf = leaf };
         }
     }
     return null;
 }
 
-fn getLeftmostIdent(source: []const u8, node: ts.Node) ?[]const u8 {
-    const kind = node.kind();
-    if (std.mem.eql(u8, kind, "identifier")) {
+fn getLeftmostIdent(source: []const u8, node: ts.Node, k: *const KindIds) ?[]const u8 {
+    const kid = node.kindId();
+    if (kid == k.identifier) {
         return ts_api.nodeText(source, node);
     }
-    if (std.mem.eql(u8, kind, "field_expression")) {
+    if (kid == k.field_expression) {
         if (node.namedChild(0)) |child| {
-            return getLeftmostIdent(source, child);
+            return getLeftmostIdent(source, child, k);
         }
     }
     return null;
 }
 
-fn getRightmostField(source: []const u8, node: ts.Node) ?[]const u8 {
-    const kind = node.kind();
-    if (!std.mem.eql(u8, kind, "field_expression")) return null;
+fn getRightmostField(source: []const u8, node: ts.Node, k: *const KindIds) ?[]const u8 {
+    if (node.kindId() != k.field_expression) return null;
     const count = node.namedChildCount();
     if (count < 2) return null;
     const last = node.namedChild(count - 1) orelse return null;
-    const last_kind = last.kind();
+    const last_kid = last.kindId();
     // tree-sitter Zig uses field_identifier for the .field part
-    if (std.mem.eql(u8, last_kind, "field_identifier") or std.mem.eql(u8, last_kind, "property_identifier") or std.mem.eql(u8, last_kind, "identifier")) {
+    if (last_kid == k.field_identifier or last_kid == k.property_identifier or last_kid == k.identifier) {
         return ts_api.nodeText(source, last);
     }
     return null;
@@ -279,12 +280,12 @@ fn getRightmostField(source: []const u8, node: ts.Node) ?[]const u8 {
 // Type annotation and classification
 // =========================================================================
 
-pub fn hasTypeAnnotation(ts_node: ts.Node) bool {
+pub fn hasTypeAnnotation(ts_node: ts.Node, k: *const KindIds) bool {
     // Check for ":" anonymous child (indicates explicit type annotation).
     var i: u32 = 0;
     while (i < ts_node.childCount()) : (i += 1) {
         const child = ts_node.child(i) orelse continue;
-        if (std.mem.eql(u8, child.kind(), ":")) return true;
+        if (child.kindId() == k.colon) return true;
     }
     return false;
 }
@@ -294,45 +295,45 @@ pub const Classification = struct {
     struct_body: ?ts.Node,
 };
 
-pub fn classifyVariableValue(source: []const u8, ts_node: ts.Node) Classification {
+pub fn classifyVariableValue(source: []const u8, ts_node: ts.Node, k: *const KindIds) Classification {
     var result = Classification{ .kind = .constant, .struct_body = null };
-    classifyRecursive(source, ts_node, &result, 0);
+    classifyRecursive(source, ts_node, k, &result, 0);
     return result;
 }
 
-pub fn classifyRecursive(source: []const u8, ts_node: ts.Node, result: *Classification, depth: u32) void {
+pub fn classifyRecursive(source: []const u8, ts_node: ts.Node, k: *const KindIds, result: *Classification, depth: u32) void {
     if (depth > 5) return;
     var i: u32 = 0;
     while (i < ts_node.namedChildCount()) : (i += 1) {
         const child = ts_node.namedChild(i) orelse continue;
-        const kind = child.kind();
-        if (std.mem.eql(u8, kind, "struct_declaration")) {
+        const kid = child.kindId();
+        if (kid == k.struct_declaration) {
             result.kind = .type_def;
             result.struct_body = child;
             return;
         }
-        if (std.mem.eql(u8, kind, "union_declaration")) {
+        if (kid == k.union_declaration) {
             result.kind = .type_def;
             result.struct_body = child;
             return;
         }
-        if (std.mem.eql(u8, kind, "enum_declaration")) {
+        if (kid == k.enum_declaration) {
             result.kind = .enum_def;
             result.struct_body = child;
             return;
         }
-        if (std.mem.eql(u8, kind, "error_set_declaration")) {
+        if (kid == k.error_set_declaration) {
             result.kind = .error_def;
             return;
         }
-        if (std.mem.eql(u8, kind, "builtin_identifier")) {
+        if (kid == k.builtin_identifier) {
             const text = ts_api.nodeText(source, child);
             if (std.mem.eql(u8, text, "@import")) {
                 result.kind = .import_decl;
                 return;
             }
         }
-        classifyRecursive(source, child, result, depth + 1);
+        classifyRecursive(source, child, k, result, depth + 1);
         if (result.kind != .constant) return;
     }
 }

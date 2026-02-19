@@ -72,15 +72,26 @@ const NodeRefs = struct {
 
 const StringTableBuilder = struct {
     bytes: std.ArrayListUnmanaged(u8) = .{},
+    index: std.StringHashMapUnmanaged(StringRef) = .{},
 
     fn deinit(self: *StringTableBuilder, allocator: std.mem.Allocator) void {
+        self.index.deinit(allocator);
         self.bytes.deinit(allocator);
     }
 
+    /// Pre-allocate bytes capacity so that intern() never reallocates the byte
+    /// buffer, keeping StringHashMap keys (slices into bytes.items) stable.
+    fn ensureBytesCapacity(self: *StringTableBuilder, allocator: std.mem.Allocator, capacity: usize) !void {
+        try self.bytes.ensureTotalCapacity(allocator, capacity);
+    }
+
     fn intern(self: *StringTableBuilder, allocator: std.mem.Allocator, str: []const u8) !StringRef {
+        if (self.index.get(str)) |cached| return cached;
         const offset: u32 = @intCast(self.bytes.items.len);
-        try self.bytes.appendSlice(allocator, str);
-        return .{ .offset = offset, .len = @intCast(str.len) };
+        self.bytes.appendSliceAssumeCapacity(str);
+        const ref = StringRef{ .offset = offset, .len = @intCast(str.len) };
+        try self.index.put(allocator, self.bytes.items[offset..][0..str.len], ref);
+        return ref;
     }
 
     fn internOptional(self: *StringTableBuilder, allocator: std.mem.Allocator, str: ?[]const u8) !StringRef {
@@ -140,28 +151,14 @@ fn readStringRef(buf: []const u8, offset: usize) StringRef {
     };
 }
 
-fn dupeString(g: *Graph, buf: []const u8, st_off: usize, ref: StringRef) ![]const u8 {
+fn resolveStr(st_data: []const u8, ref: StringRef) []const u8 {
     if (ref.len == 0) return "";
-    const start = st_off + ref.offset;
-    const src = buf[start..][0..ref.len];
-    const duped = try g.allocator.dupe(u8, src);
-    g.addOwnedBuffer(duped) catch {
-        g.allocator.free(duped);
-        return error.OutOfMemory;
-    };
-    return duped;
+    return st_data[ref.offset..][0..ref.len];
 }
 
-fn dupeOptString(g: *Graph, buf: []const u8, st_off: usize, ref: StringRef) !?[]const u8 {
+fn resolveOptStr(st_data: []const u8, ref: StringRef) ?[]const u8 {
     if (ref.len == 0) return null;
-    const start = st_off + ref.offset;
-    const src = buf[start..][0..ref.len];
-    const duped = try g.allocator.dupe(u8, src);
-    g.addOwnedBuffer(duped) catch {
-        g.allocator.free(duped);
-        return error.OutOfMemory;
-    };
-    return duped;
+    return st_data[ref.offset..][0..ref.len];
 }
 
 // --- Public API ---
@@ -177,6 +174,26 @@ pub fn save(allocator: std.mem.Allocator, g: *const Graph, path: []const u8) !vo
 
     const node_refs = try allocator.alloc(NodeRefs, if (nc > 0) nc else 1);
     defer allocator.free(node_refs);
+
+    // Pre-compute upper bound on string table bytes for stable dedup pointers
+    var total_string_bytes: usize = 0;
+    for (g.nodes.items) |n| {
+        total_string_bytes += n.name.len;
+        if (n.file_path) |fp| total_string_bytes += fp.len;
+        if (n.signature) |s| total_string_bytes += s.len;
+        if (n.doc) |d| total_string_bytes += d.len;
+        switch (n.external) {
+            .dependency => |d| if (d.version) |v| {
+                total_string_bytes += v.len;
+            },
+            else => {},
+        }
+        switch (n.lang_meta) {
+            .zig => total_string_bytes += 2,
+            .none => {},
+        }
+    }
+    try stb.ensureBytesCapacity(allocator, total_string_bytes);
 
     for (g.nodes.items, 0..) |n, i| {
         const ext_version: ?[]const u8 = switch (n.external) {
@@ -207,7 +224,10 @@ pub fn save(allocator: std.mem.Allocator, g: *const Graph, path: []const u8) !vo
     // Allocate
     const buf = try allocator.alloc(u8, if (total_size > 0) total_size else HEADER_SIZE);
     defer allocator.free(buf);
-    @memset(buf, 0);
+    // Zero only table regions (header is fully written, string table is fully copied)
+    if (string_table_offset > node_table_offset) {
+        @memset(buf[node_table_offset..string_table_offset], 0);
+    }
 
     // Fill
 
@@ -343,12 +363,21 @@ pub fn load(allocator: std.mem.Allocator, path: []const u8) !Graph {
     const eto: usize = @intCast(std.mem.readInt(u64, buf[40..48], .little));
     const mto: usize = @intCast(std.mem.readInt(u64, buf[48..56], .little));
     const sto: usize = @intCast(std.mem.readInt(u64, buf[56..64], .little));
+    const st_size: usize = @intCast(std.mem.readInt(u64, buf[64..72], .little));
 
     var g = Graph.init(allocator, "");
     errdefer g.deinit();
 
     try g.nodes.ensureTotalCapacity(allocator, nc);
     try g.edges.ensureTotalCapacity(allocator, ec);
+
+    // Single dupe of string table region — all node strings resolve into this buffer
+    const st_data: []const u8 = if (st_size > 0) blk: {
+        const data = try g.allocator.dupe(u8, buf[sto..][0..st_size]);
+        errdefer g.allocator.free(data);
+        try g.addOwnedBuffer(data);
+        break :blk data;
+    } else "";
 
     // Parse nodes
     for (0..nc) |i| {
@@ -369,27 +398,24 @@ pub fn load(allocator: std.mem.Allocator, path: []const u8) !Graph {
         const ext_ver_ref = readStringRef(buf, base + 76);
         const lang_meta_ref = readStringRef(buf, base + 84);
 
-        // Dupe strings
-        const name = try dupeString(&g, buf, sto, name_ref);
-        const file_path = try dupeOptString(&g, buf, sto, file_path_ref);
-        const signature = try dupeOptString(&g, buf, sto, sig_ref);
-        const doc = try dupeOptString(&g, buf, sto, doc_ref);
+        // Resolve strings from duped string table (zero additional allocations)
+        const name = resolveStr(st_data, name_ref);
+        const file_path = resolveOptStr(st_data, file_path_ref);
+        const signature = resolveOptStr(st_data, sig_ref);
+        const doc = resolveOptStr(st_data, doc_ref);
 
         // External info
         const external_kind = buf[base + 11];
         const external: ExternalInfo = switch (external_kind) {
             0 => .{ .none = {} },
             1 => .{ .stdlib = {} },
-            2 => blk: {
-                const ver = try dupeOptString(&g, buf, sto, ext_ver_ref);
-                break :blk .{ .dependency = .{ .version = ver } };
-            },
+            2 => .{ .dependency = .{ .version = resolveOptStr(st_data, ext_ver_ref) } },
             else => .{ .none = {} },
         };
 
         // LangMeta
         const lang_meta: LangMeta = if (lang_meta_ref.len > 0)
-            decodeLangMeta(buf[sto + lang_meta_ref.offset ..][0..lang_meta_ref.len])
+            decodeLangMeta(st_data[lang_meta_ref.offset..][0..lang_meta_ref.len])
         else
             .{ .none = {} };
 
@@ -439,6 +465,7 @@ pub fn load(allocator: std.mem.Allocator, path: []const u8) !Graph {
         });
     }
 
+    try g.rebuildEdgeIndex();
     return g;
 }
 
