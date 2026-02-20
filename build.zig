@@ -165,4 +165,44 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_lib_unit_tests.step);
+
+    // --- Integration tests ---
+
+    // Test helpers module (shared by integration tests)
+    const helpers_mod = b.createModule(.{
+        .root_source_file = b.path("test/test_helpers.zig"),
+    });
+    helpers_mod.addImport("zcodeprism", lib_mod);
+
+    // Zig parsing integration tests (single-file parsing: edge_builder + cross_file tests)
+    const parsing_test_mod = b.createModule(.{
+        .root_source_file = b.path("test/zig/test_parsing.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    parsing_test_mod.addImport("zcodeprism", lib_mod);
+    parsing_test_mod.addImport("test-fixtures", fixture_mod);
+    parsing_test_mod.addImport("test-helpers", helpers_mod);
+    parsing_test_mod.linkLibrary(ts_zig_dep.artifact("tree-sitter-zig"));
+
+    const parsing_tests = b.addTest(.{
+        .root_module = parsing_test_mod,
+    });
+    test_step.dependOn(&b.addRunArtifact(parsing_tests).step);
+
+    // Zig indexer integration tests (multi-file indexing)
+    const indexer_test_mod = b.createModule(.{
+        .root_source_file = b.path("test/zig/test_indexer.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    indexer_test_mod.addImport("zcodeprism", lib_mod);
+    indexer_test_mod.addImport("test-fixtures", fixture_mod);
+    indexer_test_mod.addImport("test-helpers", helpers_mod);
+    indexer_test_mod.linkLibrary(ts_zig_dep.artifact("tree-sitter-zig"));
+
+    const indexer_tests = b.addTest(.{
+        .root_module = indexer_test_mod,
+    });
+    test_step.dependOn(&b.addRunArtifact(indexer_tests).step);
 }

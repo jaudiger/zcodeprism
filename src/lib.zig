@@ -134,12 +134,9 @@ test {
     _ = @import("languages/language.zig");
     _ = @import("languages/registry.zig");
     _ = @import("languages/zig/ast_analysis.zig");
-    _ = @import("languages/zig/cross_file.zig");
-    _ = @import("languages/zig/edge_builder.zig");
     _ = @import("languages/zig/meta.zig");
     _ = @import("languages/zig/visitor.zig");
     _ = @import("logging.zig");
-    _ = @import("parser/indexer.zig");
     _ = @import("parser/source_map.zig");
     _ = @import("render/common.zig");
     _ = @import("render/ctg.zig");
