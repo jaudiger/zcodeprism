@@ -32,7 +32,9 @@ pub fn returnsType(source: []const u8, fn_node: ts.Node, k: *const KindIds) bool
 
 pub const ReturnedTypeBody = struct {
     body: ts.Node,
-    is_enum: bool,
+    kind: ReturnedKind,
+
+    pub const ReturnedKind = enum { struct_like, union_like, enum_like };
 };
 
 /// Search a function body for `return struct { ... }`, `return union { ... }`, or `return enum { ... }`.
@@ -62,13 +64,13 @@ pub fn findReturnedTypeBody(fn_node: ts.Node, k: *const KindIds) ?ReturnedTypeBo
                     const val = ret.namedChild(l) orelse continue;
                     const val_kid = val.kindId();
                     if (val_kid == k.struct_declaration) {
-                        return .{ .body = val, .is_enum = false };
+                        return .{ .body = val, .kind = .struct_like };
                     }
                     if (val_kid == k.union_declaration) {
-                        return .{ .body = val, .is_enum = false };
+                        return .{ .body = val, .kind = .union_like };
                     }
                     if (val_kid == k.enum_declaration) {
-                        return .{ .body = val, .is_enum = true };
+                        return .{ .body = val, .kind = .enum_like };
                     }
                 }
             }
@@ -144,6 +146,42 @@ pub fn detectVisibility(ts_node: ts.Node, k: *const KindIds) Visibility {
         if (child.kindId() == k.pub_kw) return .public;
     }
     return .private;
+}
+
+pub fn hasKeyword(ts_node: ts.Node, keyword_id: u16) bool {
+    var i: u32 = 0;
+    while (i < ts_node.childCount()) : (i += 1) {
+        const child = ts_node.child(i) orelse continue;
+        if (child.kindId() == keyword_id) return true;
+    }
+    return false;
+}
+
+/// Extract calling convention string from an extern function declaration.
+/// The convention appears as a `string` node immediately after the `extern` keyword.
+/// For `pub extern "c" fn write(...)`, returns `"c"`.
+/// Caller must verify the node is extern before calling (use `hasKeyword`).
+pub fn extractCallingConvention(source: []const u8, ts_node: ts.Node, k: *const KindIds) ?[]const u8 {
+    var found_extern = false;
+    var i: u32 = 0;
+    while (i < ts_node.childCount()) : (i += 1) {
+        const child = ts_node.child(i) orelse continue;
+        if (child.kindId() == k.extern_kw) {
+            found_extern = true;
+            continue;
+        }
+        if (found_extern and child.kindId() == k.string) {
+            var j: u32 = 0;
+            while (j < child.namedChildCount()) : (j += 1) {
+                const sc = child.namedChild(j) orelse continue;
+                if (sc.kindId() == k.string_content) {
+                    return ts_api.nodeText(source, sc);
+                }
+            }
+            return null;
+        }
+    }
+    return null;
 }
 
 /// Collect module-level doc comments (//!) from the beginning of a source file.
@@ -292,11 +330,12 @@ pub fn hasTypeAnnotation(ts_node: ts.Node, k: *const KindIds) bool {
 
 pub const Classification = struct {
     kind: NodeKind,
-    struct_body: ?ts.Node,
+    body: ?ts.Node,
+    comptime_conditional: bool = false,
 };
 
 pub fn classifyVariableValue(source: []const u8, ts_node: ts.Node, k: *const KindIds) Classification {
-    var result = Classification{ .kind = .constant, .struct_body = null };
+    var result = Classification{ .kind = .constant, .body = null };
     classifyRecursive(source, ts_node, k, &result, 0);
     return result;
 }
@@ -307,23 +346,31 @@ pub fn classifyRecursive(source: []const u8, ts_node: ts.Node, k: *const KindIds
     while (i < ts_node.namedChildCount()) : (i += 1) {
         const child = ts_node.namedChild(i) orelse continue;
         const kid = child.kindId();
+        // Guard: conditional expressions contain branch values, not direct definitions.
+        // Don't descend into if_expression or switch_expression; the struct/union/enum
+        // inside is a branch result, not the variable's direct type definition.
+        if (kid == k.if_expression or kid == k.switch_expression) {
+            result.comptime_conditional = true;
+            continue;
+        }
         if (kid == k.struct_declaration) {
             result.kind = .type_def;
-            result.struct_body = child;
+            result.body = child;
             return;
         }
         if (kid == k.union_declaration) {
-            result.kind = .type_def;
-            result.struct_body = child;
+            result.kind = .union_def;
+            result.body = child;
             return;
         }
         if (kid == k.enum_declaration) {
             result.kind = .enum_def;
-            result.struct_body = child;
+            result.body = child;
             return;
         }
         if (kid == k.error_set_declaration) {
             result.kind = .error_def;
+            result.body = child;
             return;
         }
         if (kid == k.builtin_identifier) {

@@ -9,6 +9,7 @@ const registry_mod = @import("../languages/registry.zig");
 const phantom_mod = @import("../core/phantom.zig");
 const metrics_mod = @import("../core/metrics.zig");
 const source_scan = @import("source_scan.zig");
+const parse_context = @import("../languages/zig/parse_context.zig");
 
 const Field = logging.Field;
 const Logger = logging.Logger;
@@ -156,7 +157,7 @@ pub fn indexDirectory(
     for (file_entries.items, 0..) |fe, entry_idx| {
         // Incremental check: skip if existing file node has matching hash.
         if (options.incremental) {
-            if (findExistingFileNode(graph, fe.basename)) |existing_idx| {
+            if (findExistingFileNode(graph, fe.rel_path)) |existing_idx| {
                 const existing = graph.nodes.items[existing_idx];
                 if (existing.content_hash) |old_hash| {
                     if (std.mem.eql(u8, &old_hash, &fe.content_hash)) {
@@ -172,7 +173,7 @@ pub fn indexDirectory(
 
         // Call visitor via registry. Creates file node + children + edges.
         log.debug("parsing file", &.{Field.string("path", fe.rel_path)});
-        parse_fn(fe.content, @ptrCast(graph), log) catch {
+        parse_fn(fe.content, @ptrCast(graph), fe.rel_path, log) catch {
             log.warn("file parse error", &.{Field.string("path", fe.rel_path)});
             result.files_errored += 1;
             continue;
@@ -210,19 +211,22 @@ pub fn indexDirectory(
     }
 
     // Resolve inter-file imports and external (phantom) references.
-    // Build basename-to-FileInfo-index map for cross-file lookup.
+    // Build rel_path-to-FileInfo-index map for cross-file lookup.
     log.debug("resolving cross-file edges", &.{Field.uint("file_count", file_infos.items.len)});
-    var basename_map = std.StringHashMapUnmanaged(usize){};
-    defer basename_map.deinit(allocator);
-    try basename_map.ensureTotalCapacity(allocator, @intCast(file_infos.items.len));
+    var relpath_map = std.StringHashMapUnmanaged(usize){};
+    defer relpath_map.deinit(allocator);
+    try relpath_map.ensureTotalCapacity(allocator, @intCast(file_infos.items.len));
     for (file_infos.items, 0..) |fi, i| {
-        const name = graph.nodes.items[fi.idx].name;
-        basename_map.putAssumeCapacity(name, i);
+        const file_node = graph.nodes.items[fi.idx];
+        const key = file_node.file_path orelse file_node.name;
+        relpath_map.putAssumeCapacity(key, i);
     }
 
     // Import edges between project files.
     for (file_infos.items) |fi| {
         const file_id: NodeId = @enumFromInt(fi.idx);
+        const file_node = graph.nodes.items[fi.idx];
+        const importer_path = file_node.file_path;
 
         // Only scan import_decl nodes within this file's node range.
         for (graph.nodes.items[fi.idx..fi.scope_end]) |n| {
@@ -231,8 +235,20 @@ pub fn indexDirectory(
 
             const import_path = n.signature orelse continue;
 
-            if (basename_map.get(import_path)) |target_idx| {
-                try source_scan.addEdgeIfNew(graph, file_id, @enumFromInt(file_infos.items[target_idx].idx), .imports, .tree_sitter);
+            // Resolve import path relative to the importing file's directory.
+            const target_idx = blk: {
+                if (importer_path) |ip| {
+                    var buf: [512]u8 = undefined;
+                    if (parse_context.resolveImportPath(&buf, ip, import_path)) |resolved| {
+                        if (relpath_map.get(resolved)) |idx| break :blk idx;
+                    }
+                }
+                // Fallback: direct lookup.
+                break :blk relpath_map.get(import_path);
+            };
+
+            if (target_idx) |tidx| {
+                try source_scan.addEdgeIfNew(graph, file_id, @enumFromInt(file_infos.items[tidx].idx), .imports, .tree_sitter);
             }
         }
     }
@@ -341,12 +357,12 @@ fn topoSortFiles(allocator: std.mem.Allocator, entries: []FileEntry) !void {
     const n = entries.len;
     if (n <= 1) return;
 
-    // Build basename-to-index map.
-    var name_map = std.StringHashMapUnmanaged(usize){};
-    defer name_map.deinit(allocator);
-    try name_map.ensureTotalCapacity(allocator, @intCast(n));
+    // Build rel_path-to-index map for directory-aware resolution.
+    var relpath_map = std.StringHashMapUnmanaged(usize){};
+    defer relpath_map.deinit(allocator);
+    try relpath_map.ensureTotalCapacity(allocator, @intCast(n));
     for (entries, 0..) |fe, i| {
-        name_map.putAssumeCapacity(fe.basename, i);
+        relpath_map.putAssumeCapacity(fe.rel_path, i);
     }
 
     // Compute in-degrees and adjacency (importer -> importee).
@@ -366,11 +382,21 @@ fn topoSortFiles(allocator: std.mem.Allocator, entries: []FileEntry) !void {
     for (entries, 0..) |fe, i| {
         const count = extractImportBasenames(fe.content, &import_buf);
         for (import_buf[0..count]) |imp| {
-            if (name_map.get(imp)) |dep_idx| {
-                if (dep_idx != i) {
-                    // i imports dep_idx, so dep_idx must come before i.
-                    // Edge: dep_idx -> i in Kahn's sense.
-                    try adj[dep_idx].append(allocator, i);
+            // Resolve import path relative to the importing file's directory.
+            const dep_idx = blk: {
+                var buf: [512]u8 = undefined;
+                if (parse_context.resolveImportPath(&buf, fe.rel_path, imp)) |resolved| {
+                    if (relpath_map.get(resolved)) |idx| break :blk idx;
+                }
+                // Fallback: direct lookup (handles same-directory and basename-only).
+                break :blk relpath_map.get(imp);
+            };
+
+            if (dep_idx) |didx| {
+                if (didx != i) {
+                    // i imports didx, so didx must come before i.
+                    // Edge: didx -> i in Kahn's sense.
+                    try adj[didx].append(allocator, i);
                     in_degree[i] += 1;
                 }
             }
@@ -426,11 +452,12 @@ fn topoSortFiles(allocator: std.mem.Allocator, entries: []FileEntry) !void {
     @memcpy(entries, tmp);
 }
 
-fn findExistingFileNode(graph: *const Graph, basename: []const u8) ?usize {
+fn findExistingFileNode(graph: *const Graph, rel_path: []const u8) ?usize {
     for (graph.nodes.items, 0..) |n, i| {
-        if (n.kind == .file and std.mem.eql(u8, n.name, basename)) {
-            return i;
-        }
+        if (n.kind != .file) continue;
+        // Match by file_path (rel_path) first, fall back to name (basename).
+        const key = n.file_path orelse n.name;
+        if (std.mem.eql(u8, key, rel_path)) return i;
     }
     return null;
 }

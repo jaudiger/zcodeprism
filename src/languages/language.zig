@@ -26,7 +26,7 @@ pub const ExternalInfo = union(enum) {
 pub const LanguageSupport = struct {
     name: []const u8,
     extensions: []const []const u8,
-    parseFn: ?*const fn (source: []const u8, graph: *anyopaque, logger: logging.Logger) anyerror!void,
+    parseFn: ?*const fn (source: []const u8, graph: *anyopaque, file_path: ?[]const u8, logger: logging.Logger) anyerror!void,
     lsp_config: ?LspConfig,
 };
 
@@ -63,6 +63,7 @@ test "ZigMeta default values are all false or null" {
     try std.testing.expect(!meta.is_comptime);
     try std.testing.expect(!meta.is_inline);
     try std.testing.expect(!meta.is_extern);
+    try std.testing.expect(!meta.is_packed);
     try std.testing.expectEqual(@as(?[]const []const u8, null), meta.error_set_names);
     try std.testing.expectEqual(@as(?[]const []const u8, null), meta.inferred_errors);
     try std.testing.expect(!meta.comptime_conditional);

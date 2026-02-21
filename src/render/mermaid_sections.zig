@@ -89,7 +89,7 @@ fn collectDescendants(
     for (children_index.childrenOf(parent_idx)) |ci| {
         const n = g.nodes.items[ci];
         if (!isInternal(n)) continue;
-        if (n.kind == .file or n.kind == .field or n.kind == .import_decl) continue;
+        if (n.kind == .file or n.kind == .field or n.kind == .import_decl or n.kind == .comptime_block) continue;
         if (ids[ci]) |id_entry| {
             try result.append(allocator, .{ .node_idx = ci, .id = id_entry });
         }
@@ -115,7 +115,7 @@ fn renderNodeShape(
             try out.appendSlice(allocator, "[\"fn: ");
             if (n.parent_id) |pid| {
                 const parent = g.nodes.items[@intFromEnum(pid)];
-                if (parent.kind == .type_def) {
+                if (parent.kind == .type_def or parent.kind == .union_def) {
                     try appendEscaped(out, allocator, parent.name);
                     try out.append(allocator, '.');
                 }
@@ -128,6 +128,12 @@ fn renderNodeShape(
             try out.appendSlice(allocator, "[[\"struct: ");
             try appendEscaped(out, allocator, n.name);
             try out.appendSlice(allocator, "\"]]");
+        },
+        .union_def => {
+            // un_N(("union: name"))
+            try out.appendSlice(allocator, "((\"union: ");
+            try appendEscaped(out, allocator, n.name);
+            try out.appendSlice(allocator, "\"))");
         },
         .enum_def => {
             // en_N{{"enum: name"}}
@@ -159,7 +165,7 @@ fn renderNodeShape(
             try appendEscaped(out, allocator, n.name);
             try out.appendSlice(allocator, "\")");
         },
-        .file, .field, .import_decl => {},
+        .file, .field, .import_decl, .comptime_block => {},
     }
 }
 
@@ -293,6 +299,7 @@ fn nodeKindPrefix(kind: NodeKind) []const u8 {
     return switch (kind) {
         .function => "fn",
         .type_def => "struct",
+        .union_def => "union",
         .enum_def => "enum",
         .constant => "const",
         .test_def => "test",
@@ -301,6 +308,7 @@ fn nodeKindPrefix(kind: NodeKind) []const u8 {
         .file => "file",
         .field => "field",
         .import_decl => "import",
+        .comptime_block => "comptime",
     };
 }
 
@@ -454,7 +462,7 @@ pub fn renderClassAssignments(
     num_buf: *[20]u8,
 ) !void {
     // Collect node IDs per style class.
-    const StyleClass = enum { const_style, en_style, err_style, fn_style, ghost_style, phantom_style, st_style, test_style };
+    const StyleClass = enum { const_style, en_style, err_style, fn_style, ghost_style, phantom_style, st_style, test_style, un_style };
 
     const ClassEntry = struct {
         style: StyleClass,
@@ -473,11 +481,12 @@ pub fn renderClassAssignments(
     // Internal nodes with IDs.
     for (g.nodes.items, 0..) |n, i| {
         const id_entry = ids[i] orelse continue;
-        if (n.kind == .file or n.kind == .field or n.kind == .import_decl) continue;
+        if (n.kind == .file or n.kind == .field or n.kind == .import_decl or n.kind == .comptime_block) continue;
 
         const style: StyleClass = switch (n.kind) {
             .function => .fn_style,
             .type_def => .st_style,
+            .union_def => .un_style,
             .enum_def => .en_style,
             .constant => .const_style,
             .test_def => .test_style,
@@ -544,7 +553,7 @@ pub fn renderClassAssignments(
     // Render one "class id1,id2 style_name" line per style.
     const style_names = [_][]const u8{
         "const_style", "en_style", "err_style", "fn_style",
-        "ghost_style", "phantom_style", "st_style", "test_style",
+        "ghost_style", "phantom_style", "st_style", "test_style", "un_style",
     };
 
     for (style_names, 0..) |style_name, style_idx| {

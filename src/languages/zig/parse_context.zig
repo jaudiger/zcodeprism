@@ -49,6 +49,7 @@ pub const KindIds = struct {
     if_expression: u16,
     for_statement: u16,
     while_statement: u16,
+    switch_expression: u16,
     defer_statement: u16,
     pointer_type: u16,
     nullable_type: u16,
@@ -57,6 +58,11 @@ pub const KindIds = struct {
     payload: u16,
     payload_identifier: u16,
     pub_kw: u16,
+    var_kw: u16,
+    extern_kw: u16,
+    inline_kw: u16,
+    packed_kw: u16,
+    comptime_declaration: u16,
     colon: u16,
 
     pub fn init(lang: *const ts.Language) KindIds {
@@ -90,6 +96,7 @@ pub const KindIds = struct {
             .if_expression = lang.idForNodeKind("if_expression", true),
             .for_statement = lang.idForNodeKind("for_statement", true),
             .while_statement = lang.idForNodeKind("while_statement", true),
+            .switch_expression = lang.idForNodeKind("switch_expression", true),
             .defer_statement = lang.idForNodeKind("defer_statement", true),
             .pointer_type = lang.idForNodeKind("pointer_type", true),
             .nullable_type = lang.idForNodeKind("nullable_type", true),
@@ -98,6 +105,11 @@ pub const KindIds = struct {
             .payload = lang.idForNodeKind("payload", true),
             .payload_identifier = lang.idForNodeKind("payload_identifier", true),
             .pub_kw = lang.idForNodeKind("pub", false),
+            .var_kw = lang.idForNodeKind("var", false),
+            .extern_kw = lang.idForNodeKind("extern", false),
+            .inline_kw = lang.idForNodeKind("inline", false),
+            .packed_kw = lang.idForNodeKind("packed", false),
+            .comptime_declaration = lang.idForNodeKind("comptime_declaration", true),
             .colon = lang.idForNodeKind(":", false),
         };
     }
@@ -243,11 +255,83 @@ pub const ScopeIndex = struct {
 };
 
 // =========================================================================
-// FileIndex: file basename to NodeId for fast file lookup
+// Import path resolution utility
 // =========================================================================
 
-/// Maps file node names to their NodeId. Built once per parse,
-/// replaces full scans in `findImportTargetFile`.
+/// Resolve an import path relative to the importing file's directory.
+/// Joins the directory part of `importer_path` with `import_path`,
+/// normalizing `.` and `..` segments. Returns a slice into `buf`,
+/// or null if the path escapes above the project root.
+pub fn resolveImportPath(buf: []u8, importer_path: []const u8, import_path: []const u8) ?[]const u8 {
+    // Split importer_path into directory segments (drop the filename).
+    var segments: [64][]const u8 = undefined;
+    var seg_count: usize = 0;
+
+    // Extract directory part of importer_path.
+    var it = std.mem.splitScalar(u8, importer_path, '/');
+    // Collect all segments first, then drop the last one (filename).
+    var all_count: usize = 0;
+    var all_segments: [64][]const u8 = undefined;
+    while (it.next()) |seg| {
+        if (all_count < 64) {
+            all_segments[all_count] = seg;
+            all_count += 1;
+        }
+    }
+    // Copy directory segments (all except last).
+    if (all_count > 1) {
+        for (all_segments[0 .. all_count - 1]) |seg| {
+            if (seg.len > 0 and seg_count < 64) {
+                segments[seg_count] = seg;
+                seg_count += 1;
+            }
+        }
+    }
+
+    // Process import_path segments.
+    var imp_it = std.mem.splitScalar(u8, import_path, '/');
+    while (imp_it.next()) |seg| {
+        if (seg.len == 0 or std.mem.eql(u8, seg, ".")) {
+            // Skip empty and `.` segments.
+            continue;
+        } else if (std.mem.eql(u8, seg, "..")) {
+            // Go up one directory.
+            if (seg_count == 0) return null; // Can't go above project root.
+            seg_count -= 1;
+        } else {
+            // Append segment.
+            if (seg_count >= 64) return null; // Too many segments.
+            segments[seg_count] = seg;
+            seg_count += 1;
+        }
+    }
+
+    if (seg_count == 0) return null; // No path left.
+
+    // Join segments into buf with '/' separators.
+    var pos: usize = 0;
+    for (segments[0..seg_count], 0..) |seg, i| {
+        if (i > 0) {
+            if (pos >= buf.len) return null;
+            buf[pos] = '/';
+            pos += 1;
+        }
+        if (pos + seg.len > buf.len) return null;
+        @memcpy(buf[pos .. pos + seg.len], seg);
+        pos += seg.len;
+    }
+
+    return buf[0..pos];
+}
+
+// =========================================================================
+// FileIndex: file path to NodeId for fast file lookup
+// =========================================================================
+
+/// Maps file node paths (rel_path) to their NodeId. Built once per parse,
+/// replaces full scans in `findImportTargetFile`. Keys are `file_path`
+/// when available, falling back to `name` (basename) for nodes without
+/// a file_path (e.g., in single-file parse mode).
 pub const FileIndex = struct {
     map: std.StringHashMapUnmanaged(NodeId) = .{},
 
@@ -256,12 +340,31 @@ pub const FileIndex = struct {
         var fi = FileIndex{};
         for (nodes, 0..) |n, i| {
             if (n.kind == .file) {
-                try fi.map.put(allocator, n.name, @enumFromInt(i));
+                // Prefer file_path (rel_path) for directory-aware resolution.
+                const key = n.file_path orelse n.name;
+                try fi.map.put(allocator, key, @enumFromInt(i));
             }
         }
         return fi;
     }
 
+    /// Resolve an import path relative to the importing file's directory.
+    /// Falls back to direct lookup when importer_path is null or resolution fails.
+    pub fn resolve(self: *const FileIndex, importer_path: ?[]const u8, import_path: []const u8) ?NodeId {
+        // Try directory-relative resolution first.
+        if (importer_path) |ip| {
+            var buf: [512]u8 = undefined;
+            if (resolveImportPath(&buf, ip, import_path)) |resolved| {
+                if (self.map.get(resolved)) |id| return id;
+            }
+        }
+        // Fallback: direct lookup (works for single-file mode or same-directory).
+        return self.map.get(import_path);
+    }
+
+    /// Direct lookup by name or path. Used for backward compatibility
+    /// (e.g., return-type resolution where the import path comes from
+    /// node signatures, not relative paths).
     pub fn findByName(self: *const FileIndex, name: []const u8) ?NodeId {
         return self.map.get(name);
     }
@@ -281,4 +384,63 @@ pub fn isIdentChar(c: u8) bool {
 
 pub fn isWhitespace(c: u8) bool {
     return c == ' ' or c == '\t' or c == '\n' or c == '\r';
+}
+
+// =========================================================================
+// Tests: resolveImportPath
+// =========================================================================
+
+test "resolveImportPath: same-directory import" {
+    var buf: [512]u8 = undefined;
+    const result = resolveImportPath(&buf, "crypto/aegis.zig", "helpers.zig");
+    try std.testing.expect(result != null);
+    try std.testing.expectEqualStrings("crypto/helpers.zig", result.?);
+}
+
+test "resolveImportPath: dot-slash prefix" {
+    var buf: [512]u8 = undefined;
+    const result = resolveImportPath(&buf, "json/dynamic.zig", "./static.zig");
+    try std.testing.expect(result != null);
+    try std.testing.expectEqualStrings("json/static.zig", result.?);
+}
+
+test "resolveImportPath: root-level import" {
+    var buf: [512]u8 = undefined;
+    const result = resolveImportPath(&buf, "main.zig", "utils.zig");
+    try std.testing.expect(result != null);
+    try std.testing.expectEqualStrings("utils.zig", result.?);
+}
+
+test "resolveImportPath: parent directory" {
+    var buf: [512]u8 = undefined;
+    const result = resolveImportPath(&buf, "crypto/sub/inner.zig", "../helpers.zig");
+    try std.testing.expect(result != null);
+    try std.testing.expectEqualStrings("crypto/helpers.zig", result.?);
+}
+
+test "resolveImportPath: subdirectory import" {
+    var buf: [512]u8 = undefined;
+    const result = resolveImportPath(&buf, "main.zig", "sub/mod.zig");
+    try std.testing.expect(result != null);
+    try std.testing.expectEqualStrings("sub/mod.zig", result.?);
+}
+
+test "resolveImportPath: double dot-dot" {
+    var buf: [512]u8 = undefined;
+    const result = resolveImportPath(&buf, "a/b/c/file.zig", "../../root.zig");
+    try std.testing.expect(result != null);
+    try std.testing.expectEqualStrings("a/root.zig", result.?);
+}
+
+test "resolveImportPath: dot-slash at root" {
+    var buf: [512]u8 = undefined;
+    const result = resolveImportPath(&buf, "main.zig", "./utils.zig");
+    try std.testing.expect(result != null);
+    try std.testing.expectEqualStrings("utils.zig", result.?);
+}
+
+test "resolveImportPath: escape above project root returns null" {
+    var buf: [512]u8 = undefined;
+    const result = resolveImportPath(&buf, "file.zig", "../outside.zig");
+    try std.testing.expectEqual(@as(?[]const u8, null), result);
 }

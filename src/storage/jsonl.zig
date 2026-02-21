@@ -116,9 +116,13 @@ fn writeNodeLine(writer: *std.Io.Writer, n: Node) !void {
         .zig => |zm| {
             try writer.writeAll("{\"type\":\"zig\"");
             try writer.print(",\"is_comptime\":{s}", .{if (zm.is_comptime) "true" else "false"});
+            try writer.print(",\"is_mutable\":{s}", .{if (zm.is_mutable) "true" else "false"});
             try writer.print(",\"is_inline\":{s}", .{if (zm.is_inline) "true" else "false"});
             try writer.print(",\"is_extern\":{s}", .{if (zm.is_extern) "true" else "false"});
+            try writer.print(",\"is_packed\":{s}", .{if (zm.is_packed) "true" else "false"});
             try writer.print(",\"comptime_conditional\":{s}", .{if (zm.comptime_conditional) "true" else "false"});
+            try writer.writeAll(",\"calling_convention\":");
+            try writeOptStr(writer, zm.calling_convention);
             try writer.writeByte('}');
         },
     }
@@ -220,9 +224,12 @@ fn parseLangMeta(val: std.json.Value) LangMeta {
             if (std.mem.eql(u8, type_val.string, "zig")) {
                 return .{ .zig = .{
                     .is_comptime = if (obj.get("is_comptime")) |v| (v == .bool and v.bool) else false,
+                    .is_mutable = if (obj.get("is_mutable")) |v| (v == .bool and v.bool) else false,
                     .is_inline = if (obj.get("is_inline")) |v| (v == .bool and v.bool) else false,
                     .is_extern = if (obj.get("is_extern")) |v| (v == .bool and v.bool) else false,
+                    .is_packed = if (obj.get("is_packed")) |v| (v == .bool and v.bool) else false,
                     .comptime_conditional = if (obj.get("comptime_conditional")) |v| (v == .bool and v.bool) else false,
+                    .calling_convention = if (obj.get("calling_convention")) |v| jsonOptStr(v) else null,
                 } };
             }
             return .{ .none = {} };
@@ -846,4 +853,60 @@ test "jsonl preserves phantom nodes" {
     // Assert
     try std.testing.expectEqual(@as(usize, 1), loaded.nodeCount());
     try std.testing.expectEqual(ExternalInfo.stdlib, loaded.getNode(.root).?.external);
+}
+
+test "jsonl round-trip preserves union_def kind" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/test-project");
+    defer g.deinit();
+
+    _ = try g.addNode(.{
+        .id = .root,
+        .name = "MyUnion",
+        .kind = .union_def,
+        .language = .zig,
+        .visibility = .public,
+    });
+
+    var aw = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer aw.deinit();
+
+    // Act
+    try exportJsonl(std.testing.allocator, &g, &aw.writer);
+    try aw.writer.flush();
+    var loaded = try importJsonl(std.testing.allocator, aw.written());
+    defer loaded.deinit();
+
+    // Assert
+    try std.testing.expectEqual(@as(usize, 1), loaded.nodeCount());
+    try std.testing.expectEqual(NodeKind.union_def, loaded.getNode(.root).?.kind);
+}
+
+test "jsonl round-trip preserves is_packed metadata" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/test-project");
+    defer g.deinit();
+
+    _ = try g.addNode(.{
+        .id = .root,
+        .name = "PackedStruct",
+        .kind = .type_def,
+        .language = .zig,
+        .lang_meta = .{ .zig = .{ .is_packed = true } },
+    });
+
+    var aw = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer aw.deinit();
+
+    // Act
+    try exportJsonl(std.testing.allocator, &g, &aw.writer);
+    try aw.writer.flush();
+    var loaded = try importJsonl(std.testing.allocator, aw.written());
+    defer loaded.deinit();
+
+    // Assert
+    try std.testing.expectEqual(@as(usize, 1), loaded.nodeCount());
+    const meta = loaded.getNode(.root).?.lang_meta;
+    try std.testing.expect(meta.zig.is_packed);
+    try std.testing.expect(!meta.zig.is_extern);
 }

@@ -107,7 +107,7 @@ pub fn main() !void {
     var text_logger = logging.TextStderrLogger.init(min_level);
     const log = if (verbosity > 0) text_logger.logger() else logging.Logger.noop;
 
-    visitor.parse(source, &graph, log) catch |err| {
+    visitor.parse(source, &graph, null, log) catch |err| {
         try stdout.print("Parse error: {}\n", .{err});
         try stdout.flush();
         return;
@@ -173,6 +173,12 @@ pub fn main() !void {
         switch (n.lang_meta) {
             .zig => |zm| {
                 if (zm.is_comptime) try stdout.print("  [comptime]", .{});
+                if (zm.is_mutable) try stdout.print("  [mutable]", .{});
+                if (zm.is_extern) try stdout.print("  [extern]", .{});
+                if (zm.is_packed) try stdout.print("  [packed]", .{});
+                if (zm.is_inline) try stdout.print("  [inline]", .{});
+                if (zm.comptime_conditional) try stdout.print("  [comptime_conditional]", .{});
+                if (zm.calling_convention) |cc| try stdout.print("  [callconv={s}]", .{cc});
             },
             else => {},
         }

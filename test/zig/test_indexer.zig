@@ -90,6 +90,21 @@ fn writeNoCallsFixtures(dir: std.fs.Dir) !void {
     try dir.writeFile(.{ .sub_path = "no_calls.zig", .data = fixtures.zig.param_method_call.no_calls_zig });
 }
 
+/// Write dir_imports fixture files into a temporary directory with subdirectories.
+fn writeDirImportsFixtures(dir: std.fs.Dir) !void {
+    try dir.makePath("crypto");
+    try dir.makePath("tar");
+    try dir.makePath("compress/flate");
+    try dir.writeFile(.{ .sub_path = "root.zig", .data = fixtures.zig.dir_imports.root_zig });
+    try dir.writeFile(.{ .sub_path = "crypto/aegis.zig", .data = fixtures.zig.dir_imports.crypto_aegis_zig });
+    try dir.writeFile(.{ .sub_path = "crypto/hmac.zig", .data = fixtures.zig.dir_imports.crypto_hmac_zig });
+    try dir.writeFile(.{ .sub_path = "crypto/helpers.zig", .data = fixtures.zig.dir_imports.crypto_helpers_zig });
+    try dir.writeFile(.{ .sub_path = "tar/reader.zig", .data = fixtures.zig.dir_imports.tar_reader_zig });
+    try dir.writeFile(.{ .sub_path = "tar/helpers.zig", .data = fixtures.zig.dir_imports.tar_helpers_zig });
+    try dir.writeFile(.{ .sub_path = "compress/flate.zig", .data = fixtures.zig.dir_imports.compress_flate_zig });
+    try dir.writeFile(.{ .sub_path = "compress/flate/inner.zig", .data = fixtures.zig.dir_imports.compress_flate_inner_zig });
+}
+
 // ===========================================================================
 // Project fixture: file nodes, imports, calls, phantom nodes, metrics
 // ===========================================================================
@@ -743,4 +758,345 @@ test "parameter method call: negative tests" {
         // but still has uses_type to Service
         try std.testing.expect(helpers.hasEdge(&g, no_calls_fn, service_type, .uses_type));
     }
+}
+
+// ===========================================================================
+// Directory-relative import resolution
+// ===========================================================================
+
+test "dir imports: same-directory resolution with duplicate basenames" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/dir_imports");
+    defer g.deinit();
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try writeDirImportsFixtures(tmp_dir.dir);
+    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(project_root);
+
+    // Act
+    _ = indexDirectory(std.testing.allocator, project_root, &g, .{}) catch |err| return err;
+
+    // Assert: find file nodes by file_path
+    var crypto_helpers_id: ?NodeId = null;
+    var tar_helpers_id: ?NodeId = null;
+    var crypto_aegis_id: ?NodeId = null;
+    var tar_reader_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind != .file) continue;
+        if (n.file_path) |fp| {
+            if (std.mem.eql(u8, fp, "crypto/helpers.zig")) crypto_helpers_id = @enumFromInt(idx);
+            if (std.mem.eql(u8, fp, "tar/helpers.zig")) tar_helpers_id = @enumFromInt(idx);
+            if (std.mem.eql(u8, fp, "crypto/aegis.zig")) crypto_aegis_id = @enumFromInt(idx);
+            if (std.mem.eql(u8, fp, "tar/reader.zig")) tar_reader_id = @enumFromInt(idx);
+        }
+    }
+    try std.testing.expect(crypto_helpers_id != null);
+    try std.testing.expect(tar_helpers_id != null);
+    try std.testing.expect(crypto_aegis_id != null);
+    try std.testing.expect(tar_reader_id != null);
+
+    // crypto/aegis.zig imports crypto/helpers.zig, NOT tar/helpers.zig
+    try std.testing.expect(helpers.hasEdge(&g, crypto_aegis_id.?, crypto_helpers_id.?, .imports));
+    try std.testing.expect(!helpers.hasEdge(&g, crypto_aegis_id.?, tar_helpers_id.?, .imports));
+
+    // tar/reader.zig imports tar/helpers.zig, NOT crypto/helpers.zig
+    try std.testing.expect(helpers.hasEdge(&g, tar_reader_id.?, tar_helpers_id.?, .imports));
+    try std.testing.expect(!helpers.hasEdge(&g, tar_reader_id.?, crypto_helpers_id.?, .imports));
+}
+
+test "dir imports: dot-slash prefix resolves to same directory" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/dir_imports");
+    defer g.deinit();
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try writeDirImportsFixtures(tmp_dir.dir);
+    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(project_root);
+
+    // Act
+    _ = indexDirectory(std.testing.allocator, project_root, &g, .{}) catch |err| return err;
+
+    // Assert: crypto/hmac.zig (uses @import("./helpers.zig")) imports crypto/helpers.zig
+    var crypto_hmac_id: ?NodeId = null;
+    var crypto_helpers_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind != .file) continue;
+        if (n.file_path) |fp| {
+            if (std.mem.eql(u8, fp, "crypto/hmac.zig")) crypto_hmac_id = @enumFromInt(idx);
+            if (std.mem.eql(u8, fp, "crypto/helpers.zig")) crypto_helpers_id = @enumFromInt(idx);
+        }
+    }
+    try std.testing.expect(crypto_hmac_id != null);
+    try std.testing.expect(crypto_helpers_id != null);
+
+    try std.testing.expect(helpers.hasEdge(&g, crypto_hmac_id.?, crypto_helpers_id.?, .imports));
+}
+
+test "dir imports: subdirectory import resolves across directories" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/dir_imports");
+    defer g.deinit();
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try writeDirImportsFixtures(tmp_dir.dir);
+    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(project_root);
+
+    // Act
+    _ = indexDirectory(std.testing.allocator, project_root, &g, .{}) catch |err| return err;
+
+    // Assert: compress/flate.zig (uses @import("flate/inner.zig")) imports compress/flate/inner.zig
+    var compress_flate_id: ?NodeId = null;
+    var compress_flate_inner_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind != .file) continue;
+        if (n.file_path) |fp| {
+            if (std.mem.eql(u8, fp, "compress/flate.zig")) compress_flate_id = @enumFromInt(idx);
+            if (std.mem.eql(u8, fp, "compress/flate/inner.zig")) compress_flate_inner_id = @enumFromInt(idx);
+        }
+    }
+    try std.testing.expect(compress_flate_id != null);
+    try std.testing.expect(compress_flate_inner_id != null);
+
+    try std.testing.expect(helpers.hasEdge(&g, compress_flate_id.?, compress_flate_inner_id.?, .imports));
+}
+
+test "dir imports: parent directory import resolves across directories" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/dir_imports");
+    defer g.deinit();
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try writeDirImportsFixtures(tmp_dir.dir);
+    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(project_root);
+
+    // Act
+    _ = indexDirectory(std.testing.allocator, project_root, &g, .{}) catch |err| return err;
+
+    // Assert: compress/flate/inner.zig (uses @import("../flate.zig")) imports compress/flate.zig
+    var compress_flate_inner_id: ?NodeId = null;
+    var compress_flate_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind != .file) continue;
+        if (n.file_path) |fp| {
+            if (std.mem.eql(u8, fp, "compress/flate/inner.zig")) compress_flate_inner_id = @enumFromInt(idx);
+            if (std.mem.eql(u8, fp, "compress/flate.zig")) compress_flate_id = @enumFromInt(idx);
+        }
+    }
+    try std.testing.expect(compress_flate_inner_id != null);
+    try std.testing.expect(compress_flate_id != null);
+
+    try std.testing.expect(helpers.hasEdge(&g, compress_flate_inner_id.?, compress_flate_id.?, .imports));
+}
+
+test "dir imports: subdirectory import from root" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/dir_imports");
+    defer g.deinit();
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try writeDirImportsFixtures(tmp_dir.dir);
+    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(project_root);
+
+    // Act
+    _ = indexDirectory(std.testing.allocator, project_root, &g, .{}) catch |err| return err;
+
+    // Assert: root.zig (uses @import("crypto/aegis.zig")) imports crypto/aegis.zig
+    var root_id: ?NodeId = null;
+    var crypto_aegis_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind != .file) continue;
+        if (n.file_path) |fp| {
+            if (std.mem.eql(u8, fp, "root.zig")) root_id = @enumFromInt(idx);
+            if (std.mem.eql(u8, fp, "crypto/aegis.zig")) crypto_aegis_id = @enumFromInt(idx);
+        }
+    }
+    try std.testing.expect(root_id != null);
+    try std.testing.expect(crypto_aegis_id != null);
+
+    try std.testing.expect(helpers.hasEdge(&g, root_id.?, crypto_aegis_id.?, .imports));
+}
+
+test "dir imports: cross-file call edges resolve to correct targets" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/dir_imports");
+    defer g.deinit();
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try writeDirImportsFixtures(tmp_dir.dir);
+    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(project_root);
+
+    // Act
+    _ = indexDirectory(std.testing.allocator, project_root, &g, .{}) catch |err| return err;
+
+    // Find file nodes
+    var crypto_aegis_id: ?NodeId = null;
+    var crypto_helpers_id: ?NodeId = null;
+    var tar_reader_id: ?NodeId = null;
+    var tar_helpers_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind != .file) continue;
+        if (n.file_path) |fp| {
+            if (std.mem.eql(u8, fp, "crypto/aegis.zig")) crypto_aegis_id = @enumFromInt(idx);
+            if (std.mem.eql(u8, fp, "crypto/helpers.zig")) crypto_helpers_id = @enumFromInt(idx);
+            if (std.mem.eql(u8, fp, "tar/reader.zig")) tar_reader_id = @enumFromInt(idx);
+            if (std.mem.eql(u8, fp, "tar/helpers.zig")) tar_helpers_id = @enumFromInt(idx);
+        }
+    }
+    try std.testing.expect(crypto_aegis_id != null);
+    try std.testing.expect(crypto_helpers_id != null);
+    try std.testing.expect(tar_reader_id != null);
+    try std.testing.expect(tar_helpers_id != null);
+
+    // Find function nodes scoped to the correct files
+    const encrypt_fn = helpers.findNodeInFile(&g, "encrypt", .function, crypto_aegis_id.?) orelse return error.TestExpectedEqual;
+    const validate_fn = helpers.findNodeInFile(&g, "validate", .function, crypto_helpers_id.?) orelse return error.TestExpectedEqual;
+    const read_fn = helpers.findNodeInFile(&g, "read", .function, tar_reader_id.?) orelse return error.TestExpectedEqual;
+    const checksum_fn = helpers.findNodeInFile(&g, "checksum", .function, tar_helpers_id.?) orelse return error.TestExpectedEqual;
+
+    // encrypt() in aegis.zig calls validate() in crypto/helpers.zig
+    try std.testing.expect(helpers.hasEdge(&g, encrypt_fn, validate_fn, .calls));
+    // read() in reader.zig calls checksum() in tar/helpers.zig
+    try std.testing.expect(helpers.hasEdge(&g, read_fn, checksum_fn, .calls));
+
+    // Negative: encrypt() does NOT call checksum()
+    try std.testing.expect(!helpers.hasEdge(&g, encrypt_fn, checksum_fn, .calls));
+    // Negative: read() does NOT call validate()
+    try std.testing.expect(!helpers.hasEdge(&g, read_fn, validate_fn, .calls));
+}
+
+// ===========================================================================
+// Inner struct call: cross-file edges from test block inner struct
+// ===========================================================================
+
+/// Write direct_extraction fixture files into a temporary directory.
+fn writeDirectExtractionTypeFixtures(dir: std.fs.Dir) !void {
+    try dir.writeFile(.{ .sub_path = "provider.zig", .data = fixtures.zig.direct_extraction.provider_zig });
+    try dir.writeFile(.{ .sub_path = "type_consumer.zig", .data = fixtures.zig.direct_extraction.type_consumer_zig });
+}
+
+/// Write direct_extraction fixture files for bare function call.
+fn writeDirectExtractionFnFixtures(dir: std.fs.Dir) !void {
+    try dir.writeFile(.{ .sub_path = "provider.zig", .data = fixtures.zig.direct_extraction.provider_zig });
+    try dir.writeFile(.{ .sub_path = "fn_consumer.zig", .data = fixtures.zig.direct_extraction.fn_consumer_zig });
+}
+
+/// Write inner_struct_call fixture files into a temporary directory.
+fn writeInnerStructCallFixtures(dir: std.fs.Dir) !void {
+    try dir.writeFile(.{ .sub_path = "provider.zig", .data = fixtures.zig.inner_struct_call.provider_zig });
+    try dir.writeFile(.{ .sub_path = "consumer.zig", .data = fixtures.zig.inner_struct_call.consumer_zig });
+}
+
+test "inner struct call: cross-file edges from test block inner struct" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/inner_struct_call");
+    defer g.deinit();
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try writeInnerStructCallFixtures(tmp_dir.dir);
+    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(project_root);
+
+    // Act
+    _ = indexDirectory(std.testing.allocator, project_root, &g, .{}) catch |err| return err;
+
+    // Assert: find file nodes
+    const provider_file = helpers.findNode(&g, "provider.zig", .file) orelse return error.TestExpectedEqual;
+    const consumer_file = helpers.findNode(&g, "consumer.zig", .file) orelse return error.TestExpectedEqual;
+
+    // Assert: import edge consumer.zig imports provider.zig
+    try std.testing.expect(helpers.hasEdge(&g, consumer_file.id, provider_file.id, .imports));
+
+    // Assert: find function and test nodes
+    const some_fn = helpers.findNodeInFile(&g, "someFunction", .function, provider_file.id) orelse return error.TestExpectedEqual;
+    const another_fn = helpers.findNodeInFile(&g, "anotherFunction", .function, provider_file.id) orelse return error.TestExpectedEqual;
+
+    // Find the "do" function (inner struct method inside test block)
+    var do_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind == .function and std.mem.eql(u8, n.name, "do")) {
+            do_id = @enumFromInt(idx);
+            break;
+        }
+    }
+    try std.testing.expect(do_id != null);
+
+    // Assert: do calls someFunction (cross-file edge from inner struct)
+    try std.testing.expect(helpers.hasEdge(&g, do_id.?, some_fn, .calls));
+
+    // Assert: "direct call" test calls anotherFunction (baseline)
+    var direct_test_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind == .test_def and std.mem.eql(u8, n.name, "direct call")) {
+            direct_test_id = @enumFromInt(idx);
+            break;
+        }
+    }
+    try std.testing.expect(direct_test_id != null);
+    try std.testing.expect(helpers.hasEdge(&g, direct_test_id.?, another_fn, .calls));
+}
+
+// ===========================================================================
+// Direct extraction: cross-file edges from @import("...").Symbol patterns
+// ===========================================================================
+
+test "direct extraction type: qualified method call creates cross-file calls edge" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/direct_extraction");
+    defer g.deinit();
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try writeDirectExtractionTypeFixtures(tmp_dir.dir);
+    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(project_root);
+
+    // Act
+    _ = indexDirectory(std.testing.allocator, project_root, &g, .{}) catch |err| return err;
+
+    // Assert: find file nodes
+    const provider_file = helpers.findNode(&g, "provider.zig", .file) orelse return error.TestExpectedEqual;
+    const consumer_file = helpers.findNode(&g, "type_consumer.zig", .file) orelse return error.TestExpectedEqual;
+
+    // Assert: import edge
+    try std.testing.expect(helpers.hasEdge(&g, consumer_file.id, provider_file.id, .imports));
+
+    // Assert: find function nodes
+    const use_widget_fn = helpers.findNodeInFile(&g, "useWidget", .function, consumer_file.id) orelse return error.TestExpectedEqual;
+    const init_fn = helpers.findNodeInFile(&g, "init", .function, provider_file.id) orelse return error.TestExpectedEqual;
+    const widget_type = helpers.findNodeInFile(&g, "Widget", .type_def, provider_file.id) orelse return error.TestExpectedEqual;
+
+    // useWidget() calls Widget.init()
+    try std.testing.expect(helpers.hasEdge(&g, use_widget_fn, init_fn, .calls));
+    // useWidget() has uses_type to Widget
+    try std.testing.expect(helpers.hasEdge(&g, use_widget_fn, widget_type, .uses_type));
+}
+
+test "direct extraction fn: bare call creates cross-file calls edge" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/direct_extraction");
+    defer g.deinit();
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try writeDirectExtractionFnFixtures(tmp_dir.dir);
+    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(project_root);
+
+    // Act
+    _ = indexDirectory(std.testing.allocator, project_root, &g, .{}) catch |err| return err;
+
+    // Assert: find nodes
+    const provider_file = helpers.findNode(&g, "provider.zig", .file) orelse return error.TestExpectedEqual;
+    const consumer_file = helpers.findNode(&g, "fn_consumer.zig", .file) orelse return error.TestExpectedEqual;
+    const call_fn = helpers.findNodeInFile(&g, "callStandalone", .function, consumer_file.id) orelse return error.TestExpectedEqual;
+    const standalone_fn = helpers.findNodeInFile(&g, "standalone", .function, provider_file.id) orelse return error.TestExpectedEqual;
+
+    // callStandalone() calls standalone()
+    try std.testing.expect(helpers.hasEdge(&g, call_fn, standalone_fn, .calls));
+    // import edge
+    try std.testing.expect(helpers.hasEdge(&g, consumer_file.id, provider_file.id, .imports));
 }

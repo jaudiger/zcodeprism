@@ -23,6 +23,17 @@ pub const NodeKind = enum {
     test_def,
     error_def,
     import_decl,
+    union_def,
+    comptime_block,
+
+    /// Returns true for type-like containers that can hold children
+    /// (methods, fields): struct, enum, union.
+    pub fn isTypeContainer(self: NodeKind) bool {
+        return switch (self) {
+            .type_def, .enum_def, .union_def => true,
+            else => false,
+        };
+    }
 };
 
 /// The semantic relationship between two nodes.
@@ -69,11 +80,26 @@ test "EdgeId is 8 bytes" {
     }
 }
 
-test "NodeKind has exactly 10 variants" {
+test "NodeKind has exactly 12 variants" {
     comptime {
         const fields = @typeInfo(NodeKind).@"enum".fields;
-        std.debug.assert(fields.len == 10);
+        std.debug.assert(fields.len == 12);
     }
+}
+
+test "isTypeContainer returns true for type_def, enum_def, union_def" {
+    try std.testing.expect(NodeKind.type_def.isTypeContainer());
+    try std.testing.expect(NodeKind.enum_def.isTypeContainer());
+    try std.testing.expect(NodeKind.union_def.isTypeContainer());
+    try std.testing.expect(!NodeKind.function.isTypeContainer());
+    try std.testing.expect(!NodeKind.field.isTypeContainer());
+    try std.testing.expect(!NodeKind.constant.isTypeContainer());
+    try std.testing.expect(!NodeKind.file.isTypeContainer());
+    try std.testing.expect(!NodeKind.module.isTypeContainer());
+    try std.testing.expect(!NodeKind.test_def.isTypeContainer());
+    try std.testing.expect(!NodeKind.error_def.isTypeContainer());
+    try std.testing.expect(!NodeKind.import_decl.isTypeContainer());
+    try std.testing.expect(!NodeKind.comptime_block.isTypeContainer());
 }
 
 test "EdgeType has exactly 6 variants" {

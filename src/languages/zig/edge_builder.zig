@@ -73,17 +73,12 @@ const ParamTypeTracker = struct {
         self.count += 1;
     }
 
-    const ParamOrigin = struct {
-        target_file: NodeId,
-        type_chain: []const []const u8,
-    };
-
-    fn findOrigin(self: *const ParamTypeTracker, name: []const u8) ?ParamOrigin {
+    fn findOrigin(self: *const ParamTypeTracker, name: []const u8) ?cf.SymbolOrigin {
         for (0..self.count) |i| {
             if (std.mem.eql(u8, self.names[i], name)) {
                 return .{
-                    .target_file = self.target_files[i],
-                    .type_chain = self.type_chains[i][0..self.chain_lens[i]],
+                    .file_id = self.target_files[i],
+                    .chain = self.type_chains[i][0..self.chain_lens[i]],
                 };
             }
         }
@@ -128,17 +123,8 @@ pub fn walkForEdges(g: *Graph, source: []const u8, ts_node: ts.Node, ctx: *const
             const decl_line = ts_node.startPoint().row + 1;
             if (findFunctionByNameAndLine(g, name, decl_line, ctx.scope_start, ctx.scope_end)) |fn_id| {
                 const fn_node = g.getNode(fn_id);
-                const fn_parent_id = if (fn_node) |n| n.parent_id else null;
-
-                // For generic type-returning functions (stored as type_def or
-                // enum_def), inner declarations (Self, init, etc.) are children
-                // of fn_id itself, not of fn_parent_id. Use fn_id as the scope
-                // to prevent cross-scope Self resolution.
-                const is_type_scope = if (fn_node) |n|
-                    n.kind == .type_def or n.kind == .enum_def
-                else
-                    false;
-                const caller_scope_id = if (is_type_scope) fn_id else fn_parent_id;
+                _ = if (fn_node) |n| n.parent_id else null; // Scope walk starts at fn_id and walks up through parents.
+                const caller_scope_id: ?NodeId = fn_id;
 
                 // Build all per-function trackers in a single block walk.
                 var var_tracker = VarTracker{};
@@ -179,8 +165,8 @@ pub fn walkForEdges(g: *Graph, source: []const u8, ts_node: ts.Node, ctx: *const
     } else if (kid == k.test_declaration) {
         const test_name = ast.getTestName(source, ts_node, k);
         if (findTestByName(g, test_name, ctx.scope_start, ctx.scope_end)) |test_id| {
-            const test_node = g.getNode(test_id);
-            const test_parent_id = if (test_node) |n| n.parent_id else null;
+            _ = g.getNode(test_id); // Scope walk starts at test_id and walks up through parents.
+            const test_parent_id: ?NodeId = test_id;
 
             // Build all per-test trackers in a single block walk.
             var var_tracker = VarTracker{};
@@ -226,6 +212,33 @@ pub fn walkForEdges(g: *Graph, source: []const u8, ts_node: ts.Node, ctx: *const
     }
 }
 
+/// Resolve a call through a SymbolOrigin by prepending its chain to the call chain.
+fn resolveOriginCall(
+    sctx: *const ScanContext,
+    origin: cf.SymbolOrigin,
+    call_chain: []const []const u8,
+    is_call: bool,
+) !void {
+    var resolve_chain: [cf.max_chain_depth][]const u8 = undefined;
+    var len: usize = 0;
+    for (origin.chain) |seg| {
+        if (len >= cf.max_chain_depth) break;
+        resolve_chain[len] = seg;
+        len += 1;
+    }
+    for (call_chain) |seg| {
+        if (len >= cf.max_chain_depth) break;
+        resolve_chain[len] = seg;
+        len += 1;
+    }
+    if (len == 0) return;
+    try cf.resolveQualifiedCall(
+        sctx.g, sctx.caller_id, origin.file_id,
+        resolve_chain[0..len], is_call,
+        sctx.scope_index, sctx.file_index, sctx.log,
+    );
+}
+
 fn scanForCalls(sctx: *const ScanContext, ts_node: ts.Node, depth: u32) !void {
     // Graceful cap: stop descending, edges in deeper subtrees are skipped.
     if (depth >= cf.max_ast_scan_depth) {
@@ -243,6 +256,11 @@ fn scanForCalls(sctx: *const ScanContext, ts_node: ts.Node, depth: u32) !void {
                     if (@intFromEnum(sctx.caller_id) != @intFromEnum(callee_id)) {
                         try cf.addEdgeIfNew(sctx.g, sctx.caller_id, callee_id, .calls, sctx.log);
                     }
+                } else if (sctx.edge_ctx.findImportOrigin(callee_name)) |origin| {
+                    // Direct extraction: bare call to imported symbol.
+                    if (origin.chain.len > 0) {
+                        try resolveOriginCall(sctx, origin, &.{}, true);
+                    }
                 } else {
                     sctx.log.trace("bare call unresolved", &.{Field.string("callee", callee_name)});
                 }
@@ -254,9 +272,9 @@ fn scanForCalls(sctx: *const ScanContext, ts_node: ts.Node, depth: u32) !void {
                 if (chain_len >= 2) {
                     const root_name = chain[0];
 
-                    if (sctx.edge_ctx.findImportTarget(root_name)) |target_file_id| {
-                        // Import-qualified call: alpha.Self.init(42).
-                        try cf.resolveQualifiedCall(sctx.g, sctx.caller_id, target_file_id, chain[1..chain_len], true, sctx.scope_index, sctx.file_index, sctx.log);
+                    if (sctx.edge_ctx.findImportOrigin(root_name)) |origin| {
+                        // Import-qualified call: prepend extraction chain.
+                        try resolveOriginCall(sctx, origin, chain[1..chain_len], true);
                     } else if (sctx.var_tracker.findTarget(root_name)) |target_file_id| {
                         // Variable method call: a.deinit() where a was assigned from import.
                         try cf.resolveQualifiedCall(sctx.g, sctx.caller_id, target_file_id, chain[1..chain_len], true, sctx.scope_index, sctx.file_index, sctx.log);
@@ -276,22 +294,8 @@ fn scanForCalls(sctx: *const ScanContext, ts_node: ts.Node, depth: u32) !void {
                             }
                         }
                     } else if (sctx.param_tracker.findOrigin(root_name)) |origin| {
-                        // Parameter with import-qualified type: svc.method() where
-                        // svc's type comes from an imported module (e.g., svc_mod.Service).
-                        // Build resolution chain: [TypeName, ..., method_name].
-                        var resolve_chain: [cf.max_chain_depth][]const u8 = undefined;
-                        var resolve_len: usize = 0;
-                        for (origin.type_chain) |seg| {
-                            if (resolve_len >= cf.max_chain_depth) break;
-                            resolve_chain[resolve_len] = seg;
-                            resolve_len += 1;
-                        }
-                        for (chain[1..chain_len]) |seg| {
-                            if (resolve_len >= cf.max_chain_depth) break;
-                            resolve_chain[resolve_len] = seg;
-                            resolve_len += 1;
-                        }
-                        try cf.resolveQualifiedCall(sctx.g, sctx.caller_id, origin.target_file, resolve_chain[0..resolve_len], true, sctx.scope_index, sctx.file_index, sctx.log);
+                        // Parameter with import-qualified type.
+                        try resolveOriginCall(sctx, origin, chain[1..chain_len], true);
                     } else {
                         // Fallback: use the AST to determine if the receiver is
                         // local (self or a known local type) vs external.
@@ -486,7 +490,7 @@ fn scanBlockPrescan(
             const var_name = ast.getIdentifierName(source, child, k) orelse continue;
             // VarTracker: import-qualified initializer.
             if (cf.findImportQualifiedRoot(source, child, ctx, k)) |target_file_id| {
-                const resolved = cf.resolveVarTargetThroughReturnType(g, source, child, ctx, k, target_file_id, scope_index, file_index, log) orelse target_file_id;
+                const resolved = cf.resolveVarTargetThroughReturnType(g, source, child, ctx, k, scope_index, file_index, log) orelse target_file_id;
                 var_tracker.addBinding(var_name, resolved, log);
             }
             // LocalTypeTracker: struct literal or static method call initializer.
@@ -520,7 +524,7 @@ fn scanBlockPrescan(
 
             if (cond_ident != null and capture_name != null) {
                 if (param_tracker.findOrigin(cond_ident.?)) |origin| {
-                    param_tracker.addBinding(capture_name.?, origin.target_file, origin.type_chain);
+                    param_tracker.addBinding(capture_name.?, origin.file_id, origin.chain);
                 }
             }
         }
@@ -753,7 +757,7 @@ fn findTypeCrossFile(g: *const Graph, name: []const u8, ctx: *const EdgeContext,
     for (ctx.import_targets[0..ctx.import_count]) |target_file_id| {
         for (scope_index.childrenOf(target_file_id)) |child_idx| {
             const n = g.nodes.items[child_idx];
-            if (n.kind != .type_def and n.kind != .enum_def) continue;
+            if (!n.kind.isTypeContainer()) continue;
             if (!std.mem.eql(u8, n.name, name)) continue;
             match = @enumFromInt(child_idx);
             match_count += 1;
@@ -799,11 +803,11 @@ fn findTypeByNameScoped(g: *const Graph, name: []const u8, scope_start: usize, s
 }
 
 /// Check whether a graph node represents a type reference with the given name.
-/// Matches type_def, enum_def, PascalCase constants (type aliases), and
+/// Matches type containers (type_def, enum_def, union_def), PascalCase constants (type aliases), and
 /// PascalCase import_decl nodes (e.g. `const ZigMeta = @import("...").ZigMeta`).
 fn isTypeReference(n: @import("../../core/node.zig").Node, name: []const u8) bool {
     if (!std.mem.eql(u8, n.name, name)) return false;
-    if (n.kind == .type_def or n.kind == .enum_def) return true;
+    if (n.kind.isTypeContainer()) return true;
     const is_pascal = n.name.len > 0 and n.name[0] >= 'A' and n.name[0] <= 'Z';
     if (is_pascal and (n.kind == .constant or n.kind == .import_decl)) return true;
     return false;
@@ -856,7 +860,7 @@ fn findFunctionByNameAndLine(g: *const Graph, name: []const u8, line: u32, scope
     // Fallback: for generic type-returning functions that are stored as
     // type_def nodes, match by name and line.
     for (scoped_nodes, scope_start..) |n, i| {
-        if ((n.kind == .type_def or n.kind == .enum_def) and
+        if (n.kind.isTypeContainer() and
             std.mem.eql(u8, n.name, name) and
             n.line_start != null and n.line_start.? == line)
         {

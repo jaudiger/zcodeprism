@@ -136,9 +136,10 @@ pub fn prefixOrder(prefix: []const u8) u64 {
         'f' << 8 | 'n' => 4, // "fn:"
         'm' << 8 | ':' => 5, // "m:"
         's' << 8 | 't' => 6, // "st:"
-        't' << 8 | ':' => 7, // "t:"
-        'x' << 8 | ':' => 8, // "x:"
-        else => 9,
+        'u' << 8 | 'n' => 7, // "un:"
+        't' << 8 | ':' => 8, // "t:"
+        'x' << 8 | ':' => 9, // "x:"
+        else => 10,
     };
 }
 
@@ -200,6 +201,7 @@ pub fn collectPhantomSymbols(
 /// Mutable state carried through the recursive ID assignment walk.
 pub const IdWalkState = struct {
     st_counter: u32 = 0,
+    un_counter: u32 = 0,
     en_counter: u32 = 0,
     fn_counter: u32 = 0,
     c_counter: u32 = 0,
@@ -207,6 +209,7 @@ pub const IdWalkState = struct {
     t_counter: u32 = 0,
     m_counter: u32 = 0,
     struct_indices: std.ArrayListUnmanaged(usize) = .{},
+    union_indices: std.ArrayListUnmanaged(usize) = .{},
     enum_indices: std.ArrayListUnmanaged(usize) = .{},
     fn_indices: std.ArrayListUnmanaged(usize) = .{},
     const_indices: std.ArrayListUnmanaged(usize) = .{},
@@ -215,6 +218,7 @@ pub const IdWalkState = struct {
 
     pub fn deinit(self: *IdWalkState, allocator: std.mem.Allocator) void {
         self.struct_indices.deinit(allocator);
+        self.union_indices.deinit(allocator);
         self.enum_indices.deinit(allocator);
         self.fn_indices.deinit(allocator);
         self.const_indices.deinit(allocator);
@@ -240,6 +244,12 @@ pub fn assignChildrenIds(
                 state.st_counter += 1;
                 ids[child_idx] = .{ .prefix = "st:", .num = state.st_counter };
                 try state.struct_indices.append(allocator, child_idx);
+                try assignChildrenIds(allocator, g, child_idx, ids, filter, children_index, state);
+            },
+            .union_def => {
+                state.un_counter += 1;
+                ids[child_idx] = .{ .prefix = "un:", .num = state.un_counter };
+                try state.union_indices.append(allocator, child_idx);
                 try assignChildrenIds(allocator, g, child_idx, ids, filter, children_index, state);
             },
             .enum_def => {
@@ -277,7 +287,7 @@ pub fn assignChildrenIds(
                 ids[child_idx] = .{ .prefix = "m:", .num = state.m_counter };
                 try assignChildrenIds(allocator, g, child_idx, ids, filter, children_index, state);
             },
-            .field, .import_decl, .file => {},
+            .field, .import_decl, .file, .comptime_block => {},
         }
     }
 }
@@ -288,6 +298,7 @@ pub const IdAssignment = struct {
     ids: []?IdEntry,
     file_indices: std.ArrayListUnmanaged(usize),
     struct_indices: std.ArrayListUnmanaged(usize),
+    union_indices: std.ArrayListUnmanaged(usize),
     enum_indices: std.ArrayListUnmanaged(usize),
     fn_indices: std.ArrayListUnmanaged(usize),
     const_indices: std.ArrayListUnmanaged(usize),
@@ -302,6 +313,7 @@ pub const IdAssignment = struct {
         allocator.free(self.ids);
         self.file_indices.deinit(allocator);
         self.struct_indices.deinit(allocator);
+        self.union_indices.deinit(allocator);
         self.enum_indices.deinit(allocator);
         self.fn_indices.deinit(allocator);
         self.const_indices.deinit(allocator);
@@ -489,6 +501,7 @@ pub fn buildIdAssignment(
         .ids = ids,
         .file_indices = file_indices,
         .struct_indices = state.struct_indices,
+        .union_indices = state.union_indices,
         .enum_indices = state.enum_indices,
         .fn_indices = state.fn_indices,
         .const_indices = state.const_indices,

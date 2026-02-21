@@ -28,7 +28,9 @@ const LangMeta = lang.LangMeta;
 
 /// Parse Zig source code and populate the graph with nodes and edges.
 /// This is the entry point used by the LanguageSupport registry.
-pub fn parse(source: []const u8, graph: *anyopaque, logger: Logger) anyerror!void {
+/// `file_path` is the file's relative path within the project, set by the
+/// indexer. When null, import resolution falls back to basename-only lookup.
+pub fn parse(source: []const u8, graph: *anyopaque, file_path: ?[]const u8, logger: Logger) anyerror!void {
     const g: *Graph = @ptrCast(@alignCast(graph));
     const log = logger.withScope("zig-visitor");
 
@@ -50,6 +52,7 @@ pub fn parse(source: []const u8, graph: *anyopaque, logger: Logger) anyerror!voi
             .visibility = .public,
             .line_start = 1,
             .line_end = if (line_count > 0) line_count else null,
+            .file_path = file_path,
         });
         return;
     };
@@ -70,6 +73,7 @@ pub fn parse(source: []const u8, graph: *anyopaque, logger: Logger) anyerror!voi
         .line_start = 1,
         .line_end = if (line_count > 0) line_count else null,
         .doc = module_doc,
+        .file_path = file_path,
     });
 
     // Create nodes from declarations.
@@ -93,7 +97,7 @@ pub fn parse(source: []const u8, graph: *anyopaque, logger: Logger) anyerror!voi
     var scope_index = try ScopeIndex.build(g.allocator, g.nodes.items, 0);
     defer scope_index.deinit(g.allocator);
 
-    cf.buildImportMap(g, source, root, &ctx, &file_index, &k, log);
+    cf.buildImportMap(g, source, root, &ctx, &file_index, file_path, &k, log);
 
     // Create edges (calls, uses_type) with cross-file resolution.
     log.debug("building edges", &.{});
@@ -112,9 +116,11 @@ fn processDeclaration(g: *Graph, source: []const u8, ts_node: ts.Node, parent_id
     } else if (kid == k.function_declaration) {
         try processFunctionDecl(g, source, ts_node, parent_id, k, log);
     } else if (kid == k.test_declaration) {
-        try processTestDecl(g, source, ts_node, parent_id, k);
+        try processTestDecl(g, source, ts_node, parent_id, k, log);
     } else if (kid == k.container_field) {
         try processContainerField(g, source, ts_node, parent_id, k, log);
+    } else if (kid == k.comptime_declaration) {
+        try processComptimeDecl(g, source, ts_node, parent_id, k, log);
     }
 }
 
@@ -138,25 +144,41 @@ fn processVariableDecl(g: *Graph, source: []const u8, ts_node: ts.Node, parent_i
             return;
         }
 
-        // Skip same-name re-exports from imports (e.g., `const Graph = graph_mod.Graph`).
+        // Skip same-name re-exports from imports, but only when private.
+        // Public re-exports (e.g., `pub const iovec = std.posix.iovec`) are intentional API.
         if (ast.getFieldExprRootAndLeaf(source, ts_node, k)) |info| {
-            if (std.mem.eql(u8, info.leaf, name)) {
+            if (std.mem.eql(u8, info.leaf, name) and visibility == .private) {
                 if (isImportSibling(g, parent_id, info.root)) {
-                    log.trace("skipping re-export", &.{Field.string("name", name)});
+                    log.trace("skipping private re-export", &.{Field.string("name", name)});
                     return;
                 }
             }
         }
     }
 
-    // Comptime detection: constants with explicit type annotation are comptime-known.
-    var lang_meta: LangMeta = .{ .none = {} };
-    if (kind == .constant and ast.hasTypeAnnotation(ts_node, k)) {
-        lang_meta = .{ .zig = .{ .is_comptime = true } };
-    }
+    // Detect all Zig-specific qualifiers.
+    const is_mutable = ast.hasKeyword(ts_node, k.var_kw);
+    const is_comptime = kind == .constant and ast.hasTypeAnnotation(ts_node, k);
+    const is_packed = if (classification.body) |body| ast.hasKeyword(body, k.packed_kw) else false;
+    const is_extern = if (classification.body) |body| ast.hasKeyword(body, k.extern_kw) else false;
+    const comptime_conditional = classification.comptime_conditional;
+
+    const has_zig_meta = is_mutable or is_comptime or is_packed or is_extern or comptime_conditional;
+    const lang_meta: LangMeta = if (has_zig_meta) .{ .zig = .{
+        .is_mutable = is_mutable,
+        .is_comptime = is_comptime,
+        .is_packed = is_packed,
+        .is_extern = is_extern,
+        .comptime_conditional = comptime_conditional,
+    } } else .{ .none = {} };
 
     // For import declarations, store the import path extracted from the AST.
-    const sig: ?[]const u8 = if (kind == .import_decl) cf.extractImportPath(source, ts_node, k) else null;
+    const sig: ?[]const u8 = if (kind == .import_decl)
+        cf.extractImportPath(source, ts_node, k)
+    else if (kind == .error_def)
+        if (classification.body) |body| source[body.startByte()..body.endByte()] else null
+    else
+        null;
 
     const node_id = try g.addNode(.{
         .id = .root,
@@ -173,7 +195,7 @@ fn processVariableDecl(g: *Graph, source: []const u8, ts_node: ts.Node, parent_i
     });
 
     // Recurse into struct body for nested declarations (methods, nested types).
-    if (classification.struct_body) |body| {
+    if (classification.body) |body| {
         var i: u32 = 0;
         while (i < body.childCount()) : (i += 1) {
             const child = body.child(i) orelse continue;
@@ -191,10 +213,30 @@ fn processFunctionDecl(g: *Graph, source: []const u8, ts_node: ts.Node, parent_i
     const visibility = ast.detectVisibility(ts_node, k);
     const doc = ast.collectDocComment(source, ts_node, k);
 
+    // Shared: extract function signature and is_inline before branching.
+    // Both type-returning and regular function paths need these.
+    const signature = extractFunctionSignature(source, ts_node, k);
+    const is_inline = ast.hasKeyword(ts_node, k.inline_kw);
+
     // Detect type-returning generic functions: `fn Foo(comptime T: type) type { return struct { ... }; }`
     if (ast.returnsType(source, ts_node, k)) {
         if (ast.findReturnedTypeBody(ts_node, k)) |body_info| {
-            const kind: NodeKind = if (body_info.is_enum) .enum_def else .type_def;
+            const kind: NodeKind = switch (body_info.kind) {
+                .enum_like => .enum_def,
+                .union_like => .union_def,
+                .struct_like => .type_def,
+            };
+            // Container qualifiers from the returned body.
+            const is_packed = ast.hasKeyword(body_info.body, k.packed_kw);
+            const is_extern_container = ast.hasKeyword(body_info.body, k.extern_kw);
+            // Combine container qualifiers with function-level is_inline.
+            const has_zig_meta = is_packed or is_extern_container or is_inline;
+            const type_lang_meta: LangMeta = if (has_zig_meta) .{ .zig = .{
+                .is_packed = is_packed,
+                .is_extern = is_extern_container,
+                .is_inline = is_inline,
+            } } else .{ .none = {} };
+
             const type_id = try g.addNode(.{
                 .id = .root,
                 .name = name,
@@ -203,6 +245,8 @@ fn processFunctionDecl(g: *Graph, source: []const u8, ts_node: ts.Node, parent_i
                 .parent_id = parent_id,
                 .visibility = visibility,
                 .doc = doc,
+                .signature = signature,
+                .lang_meta = type_lang_meta,
                 .line_start = ts_node.startPoint().row + 1,
                 .line_end = ts_node.endPoint().row + 1,
             });
@@ -219,7 +263,15 @@ fn processFunctionDecl(g: *Graph, source: []const u8, ts_node: ts.Node, parent_i
         }
     }
 
-    _ = try g.addNode(.{
+    // Regular function path: extract function-specific qualifiers.
+    const is_extern = ast.hasKeyword(ts_node, k.extern_kw);
+    const lang_meta: LangMeta = if (is_extern or is_inline) .{ .zig = .{
+        .is_extern = is_extern,
+        .is_inline = is_inline,
+        .calling_convention = if (is_extern) ast.extractCallingConvention(source, ts_node, k) else null,
+    } } else .{ .none = {} };
+
+    const fn_id = try g.addNode(.{
         .id = .root,
         .name = name,
         .kind = .function,
@@ -227,10 +279,21 @@ fn processFunctionDecl(g: *Graph, source: []const u8, ts_node: ts.Node, parent_i
         .parent_id = parent_id,
         .visibility = visibility,
         .doc = doc,
-        .signature = extractFunctionSignature(source, ts_node, k),
+        .signature = signature,
+        .lang_meta = lang_meta,
         .line_start = ts_node.startPoint().row + 1,
         .line_end = ts_node.endPoint().row + 1,
     });
+
+    // Discover inner type definitions inside the function block body.
+    var fi: u32 = 0;
+    while (fi < ts_node.childCount()) : (fi += 1) {
+        const child = ts_node.child(fi) orelse continue;
+        if (child.kindId() == k.block) {
+            try discoverInnerTypes(g, source, child, fn_id, k, log);
+            break;
+        }
+    }
 }
 
 /// Extract the function header text (from "fn" keyword to the body block start).
@@ -248,14 +311,19 @@ fn extractFunctionSignature(source: []const u8, ts_node: ts.Node, k: *const Kind
             return null;
         }
     }
+    // No block found (extern function) — use full declaration minus trailing semicolon.
+    const end = ts_node.endByte();
+    if (end > start and end <= source.len) {
+        return std.mem.trimRight(u8, source[start..end], " \t\n\r;");
+    }
     return null;
 }
 
-fn processTestDecl(g: *Graph, source: []const u8, ts_node: ts.Node, parent_id: NodeId, k: *const KindIds) anyerror!void {
+fn processTestDecl(g: *Graph, source: []const u8, ts_node: ts.Node, parent_id: NodeId, k: *const KindIds, log: Logger) anyerror!void {
     const name = ast.getTestName(source, ts_node, k);
     const doc = ast.collectDocComment(source, ts_node, k);
 
-    _ = try g.addNode(.{
+    const test_id = try g.addNode(.{
         .id = .root,
         .name = name,
         .kind = .test_def,
@@ -266,6 +334,76 @@ fn processTestDecl(g: *Graph, source: []const u8, ts_node: ts.Node, parent_id: N
         .line_start = ts_node.startPoint().row + 1,
         .line_end = ts_node.endPoint().row + 1,
     });
+
+    // Discover inner type definitions inside the test block body.
+    var i: u32 = 0;
+    while (i < ts_node.childCount()) : (i += 1) {
+        const child = ts_node.child(i) orelse continue;
+        if (child.kindId() == k.block) {
+            try discoverInnerTypes(g, source, child, test_id, k, log);
+            break;
+        }
+    }
+}
+
+fn processComptimeDecl(g: *Graph, source: []const u8, ts_node: ts.Node, parent_id: NodeId, k: *const KindIds, log: Logger) anyerror!void {
+    const doc = ast.collectDocComment(source, ts_node, k);
+
+    const ct_id = try g.addNode(.{
+        .id = .root,
+        .name = "comptime",
+        .kind = .comptime_block,
+        .language = .zig,
+        .parent_id = parent_id,
+        .visibility = .private,
+        .doc = doc,
+        .lang_meta = .{ .zig = .{ .is_comptime = true } },
+        .line_start = ts_node.startPoint().row + 1,
+        .line_end = ts_node.endPoint().row + 1,
+    });
+
+    // Discover inner type definitions inside the comptime block body.
+    var i: u32 = 0;
+    while (i < ts_node.childCount()) : (i += 1) {
+        const child = ts_node.child(i) orelse continue;
+        if (child.kindId() == k.block) {
+            try discoverInnerTypes(g, source, child, ct_id, k, log);
+            break;
+        }
+    }
+}
+
+/// Scan a block node for variable_declarations whose value classifies as a type
+/// container (struct, enum, union). For each match, calls processVariableDecl which
+/// recursively handles nested declarations (methods, fields, inner types).
+/// Also recurses into nested blocks (if/while/for/comptime bodies) to catch
+/// type definitions at any depth within the block.
+fn discoverInnerTypes(g: *Graph, source: []const u8, block: ts.Node, parent_id: NodeId, k: *const KindIds, log: Logger) anyerror!void {
+    var i: u32 = 0;
+    while (i < block.childCount()) : (i += 1) {
+        const child = block.child(i) orelse continue;
+        const kid = child.kindId();
+
+        if (kid == k.variable_declaration) {
+            const classification = ast.classifyVariableValue(source, child, k);
+            if (classification.body != null) {
+                try processVariableDecl(g, source, child, parent_id, k, log);
+            }
+            continue;
+        }
+
+        // Recurse into nested block-like nodes to find deeper type definitions.
+        if (kid == k.block or
+            kid == k.if_statement or
+            kid == k.if_expression or
+            kid == k.for_statement or
+            kid == k.while_statement or
+            kid == k.expression_statement or
+            kid == k.defer_statement)
+        {
+            try discoverInnerTypes(g, source, child, parent_id, k, log);
+        }
+    }
 }
 
 fn processContainerField(g: *Graph, source: []const u8, ts_node: ts.Node, parent_id: NodeId, k: *const KindIds, log: Logger) anyerror!void {
@@ -320,7 +458,7 @@ test "simple fixture: nodes, visibility, parents, doc comments" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.simple, &g, Logger.noop);
+    try parse(fixtures.zig.simple, &g, null, Logger.noop);
 
     // Assert: at least one node of each kind exists
     var found_pub_fn = false;
@@ -457,18 +595,18 @@ test "simple fixture: unions, enum methods, imports, fields, variants, module do
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.simple, &g, Logger.noop);
+    try parse(fixtures.zig.simple, &g, null, Logger.noop);
 
     // --- unions ---
-    // tagged union Shape: type_def, public, doc
+    // tagged union Shape: union_def, public, doc
     var found_shape = false;
-    // plain union RawValue: type_def, private
+    // plain union RawValue: union_def, private
     var found_raw = false;
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {
         const n = g.getNode(@enumFromInt(i)) orelse continue;
         if (std.mem.eql(u8, n.name, "Shape")) {
-            try std.testing.expectEqual(NodeKind.type_def, n.kind);
+            try std.testing.expectEqual(NodeKind.union_def, n.kind);
             try std.testing.expectEqual(Visibility.public, n.visibility);
             try std.testing.expect(n.doc != null);
             try std.testing.expect(n.parent_id != null);
@@ -477,7 +615,7 @@ test "simple fixture: unions, enum methods, imports, fields, variants, module do
             found_shape = true;
         }
         if (std.mem.eql(u8, n.name, "RawValue")) {
-            try std.testing.expectEqual(NodeKind.type_def, n.kind);
+            try std.testing.expectEqual(NodeKind.union_def, n.kind);
             try std.testing.expectEqual(Visibility.private, n.visibility);
             found_raw = true;
         }
@@ -598,7 +736,7 @@ test "generic type fixture: type_def nodes, parents, visibility, doc comments" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.generic_type, &g, Logger.noop);
+    try parse(fixtures.zig.generic_type, &g, null, Logger.noop);
 
     // --- Container exists as type_def with file as parent ---
     var container_node: ?*const Node = null;
@@ -704,7 +842,7 @@ test "generic type fixture: type_def nodes, parents, visibility, doc comments" {
     while (i < g.nodeCount()) : (i += 1) {
         const n = g.getNode(@enumFromInt(i)) orelse continue;
         if (std.mem.eql(u8, n.name, "Result") and
-            (n.kind == .type_def or n.kind == .enum_def)) found_result = true;
+            n.kind.isTypeContainer()) found_result = true;
         if (n.kind == .function and std.mem.eql(u8, n.name, "isOk")) found_isOk = true;
     }
     try std.testing.expect(found_result);
@@ -737,7 +875,7 @@ test "file struct fixture: methods, nested types, Self filtering" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.file_struct, &g, Logger.noop);
+    try parse(fixtures.zig.file_struct, &g, null, Logger.noop);
 
     // --- methods are direct children of file node ---
     var found_init = false;
@@ -798,7 +936,7 @@ test "edge case fixtures: empty, comments-only, no-pub, deep nesting, many param
     {
         var g = Graph.init(std.testing.allocator, "/tmp/project");
         defer g.deinit();
-        try parse(fixtures.zig.edge_cases.empty, &g, Logger.noop);
+        try parse(fixtures.zig.edge_cases.empty, &g, null, Logger.noop);
 
         try std.testing.expectEqual(@as(usize, 1), g.nodeCount());
         try std.testing.expectEqual(@as(usize, 0), g.edgeCount());
@@ -811,7 +949,7 @@ test "edge case fixtures: empty, comments-only, no-pub, deep nesting, many param
     {
         var g = Graph.init(std.testing.allocator, "/tmp/project");
         defer g.deinit();
-        try parse(fixtures.zig.edge_cases.only_comments, &g, Logger.noop);
+        try parse(fixtures.zig.edge_cases.only_comments, &g, null, Logger.noop);
 
         try std.testing.expectEqual(@as(usize, 1), g.nodeCount());
         const f = g.getNode(@enumFromInt(0));
@@ -823,7 +961,7 @@ test "edge case fixtures: empty, comments-only, no-pub, deep nesting, many param
     {
         var g = Graph.init(std.testing.allocator, "/tmp/project");
         defer g.deinit();
-        try parse(fixtures.zig.edge_cases.no_pub, &g, Logger.noop);
+        try parse(fixtures.zig.edge_cases.no_pub, &g, null, Logger.noop);
 
         var fn_count: usize = 0;
         var i: usize = 0;
@@ -841,7 +979,7 @@ test "edge case fixtures: empty, comments-only, no-pub, deep nesting, many param
     {
         var g = Graph.init(std.testing.allocator, "/tmp/project");
         defer g.deinit();
-        try parse(fixtures.zig.edge_cases.deeply_nested, &g, Logger.noop);
+        try parse(fixtures.zig.edge_cases.deeply_nested, &g, null, Logger.noop);
 
         var inner_method: ?*const Node = null;
         var i: usize = 0;
@@ -875,7 +1013,7 @@ test "edge case fixtures: empty, comments-only, no-pub, deep nesting, many param
     {
         var g = Graph.init(std.testing.allocator, "/tmp/project");
         defer g.deinit();
-        try parse(fixtures.zig.edge_cases.many_params, &g, Logger.noop);
+        try parse(fixtures.zig.edge_cases.many_params, &g, null, Logger.noop);
 
         var found = false;
         var i: usize = 0;
@@ -893,7 +1031,7 @@ test "edge case fixtures: empty, comments-only, no-pub, deep nesting, many param
     {
         var g = Graph.init(std.testing.allocator, "/tmp/project");
         defer g.deinit();
-        try parse(fixtures.zig.edge_cases.unicode_names, &g, Logger.noop);
+        try parse(fixtures.zig.edge_cases.unicode_names, &g, null, Logger.noop);
 
         var found_cafe = false;
         var found_resume = false;
@@ -920,7 +1058,7 @@ test "decl-reference and string-literal test names" {
             \\fn helper() i32 { return 42; }
             \\test helper { _ = helper(); }
         ;
-        try parse(source, &g, Logger.noop);
+        try parse(source, &g, null, Logger.noop);
         var found_test = false;
         for (g.nodes.items) |n| {
             if (n.kind == .test_def) {
@@ -942,7 +1080,7 @@ test "decl-reference and string-literal test names" {
             \\};
             \\test Foo { Foo.bar(); }
         ;
-        try parse(source, &g, Logger.noop);
+        try parse(source, &g, null, Logger.noop);
         var found_test = false;
         for (g.nodes.items) |n| {
             if (n.kind == .test_def) {
@@ -964,7 +1102,7 @@ test "decl-reference and string-literal test names" {
             \\test alpha { _ = alpha(); }
             \\test beta { _ = beta(); }
         ;
-        try parse(source, &g, Logger.noop);
+        try parse(source, &g, null, Logger.noop);
         var test_count: usize = 0;
         var found_alpha = false;
         var found_beta = false;
@@ -988,7 +1126,7 @@ test "decl-reference and string-literal test names" {
         const source =
             \\test @"edge case name" {}
         ;
-        try parse(source, &g, Logger.noop);
+        try parse(source, &g, null, Logger.noop);
         var found_test = false;
         for (g.nodes.items) |n| {
             if (n.kind == .test_def) {
@@ -1008,7 +1146,7 @@ test "decl-reference and string-literal test names" {
             \\fn foo() void {}
             \\test "calls foo" { _ = foo(); }
         ;
-        try parse(source, &g, Logger.noop);
+        try parse(source, &g, null, Logger.noop);
         for (g.nodes.items) |n| {
             if (n.kind == .test_def) {
                 try std.testing.expectEqualStrings("calls foo", n.name);
@@ -1027,7 +1165,7 @@ test "module doc comment separation" {
     {
         var g = Graph.init(std.testing.allocator, "/tmp/project");
         defer g.deinit();
-        try parse("const x = 42;\n", &g, Logger.noop);
+        try parse("const x = 42;\n", &g, null, Logger.noop);
 
         const f = g.getNode(@enumFromInt(0));
         try std.testing.expect(f != null);
@@ -1044,7 +1182,7 @@ test "module doc comment separation" {
             \\/// Item doc.
             \\const x = 42;
         ;
-        try parse(source, &g, Logger.noop);
+        try parse(source, &g, null, Logger.noop);
 
         const f = g.getNode(@enumFromInt(0));
         try std.testing.expect(f != null);
@@ -1068,4 +1206,149 @@ test "module doc comment separation" {
         try std.testing.expect(std.mem.indexOf(u8, item_doc, "Item doc.") != null);
         try std.testing.expect(std.mem.indexOf(u8, item_doc, "Module doc.") == null);
     }
+}
+
+// ---------------------------------------------------------------------------
+// extern_functions.zig fixture: extern/inline qualifiers and calling convention
+// ---------------------------------------------------------------------------
+
+test "extern functions fixture: qualifiers, calling convention, and signatures" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/project");
+    defer g.deinit();
+
+    // Act
+    try parse(fixtures.zig.edge_cases.extern_functions, &g, null, Logger.noop);
+
+    // Assert: find all function nodes
+    var c_write_node: ?*const Node = null;
+    var bare_extern_node: ?*const Node = null;
+    var private_extern_node: ?*const Node = null;
+    var fast_add_node: ?*const Node = null;
+    var internal_helper_node: ?*const Node = null;
+    var normal_function_node: ?*const Node = null;
+    var also_normal_node: ?*const Node = null;
+    var i: usize = 0;
+    while (i < g.nodeCount()) : (i += 1) {
+        const n = g.getNode(@enumFromInt(i)) orelse continue;
+        if (n.kind != .function) continue;
+        if (std.mem.eql(u8, n.name, "c_write")) c_write_node = n;
+        if (std.mem.eql(u8, n.name, "bare_extern")) bare_extern_node = n;
+        if (std.mem.eql(u8, n.name, "private_extern")) private_extern_node = n;
+        if (std.mem.eql(u8, n.name, "fast_add")) fast_add_node = n;
+        if (std.mem.eql(u8, n.name, "internal_helper")) internal_helper_node = n;
+        if (std.mem.eql(u8, n.name, "normal_function")) normal_function_node = n;
+        if (std.mem.eql(u8, n.name, "also_normal")) also_normal_node = n;
+    }
+    try std.testing.expect(c_write_node != null);
+    try std.testing.expect(bare_extern_node != null);
+    try std.testing.expect(private_extern_node != null);
+    try std.testing.expect(fast_add_node != null);
+    try std.testing.expect(internal_helper_node != null);
+    try std.testing.expect(normal_function_node != null);
+    try std.testing.expect(also_normal_node != null);
+
+    // Assert: c_write has is_extern=true, calling_convention="c", and a signature
+    switch (c_write_node.?.lang_meta) {
+        .zig => |zm| {
+            try std.testing.expect(zm.is_extern);
+            try std.testing.expect(!zm.is_inline);
+            try std.testing.expectEqualStrings("c", zm.calling_convention.?);
+        },
+        .none => return error.ExpectedZigMeta,
+    }
+    try std.testing.expect(c_write_node.?.signature != null);
+
+    // Assert: bare_extern has is_extern=true, no calling convention, and a signature
+    switch (bare_extern_node.?.lang_meta) {
+        .zig => |zm| {
+            try std.testing.expect(zm.is_extern);
+            try std.testing.expectEqual(@as(?[]const u8, null), zm.calling_convention);
+        },
+        .none => return error.ExpectedZigMeta,
+    }
+    try std.testing.expect(bare_extern_node.?.signature != null);
+
+    // Assert: private_extern has is_extern=true and visibility=private
+    try std.testing.expectEqual(Visibility.private, private_extern_node.?.visibility);
+    switch (private_extern_node.?.lang_meta) {
+        .zig => |zm| try std.testing.expect(zm.is_extern),
+        .none => return error.ExpectedZigMeta,
+    }
+
+    // Assert: fast_add has is_inline=true, not extern, no calling convention
+    switch (fast_add_node.?.lang_meta) {
+        .zig => |zm| {
+            try std.testing.expect(zm.is_inline);
+            try std.testing.expect(!zm.is_extern);
+            try std.testing.expectEqual(@as(?[]const u8, null), zm.calling_convention);
+        },
+        .none => return error.ExpectedZigMeta,
+    }
+
+    // Assert: internal_helper is inline and private
+    try std.testing.expectEqual(Visibility.private, internal_helper_node.?.visibility);
+    switch (internal_helper_node.?.lang_meta) {
+        .zig => |zm| try std.testing.expect(zm.is_inline),
+        .none => return error.ExpectedZigMeta,
+    }
+
+    // Assert: regular functions have no zig meta
+    try std.testing.expectEqual(LangMeta{ .none = {} }, normal_function_node.?.lang_meta);
+    try std.testing.expectEqual(LangMeta{ .none = {} }, also_normal_node.?.lang_meta);
+}
+
+// ---------------------------------------------------------------------------
+// mutability.zig fixture: var vs const metadata
+// ---------------------------------------------------------------------------
+
+test "mutability fixture: var vs const metadata" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/project");
+    defer g.deinit();
+
+    // Act
+    try parse(fixtures.zig.edge_cases.mutability, &g, null, Logger.noop);
+
+    // Assert: find relevant nodes
+    var max_size_node: ?*const Node = null;
+    var default_name_node: ?*const Node = null;
+    var counter_node: ?*const Node = null;
+    var internal_state_node: ?*const Node = null;
+    var verbose_node: ?*const Node = null;
+    var config_node: ?*const Node = null;
+    var i: usize = 0;
+    while (i < g.nodeCount()) : (i += 1) {
+        const n = g.getNode(@enumFromInt(i)) orelse continue;
+        if (std.mem.eql(u8, n.name, "max_size")) max_size_node = n;
+        if (std.mem.eql(u8, n.name, "default_name")) default_name_node = n;
+        if (std.mem.eql(u8, n.name, "counter")) counter_node = n;
+        if (std.mem.eql(u8, n.name, "internal_state")) internal_state_node = n;
+        if (std.mem.eql(u8, n.name, "verbose")) verbose_node = n;
+        if (std.mem.eql(u8, n.name, "Config")) config_node = n;
+    }
+    try std.testing.expect(max_size_node != null);
+    try std.testing.expect(default_name_node != null);
+    try std.testing.expect(counter_node != null);
+    try std.testing.expect(internal_state_node != null);
+    try std.testing.expect(verbose_node != null);
+    try std.testing.expect(config_node != null);
+
+    // Assert: const declarations have is_mutable false
+    try std.testing.expectEqual(LangMeta{ .zig = .{ .is_comptime = true } }, max_size_node.?.lang_meta);
+    try std.testing.expectEqual(LangMeta{ .none = {} }, default_name_node.?.lang_meta);
+
+    // Assert: var declarations have is_mutable true and keep kind .constant
+    try std.testing.expectEqual(NodeKind.constant, counter_node.?.kind);
+    try std.testing.expectEqual(LangMeta{ .zig = .{ .is_mutable = true, .is_comptime = true } }, counter_node.?.lang_meta);
+
+    try std.testing.expectEqual(NodeKind.constant, internal_state_node.?.kind);
+    try std.testing.expectEqual(LangMeta{ .zig = .{ .is_mutable = true, .is_comptime = true } }, internal_state_node.?.lang_meta);
+
+    // Assert: var without type annotation has is_mutable but not is_comptime
+    try std.testing.expectEqual(NodeKind.constant, verbose_node.?.kind);
+    try std.testing.expectEqual(LangMeta{ .zig = .{ .is_mutable = true } }, verbose_node.?.lang_meta);
+
+    // Assert: struct const is still classified as type_def (unaffected)
+    try std.testing.expectEqual(NodeKind.type_def, config_node.?.kind);
 }

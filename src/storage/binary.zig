@@ -106,15 +106,25 @@ fn encodeLangMeta(stb: *StringTableBuilder, allocator: std.mem.Allocator, meta: 
     switch (meta) {
         .none => return .{ .offset = 0, .len = 0 },
         .zig => |zm| {
-            var buf: [2]u8 = undefined;
+            // Encode as: [tag=1][flags][optional calling_convention string]
+            var buf: [256]u8 = undefined;
             buf[0] = 1; // tag = zig
             var flags: u8 = 0;
             if (zm.is_comptime) flags |= 0x01;
             if (zm.is_inline) flags |= 0x02;
             if (zm.is_extern) flags |= 0x04;
             if (zm.comptime_conditional) flags |= 0x08;
+            if (zm.is_mutable) flags |= 0x10;
+            if (zm.is_packed) flags |= 0x20;
             buf[1] = flags;
-            return stb.intern(allocator, &buf);
+            var len: usize = 2;
+            if (zm.calling_convention) |cc| {
+                if (cc.len <= buf.len - 2) {
+                    @memcpy(buf[2..][0..cc.len], cc);
+                    len += cc.len;
+                }
+            }
+            return stb.intern(allocator, buf[0..len]);
         },
     }
 }
@@ -128,6 +138,9 @@ fn decodeLangMeta(data: []const u8) LangMeta {
             .is_inline = flags & 0x02 != 0,
             .is_extern = flags & 0x04 != 0,
             .comptime_conditional = flags & 0x08 != 0,
+            .is_mutable = flags & 0x10 != 0,
+            .is_packed = flags & 0x20 != 0,
+            .calling_convention = if (data.len > 2) data[2..] else null,
         } };
     }
     return .{ .none = {} };
@@ -189,7 +202,10 @@ pub fn save(allocator: std.mem.Allocator, g: *const Graph, path: []const u8) !vo
             else => {},
         }
         switch (n.lang_meta) {
-            .zig => total_string_bytes += 2,
+            .zig => |zm| {
+                total_string_bytes += 2; // tag + flags
+                if (zm.calling_convention) |cc| total_string_bytes += cc.len;
+            },
             .none => {},
         }
     }
@@ -940,6 +956,79 @@ test "binary preserves LangMeta.none" {
 
     // Assert
     try std.testing.expectEqual(LangMeta.none, loaded.getNode(.root).?.lang_meta);
+}
+
+test "binary round-trip preserves union_def kind" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/test-project");
+    defer g.deinit();
+
+    _ = try g.addNode(.{
+        .id = .root,
+        .name = "MyUnion",
+        .kind = .union_def,
+        .language = .zig,
+        .visibility = .public,
+        .file_path = "src/main.zig",
+    });
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(path);
+    const file_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/test.bin", .{path});
+    defer std.testing.allocator.free(file_path);
+
+    // Act
+    try save(std.testing.allocator, &g, file_path);
+    var loaded = try load(std.testing.allocator, file_path);
+    defer loaded.deinit();
+
+    // Assert
+    try std.testing.expectEqual(NodeKind.union_def, loaded.getNode(.root).?.kind);
+}
+
+test "binary round-trip preserves is_packed metadata" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/test-project");
+    defer g.deinit();
+
+    _ = try g.addNode(.{
+        .id = .root,
+        .name = "PackedStruct",
+        .kind = .type_def,
+        .language = .zig,
+        .lang_meta = .{ .zig = .{ .is_packed = true } },
+    });
+
+    _ = try g.addNode(.{
+        .id = .root,
+        .name = "ExternStruct",
+        .kind = .type_def,
+        .language = .zig,
+        .lang_meta = .{ .zig = .{ .is_extern = true } },
+    });
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(path);
+    const file_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/test.bin", .{path});
+    defer std.testing.allocator.free(file_path);
+
+    // Act
+    try save(std.testing.allocator, &g, file_path);
+    var loaded = try load(std.testing.allocator, file_path);
+    defer loaded.deinit();
+
+    // Assert
+    const packed_meta = loaded.getNode(@enumFromInt(0)).?.lang_meta;
+    try std.testing.expect(packed_meta.zig.is_packed);
+    try std.testing.expect(!packed_meta.zig.is_extern);
+
+    const extern_meta = loaded.getNode(@enumFromInt(1)).?.lang_meta;
+    try std.testing.expect(extern_meta.zig.is_extern);
+    try std.testing.expect(!extern_meta.zig.is_packed);
 }
 
 // Append tests

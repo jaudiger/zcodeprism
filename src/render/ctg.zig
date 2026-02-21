@@ -44,6 +44,7 @@ pub fn renderCtg(
     const file_count = assignment.file_indices.items.len;
     const fn_count = assignment.fn_indices.items.len;
     const struct_count = assignment.struct_indices.items.len;
+    const union_count = assignment.union_indices.items.len;
     const enum_count = assignment.enum_indices.items.len;
     const const_count = assignment.const_indices.items.len;
     const test_count = assignment.test_indices.items.len;
@@ -65,6 +66,8 @@ pub fn renderCtg(
     try out.appendSlice(allocator, " functions, ");
     try appendNum(out, allocator, struct_count, &num_buf);
     try out.appendSlice(allocator, " structs, ");
+    try appendNum(out, allocator, union_count, &num_buf);
+    try out.appendSlice(allocator, " unions, ");
     try appendNum(out, allocator, enum_count, &num_buf);
     try out.appendSlice(allocator, " enums, ");
     try appendNum(out, allocator, const_count, &num_buf);
@@ -123,6 +126,11 @@ pub fn renderCtg(
     if (assignment.struct_indices.items.len > 0) {
         if (written) try out.append(allocator, '\n');
         try sections.renderStructsSection(out, allocator, g, assignment.struct_indices.items, ids, &num_buf, &assignment.children_index);
+        written = true;
+    }
+    if (assignment.union_indices.items.len > 0) {
+        if (written) try out.append(allocator, '\n');
+        try sections.renderUnionsSection(out, allocator, g, assignment.union_indices.items, ids, &num_buf, &assignment.children_index);
         written = true;
     }
     if (assignment.enum_indices.items.len > 0) {
@@ -662,6 +670,66 @@ test "enum IDs use en: prefix" {
         found_any = true;
     }
     try std.testing.expect(found_any);
+}
+
+test "union IDs use un: prefix" {
+    // Arrange
+    const allocator = std.testing.allocator;
+    var g = Graph.init(allocator, "/tmp/project");
+    defer g.deinit();
+
+    const file_id = try g.addNode(.{
+        .id = .root,
+        .name = "src/lib.zig",
+        .kind = .file,
+        .language = .zig,
+        .file_path = "src/lib.zig",
+        .line_start = 1,
+        .line_end = 50,
+        .visibility = .public,
+    });
+    _ = try g.addNode(.{
+        .id = .root,
+        .name = "Value",
+        .kind = .union_def,
+        .language = .zig,
+        .file_path = "src/lib.zig",
+        .line_start = 5,
+        .line_end = 15,
+        .parent_id = file_id,
+        .visibility = .public,
+    });
+
+    var out: std.ArrayListUnmanaged(u8) = .{};
+    defer out.deinit(allocator);
+
+    const options = RenderOptions{
+        .project_name = "myproject",
+        .timestamp = "2026-02-14T10:30:00Z",
+    };
+
+    // Act
+    try renderCtg(allocator, &g, options, &out);
+
+    // Assert: [unions] section exists with un: prefix
+    const output = out.items;
+    const uns_start = (std.mem.indexOf(u8, output, "[unions]\n") orelse return error.MissingSection) + "[unions]\n".len;
+    const section_start = uns_start;
+    const section_end = std.mem.indexOf(u8, output[section_start..], "\n[") orelse (output.len - section_start);
+    const section = output[section_start .. section_start + section_end];
+
+    var lines = std.mem.splitScalar(u8, section, '\n');
+    var found = false;
+    while (lines.next()) |line| {
+        if (line.len == 0) continue;
+        if (std.mem.startsWith(u8, line, "  ")) continue;
+        try std.testing.expect(std.mem.startsWith(u8, line, "un:"));
+        found = true;
+    }
+    try std.testing.expect(found);
+
+    // Assert: header mentions unions count
+    try std.testing.expect(std.mem.indexOf(u8, output, "unions") != null);
 }
 
 test "constant IDs use c: prefix" {

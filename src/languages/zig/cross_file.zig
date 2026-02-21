@@ -28,6 +28,14 @@ const FileIndex = pc.FileIndex;
 // Cross-file resolution context
 // =========================================================================
 
+/// A symbol located at `chain` within `file_id`.
+/// Empty chain means the whole module.
+/// Non-empty chain means a path extracted from post-import field accesses.
+pub const SymbolOrigin = struct {
+    file_id: NodeId,
+    chain: []const []const u8,
+};
+
 /// Groups all context needed during edge creation for one file parse.
 /// Contains the file's node scope range and a map of project-file imports.
 pub const EdgeContext = struct {
@@ -35,14 +43,30 @@ pub const EdgeContext = struct {
     scope_end: usize,
     import_names: [max_imports][]const u8 = undefined,
     import_targets: [max_imports]NodeId = undefined,
+    import_chains: [max_imports][max_chain_depth][]const u8 = undefined,
+    import_chain_lens: [max_imports]usize = undefined,
     import_count: usize = 0,
 
     // Max number of tracked @import bindings per file for cross-file edge resolution.
     pub const max_imports = 32;
 
+    /// Returns file_id only, ignoring the extraction chain.
     pub fn findImportTarget(self: *const EdgeContext, name: []const u8) ?NodeId {
         for (self.import_names[0..self.import_count], self.import_targets[0..self.import_count]) |iname, itarget| {
             if (std.mem.eql(u8, iname, name)) return itarget;
+        }
+        return null;
+    }
+
+    /// Full origin including extraction chain.
+    pub fn findImportOrigin(self: *const EdgeContext, name: []const u8) ?SymbolOrigin {
+        for (0..self.import_count) |i| {
+            if (std.mem.eql(u8, self.import_names[i], name)) {
+                return .{
+                    .file_id = self.import_targets[i],
+                    .chain = self.import_chains[i][0..self.import_chain_lens[i]],
+                };
+            }
         }
         return null;
     }
@@ -132,7 +156,7 @@ fn collectChainRecursive(source: []const u8, node: ts.Node, out: *[max_chain_dep
     // Graceful cap: return truncated chain, remaining segments are ignored.
     if (depth >= max_chain_depth) return depth;
     const kid = node.kindId();
-    if (kid == k.identifier) {
+    if (kid == k.identifier or kid == k.property_identifier) {
         out[depth] = ts_api.nodeText(source, node);
         return depth + 1;
     }
@@ -190,6 +214,27 @@ fn extractImportPathRecursive(source: []const u8, node: ts.Node, k: *const KindI
     return null;
 }
 
+/// Extract the post-import field access chain from a variable declaration
+/// containing an @import expression. Returns the number of chain segments.
+pub fn extractImportExtractionChain(
+    source: []const u8,
+    var_decl: ts.Node,
+    chain: *[max_chain_depth][]const u8,
+    k: *const KindIds,
+) usize {
+    var i: u32 = 0;
+    while (i < var_decl.namedChildCount()) : (i += 1) {
+        const child = var_decl.namedChild(i) orelse continue;
+        if (child.kindId() == k.field_expression) {
+            // collectFieldExprChain skips nodes it doesn't recognize
+            // (like builtin_function), so only the identifier segments
+            // after the @import are collected.
+            return collectFieldExprChain(source, child, chain, k);
+        }
+    }
+    return 0;
+}
+
 /// Walk an AST subtree looking for the first `string_content` node.
 /// Used to extract the path argument from `@import("path")`.
 fn findStringContent(source: []const u8, node: ts.Node, k: *const KindIds) ?[]const u8 {
@@ -205,7 +250,7 @@ fn findStringContent(source: []const u8, node: ts.Node, k: *const KindIds) ?[]co
 }
 
 /// Build the import map in an EdgeContext by scanning root-level variable declarations.
-pub fn buildImportMap(g: *const Graph, source: []const u8, root: ts.Node, ctx: *EdgeContext, file_index: *const FileIndex, k: *const KindIds, log: Logger) void {
+pub fn buildImportMap(g: *const Graph, source: []const u8, root: ts.Node, ctx: *EdgeContext, file_index: *const FileIndex, importer_path: ?[]const u8, k: *const KindIds, log: Logger) void {
     var i: u32 = 0;
     while (i < root.childCount()) : (i += 1) {
         const child = root.child(i) orelse continue;
@@ -236,10 +281,17 @@ pub fn buildImportMap(g: *const Graph, source: []const u8, root: ts.Node, ctx: *
             continue;
         };
 
-        // Find the target file node in the graph.
-        if (file_index.findByName(import_path)) |target_id| {
+        // Find the target file node in the graph using directory-relative resolution.
+        if (file_index.resolve(importer_path, import_path)) |target_id| {
             ctx.import_names[ctx.import_count] = name;
             ctx.import_targets[ctx.import_count] = target_id;
+            // Extract post-import field chain.
+            var ext_chain: [max_chain_depth][]const u8 = undefined;
+            const ext_len = extractImportExtractionChain(source, child, &ext_chain, k);
+            for (0..ext_len) |ci| {
+                ctx.import_chains[ctx.import_count][ci] = ext_chain[ci];
+            }
+            ctx.import_chain_lens[ctx.import_count] = ext_len;
             ctx.import_count += 1;
         } else {
             log.trace("import target file not found", &.{Field.string("path", import_path)});
@@ -307,7 +359,7 @@ pub fn resolveQualifiedCall(
         // and should NOT produce a uses_type edge.
         if (matched_id == null and std.mem.eql(u8, segment, "Self")) {
             const scope_node = g.getNode(current_scope_id) orelse return;
-            if (scope_node.kind == .type_def or scope_node.kind == .enum_def or scope_node.kind == .file) {
+            if (scope_node.kind.isTypeContainer() or scope_node.kind == .file) {
                 // Self refers to the current type or file-struct; stay at this scope.
                 continue;
             }
@@ -336,7 +388,7 @@ pub fn resolveQualifiedCall(
             log.trace("qualified call: return type unresolvable", &.{});
             return; // Cannot resolve return type; stop chain.
         } else {
-            const is_type = resolved_node.kind == .type_def or resolved_node.kind == .enum_def;
+            const is_type = resolved_node.kind.isTypeContainer();
             const is_type_alias = resolved_node.kind == .constant and
                 resolved_node.name.len > 0 and resolved_node.name[0] >= 'A' and resolved_node.name[0] <= 'Z';
             if (is_type or is_type_alias) {
@@ -345,7 +397,7 @@ pub fn resolveQualifiedCall(
         }
 
         // Narrow scope for next segment.
-        if (resolved_node.kind == .type_def or resolved_node.kind == .enum_def) {
+        if (resolved_node.kind.isTypeContainer()) {
             // Type container: next segment is a child of this type.
             current_scope_id = resolved_id;
         } else {
@@ -473,29 +525,33 @@ fn findContainingFile(g: *const Graph, node_id: NodeId) ?NodeId {
 /// Find an import_decl child of a file node that matches the given name,
 /// and return the target file's NodeId by resolving the import path.
 fn findImportInFile(g: *const Graph, file_id: NodeId, import_name: []const u8, scope_index: *const ScopeIndex, file_index: *const FileIndex) ?NodeId {
+    // Get the file node's file_path for directory-relative resolution.
+    const file_node = g.getNode(file_id) orelse return null;
+    const importer_path = file_node.file_path;
+
     for (scope_index.childrenOf(file_id)) |child_idx| {
         const n = g.nodes.items[child_idx];
         if (n.kind != .import_decl) continue;
         if (!std.mem.eql(u8, n.name, import_name)) continue;
         const import_path = n.signature orelse continue;
-        return file_index.findByName(import_path);
+        return file_index.resolve(importer_path, import_path);
     }
     return null;
 }
 
-/// Find a type_def or enum_def child of a scope node with the given name.
+/// Find a type container child (type_def, enum_def, or union_def) of a scope node with the given name.
 fn findTypeInFile(g: *const Graph, scope_id: NodeId, type_name: []const u8, scope_index: *const ScopeIndex) ?NodeId {
     for (scope_index.childrenOf(scope_id)) |child_idx| {
         const n = g.nodes.items[child_idx];
-        if (n.kind != .type_def and n.kind != .enum_def) continue;
+        if (!n.kind.isTypeContainer()) continue;
         if (std.mem.eql(u8, n.name, type_name)) return @enumFromInt(child_idx);
     }
     return null;
 }
 
-/// For a variable assigned from an import-qualified function call (e.g.,
-/// `var svc = factory_mod.create()`), try to resolve through the called
-/// function's return type to find the file where the result type lives.
+/// For a variable assigned from an import-qualified function call,
+/// try to resolve through the called function's return type to find
+/// the file where the result type lives.
 /// Returns the resolved file NodeId, or null to use the original target.
 pub fn resolveVarTargetThroughReturnType(
     g: *const Graph,
@@ -503,7 +559,6 @@ pub fn resolveVarTargetThroughReturnType(
     var_decl: ts.Node,
     ctx: *const EdgeContext,
     k: *const KindIds,
-    import_file_id: NodeId,
     scope_index: *const ScopeIndex,
     file_index: *const FileIndex,
     log: Logger,
@@ -534,18 +589,35 @@ pub fn resolveVarTargetThroughReturnType(
         }
     }
 
-    if (chain_len < 2) {
+    if (chain_len == 0) {
         log.trace("var target: chain extraction failed", &.{});
         return null;
     }
-    // Verify the root is the import that resolved to import_file_id.
-    if (ctx.findImportTarget(chain[0]) == null) return null;
 
-    // Walk chain[1..] to find the function node in the target file.
-    var scope_id = import_file_id;
+    // Look up the origin for the root name (includes extraction chain).
+    const origin = ctx.findImportOrigin(chain[0]) orelse return null;
+
+    // Build effective chain: origin.chain ++ chain[1..chain_len].
+    var effective: [max_chain_depth][]const u8 = undefined;
+    var eff_len: usize = 0;
+    for (origin.chain) |seg| {
+        if (eff_len >= max_chain_depth) break;
+        effective[eff_len] = seg;
+        eff_len += 1;
+    }
+    for (chain[1..chain_len]) |seg| {
+        if (eff_len >= max_chain_depth) break;
+        effective[eff_len] = seg;
+        eff_len += 1;
+    }
+
+    if (eff_len == 0) return null;
+
+    // Walk effective chain to find the function node in the target file.
+    var scope_id = origin.file_id;
     var last_fn_id: ?NodeId = null;
 
-    for (chain[1..chain_len]) |segment| {
+    for (effective[0..eff_len]) |segment| {
         var matched: ?NodeId = null;
         for (scope_index.childrenOf(scope_id)) |child_idx| {
             const n = g.nodes.items[child_idx];
@@ -561,7 +633,7 @@ pub fn resolveVarTargetThroughReturnType(
         if (node.kind == .function) {
             last_fn_id = matched;
         }
-        if (node.kind == .type_def or node.kind == .enum_def) {
+        if (node.kind.isTypeContainer()) {
             scope_id = matched.?;
         } else {
             scope_id = node.parent_id orelse return null;

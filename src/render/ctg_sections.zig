@@ -75,11 +75,46 @@ pub fn renderStructsSection(
         }
         try out.append(allocator, '\n');
 
-        try renderStructChildren(out, allocator, g, si, children_index);
+        try renderContainerChildren(out, allocator, g, si, children_index);
     }
 }
 
-fn renderStructChildren(
+pub fn renderUnionsSection(
+    out: *std.ArrayListUnmanaged(u8),
+    allocator: std.mem.Allocator,
+    g: *const Graph,
+    union_indices: []const usize,
+    ids: []const ?IdEntry,
+    num_buf: *[20]u8,
+    children_index: *const ChildrenIndex,
+) !void {
+    if (union_indices.len == 0) return;
+    try out.appendSlice(allocator, "[unions]\n");
+    for (union_indices) |ui| {
+        const n = g.nodes.items[ui];
+        const id = ids[ui].?;
+        const file_id = findFileId(g, n, ids);
+
+        try out.appendSlice(allocator, id.prefix);
+        try appendNum(out, allocator, id.num, num_buf);
+        try out.append(allocator, ' ');
+        try out.appendSlice(allocator, n.name);
+        if (file_id) |fid| {
+            try out.appendSlice(allocator, " f:");
+            try appendNum(out, allocator, fid, num_buf);
+            try out.append(allocator, ':');
+            try appendNum(out, allocator, n.line_start orelse 0, num_buf);
+        }
+        if (n.visibility == .public) {
+            try out.appendSlice(allocator, " pub");
+        }
+        try out.append(allocator, '\n');
+
+        try renderContainerChildren(out, allocator, g, ui, children_index);
+    }
+}
+
+fn renderContainerChildren(
     out: *std.ArrayListUnmanaged(u8),
     allocator: std.mem.Allocator,
     g: *const Graph,

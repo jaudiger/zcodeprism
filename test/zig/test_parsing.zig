@@ -9,6 +9,7 @@ const NodeKind = zcodeprism.types.NodeKind;
 const EdgeType = zcodeprism.types.EdgeType;
 const EdgeSource = zcodeprism.types.EdgeSource;
 const Visibility = zcodeprism.types.Visibility;
+const LangMeta = zcodeprism.language.LangMeta;
 const Logger = zcodeprism.logging.Logger;
 const parse = zcodeprism.visitor.parse;
 
@@ -22,7 +23,7 @@ test "simple fixture: edge creation" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.simple, &g, Logger.noop);
+    try parse(fixtures.zig.simple, &g, null, Logger.noop);
 
     // Assert: at least one calls edge exists (manhattan calls abs)
     var found_calls = false;
@@ -130,7 +131,7 @@ test "file struct fixture: edge creation" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.file_struct, &g, Logger.noop);
+    try parse(fixtures.zig.file_struct, &g, null, Logger.noop);
 
     // Assert: isValid has a calls edge to validate (via self.validate())
     var isValid_id: ?NodeId = null;
@@ -182,7 +183,7 @@ test "generic type fixture: edge creation" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.generic_type, &g, Logger.noop);
+    try parse(fixtures.zig.generic_type, &g, null, Logger.noop);
 
     // Assert: isEmpty calls count (via self.count())
     var caller_id: ?NodeId = null;
@@ -270,7 +271,7 @@ test "test block edges" {
             \\fn helper() i32 { return 42; }
             \\test "uses helper" { _ = helper(); }
         ;
-        try parse(source, &g, Logger.noop);
+        try parse(source, &g, null, Logger.noop);
 
         var test_id: ?NodeId = null;
         var helper_id: ?NodeId = null;
@@ -301,7 +302,7 @@ test "test block edges" {
             \\};
             \\test "calls bar" { Foo.bar(); }
         ;
-        try parse(source, &g, Logger.noop);
+        try parse(source, &g, null, Logger.noop);
 
         var test_id: ?NodeId = null;
         var bar_id: ?NodeId = null;
@@ -332,7 +333,7 @@ test "test block edges" {
             \\    _ = x;
             \\}
         ;
-        try parse(source, &g, Logger.noop);
+        try parse(source, &g, null, Logger.noop);
 
         var test_id: ?NodeId = null;
         for (g.nodes.items, 0..) |n, idx| {
@@ -360,7 +361,7 @@ test "test block edges" {
             \\test alpha { _ = alpha(); }
             \\test beta { _ = beta(); }
         ;
-        try parse(source, &g, Logger.noop);
+        try parse(source, &g, null, Logger.noop);
 
         var test_alpha_id: ?NodeId = null;
         var test_beta_id: ?NodeId = null;
@@ -414,25 +415,51 @@ test "nested scope isolation" {
             \\    S.inner();
             \\}
         ;
-        try parse(source, &g, Logger.noop);
+        try parse(source, &g, null, Logger.noop);
 
         var test_id: ?NodeId = null;
         var helper_id: ?NodeId = null;
+        var inner_id: ?NodeId = null;
         for (g.nodes.items, 0..) |n, idx| {
             if (n.kind == .test_def and std.mem.eql(u8, n.name, "outer")) test_id = @enumFromInt(idx);
             if (n.kind == .function and std.mem.eql(u8, n.name, "helper")) helper_id = @enumFromInt(idx);
+            if (n.kind == .function and std.mem.eql(u8, n.name, "inner")) inner_id = @enumFromInt(idx);
         }
         try std.testing.expect(test_id != null);
         try std.testing.expect(helper_id != null);
+        try std.testing.expect(inner_id != null);
 
-        var found = false;
+        // test "outer" does NOT have a leaked calls edge to helper
+        var found_leak = false;
         for (g.edges.items) |e| {
             if (e.source_id == test_id.? and e.target_id == helper_id.? and e.edge_type == .calls) {
-                found = true;
+                found_leak = true;
                 break;
             }
         }
-        try std.testing.expect(!found);
+        try std.testing.expect(!found_leak);
+
+        // inner -> helper calls edge exists (inner function's own edge)
+        var found_inner_calls = false;
+        for (g.edges.items) |e| {
+            if (e.source_id == inner_id.? and e.target_id == helper_id.? and e.edge_type == .calls) {
+                found_inner_calls = true;
+                break;
+            }
+        }
+        try std.testing.expect(found_inner_calls);
+
+        // S type_def node exists with parent = test_def
+        var found_s = false;
+        for (g.nodes.items) |n| {
+            if (n.kind == .type_def and std.mem.eql(u8, n.name, "S") and
+                n.parent_id != null and n.parent_id.? == test_id.?)
+            {
+                found_s = true;
+                break;
+            }
+        }
+        try std.testing.expect(found_s);
     }
 
     // --- function does not leak calls from nested function ---
@@ -448,25 +475,39 @@ test "nested scope isolation" {
             \\    S.nested();
             \\}
         ;
-        try parse(source, &g, Logger.noop);
+        try parse(source, &g, null, Logger.noop);
 
         var outer_id: ?NodeId = null;
         var target_id: ?NodeId = null;
+        var nested_id: ?NodeId = null;
         for (g.nodes.items, 0..) |n, idx| {
             if (n.kind == .function and std.mem.eql(u8, n.name, "outer")) outer_id = @enumFromInt(idx);
             if (n.kind == .function and std.mem.eql(u8, n.name, "target")) target_id = @enumFromInt(idx);
+            if (n.kind == .function and std.mem.eql(u8, n.name, "nested")) nested_id = @enumFromInt(idx);
         }
         try std.testing.expect(outer_id != null);
         try std.testing.expect(target_id != null);
+        try std.testing.expect(nested_id != null);
 
-        var found = false;
+        // outer does NOT have a leaked calls edge to target
+        var found_leak = false;
         for (g.edges.items) |e| {
             if (e.source_id == outer_id.? and e.target_id == target_id.? and e.edge_type == .calls) {
-                found = true;
+                found_leak = true;
                 break;
             }
         }
-        try std.testing.expect(!found);
+        try std.testing.expect(!found_leak);
+
+        // nested -> target calls edge exists
+        var found_nested_calls = false;
+        for (g.edges.items) |e| {
+            if (e.source_id == nested_id.? and e.target_id == target_id.? and e.edge_type == .calls) {
+                found_nested_calls = true;
+                break;
+            }
+        }
+        try std.testing.expect(found_nested_calls);
     }
 
     // --- nested function gets its own calls edge not parent's ---
@@ -484,17 +525,20 @@ test "nested scope isolation" {
             \\    S.child();
             \\}
         ;
-        try parse(source, &g, Logger.noop);
+        try parse(source, &g, null, Logger.noop);
 
         var parent_id: ?NodeId = null;
+        var child_id: ?NodeId = null;
         var alpha_id: ?NodeId = null;
         var beta_id: ?NodeId = null;
         for (g.nodes.items, 0..) |n, idx| {
             if (n.kind == .function and std.mem.eql(u8, n.name, "parent")) parent_id = @enumFromInt(idx);
+            if (n.kind == .function and std.mem.eql(u8, n.name, "child")) child_id = @enumFromInt(idx);
             if (n.kind == .function and std.mem.eql(u8, n.name, "alpha")) alpha_id = @enumFromInt(idx);
             if (n.kind == .function and std.mem.eql(u8, n.name, "beta")) beta_id = @enumFromInt(idx);
         }
         try std.testing.expect(parent_id != null);
+        try std.testing.expect(child_id != null);
         try std.testing.expect(alpha_id != null);
         try std.testing.expect(beta_id != null);
 
@@ -508,6 +552,16 @@ test "nested scope isolation" {
         }
         try std.testing.expect(calls_alpha);
         try std.testing.expect(!calls_beta);
+
+        // child -> beta calls edge exists
+        var found_child_calls = false;
+        for (g.edges.items) |e| {
+            if (e.source_id == child_id.? and e.target_id == beta_id.? and e.edge_type == .calls) {
+                found_child_calls = true;
+                break;
+            }
+        }
+        try std.testing.expect(found_child_calls);
     }
 
     // --- function does not leak uses_type from nested function ---
@@ -523,25 +577,39 @@ test "nested scope isolation" {
             \\    _ = S.nested;
             \\}
         ;
-        try parse(source, &g, Logger.noop);
+        try parse(source, &g, null, Logger.noop);
 
         var outer_id: ?NodeId = null;
+        var nested_id: ?NodeId = null;
         var mytype_id: ?NodeId = null;
         for (g.nodes.items, 0..) |n, idx| {
             if (n.kind == .function and std.mem.eql(u8, n.name, "outer")) outer_id = @enumFromInt(idx);
+            if (n.kind == .function and std.mem.eql(u8, n.name, "nested")) nested_id = @enumFromInt(idx);
             if (std.mem.eql(u8, n.name, "MyType")) mytype_id = @enumFromInt(idx);
         }
         try std.testing.expect(outer_id != null);
+        try std.testing.expect(nested_id != null);
         try std.testing.expect(mytype_id != null);
 
-        var found = false;
+        // outer does NOT have a leaked uses_type edge to MyType
+        var found_leak = false;
         for (g.edges.items) |e| {
             if (e.source_id == outer_id.? and e.target_id == mytype_id.? and e.edge_type == .uses_type) {
-                found = true;
+                found_leak = true;
                 break;
             }
         }
-        try std.testing.expect(!found);
+        try std.testing.expect(!found_leak);
+
+        // nested -> MyType uses_type edge exists (inner function's own type reference)
+        var found_nested_uses = false;
+        for (g.edges.items) |e| {
+            if (e.source_id == nested_id.? and e.target_id == mytype_id.? and e.edge_type == .uses_type) {
+                found_nested_uses = true;
+                break;
+            }
+        }
+        try std.testing.expect(found_nested_uses);
     }
 }
 
@@ -559,7 +627,7 @@ test "type alias edges" {
             \\const Bar = Foo;
             \\fn useBar(b: Bar) void { _ = b; }
         ;
-        try parse(source, &g, Logger.noop);
+        try parse(source, &g, null, Logger.noop);
 
         var useBar_id: ?NodeId = null;
         var bar_id: ?NodeId = null;
@@ -589,7 +657,7 @@ test "type alias edges" {
             \\const Err = MyError;
             \\fn doStuff() Err!void {}
         ;
-        try parse(source, &g, Logger.noop);
+        try parse(source, &g, null, Logger.noop);
 
         var doStuff_id: ?NodeId = null;
         var err_id: ?NodeId = null;
@@ -619,7 +687,7 @@ test "type alias edges" {
             \\const max = 100;
             \\fn process(l: Limit) void { _ = l; }
         ;
-        try parse(source, &g, Logger.noop);
+        try parse(source, &g, null, Logger.noop);
 
         var process_id: ?NodeId = null;
         var limit_id: ?NodeId = null;
@@ -655,7 +723,7 @@ test "type alias edges" {
             \\const Alias = Other;
             \\fn both(d: Direct, a: Alias) void { _ = d; _ = a; }
         ;
-        try parse(source, &g, Logger.noop);
+        try parse(source, &g, null, Logger.noop);
 
         var both_id: ?NodeId = null;
         var direct_id: ?NodeId = null;
@@ -698,7 +766,7 @@ test "advanced uses_type edges" {
             \\    _ = c;
             \\}
         ;
-        try parse(source, &g, Logger.noop);
+        try parse(source, &g, null, Logger.noop);
 
         var makeDefault_id: ?NodeId = null;
         var config_id: ?NodeId = null;
@@ -735,7 +803,7 @@ test "advanced uses_type edges" {
             \\    _ = b;
             \\}
         ;
-        try parse(source, &g, Logger.noop);
+        try parse(source, &g, null, Logger.noop);
 
         var create_id: ?NodeId = null;
         var builder_id: ?NodeId = null;
@@ -766,7 +834,7 @@ test "advanced uses_type edges" {
             \\    return Item{ .id = item.id + 1 };
             \\}
         ;
-        try parse(source, &g, Logger.noop);
+        try parse(source, &g, null, Logger.noop);
 
         var process_id: ?NodeId = null;
         var item_id: ?NodeId = null;
@@ -798,7 +866,7 @@ test "advanced uses_type edges" {
             \\    serialize(Payload, p);
             \\}
         ;
-        try parse(source, &g, Logger.noop);
+        try parse(source, &g, null, Logger.noop);
 
         var doWork_id: ?NodeId = null;
         var payload_id: ?NodeId = null;
@@ -832,7 +900,7 @@ test "advanced uses_type edges" {
             \\    _ = Container(Element);
             \\}
         ;
-        try parse(source, &g, Logger.noop);
+        try parse(source, &g, null, Logger.noop);
 
         var build_id: ?NodeId = null;
         var element_id: ?NodeId = null;
@@ -865,7 +933,7 @@ test "advanced uses_type edges" {
             \\    helper(max);
             \\}
         ;
-        try parse(source, &g, Logger.noop);
+        try parse(source, &g, null, Logger.noop);
 
         var run_id: ?NodeId = null;
         var helper_id: ?NodeId = null;
@@ -909,7 +977,7 @@ test "local-type parameter edges" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.edge_cases.local_type_param, &g, Logger.noop);
+    try parse(fixtures.zig.edge_cases.local_type_param, &g, null, Logger.noop);
 
     // Assert: processPoint has a calls edge to manhattan
     var processPoint_id: ?NodeId = null;
@@ -984,7 +1052,7 @@ test "duplicate method names: scope resolution" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.edge_cases.duplicate_method_names, &g, Logger.noop);
+    try parse(fixtures.zig.edge_cases.duplicate_method_names, &g, null, Logger.noop);
 
     // Assert: @This() aliases are filtered -- no Self constants exist
     var self_count: usize = 0;
@@ -1098,7 +1166,7 @@ test "external method collision: no false edges" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.edge_cases.external_method_collision, &g, Logger.noop);
+    try parse(fixtures.zig.edge_cases.external_method_collision, &g, null, Logger.noop);
 
     // Find Resource struct and its methods
     var resource_id: ?NodeId = null;
@@ -1177,7 +1245,7 @@ test "generic dual self: Self filtering and resolution" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.edge_cases.generic_dual_self, &g, Logger.noop);
+    try parse(fixtures.zig.edge_cases.generic_dual_self, &g, null, Logger.noop);
 
     // Assert: no Self constants exist
     var self_count: usize = 0;
@@ -1262,7 +1330,7 @@ test "generic type: self-reference prevention" {
     defer g.deinit();
 
     // Act
-    try parse(fixtures.zig.generic_type, &g, Logger.noop);
+    try parse(fixtures.zig.generic_type, &g, null, Logger.noop);
 
     // Assert: no Self constants exist
     for (g.nodes.items) |n| {
@@ -1276,7 +1344,7 @@ test "generic type: self-reference prevention" {
     var result_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
         if (n.kind == .type_def and std.mem.eql(u8, n.name, "Container")) container_id = @enumFromInt(idx);
-        if (n.kind == .type_def and std.mem.eql(u8, n.name, "Result")) result_id = @enumFromInt(idx);
+        if (n.kind == .union_def and std.mem.eql(u8, n.name, "Result")) result_id = @enumFromInt(idx);
     }
     try std.testing.expect(container_id != null);
     try std.testing.expect(result_id != null);
@@ -1291,4 +1359,723 @@ test "generic type: self-reference prevention" {
     }
     try std.testing.expect(!container_self_loop);
     try std.testing.expect(!result_self_loop);
+}
+
+// =========================================================================
+// Union classification: union_def distinct from type_def
+// =========================================================================
+
+test "union classification: union_def distinct from type_def" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/project");
+    defer g.deinit();
+    const source =
+        \\const MyStruct = struct { x: i32 };
+        \\const TaggedUnion = union(enum) { int: i32, none };
+        \\const PlainUnion = union { int: i32, float: f64 };
+        \\const MyEnum = enum { a, b };
+    ;
+
+    // Act
+    try parse(source, &g, null, Logger.noop);
+
+    // Assert: struct → type_def, unions → union_def, enum → enum_def
+    var struct_node: ?*const Node = null;
+    var tagged_node: ?*const Node = null;
+    var plain_node: ?*const Node = null;
+    var enum_node: ?*const Node = null;
+    for (g.nodes.items) |*n| {
+        if (std.mem.eql(u8, n.name, "MyStruct")) struct_node = n;
+        if (std.mem.eql(u8, n.name, "TaggedUnion")) tagged_node = n;
+        if (std.mem.eql(u8, n.name, "PlainUnion")) plain_node = n;
+        if (std.mem.eql(u8, n.name, "MyEnum")) enum_node = n;
+    }
+    try std.testing.expect(struct_node != null);
+    try std.testing.expect(tagged_node != null);
+    try std.testing.expect(plain_node != null);
+    try std.testing.expect(enum_node != null);
+
+    try std.testing.expectEqual(NodeKind.type_def, struct_node.?.kind);
+    try std.testing.expectEqual(NodeKind.union_def, tagged_node.?.kind);
+    try std.testing.expectEqual(NodeKind.union_def, plain_node.?.kind);
+    try std.testing.expectEqual(NodeKind.enum_def, enum_node.?.kind);
+
+    // Assert: union fields are children of the union_def node
+    var tagged_field_count: usize = 0;
+    for (g.nodes.items) |n| {
+        if (n.kind == .field and n.parent_id != null and n.parent_id.? == tagged_node.?.id) {
+            tagged_field_count += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 2), tagged_field_count);
+}
+
+test "uses_type edges can target union_def nodes" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/project");
+    defer g.deinit();
+    const source =
+        \\const Value = union(enum) { int: i32, none };
+        \\fn process(v: Value) void { _ = v; }
+    ;
+
+    // Act
+    try parse(source, &g, null, Logger.noop);
+
+    // Assert
+    var fn_id: ?NodeId = null;
+    var union_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind == .function and std.mem.eql(u8, n.name, "process")) fn_id = @enumFromInt(idx);
+        if (n.kind == .union_def and std.mem.eql(u8, n.name, "Value")) union_id = @enumFromInt(idx);
+    }
+    try std.testing.expect(fn_id != null);
+    try std.testing.expect(union_id != null);
+
+    var found = false;
+    for (g.edges.items) |e| {
+        if (e.source_id == fn_id.? and e.target_id == union_id.? and e.edge_type == .uses_type) {
+            found = true;
+            break;
+        }
+    }
+    try std.testing.expect(found);
+}
+
+// =========================================================================
+// Container layout qualifiers: packed/extern on structs and unions
+// =========================================================================
+
+test "container layout qualifiers: packed and extern detected on structs and unions" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/project");
+    defer g.deinit();
+    const source =
+        \\const Normal = struct { x: i32 };
+        \\const Packed = packed struct { x: i32, y: u8 };
+        \\const PackedBacked = packed struct(u32) { a: u16, b: u16 };
+        \\const Ext = extern struct { x: c_int };
+        \\const PackedUnion = packed union { int: i32, float: f32 };
+        \\const ExternUnion = extern union { int: c_int, float: c_int };
+        \\const NormalUnion = union { int: i32, float: f64 };
+        \\pub fn GenPacked(comptime T: type) type {
+        \\    return packed struct { val: T };
+        \\}
+    ;
+
+    // Act
+    try parse(source, &g, null, Logger.noop);
+
+    // Assert — collect all named nodes
+    var normal: ?*const Node = null;
+    var packed_s: ?*const Node = null;
+    var packed_backed: ?*const Node = null;
+    var ext_s: ?*const Node = null;
+    var packed_u: ?*const Node = null;
+    var ext_u: ?*const Node = null;
+    var normal_u: ?*const Node = null;
+    var gen_packed: ?*const Node = null;
+    for (g.nodes.items) |*n| {
+        if (std.mem.eql(u8, n.name, "Normal")) normal = n;
+        if (std.mem.eql(u8, n.name, "Packed")) packed_s = n;
+        if (std.mem.eql(u8, n.name, "PackedBacked")) packed_backed = n;
+        if (std.mem.eql(u8, n.name, "Ext")) ext_s = n;
+        if (std.mem.eql(u8, n.name, "PackedUnion")) packed_u = n;
+        if (std.mem.eql(u8, n.name, "ExternUnion")) ext_u = n;
+        if (std.mem.eql(u8, n.name, "NormalUnion")) normal_u = n;
+        if (std.mem.eql(u8, n.name, "GenPacked")) gen_packed = n;
+    }
+
+    // All nodes found
+    try std.testing.expect(normal != null);
+    try std.testing.expect(packed_s != null);
+    try std.testing.expect(packed_backed != null);
+    try std.testing.expect(ext_s != null);
+    try std.testing.expect(packed_u != null);
+    try std.testing.expect(ext_u != null);
+    try std.testing.expect(normal_u != null);
+    try std.testing.expect(gen_packed != null);
+
+    // Normal struct: no zig meta (neither packed nor extern)
+    try std.testing.expectEqual(LangMeta{ .none = {} }, normal.?.lang_meta);
+
+    // Packed struct: is_packed=true, is_extern=false
+    switch (packed_s.?.lang_meta) {
+        .zig => |zm| {
+            try std.testing.expect(zm.is_packed);
+            try std.testing.expect(!zm.is_extern);
+        },
+        .none => return error.ExpectedZigMeta,
+    }
+
+    // Packed struct with backing type: same as packed
+    switch (packed_backed.?.lang_meta) {
+        .zig => |zm| try std.testing.expect(zm.is_packed),
+        .none => return error.ExpectedZigMeta,
+    }
+
+    // Extern struct: is_extern=true, is_packed=false
+    switch (ext_s.?.lang_meta) {
+        .zig => |zm| {
+            try std.testing.expect(zm.is_extern);
+            try std.testing.expect(!zm.is_packed);
+        },
+        .none => return error.ExpectedZigMeta,
+    }
+
+    // Packed union: is_packed=true
+    try std.testing.expectEqual(NodeKind.union_def, packed_u.?.kind);
+    switch (packed_u.?.lang_meta) {
+        .zig => |zm| try std.testing.expect(zm.is_packed),
+        .none => return error.ExpectedZigMeta,
+    }
+
+    // Extern union: is_extern=true
+    try std.testing.expectEqual(NodeKind.union_def, ext_u.?.kind);
+    switch (ext_u.?.lang_meta) {
+        .zig => |zm| try std.testing.expect(zm.is_extern),
+        .none => return error.ExpectedZigMeta,
+    }
+
+    // Normal union: no zig meta
+    try std.testing.expectEqual(LangMeta{ .none = {} }, normal_u.?.lang_meta);
+
+    // Type-returning function returning packed struct: is_packed=true
+    try std.testing.expectEqual(NodeKind.type_def, gen_packed.?.kind);
+    switch (gen_packed.?.lang_meta) {
+        .zig => |zm| try std.testing.expect(zm.is_packed),
+        .none => return error.ExpectedZigMeta,
+    }
+}
+
+// =========================================================================
+// Re-export filtering: public re-exports preserved, private aliases filtered
+// =========================================================================
+
+// =========================================================================
+// Type-returning function signature preservation
+// =========================================================================
+
+test "type-returning function signature preserved" {
+    // --- generic_type.zig fixture: Container, Result, Config ---
+    {
+        // Arrange
+        var g = Graph.init(std.testing.allocator, "/tmp/project");
+        defer g.deinit();
+
+        // Act
+        try parse(fixtures.zig.generic_type, &g, null, Logger.noop);
+
+        // Assert: find Container, Result, Config nodes
+        var container_node: ?*const Node = null;
+        var result_node: ?*const Node = null;
+        var config_node: ?*const Node = null;
+        for (g.nodes.items) |*n| {
+            if (std.mem.eql(u8, n.name, "Container")) container_node = n;
+            if (std.mem.eql(u8, n.name, "Result")) result_node = n;
+            if (std.mem.eql(u8, n.name, "Config")) config_node = n;
+        }
+        try std.testing.expect(container_node != null);
+        try std.testing.expect(result_node != null);
+        try std.testing.expect(config_node != null);
+
+        // Assert: Container has kind type_def and signature != null
+        try std.testing.expectEqual(NodeKind.type_def, container_node.?.kind);
+        try std.testing.expect(container_node.?.signature != null);
+        const container_sig = container_node.?.signature.?;
+        // Signature contains function name and generic parameter
+        try std.testing.expect(std.mem.indexOf(u8, container_sig, "Container") != null);
+        try std.testing.expect(std.mem.indexOf(u8, container_sig, "comptime T") != null);
+
+        // Assert: Result has kind union_def and signature != null
+        try std.testing.expectEqual(NodeKind.union_def, result_node.?.kind);
+        try std.testing.expect(result_node.?.signature != null);
+        const result_sig = result_node.?.signature.?;
+        // Signature contains function name and both generic parameters
+        try std.testing.expect(std.mem.indexOf(u8, result_sig, "Result") != null);
+        try std.testing.expect(std.mem.indexOf(u8, result_sig, "comptime T") != null);
+        try std.testing.expect(std.mem.indexOf(u8, result_sig, "comptime E") != null);
+
+        // Assert: Config has kind type_def and signature == null (non-generic, not a function)
+        try std.testing.expectEqual(NodeKind.type_def, config_node.?.kind);
+        try std.testing.expectEqual(@as(?[]const u8, null), config_node.?.signature);
+    }
+
+    // --- inline type-returning function: is_inline and signature ---
+    {
+        // Arrange
+        var g = Graph.init(std.testing.allocator, "/tmp/project");
+        defer g.deinit();
+        const source =
+            \\inline fn Wrapper(comptime T: type) type {
+            \\    return struct { val: T };
+            \\}
+        ;
+
+        // Act
+        try parse(source, &g, null, Logger.noop);
+
+        // Assert: find Wrapper node
+        var wrapper_node: ?*const Node = null;
+        for (g.nodes.items) |*n| {
+            if (std.mem.eql(u8, n.name, "Wrapper")) wrapper_node = n;
+        }
+        try std.testing.expect(wrapper_node != null);
+
+        // Assert: kind is type_def
+        try std.testing.expectEqual(NodeKind.type_def, wrapper_node.?.kind);
+
+        // Assert: signature is present
+        try std.testing.expect(wrapper_node.?.signature != null);
+
+        // Assert: is_inline is true in lang_meta
+        switch (wrapper_node.?.lang_meta) {
+            .zig => |zm| try std.testing.expect(zm.is_inline),
+            .none => return error.ExpectedZigMeta,
+        }
+    }
+}
+
+// =========================================================================
+// Conditional expressions: comptime_conditional classification
+// =========================================================================
+
+test "conditional expressions classified as constant with comptime_conditional" {
+    // --- Sub-test 1: if-expression with inline structs ---
+    {
+        // Arrange
+        var g = Graph.init(std.testing.allocator, "/tmp/project");
+        defer g.deinit();
+        const source =
+            \\const flag = true;
+            \\pub const system = if (flag)
+            \\    struct { pub fn read() void {} }
+            \\else
+            \\    struct { pub fn write() void {} };
+        ;
+
+        // Act
+        try parse(source, &g, null, Logger.noop);
+
+        // Assert: system has kind .constant (NOT .type_def)
+        var system_node: ?*const Node = null;
+        for (g.nodes.items) |*n| {
+            if (std.mem.eql(u8, n.name, "system")) {
+                system_node = n;
+                break;
+            }
+        }
+        try std.testing.expect(system_node != null);
+        try std.testing.expectEqual(NodeKind.constant, system_node.?.kind);
+
+        // Assert: system has lang_meta.zig.comptime_conditional == true
+        switch (system_node.?.lang_meta) {
+            .zig => |zm| try std.testing.expect(zm.comptime_conditional),
+            .none => return error.ExpectedZigMeta,
+        }
+
+        // Assert: system has visibility .public
+        try std.testing.expectEqual(Visibility.public, system_node.?.visibility);
+
+        // Assert: no child nodes with parent system exist (no read, no write leaked)
+        var system_id: ?NodeId = null;
+        for (g.nodes.items, 0..) |n, idx| {
+            if (std.mem.eql(u8, n.name, "system")) {
+                system_id = @enumFromInt(idx);
+                break;
+            }
+        }
+        try std.testing.expect(system_id != null);
+        var child_count: usize = 0;
+        for (g.nodes.items) |n| {
+            if (n.parent_id != null and n.parent_id.? == system_id.?) {
+                child_count += 1;
+            }
+        }
+        try std.testing.expectEqual(@as(usize, 0), child_count);
+    }
+
+    // --- Sub-test 2: switch-expression with inline structs ---
+    {
+        // Arrange
+        var g = Graph.init(std.testing.allocator, "/tmp/project");
+        defer g.deinit();
+        const source =
+            \\const Mode = enum { fast, safe };
+            \\const mode: Mode = .fast;
+            \\pub const backend = switch (mode) {
+            \\    .fast => struct { pub fn init() void {} },
+            \\    .safe => struct { pub fn init() void {} },
+            \\};
+        ;
+
+        // Act
+        try parse(source, &g, null, Logger.noop);
+
+        // Assert: backend has kind .constant (NOT .type_def)
+        var backend_node: ?*const Node = null;
+        for (g.nodes.items) |*n| {
+            if (std.mem.eql(u8, n.name, "backend")) {
+                backend_node = n;
+                break;
+            }
+        }
+        try std.testing.expect(backend_node != null);
+        try std.testing.expectEqual(NodeKind.constant, backend_node.?.kind);
+
+        // Assert: backend has lang_meta.zig.comptime_conditional == true
+        switch (backend_node.?.lang_meta) {
+            .zig => |zm| try std.testing.expect(zm.comptime_conditional),
+            .none => return error.ExpectedZigMeta,
+        }
+
+        // Assert: no child function init has parent backend
+        var backend_id: ?NodeId = null;
+        for (g.nodes.items, 0..) |n, idx| {
+            if (std.mem.eql(u8, n.name, "backend")) {
+                backend_id = @enumFromInt(idx);
+                break;
+            }
+        }
+        try std.testing.expect(backend_id != null);
+        var child_count: usize = 0;
+        for (g.nodes.items) |n| {
+            if (n.parent_id != null and n.parent_id.? == backend_id.?) {
+                child_count += 1;
+            }
+        }
+        try std.testing.expectEqual(@as(usize, 0), child_count);
+    }
+
+    // --- Sub-test 3: plain struct is unaffected ---
+    {
+        // Arrange
+        var g = Graph.init(std.testing.allocator, "/tmp/project");
+        defer g.deinit();
+        const source =
+            \\pub const Config = struct {
+            \\    name: []const u8,
+            \\    pub fn defaults() void {}
+            \\};
+        ;
+
+        // Act
+        try parse(source, &g, null, Logger.noop);
+
+        // Assert: Config has kind .type_def (unchanged, no conditional)
+        var config_node: ?*const Node = null;
+        for (g.nodes.items) |*n| {
+            if (std.mem.eql(u8, n.name, "Config")) {
+                config_node = n;
+                break;
+            }
+        }
+        try std.testing.expect(config_node != null);
+        try std.testing.expectEqual(NodeKind.type_def, config_node.?.kind);
+
+        // Assert: defaults function has parent Config (children still captured)
+        var config_id: ?NodeId = null;
+        for (g.nodes.items, 0..) |n, idx| {
+            if (std.mem.eql(u8, n.name, "Config")) {
+                config_id = @enumFromInt(idx);
+                break;
+            }
+        }
+        try std.testing.expect(config_id != null);
+        var found_defaults = false;
+        for (g.nodes.items) |n| {
+            if (n.kind == .function and std.mem.eql(u8, n.name, "defaults") and
+                n.parent_id != null and n.parent_id.? == config_id.?)
+            {
+                found_defaults = true;
+                break;
+            }
+        }
+        try std.testing.expect(found_defaults);
+
+        // Assert: Config does NOT have comptime_conditional == true
+        switch (config_node.?.lang_meta) {
+            .zig => |zm| try std.testing.expect(!zm.comptime_conditional),
+            .none => {}, // no zig meta is also acceptable (means no flags set)
+        }
+    }
+}
+
+test "error set variant names captured in signature" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/project");
+    defer g.deinit();
+    const source =
+        \\/// Multi-member error set.
+        \\pub const FileError = error{
+        \\    NotFound,
+        \\    PermissionDenied,
+        \\    IsDir,
+        \\};
+        \\
+        \\/// Single-member error set.
+        \\pub const TimeoutError = error{Timeout};
+        \\
+        \\/// Error set merge (inline part only).
+        \\pub const IoError = FileError || error{BrokenPipe};
+        \\
+        \\/// Empty error set.
+        \\const E = error{};
+        \\
+        \\/// Not an error set (for negative check).
+        \\pub fn open() void {}
+    ;
+
+    // Act
+    try parse(source, &g, null, Logger.noop);
+
+    // Assert 1: FileError has kind .error_def
+    var file_error_node: ?*const Node = null;
+    var file_error_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |*n, idx| {
+        if (std.mem.eql(u8, n.name, "FileError")) {
+            file_error_node = n;
+            file_error_id = @enumFromInt(idx);
+        }
+    }
+    try std.testing.expect(file_error_node != null);
+    try std.testing.expectEqual(NodeKind.error_def, file_error_node.?.kind);
+
+    // Assert 2: FileError has signature != null
+    try std.testing.expect(file_error_node.?.signature != null);
+
+    // Assert 3: FileError's signature contains variant names
+    const fe_sig = file_error_node.?.signature.?;
+    try std.testing.expect(std.mem.indexOf(u8, fe_sig, "NotFound") != null);
+    try std.testing.expect(std.mem.indexOf(u8, fe_sig, "PermissionDenied") != null);
+    try std.testing.expect(std.mem.indexOf(u8, fe_sig, "IsDir") != null);
+
+    // Assert 4: TimeoutError has kind .error_def and signature containing "Timeout"
+    var timeout_node: ?*const Node = null;
+    for (g.nodes.items) |*n| {
+        if (std.mem.eql(u8, n.name, "TimeoutError")) timeout_node = n;
+    }
+    try std.testing.expect(timeout_node != null);
+    try std.testing.expectEqual(NodeKind.error_def, timeout_node.?.kind);
+    try std.testing.expect(timeout_node.?.signature != null);
+    try std.testing.expect(std.mem.indexOf(u8, timeout_node.?.signature.?, "Timeout") != null);
+
+    // Assert 5: IoError has kind .error_def and signature containing "BrokenPipe"
+    var io_error_node: ?*const Node = null;
+    for (g.nodes.items) |*n| {
+        if (std.mem.eql(u8, n.name, "IoError")) io_error_node = n;
+    }
+    try std.testing.expect(io_error_node != null);
+    try std.testing.expectEqual(NodeKind.error_def, io_error_node.?.kind);
+    try std.testing.expect(io_error_node.?.signature != null);
+    try std.testing.expect(std.mem.indexOf(u8, io_error_node.?.signature.?, "BrokenPipe") != null);
+
+    // Assert 6: E has kind .error_def (empty error set)
+    var e_node: ?*const Node = null;
+    for (g.nodes.items) |*n| {
+        if (std.mem.eql(u8, n.name, "E")) e_node = n;
+    }
+    try std.testing.expect(e_node != null);
+    try std.testing.expectEqual(NodeKind.error_def, e_node.?.kind);
+
+    // Assert 7: open has kind .function and signature does NOT contain "error"
+    var open_node: ?*const Node = null;
+    for (g.nodes.items) |*n| {
+        if (std.mem.eql(u8, n.name, "open")) open_node = n;
+    }
+    try std.testing.expect(open_node != null);
+    try std.testing.expectEqual(NodeKind.function, open_node.?.kind);
+    if (open_node.?.signature) |sig| {
+        try std.testing.expect(std.mem.indexOf(u8, sig, "error") == null);
+    }
+
+    // Assert 8: No child nodes exist with parent FileError
+    var child_count: usize = 0;
+    for (g.nodes.items) |n| {
+        if (n.parent_id != null and n.parent_id.? == file_error_id.?) {
+            child_count += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 0), child_count);
+}
+
+test "re-export filtering: public re-exports preserved, private aliases filtered" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/project");
+    defer g.deinit();
+    const source =
+        \\const std = @import("std");
+        \\const utils = @import("utils.zig");
+        \\
+        \\/// Public re-export from std: intentional API surface.
+        \\pub const iovec = std.posix.iovec;
+        \\
+        \\/// Public re-export from local import.
+        \\pub const Helper = utils.Helper;
+        \\
+        \\/// Private same-name alias: noise, should be filtered.
+        \\const Allocator = std.mem.Allocator;
+        \\
+        \\/// Private same-name alias from local import.
+        \\const InternalHelper = utils.InternalHelper;
+        \\
+        \\/// Different name: NOT a same-name re-export, always kept.
+        \\pub const MyAlloc = std.mem.Allocator;
+        \\
+        \\/// Private different name: also kept (not same-name).
+        \\const LocalAlloc = std.mem.Allocator;
+        \\
+        \\pub fn doWork() void {}
+    ;
+
+    // Act
+    try parse(source, &g, null, Logger.noop);
+
+    // Assert: collect all nodes by name
+    var found_iovec = false;
+    var found_helper = false;
+    var found_allocator = false;
+    var found_internal_helper = false;
+    var found_my_alloc = false;
+    var found_local_alloc = false;
+    var found_do_work = false;
+    for (g.nodes.items) |n| {
+        if (std.mem.eql(u8, n.name, "iovec")) found_iovec = true;
+        if (std.mem.eql(u8, n.name, "Helper")) found_helper = true;
+        if (std.mem.eql(u8, n.name, "Allocator")) found_allocator = true;
+        if (std.mem.eql(u8, n.name, "InternalHelper")) found_internal_helper = true;
+        if (std.mem.eql(u8, n.name, "MyAlloc")) found_my_alloc = true;
+        if (std.mem.eql(u8, n.name, "LocalAlloc")) found_local_alloc = true;
+        if (std.mem.eql(u8, n.name, "doWork")) found_do_work = true;
+    }
+
+    // Public same-name re-exports: KEPT (intentional API)
+    try std.testing.expect(found_iovec);
+    try std.testing.expect(found_helper);
+
+    // Private same-name aliases: FILTERED (noise)
+    try std.testing.expect(!found_allocator);
+    try std.testing.expect(!found_internal_helper);
+
+    // Different-name aliases: KEPT regardless of visibility
+    try std.testing.expect(found_my_alloc);
+    try std.testing.expect(found_local_alloc);
+
+    // Sanity: function and imports are unaffected
+    try std.testing.expect(found_do_work);
+
+    // Assert: public re-exports have correct visibility
+    for (g.nodes.items) |n| {
+        if (std.mem.eql(u8, n.name, "iovec")) {
+            try std.testing.expectEqual(Visibility.public, n.visibility);
+            try std.testing.expectEqual(NodeKind.constant, n.kind);
+        }
+        if (std.mem.eql(u8, n.name, "Helper")) {
+            try std.testing.expectEqual(Visibility.public, n.visibility);
+            try std.testing.expectEqual(NodeKind.constant, n.kind);
+        }
+    }
+}
+
+// =========================================================================
+// Top-level comptime blocks captured
+// =========================================================================
+
+test "top-level comptime blocks captured" {
+    // Arrange
+    var g = Graph.init(std.testing.allocator, "/tmp/project");
+    defer g.deinit();
+    const source =
+        \\const std = @import("std");
+        \\
+        \\/// Comptime export block.
+        \\comptime {
+        \\    @export(&std, .{ .name = "main" });
+        \\}
+        \\
+        \\/// Comptime import block.
+        \\comptime {
+        \\    if (@import("builtin").is_test) {
+        \\        _ = std;
+        \\    }
+        \\}
+        \\
+        \\pub const Config = struct { name: []const u8 };
+        \\pub fn init() void {}
+    ;
+
+    // Act
+    try parse(source, &g, null, Logger.noop);
+
+    // Assert: two comptime_block nodes exist
+    var comptime_count: usize = 0;
+    var comptime_nodes: [2]?*const Node = .{ null, null };
+    for (g.nodes.items) |*n| {
+        if (n.kind == .comptime_block) {
+            if (comptime_count < 2) comptime_nodes[comptime_count] = n;
+            comptime_count += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 2), comptime_count);
+
+    // Assert: both have parent equal to the file node (top-level)
+    const file_id: NodeId = @enumFromInt(0);
+    const ct0 = comptime_nodes[0].?;
+    const ct1 = comptime_nodes[1].?;
+    try std.testing.expect(ct0.parent_id != null);
+    try std.testing.expectEqual(file_id, ct0.parent_id.?);
+    try std.testing.expect(ct1.parent_id != null);
+    try std.testing.expectEqual(file_id, ct1.parent_id.?);
+
+    // Assert: both have visibility .private
+    try std.testing.expectEqual(Visibility.private, ct0.visibility);
+    try std.testing.expectEqual(Visibility.private, ct1.visibility);
+
+    // Assert: both have name "comptime"
+    try std.testing.expectEqualStrings("comptime", ct0.name);
+    try std.testing.expectEqualStrings("comptime", ct1.name);
+
+    // Assert: both have lang_meta.zig.is_comptime == true
+    switch (ct0.lang_meta) {
+        .zig => |zm| try std.testing.expect(zm.is_comptime),
+        .none => return error.ExpectedZigMeta,
+    }
+    switch (ct1.lang_meta) {
+        .zig => |zm| try std.testing.expect(zm.is_comptime),
+        .none => return error.ExpectedZigMeta,
+    }
+
+    // Assert: first comptime block has a doc comment
+    try std.testing.expect(ct0.doc != null);
+    try std.testing.expect(std.mem.indexOf(u8, ct0.doc.?, "Comptime export block") != null);
+
+    // Assert: second comptime block has a doc comment
+    try std.testing.expect(ct1.doc != null);
+    try std.testing.expect(std.mem.indexOf(u8, ct1.doc.?, "Comptime import block") != null);
+
+    // Assert: Config still has kind .type_def (existing behavior unaffected)
+    var found_config = false;
+    for (g.nodes.items) |n| {
+        if (std.mem.eql(u8, n.name, "Config")) {
+            try std.testing.expectEqual(NodeKind.type_def, n.kind);
+            found_config = true;
+        }
+    }
+    try std.testing.expect(found_config);
+
+    // Assert: init still has kind .function (existing behavior unaffected)
+    var found_init = false;
+    for (g.nodes.items) |n| {
+        if (std.mem.eql(u8, n.name, "init")) {
+            try std.testing.expectEqual(NodeKind.function, n.kind);
+            found_init = true;
+        }
+    }
+    try std.testing.expect(found_init);
+
+    // Assert: both comptime blocks have line_start and line_end set
+    try std.testing.expect(ct0.line_start != null);
+    try std.testing.expect(ct0.line_end != null);
+    try std.testing.expect(ct1.line_start != null);
+    try std.testing.expect(ct1.line_end != null);
 }
