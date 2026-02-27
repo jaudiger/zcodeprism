@@ -5,11 +5,11 @@ const node_mod = @import("../core/node.zig");
 const edge_mod = @import("../core/edge.zig");
 const types = @import("../core/types.zig");
 const lang = @import("../languages/language.zig");
+const lang_support = @import("../languages/language_support.zig");
 const registry_mod = @import("../languages/registry.zig");
 const phantom_mod = @import("../core/phantom.zig");
 const metrics_mod = @import("../core/metrics.zig");
 const source_scan = @import("source_scan.zig");
-const parse_context = @import("../languages/zig/parse_context.zig");
 
 const Field = logging.Field;
 const Logger = logging.Logger;
@@ -28,14 +28,23 @@ const Registry = registry_mod.Registry;
 const PhantomManager = phantom_mod.PhantomManager;
 const Metrics = metrics_mod.Metrics;
 
-/// Options controlling directory indexation.
+/// Configuration for `indexDirectory`.
+///
+/// - `exclude_paths`: relative paths or basenames to skip during discovery.
+/// - `incremental`: when true, files whose content hash matches an existing
+///   file node in the graph are skipped.
+/// - `logger`: structured logger for diagnostics (defaults to noop).
 pub const IndexOptions = struct {
     exclude_paths: []const []const u8 = &.{},
     incremental: bool = false,
     logger: Logger = Logger.noop,
 };
 
-/// Result of indexing a directory.
+/// Summary counters returned by `indexDirectory` after a complete run.
+///
+/// - `files_indexed`: files successfully parsed and added to the graph.
+/// - `files_skipped`: files skipped in incremental mode (unchanged hash).
+/// - `files_errored`: files that could not be read or parsed.
 pub const IndexResult = struct {
     files_indexed: usize = 0,
     files_skipped: usize = 0,
@@ -48,8 +57,12 @@ const FileEntry = struct {
     basename: []const u8,
     content: []const u8,
     content_hash: [12]u8,
+    lang_support: *const lang_support.LanguageSupport,
     import_count: usize = 0,
-    consumed: bool = false,
+    /// Whether ownership of content has been transferred to the consumer.
+    content_consumed: bool = false,
+    /// Whether ownership of rel_path has been transferred to the consumer.
+    path_consumed: bool = false,
 };
 
 /// Tracks a parsed file's node index and source for post-processing.
@@ -57,11 +70,20 @@ const FileInfo = struct {
     idx: usize,
     scope_end: usize,
     source: []const u8,
+    lang_support: *const lang_support.LanguageSupport,
 };
 
-/// Index all Zig source files in a directory, populating the graph with
-/// file nodes, declaration nodes, edges (imports, calls, uses_type),
-/// phantom nodes for external references, and computed metrics.
+/// Discover and index all supported source files under `project_root`, populating
+/// `graph` with file nodes, declaration nodes, intra- and inter-file edges
+/// (imports, calls, uses_type), phantom nodes for external references, and
+/// per-function metrics (line count, cyclomatic complexity).
+///
+/// Files are parsed in topological order so that imported files are visited
+/// before their importers. After all files are processed, the graph is frozen.
+///
+/// Returns an `IndexResult` with per-file counters. The caller owns `graph`;
+/// the indexer transfers ownership of file content and path buffers into
+/// `graph.owned_buffers`.
 pub fn indexDirectory(
     allocator: std.mem.Allocator,
     project_root: []const u8,
@@ -71,7 +93,7 @@ pub fn indexDirectory(
     var result = IndexResult{};
     const log = options.logger.withScope("indexer");
 
-    // Discover .zig files in the project directory.
+    // Discover source files in the project directory.
     var dir = try std.fs.openDirAbsolute(project_root, .{ .iterate = true });
     defer dir.close();
 
@@ -84,7 +106,8 @@ pub fn indexDirectory(
 
         while (try walker.next()) |entry| {
             if (entry.kind != .file) continue;
-            if (!std.mem.endsWith(u8, entry.path, ".zig")) continue;
+            const ext = std.fs.path.extension(entry.path);
+            const file_lang = Registry.getByExtension(ext) orelse continue;
             if (isExcluded(entry.path, options.exclude_paths)) continue;
 
             const file = dir.openFile(entry.path, .{}) catch {
@@ -110,6 +133,7 @@ pub fn indexDirectory(
                 .basename = basename,
                 .content = content,
                 .content_hash = hash,
+                .lang_support = file_lang,
             });
         }
     }
@@ -118,10 +142,8 @@ pub fn indexDirectory(
     // the deinit defers above (reverse declaration order), so items are valid.
     defer {
         for (file_entries.items) |fe| {
-            if (!fe.consumed) {
-                allocator.free(fe.content);
-                allocator.free(fe.rel_path);
-            }
+            if (!fe.content_consumed) allocator.free(fe.content);
+            if (!fe.path_consumed) allocator.free(fe.rel_path);
         }
     }
 
@@ -132,25 +154,36 @@ pub fn indexDirectory(
 
     if (file_entries.items.len == 0) {
         log.debug("no files to index", &.{});
+        try graph.freeze();
         return result;
     }
 
     // Pre-allocate graph capacity: rough estimate of ~30 nodes and ~20 edges per file.
+    // Each file contributes 2 owned buffers (content + rel_path).
     {
-        const est_nodes: u32 = @intCast(file_entries.items.len * 30);
-        const est_edges: u32 = @intCast(file_entries.items.len * 20);
+        const file_count = file_entries.items.len;
+        const est_nodes: u32 = @intCast(file_count * 30);
+        const est_edges: u32 = @intCast(file_count * 20);
+        const est_bufs: u32 = @intCast(graph.owned_buffers.items.len + file_count * 2);
         try graph.nodes.ensureTotalCapacity(graph.allocator, est_nodes);
         try graph.edges.ensureTotalCapacity(graph.allocator, est_edges);
         try graph.edge_index.ensureTotalCapacity(graph.allocator, est_edges);
+        try graph.owned_buffers.ensureTotalCapacity(graph.allocator, est_bufs);
     }
 
     // Topological sort: imported files are parsed before their importers.
     try topoSortFiles(allocator, file_entries.items);
 
-    // Parse each file through the visitor in dependency order.
-    const lang_support = Registry.getByExtension(".zig") orelse return error.UnsupportedLanguage;
-    const parse_fn = lang_support.parseFn orelse return error.NoParseFn;
+    // Load build config (if the language supports it).
+    var build_config: ?lang.BuildConfig = null;
+    defer if (build_config) |*bc| bc.deinit(allocator);
+    if (file_entries.items.len > 0) {
+        if (file_entries.items[0].lang_support.parseBuildConfigFn) |parse_config_fn| {
+            build_config = parse_config_fn(allocator, project_root, log) catch null;
+        }
+    }
 
+    // Parse each file through the visitor in dependency order.
     var file_infos = std.ArrayListUnmanaged(FileInfo){};
     defer file_infos.deinit(allocator);
 
@@ -169,20 +202,27 @@ pub fn indexDirectory(
             }
         }
 
-        const before_count = graph.nodeCount();
-
-        // Call visitor via registry. Creates file node + children + edges.
-        log.debug("parsing file", &.{Field.string("path", fe.rel_path)});
-        parse_fn(fe.content, @ptrCast(graph), fe.rel_path, log) catch {
-            log.warn("file parse error", &.{Field.string("path", fe.rel_path)});
+        const parse_fn = fe.lang_support.parseFn orelse {
             result.files_errored += 1;
             continue;
         };
 
-        // Transfer ownership of content and path to graph.
+        const before_count = graph.nodeCount();
+
+        // Graph owns the backing memory for all node slices (name, doc, signature).
+        // Ownership must be established before parse_fn, which creates those slices.
         try graph.addOwnedBuffer(fe.content);
+        file_entries.items[entry_idx].content_consumed = true;
         try graph.addOwnedBuffer(fe.rel_path);
-        file_entries.items[entry_idx].consumed = true;
+        file_entries.items[entry_idx].path_consumed = true;
+
+        // Call visitor via language support. Creates file node + children + edges.
+        log.debug("parsing file", &.{Field.string("path", fe.rel_path)});
+        parse_fn(fe.content, graph, fe.rel_path, log) catch {
+            log.warn("file parse error", &.{Field.string("path", fe.rel_path)});
+            result.files_errored += 1;
+            continue;
+        };
 
         // Patch the file node (visitor creates it at before_count with name="").
         if (before_count < graph.nodeCount()) {
@@ -199,6 +239,7 @@ pub fn indexDirectory(
                 .idx = before_count,
                 .scope_end = graph.nodeCount(),
                 .source = fe.content,
+                .lang_support = fe.lang_support,
             });
         }
 
@@ -238,9 +279,13 @@ pub fn indexDirectory(
             // Resolve import path relative to the importing file's directory.
             const target_idx = blk: {
                 if (importer_path) |ip| {
-                    var buf: [512]u8 = undefined;
-                    if (parse_context.resolveImportPath(&buf, ip, import_path)) |resolved| {
-                        if (relpath_map.get(resolved)) |idx| break :blk idx;
+                    if (fi.lang_support.resolveImportPathFn) |resolve_fn| {
+                        var buf: [512]u8 = undefined;
+                        var ci: usize = 0;
+                        while (ci < 8) : (ci += 1) {
+                            const resolved = resolve_fn(&buf, ip, import_path, ci) orelse break;
+                            if (relpath_map.get(resolved)) |idx| break :blk idx;
+                        }
                     }
                 }
                 // Fallback: direct lookup.
@@ -248,35 +293,20 @@ pub fn indexDirectory(
             };
 
             if (target_idx) |tidx| {
-                try source_scan.addEdgeIfNew(graph, file_id, @enumFromInt(file_infos.items[tidx].idx), .imports, .tree_sitter);
+                _ = try graph.addEdgeIfNew(.{ .source_id = file_id, .target_id = @enumFromInt(file_infos.items[tidx].idx), .edge_type = .imports });
             }
         }
     }
 
-    // Phantom nodes for std references.
+    // Phantom nodes for external references.
     log.debug("resolving phantom nodes", &.{Field.uint("file_count", file_infos.items.len)});
     var phantom = PhantomManager.init(allocator, graph);
     defer phantom.deinit();
 
     for (file_infos.items) |fi| {
-        const file_id: NodeId = @enumFromInt(fi.idx);
-
-        // Find the std import variable name in this file (usually "std").
-        var std_import_name: ?[]const u8 = null;
-        for (graph.nodes.items[fi.idx..fi.scope_end]) |n| {
-            if (n.kind != .import_decl) continue;
-            if (n.parent_id == null or n.parent_id.? != file_id) continue;
-            const import_path = n.signature orelse continue;
-            if (std.mem.eql(u8, import_path, "std")) {
-                std_import_name = n.name;
-                const std_id = try phantom.getOrCreate("std", .module);
-                try source_scan.addEdgeIfNew(graph, file_id, std_id, .imports, .phantom);
-                break;
-            }
-        }
-
-        if (std_import_name) |sname| {
-            try source_scan.resolveStdPhantoms(graph, fi.source, fi.idx, fi.scope_end, &phantom, sname);
+        if (fi.lang_support.resolvePhantomsFn) |resolve_phantoms| {
+            const bc_ptr: ?*const lang.BuildConfig = if (build_config) |*bc| bc else null;
+            try resolve_phantoms(graph, fi.source, fi.idx, fi.scope_end, &phantom, bc_ptr, log);
         }
     }
 
@@ -288,12 +318,9 @@ pub fn indexDirectory(
         Field.uint("edges", graph.edgeCount()),
     });
 
+    try graph.freeze();
     return result;
 }
-
-// ---------------------------------------------------------------------------
-// Indexer helpers
-// ---------------------------------------------------------------------------
 
 fn computeContentHash(content: []const u8) [12]u8 {
     const h1 = std.hash.XxHash3.hash(0, content);
@@ -304,9 +331,6 @@ fn computeContentHash(content: []const u8) [12]u8 {
     return result;
 }
 
-/// Directories unconditionally excluded from indexation to not pollute the graph.
-const hardcoded_excludes = [_][]const u8{ ".zig-cache", "zig-out" };
-
 fn isExcluded(rel_path: []const u8, exclude_paths: []const []const u8) bool {
     const bn = std.fs.path.basename(rel_path);
     for (exclude_paths) |exc| {
@@ -314,8 +338,11 @@ fn isExcluded(rel_path: []const u8, exclude_paths: []const []const u8) bool {
         if (std.mem.eql(u8, bn, exc)) return true;
         if (pathHasComponent(rel_path, exc)) return true;
     }
-    for (&hardcoded_excludes) |dir| {
-        if (pathHasComponent(rel_path, dir)) return true;
+    // Exclude directories declared by all registered languages.
+    for (Registry.allLanguages()) |ls| {
+        for (ls.excluded_dirs) |dir| {
+            if (pathHasComponent(rel_path, dir)) return true;
+        }
     }
     return false;
 }
@@ -327,27 +354,6 @@ fn pathHasComponent(path: []const u8, component: []const u8) bool {
         if (std.mem.eql(u8, seg, component)) return true;
     }
     return false;
-}
-
-/// Extract all @import("...") basenames from source content as zero-copy
-/// slices into `content`. Returns the number of basenames found.
-fn extractImportBasenames(content: []const u8, out: [][]const u8) usize {
-    const pattern = "@import(\"";
-    var pos: usize = 0;
-    var count: usize = 0;
-    while (pos + pattern.len <= content.len) {
-        const idx = std.mem.indexOf(u8, content[pos..], pattern) orelse break;
-        const abs_idx = pos + idx;
-        const path_start = abs_idx + pattern.len;
-        if (path_start >= content.len) break;
-        const end = std.mem.indexOfScalar(u8, content[path_start..], '"') orelse break;
-        if (count < out.len) {
-            out[count] = content[path_start .. path_start + end];
-            count += 1;
-        }
-        pos = path_start + end + 1;
-    }
-    return count;
 }
 
 /// Topological sort of file entries using Kahn's algorithm.
@@ -378,18 +384,24 @@ fn topoSortFiles(allocator: std.mem.Allocator, entries: []FileEntry) !void {
     }
     for (adj) |*a| a.* = .{};
 
-    var import_buf: [256][]const u8 = undefined;
+    var import_buf: [256]lang.ImportEntry = undefined;
     for (entries, 0..) |fe, i| {
-        const count = extractImportBasenames(fe.content, &import_buf);
-        for (import_buf[0..count]) |imp| {
+        const extract_fn = fe.lang_support.extractImportsFn orelse continue;
+        const count = extract_fn(fe.content, &import_buf);
+        for (import_buf[0..count]) |ie| {
+            if (ie.kind != .project_file) continue; // only project files affect topo order
             // Resolve import path relative to the importing file's directory.
             const dep_idx = blk: {
-                var buf: [512]u8 = undefined;
-                if (parse_context.resolveImportPath(&buf, fe.rel_path, imp)) |resolved| {
-                    if (relpath_map.get(resolved)) |idx| break :blk idx;
+                if (fe.lang_support.resolveImportPathFn) |resolve_fn| {
+                    var buf: [512]u8 = undefined;
+                    var ci: usize = 0;
+                    while (ci < 8) : (ci += 1) {
+                        const resolved = resolve_fn(&buf, fe.rel_path, ie.path, ci) orelse break;
+                        if (relpath_map.get(resolved)) |idx| break :blk idx;
+                    }
                 }
                 // Fallback: direct lookup (handles same-directory and basename-only).
-                break :blk relpath_map.get(imp);
+                break :blk relpath_map.get(ie.path);
             };
 
             if (dep_idx) |didx| {

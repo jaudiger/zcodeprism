@@ -8,10 +8,6 @@ const NodeKind = types.NodeKind;
 const Visibility = types.Visibility;
 const KindIds = pc.KindIds;
 
-// =========================================================================
-// Return type analysis
-// =========================================================================
-
 /// Check if a function_declaration has `type` as its return type.
 pub fn returnsType(source: []const u8, fn_node: ts.Node, k: *const KindIds) bool {
     // The return type appears as a `builtin_type` child with text "type",
@@ -30,10 +26,12 @@ pub fn returnsType(source: []const u8, fn_node: ts.Node, k: *const KindIds) bool
     return false;
 }
 
+/// The body node and kind of a type returned from a generic function.
 pub const ReturnedTypeBody = struct {
     body: ts.Node,
     kind: ReturnedKind,
 
+    /// Discriminates between struct, union, and enum return types.
     pub const ReturnedKind = enum { struct_like, union_like, enum_like };
 };
 
@@ -79,10 +77,7 @@ pub fn findReturnedTypeBody(fn_node: ts.Node, k: *const KindIds) ?ReturnedTypeBo
     return null;
 }
 
-// =========================================================================
-// Identifier and name extraction
-// =========================================================================
-
+/// Return the text of the first `identifier` child of `ts_node`, or null if none exists.
 pub fn getIdentifierName(source: []const u8, ts_node: ts.Node, k: *const KindIds) ?[]const u8 {
     var i: u32 = 0;
     while (i < ts_node.namedChildCount()) : (i += 1) {
@@ -95,6 +90,8 @@ pub fn getIdentifierName(source: []const u8, ts_node: ts.Node, k: *const KindIds
     return null;
 }
 
+/// Strip the `@"..."` quoting from a Zig identifier, returning the inner name.
+/// Returns `raw` unchanged if it is not quoted.
 pub fn stripQuotedIdentifier(raw: []const u8) []const u8 {
     // Handle @"name" syntax for unicode or keyword identifiers.
     if (raw.len >= 3 and raw[0] == '@' and raw[1] == '"' and raw[raw.len - 1] == '"') {
@@ -103,6 +100,9 @@ pub fn stripQuotedIdentifier(raw: []const u8) []const u8 {
     return raw;
 }
 
+/// Extract the test name from a `test_declaration` node.
+/// Handles both string-literal names (`test "name"`) and decl-reference names (`test Value`).
+/// Returns "test" as a fallback if no name child is found.
 pub fn getTestName(source: []const u8, ts_node: ts.Node, k: *const KindIds) []const u8 {
     var i: u32 = 0;
     while (i < ts_node.namedChildCount()) : (i += 1) {
@@ -134,10 +134,7 @@ pub fn getTestName(source: []const u8, ts_node: ts.Node, k: *const KindIds) []co
     return "test";
 }
 
-// =========================================================================
-// Visibility and doc comments
-// =========================================================================
-
+/// Determine whether a declaration node is public or private by scanning for a `pub` keyword child.
 pub fn detectVisibility(ts_node: ts.Node, k: *const KindIds) Visibility {
     // Check all children (including anonymous) for "pub" keyword.
     var i: u32 = 0;
@@ -148,6 +145,7 @@ pub fn detectVisibility(ts_node: ts.Node, k: *const KindIds) Visibility {
     return .private;
 }
 
+/// Return true if any child of `ts_node` has the given tree-sitter kind id.
 pub fn hasKeyword(ts_node: ts.Node, keyword_id: u16) bool {
     var i: u32 = 0;
     while (i < ts_node.childCount()) : (i += 1) {
@@ -216,6 +214,8 @@ pub fn collectModuleDocComment(source: []const u8, root: ts.Node, k: *const Kind
     return null;
 }
 
+/// Collect consecutive `///` doc comment lines immediately preceding `ts_node`.
+/// Returns the full span from the first to the last doc comment line, or null if none.
 pub fn collectDocComment(source: []const u8, ts_node: ts.Node, k: *const KindIds) ?[]const u8 {
     // Walk previous siblings to collect consecutive doc comment lines.
     var first_doc_start: ?u32 = null;
@@ -240,10 +240,6 @@ pub fn collectDocComment(source: []const u8, ts_node: ts.Node, k: *const KindIds
     return null;
 }
 
-// =========================================================================
-// @This() and field_expression detection
-// =========================================================================
-
 /// Check if a variable_declaration's value contains `@This()`.
 /// Detects all aliases regardless of name (not just "Self").
 pub fn isThisBuiltin(source: []const u8, var_decl: ts.Node, k: *const KindIds) bool {
@@ -264,6 +260,7 @@ fn isThisRecursive(source: []const u8, node: ts.Node, k: *const KindIds, depth: 
     return false;
 }
 
+/// The leftmost identifier (root) and rightmost field name (leaf) of a field expression chain.
 pub const FieldExprParts = struct {
     root: []const u8,
     leaf: []const u8,
@@ -314,10 +311,7 @@ fn getRightmostField(source: []const u8, node: ts.Node, k: *const KindIds) ?[]co
     return null;
 }
 
-// =========================================================================
-// Type annotation and classification
-// =========================================================================
-
+/// Return true if the declaration node has an explicit type annotation (contains a `:` token).
 pub fn hasTypeAnnotation(ts_node: ts.Node, k: *const KindIds) bool {
     // Check for ":" anonymous child (indicates explicit type annotation).
     var i: u32 = 0;
@@ -328,18 +322,23 @@ pub fn hasTypeAnnotation(ts_node: ts.Node, k: *const KindIds) bool {
     return false;
 }
 
+/// Result of classifying a variable's initializer expression into a semantic node kind.
 pub const Classification = struct {
     kind: NodeKind,
     body: ?ts.Node,
     comptime_conditional: bool = false,
 };
 
+/// Classify a variable declaration's initializer to determine its semantic kind.
+/// Detects struct, union, enum, error set, and import expressions.
 pub fn classifyVariableValue(source: []const u8, ts_node: ts.Node, k: *const KindIds) Classification {
     var result = Classification{ .kind = .constant, .body = null };
     classifyRecursive(source, ts_node, k, &result, 0);
     return result;
 }
 
+/// Recursively walk named children of `ts_node` to find a type-defining expression.
+/// Updates `result` in place and stops once a classification is found. Limits depth to 5.
 pub fn classifyRecursive(source: []const u8, ts_node: ts.Node, k: *const KindIds, result: *Classification, depth: u32) void {
     if (depth > 5) return;
     var i: u32 = 0;

@@ -12,6 +12,8 @@ pub const GraphGeneration = struct {
     source_hash: [12]u8,
     generation_id: u64,
 
+    /// Create a new generation with the given id and source hash.
+    /// Allocates an internal arena from `backing_allocator` for the graph.
     pub fn init(backing_allocator: std.mem.Allocator, generation_id: u64, source_hash: [12]u8) GraphGeneration {
         var arena = std.heap.ArenaAllocator.init(backing_allocator);
         return .{
@@ -38,8 +40,6 @@ pub const GraphGeneration = struct {
         }
     }
 };
-
-// --- Tests ---
 
 test "acquire increments refcount" {
     // Arrange

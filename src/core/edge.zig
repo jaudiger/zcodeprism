@@ -5,149 +5,71 @@ const NodeId = types.NodeId;
 const EdgeType = types.EdgeType;
 const EdgeSource = types.EdgeSource;
 
-/// Composite key for edge deduplication: (source, target, type) triple.
+/// Deduplication key for edges: the (source_id, target_id, edge_type) triple.
+///
+/// Two edges with the same key are considered duplicates regardless of their
+/// discovery source. Used as the key type in edge sets to prevent inserting
+/// the same semantic relationship more than once.
 pub const EdgeKey = struct {
+    /// Node where the relationship originates.
     source_id: NodeId,
+    /// Node where the relationship points to.
     target_id: NodeId,
+    /// Semantic kind of the relationship.
     edge_type: EdgeType,
 };
 
-/// An edge in the code graph representing a relationship between two nodes.
+/// A directed edge in the code graph, connecting two nodes with a typed
+/// semantic relationship (e.g. calls, imports, uses_type).
+///
+/// Each edge also records how it was discovered via the `source` field,
+/// but the discovery source is not part of the deduplication key.
 pub const Edge = struct {
+    /// Node where the relationship originates.
     source_id: NodeId,
+    /// Node where the relationship points to.
     target_id: NodeId,
+    /// Semantic kind of the relationship.
     edge_type: EdgeType,
+    /// How this edge was discovered. Defaults to `.tree_sitter` because most
+    /// edges are created during AST-based parsing.
     source: EdgeSource = .tree_sitter,
 
+    /// Returns the deduplication key for this edge, stripping the discovery source.
     pub fn key(self: Edge) EdgeKey {
         return .{ .source_id = self.source_id, .target_id = self.target_id, .edge_type = self.edge_type };
     }
 };
 
-// --- Tests ---
-
-test "edge with calls type" {
+test "edge types are correctly stored" {
     // Arrange
-    const e = Edge{
-        .source_id = .root,
-        .target_id = @enumFromInt(1),
-        .edge_type = .calls,
-    };
+    const edge_types = [_]EdgeType{ .calls, .imports, .uses_type, .similar_to, .exports, .implements };
 
-    // Assert
-    try std.testing.expectEqual(EdgeType.calls, e.edge_type);
+    // Act / Assert
+    for (edge_types) |et| {
+        const e = Edge{
+            .source_id = .root,
+            .target_id = @enumFromInt(1),
+            .edge_type = et,
+        };
+        try std.testing.expectEqual(et, e.edge_type);
+    }
 }
 
-test "edge with imports type" {
+test "edge sources are correctly stored" {
     // Arrange
-    const e = Edge{
-        .source_id = .root,
-        .target_id = @enumFromInt(1),
-        .edge_type = .imports,
-    };
+    const sources = [_]EdgeSource{ .tree_sitter, .lsp, .phantom, .workspace };
 
-    // Assert
-    try std.testing.expectEqual(EdgeType.imports, e.edge_type);
-}
-
-test "edge with uses_type type" {
-    // Arrange
-    const e = Edge{
-        .source_id = .root,
-        .target_id = @enumFromInt(1),
-        .edge_type = .uses_type,
-    };
-
-    // Assert
-    try std.testing.expectEqual(EdgeType.uses_type, e.edge_type);
-}
-
-test "edge with similar_to type" {
-    // Arrange
-    const e = Edge{
-        .source_id = .root,
-        .target_id = @enumFromInt(1),
-        .edge_type = .similar_to,
-    };
-
-    // Assert
-    try std.testing.expectEqual(EdgeType.similar_to, e.edge_type);
-}
-
-test "edge with exports type" {
-    // Arrange
-    const e = Edge{
-        .source_id = .root,
-        .target_id = @enumFromInt(1),
-        .edge_type = .exports,
-    };
-
-    // Assert
-    try std.testing.expectEqual(EdgeType.exports, e.edge_type);
-}
-
-test "edge with implements type" {
-    // Arrange
-    const e = Edge{
-        .source_id = .root,
-        .target_id = @enumFromInt(1),
-        .edge_type = .implements,
-    };
-
-    // Assert
-    try std.testing.expectEqual(EdgeType.implements, e.edge_type);
-}
-
-test "edge with tree_sitter source" {
-    // Arrange
-    const e = Edge{
-        .source_id = .root,
-        .target_id = @enumFromInt(1),
-        .edge_type = .calls,
-        .source = .tree_sitter,
-    };
-
-    // Assert
-    try std.testing.expectEqual(EdgeSource.tree_sitter, e.source);
-}
-
-test "edge with lsp source" {
-    // Arrange
-    const e = Edge{
-        .source_id = .root,
-        .target_id = @enumFromInt(1),
-        .edge_type = .calls,
-        .source = .lsp,
-    };
-
-    // Assert
-    try std.testing.expectEqual(EdgeSource.lsp, e.source);
-}
-
-test "edge with phantom source" {
-    // Arrange
-    const e = Edge{
-        .source_id = .root,
-        .target_id = @enumFromInt(1),
-        .edge_type = .uses_type,
-        .source = .phantom,
-    };
-
-    // Assert
-    try std.testing.expectEqual(EdgeSource.phantom, e.source);
-}
-
-test "edge with workspace source" {
-    // Arrange
-    const e = Edge{
-        .source_id = .root,
-        .target_id = @enumFromInt(1),
-        .edge_type = .imports,
-        .source = .workspace,
-    };
-
-    // Assert
-    try std.testing.expectEqual(EdgeSource.workspace, e.source);
+    // Act / Assert
+    for (sources) |src| {
+        const e = Edge{
+            .source_id = .root,
+            .target_id = @enumFromInt(1),
+            .edge_type = .calls,
+            .source = src,
+        };
+        try std.testing.expectEqual(src, e.source);
+    }
 }
 
 test "edge default source is tree_sitter" {

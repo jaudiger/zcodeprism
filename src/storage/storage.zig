@@ -1,60 +1,68 @@
 const std = @import("std");
-const graph_mod = @import("../core/graph.zig");
 
-const Graph = graph_mod.Graph;
+/// Binary storage backend (compact, not human-readable).
+pub const binary = @import("binary.zig");
 
-/// Error set for storage operations.
-/// Covers domain-specific errors (format validation) plus common I/O
-/// and allocation failures. Concrete StorageBackend implementations
-/// must map their internal errors to this set.
+/// JSONL storage backend (one JSON object per line, human-readable).
+pub const jsonl = @import("jsonl.zig");
+
+/// Supported persistent storage formats for graph serialization.
+///
+/// Callers select a format and call the corresponding module's functions
+/// directly. There is no vtable dispatch -- the caller is the adapter.
+pub const Format = enum {
+    /// Compact binary format with a string table and 8-byte aligned tables.
+    binary_v1,
+    /// One JSON object per line (nodes first, then edges).
+    jsonl,
+};
+
+/// Domain-specific errors that storage backends may return.
+///
+/// These cover format validation failures distinct from generic I/O and
+/// allocation errors. Concrete backends return them directly in their
+/// inferred error sets; this definition lets callers catch storage-specific
+/// failures without matching on `anyerror`.
 pub const StorageError = error{
-    OutOfMemory,
+    /// Data does not conform to the expected layout.
     InvalidFormat,
+    /// File does not start with the expected magic bytes.
     InvalidMagic,
+    /// File version is newer than what this build supports.
     UnsupportedVersion,
-    AccessDenied,
-    FileNotFound,
-    InputOutput,
-    NoSpaceLeft,
-    Unexpected,
 };
 
-/// Abstract storage backend interface using vtable pattern.
-/// Concrete implementations provide their own save/load
-/// functions through this interface.
-pub const StorageBackend = struct {
-    saveFn: *const fn (*StorageBackend, std.mem.Allocator, *const Graph) StorageError!void,
-    loadFn: *const fn (*StorageBackend, std.mem.Allocator) StorageError!Graph,
-
-    pub fn save(self: *StorageBackend, allocator: std.mem.Allocator, g: *const Graph) StorageError!void {
-        return self.saveFn(self, allocator, g);
-    }
-
-    pub fn load(self: *StorageBackend, allocator: std.mem.Allocator) StorageError!Graph {
-        return self.loadFn(self, allocator);
-    }
-};
-
-// --- Tests ---
-
-test "storage interface is abstract" {
+test "Format enum has exactly two variants" {
     comptime {
-        // StorageBackend is a struct
-        const info = @typeInfo(StorageBackend);
-        std.debug.assert(info == .@"struct");
+        const fields = @typeInfo(Format).@"enum".fields;
+        std.debug.assert(fields.len == 2);
+    }
+}
 
-        // It has saveFn and loadFn fields
-        std.debug.assert(@hasField(StorageBackend, "saveFn"));
-        std.debug.assert(@hasField(StorageBackend, "loadFn"));
+test "StorageError contains domain-specific errors" {
+    comptime {
+        // Verify each domain error is in the set by attempting a catch.
+        // If any were missing, this would be a compile error.
+        const errors = [_]StorageError{
+            error.InvalidFormat,
+            error.InvalidMagic,
+            error.UnsupportedVersion,
+        };
+        std.debug.assert(errors.len == 3);
+    }
+}
 
-        // Binary module exposes expected function signatures
-        const binary = @import("binary.zig");
-        std.debug.assert(@TypeOf(binary.save) == @TypeOf(binary.save));
-        std.debug.assert(@TypeOf(binary.load) == @TypeOf(binary.load));
+test "binary module exposes save and load" {
+    comptime {
+        std.debug.assert(@hasDecl(binary, "save"));
+        std.debug.assert(@hasDecl(binary, "load"));
+        std.debug.assert(@hasDecl(binary, "append"));
+    }
+}
 
-        // JSONL module exposes expected function signatures
-        const jsonl = @import("jsonl.zig");
-        std.debug.assert(@TypeOf(jsonl.exportJsonl) == @TypeOf(jsonl.exportJsonl));
-        std.debug.assert(@TypeOf(jsonl.importJsonl) == @TypeOf(jsonl.importJsonl));
+test "jsonl module exposes exportJsonl and importJsonl" {
+    comptime {
+        std.debug.assert(@hasDecl(jsonl, "exportJsonl"));
+        std.debug.assert(@hasDecl(jsonl, "importJsonl"));
     }
 }

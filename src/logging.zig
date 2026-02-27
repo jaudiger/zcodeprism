@@ -1,6 +1,6 @@
 const std = @import("std");
 
-/// Log severity levels, ordered from most to least verbose.
+/// Log severity levels, ordered from most verbose (trace=0) to least (err=4).
 pub const Level = enum(u8) {
     trace = 0,
     debug = 1,
@@ -8,6 +8,7 @@ pub const Level = enum(u8) {
     warn = 3,
     err = 4,
 
+    /// Return the human-readable label for this level (e.g. "TRACE", "ERROR").
     pub fn asText(self: Level) []const u8 {
         return switch (self) {
             .trace => "TRACE",
@@ -19,7 +20,7 @@ pub const Level = enum(u8) {
     }
 };
 
-/// Tagged union for structured log field values.
+/// Tagged union carrying one structured log field value.
 pub const FieldValue = union(enum) {
     string: []const u8,
     int: i64,
@@ -27,35 +28,45 @@ pub const FieldValue = union(enum) {
     boolean: bool,
 };
 
-/// A key-value pair attached to a log message.
+/// A key-value pair attached to a structured log message.
 pub const Field = struct {
     key: []const u8,
     value: FieldValue,
 
+    /// Create a string-valued field.
     pub fn string(key: []const u8, val: []const u8) Field {
         return .{ .key = key, .value = .{ .string = val } };
     }
 
+    /// Create a signed-integer-valued field.
     pub fn int(key: []const u8, val: i64) Field {
         return .{ .key = key, .value = .{ .int = val } };
     }
 
+    /// Create an unsigned-integer-valued field.
     pub fn uint(key: []const u8, val: u64) Field {
         return .{ .key = key, .value = .{ .uint = val } };
     }
 
+    /// Create a boolean-valued field.
     pub fn boolean(key: []const u8, val: bool) Field {
         return .{ .key = key, .value = .{ .boolean = val } };
     }
 };
 
-/// Vtable-based logger. Zero-cost when using the `noop` instance.
+/// Vtable-based logger interface.
+///
+/// Zero-cost when using the `noop` instance (all methods short-circuit).
+/// Concrete implementations (e.g. `TextStderrLogger`) provide a VTable and
+/// are accessed through the `ptr` field. Pass loggers by value; they are
+/// small (pointer-sized) and cheap to copy.
 pub const Logger = struct {
     ptr: ?*anyopaque,
     vtable: *const VTable,
     scope: []const u8,
     min_level: u8,
 
+    /// Dispatch table for a concrete logger backend.
     pub const VTable = struct {
         log: *const fn (ptr: ?*anyopaque, level: Level, scope: []const u8, msg: []const u8, fields: []const Field) void,
     };
@@ -66,8 +77,8 @@ pub const Logger = struct {
 
     fn noopLog(_: ?*anyopaque, _: Level, _: []const u8, _: []const u8, _: []const Field) void {}
 
-    /// A logger that does nothing. All convenience methods short-circuit
-    /// because `min_level` is set to `maxInt(u8)`.
+    /// A logger that discards all messages.
+    /// All convenience methods short-circuit because `min_level` is maxInt(u8).
     pub const noop = Logger{
         .ptr = null,
         .vtable = &noop_vtable,
@@ -75,7 +86,8 @@ pub const Logger = struct {
         .min_level = std.math.maxInt(u8),
     };
 
-    /// Returns a copy of this logger with a different scope.
+    /// Return a copy of this logger with a different scope tag.
+    /// The vtable, ptr, and min_level are preserved.
     pub fn withScope(self: Logger, scope: []const u8) Logger {
         return .{
             .ptr = self.ptr,
@@ -90,29 +102,36 @@ pub const Logger = struct {
         self.vtable.log(self.ptr, level, self.scope, msg, fields);
     }
 
+    /// Emit a trace-level log message (most verbose).
     pub fn trace(self: Logger, msg: []const u8, fields: []const Field) void {
         self.dispatch(.trace, msg, fields);
     }
 
+    /// Emit a debug-level log message.
     pub fn debug(self: Logger, msg: []const u8, fields: []const Field) void {
         self.dispatch(.debug, msg, fields);
     }
 
+    /// Emit an info-level log message.
     pub fn info(self: Logger, msg: []const u8, fields: []const Field) void {
         self.dispatch(.info, msg, fields);
     }
 
+    /// Emit a warn-level log message.
     pub fn warn(self: Logger, msg: []const u8, fields: []const Field) void {
         self.dispatch(.warn, msg, fields);
     }
 
+    /// Emit an error-level log message (least verbose).
     pub fn err(self: Logger, msg: []const u8, fields: []const Field) void {
         self.dispatch(.err, msg, fields);
     }
 };
 
-/// A logger implementation that writes structured text lines to stderr.
-/// Format: `2025-02-09T12:34:56Z INFO [scope] message key=val key=val`
+/// Concrete logger backend that writes structured text lines to stderr.
+///
+/// Output format: `YYYY-MM-DDTHH:MM:SSZ LEVEL [scope] message key=val ...`
+/// Uses a fixed 4096-byte stack buffer; messages exceeding that are truncated.
 pub const TextStderrLogger = struct {
     min_level: Level,
 
@@ -120,10 +139,13 @@ pub const TextStderrLogger = struct {
         .log = &logImpl,
     };
 
+    /// Create a TextStderrLogger that emits messages at `min_level` and above.
     pub fn init(min_level: Level) TextStderrLogger {
         return .{ .min_level = min_level };
     }
 
+    /// Return a Logger interface backed by this TextStderrLogger.
+    /// The returned Logger borrows `self`, so `self` must outlive it.
     pub fn logger(self: *TextStderrLogger) Logger {
         return .{
             .ptr = @ptrCast(self),
@@ -176,10 +198,6 @@ pub const TextStderrLogger = struct {
     }
 };
 
-// =========================================================================
-// Tests
-// =========================================================================
-
 test "Level has correct integer values" {
     comptime {
         std.debug.assert(@intFromEnum(Level.trace) == 0);
@@ -198,56 +216,44 @@ test "Level.asText returns correct strings" {
     try std.testing.expectEqualStrings("ERROR", Level.err.asText());
 }
 
-test "Field.string creates correct field" {
+test "Field constructors create correct fields" {
     // Arrange / Act
-    const f = Field.string("name", "hello");
+    const fs = Field.string("name", "hello");
+    const fi = Field.int("count", -42);
+    const fu = Field.uint("size", 100);
+    const fb = Field.boolean("enabled", true);
 
-    // Assert
-    try std.testing.expectEqualStrings("name", f.key);
-    switch (f.value) {
+    // Assert: string
+    try std.testing.expectEqualStrings("name", fs.key);
+    switch (fs.value) {
         .string => |v| try std.testing.expectEqualStrings("hello", v),
         else => return error.UnexpectedVariant,
     }
-}
 
-test "Field.int creates correct field" {
-    // Arrange / Act
-    const f = Field.int("count", -42);
-
-    // Assert
-    try std.testing.expectEqualStrings("count", f.key);
-    switch (f.value) {
+    // Assert: int
+    try std.testing.expectEqualStrings("count", fi.key);
+    switch (fi.value) {
         .int => |v| try std.testing.expectEqual(@as(i64, -42), v),
         else => return error.UnexpectedVariant,
     }
-}
 
-test "Field.uint creates correct field" {
-    // Arrange / Act
-    const f = Field.uint("size", 100);
-
-    // Assert
-    try std.testing.expectEqualStrings("size", f.key);
-    switch (f.value) {
+    // Assert: uint
+    try std.testing.expectEqualStrings("size", fu.key);
+    switch (fu.value) {
         .uint => |v| try std.testing.expectEqual(@as(u64, 100), v),
         else => return error.UnexpectedVariant,
     }
-}
 
-test "Field.boolean creates correct field" {
-    // Arrange / Act
-    const f = Field.boolean("enabled", true);
-
-    // Assert
-    try std.testing.expectEqualStrings("enabled", f.key);
-    switch (f.value) {
+    // Assert: boolean
+    try std.testing.expectEqualStrings("enabled", fb.key);
+    switch (fb.value) {
         .boolean => |v| try std.testing.expectEqual(true, v),
         else => return error.UnexpectedVariant,
     }
 }
 
 test "Logger.noop does not crash on any method" {
-    // Act: call every level — none should crash
+    // Act: call every level, none should crash
     const log = Logger.noop;
     log.trace("msg", &.{});
     log.debug("msg", &.{});

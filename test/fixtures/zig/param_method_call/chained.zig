@@ -3,7 +3,7 @@
 ///
 /// Expected edges:
 ///   handleChained -> Service.getClient  (calls)
-///   handleChained -> Client.send        (calls, transitive — requires return type tracking)
+///   handleChained -> Client.send        (calls, transitive; requires return type tracking)
 ///   handleChained -> Service            (uses_type)
 const svc_mod = @import("service_with_client.zig");
 

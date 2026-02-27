@@ -13,10 +13,6 @@ const LangMeta = zcodeprism.language.LangMeta;
 const Logger = zcodeprism.logging.Logger;
 const parse = zcodeprism.visitor.parse;
 
-// =========================================================================
-// simple.zig fixture: edge creation
-// =========================================================================
-
 test "simple fixture: edge creation" {
     // Arrange
     var g = Graph.init(std.testing.allocator, "/tmp/project");
@@ -74,7 +70,7 @@ test "simple fixture: edge creation" {
         try std.testing.expectEqual(EdgeSource.tree_sitter, e.source);
     }
 
-    // Assert: isWarm has a uses_type edge pointing to Color (enum method → parent enum)
+    // Assert: isWarm has a uses_type edge pointing to Color (enum method -> parent enum)
     var color_id: ?NodeId = null;
     var iswarm_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
@@ -121,10 +117,6 @@ test "simple fixture: edge creation" {
     try std.testing.expect(found_test_uses_type);
 }
 
-// =========================================================================
-// file_struct.zig fixture: edge creation
-// =========================================================================
-
 test "file struct fixture: edge creation" {
     // Arrange
     var g = Graph.init(std.testing.allocator, "/tmp/project");
@@ -156,13 +148,6 @@ test "file struct fixture: edge creation" {
     }
     try std.testing.expect(found);
 
-    // Assert: Self constant is filtered; no Self node exists
-    for (g.nodes.items) |n| {
-        if (std.mem.eql(u8, n.name, "Self")) {
-            try std.testing.expect(false); // Self should not exist
-        }
-    }
-
     // Assert: test "basic" still exists
     var basic_test_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
@@ -172,10 +157,6 @@ test "file struct fixture: edge creation" {
     }
     try std.testing.expect(basic_test_id != null);
 }
-
-// =========================================================================
-// generic_type.zig fixture: edge creation
-// =========================================================================
 
 test "generic type fixture: edge creation" {
     // Arrange
@@ -207,13 +188,6 @@ test "generic type fixture: edge creation" {
         }
     }
     try std.testing.expect(found);
-
-    // Assert: no Self constants exist (all @This() aliases filtered)
-    for (g.nodes.items) |n| {
-        if (std.mem.eql(u8, n.name, "Self")) {
-            try std.testing.expect(false); // Self should not exist
-        }
-    }
 
     // Assert: Container.init still exists
     var container_id: ?NodeId = null;
@@ -258,12 +232,8 @@ test "generic type fixture: edge creation" {
     try std.testing.expect(!has_spurious_edge);
 }
 
-// =========================================================================
-// Test block edge scanning
-// =========================================================================
-
 test "test block edges" {
-    // --- test block creates calls edge to local function ---
+    // test block creates calls edge to local function
     {
         var g = Graph.init(std.testing.allocator, "/tmp/project");
         defer g.deinit();
@@ -292,7 +262,7 @@ test "test block edges" {
         try std.testing.expect(found);
     }
 
-    // --- test block creates calls edge to method via dot syntax ---
+    // test block creates calls edge to method via dot syntax
     {
         var g = Graph.init(std.testing.allocator, "/tmp/project");
         defer g.deinit();
@@ -323,7 +293,7 @@ test "test block edges" {
         try std.testing.expect(found);
     }
 
-    // --- test block with no local calls has no edges ---
+    // test block with no local calls has no edges
     {
         var g = Graph.init(std.testing.allocator, "/tmp/project");
         defer g.deinit();
@@ -351,7 +321,7 @@ test "test block edges" {
         try std.testing.expectEqual(@as(usize, 0), outgoing);
     }
 
-    // --- decl-reference test edges are attributed to correct node ---
+    // decl-reference test edges are attributed to correct node
     {
         var g = Graph.init(std.testing.allocator, "/tmp/project");
         defer g.deinit();
@@ -397,12 +367,8 @@ test "test block edges" {
     }
 }
 
-// =========================================================================
-// Nested scope isolation
-// =========================================================================
-
 test "nested scope isolation" {
-    // --- test block does not leak calls from nested function ---
+    // test block does not leak calls from nested function
     {
         var g = Graph.init(std.testing.allocator, "/tmp/project");
         defer g.deinit();
@@ -462,7 +428,7 @@ test "nested scope isolation" {
         try std.testing.expect(found_s);
     }
 
-    // --- function does not leak calls from nested function ---
+    // function does not leak calls from nested function
     {
         var g = Graph.init(std.testing.allocator, "/tmp/project");
         defer g.deinit();
@@ -510,7 +476,7 @@ test "nested scope isolation" {
         try std.testing.expect(found_nested_calls);
     }
 
-    // --- nested function gets its own calls edge not parent's ---
+    // nested function gets its own calls edge not parent's
     {
         var g = Graph.init(std.testing.allocator, "/tmp/project");
         defer g.deinit();
@@ -564,7 +530,7 @@ test "nested scope isolation" {
         try std.testing.expect(found_child_calls);
     }
 
-    // --- function does not leak uses_type from nested function ---
+    // function does not leak uses_type from nested function
     {
         var g = Graph.init(std.testing.allocator, "/tmp/project");
         defer g.deinit();
@@ -613,12 +579,8 @@ test "nested scope isolation" {
     }
 }
 
-// =========================================================================
-// Type alias uses_type edges
-// =========================================================================
-
 test "type alias edges" {
-    // --- uses_type edge for type alias in parameter ---
+    // uses_type edge for type alias in parameter
     {
         var g = Graph.init(std.testing.allocator, "/tmp/project");
         defer g.deinit();
@@ -648,7 +610,7 @@ test "type alias edges" {
         try std.testing.expect(found);
     }
 
-    // --- uses_type edge for type alias in return type ---
+    // uses_type edge for type alias in return type
     {
         var g = Graph.init(std.testing.allocator, "/tmp/project");
         defer g.deinit();
@@ -678,7 +640,7 @@ test "type alias edges" {
         try std.testing.expect(found);
     }
 
-    // --- uses_type edge not created for non-type constant ---
+    // uses_type edge not created for non-type constant
     {
         var g = Graph.init(std.testing.allocator, "/tmp/project");
         defer g.deinit();
@@ -713,7 +675,7 @@ test "type alias edges" {
         try std.testing.expect(!found_max);
     }
 
-    // --- uses_type edge for aliased type works alongside direct type ---
+    // uses_type edge for aliased type works alongside direct type
     {
         var g = Graph.init(std.testing.allocator, "/tmp/project");
         defer g.deinit();
@@ -750,12 +712,8 @@ test "type alias edges" {
     }
 }
 
-// =========================================================================
-// Advanced uses_type edges (body-level type references)
-// =========================================================================
-
 test "advanced uses_type edges" {
-    // --- struct literal construction in body ---
+    // struct literal construction in body
     {
         var g = Graph.init(std.testing.allocator, "/tmp/project");
         defer g.deinit();
@@ -787,7 +745,7 @@ test "advanced uses_type edges" {
         try std.testing.expect(found);
     }
 
-    // --- static method call in body ---
+    // static method call in body
     {
         var g = Graph.init(std.testing.allocator, "/tmp/project");
         defer g.deinit();
@@ -824,7 +782,7 @@ test "advanced uses_type edges" {
         try std.testing.expect(found);
     }
 
-    // --- no duplicate uses_type edge when type in both signature and body ---
+    // no duplicate uses_type edge when type in both signature and body
     {
         var g = Graph.init(std.testing.allocator, "/tmp/project");
         defer g.deinit();
@@ -854,7 +812,7 @@ test "advanced uses_type edges" {
         try std.testing.expectEqual(@as(usize, 1), count);
     }
 
-    // --- type passed as comptime argument ---
+    // type passed as comptime argument
     {
         var g = Graph.init(std.testing.allocator, "/tmp/project");
         defer g.deinit();
@@ -887,7 +845,7 @@ test "advanced uses_type edges" {
         try std.testing.expect(found);
     }
 
-    // --- type in generic container instantiation ---
+    // type in generic container instantiation
     {
         var g = Graph.init(std.testing.allocator, "/tmp/project");
         defer g.deinit();
@@ -921,7 +879,7 @@ test "advanced uses_type edges" {
         try std.testing.expect(found);
     }
 
-    // --- no uses_type edge for non-type identifier argument ---
+    // no uses_type edge for non-type identifier argument
     {
         var g = Graph.init(std.testing.allocator, "/tmp/project");
         defer g.deinit();
@@ -966,10 +924,6 @@ test "advanced uses_type edges" {
         try std.testing.expect(found_calls);
     }
 }
-
-// =========================================================================
-// local_type_param.zig fixture: local-type parameter edges
-// =========================================================================
 
 test "local-type parameter edges" {
     // Arrange
@@ -1041,10 +995,6 @@ test "local-type parameter edges" {
     }
     try std.testing.expect(!found_ext);
 }
-
-// =========================================================================
-// duplicate_method_names.zig fixture: scope resolution
-// =========================================================================
 
 test "duplicate method names: scope resolution" {
     // Arrange
@@ -1156,10 +1106,6 @@ test "duplicate method names: scope resolution" {
     }
 }
 
-// =========================================================================
-// external_method_collision.zig fixture: no false edges
-// =========================================================================
-
 test "external method collision: no false edges" {
     // Arrange
     var g = Graph.init(std.testing.allocator, "/tmp/project");
@@ -1234,10 +1180,6 @@ test "external method collision: no false edges" {
     }
     try std.testing.expect(found_genuine);
 }
-
-// =========================================================================
-// generic_dual_self.zig fixture: Self filtering and resolution
-// =========================================================================
 
 test "generic dual self: Self filtering and resolution" {
     // Arrange
@@ -1320,10 +1262,6 @@ test "generic dual self: Self filtering and resolution" {
     try std.testing.expect(!queue_self_loop);
 }
 
-// =========================================================================
-// generic_type.zig fixture: self-reference prevention
-// =========================================================================
-
 test "generic type: self-reference prevention" {
     // Arrange
     var g = Graph.init(std.testing.allocator, "/tmp/project");
@@ -1361,10 +1299,6 @@ test "generic type: self-reference prevention" {
     try std.testing.expect(!result_self_loop);
 }
 
-// =========================================================================
-// Union classification: union_def distinct from type_def
-// =========================================================================
-
 test "union classification: union_def distinct from type_def" {
     // Arrange
     var g = Graph.init(std.testing.allocator, "/tmp/project");
@@ -1379,7 +1313,7 @@ test "union classification: union_def distinct from type_def" {
     // Act
     try parse(source, &g, null, Logger.noop);
 
-    // Assert: struct → type_def, unions → union_def, enum → enum_def
+    // Assert: struct -> type_def, union -> union_def, enum -> enum_def
     var struct_node: ?*const Node = null;
     var tagged_node: ?*const Node = null;
     var plain_node: ?*const Node = null;
@@ -1442,10 +1376,6 @@ test "uses_type edges can target union_def nodes" {
     try std.testing.expect(found);
 }
 
-// =========================================================================
-// Container layout qualifiers: packed/extern on structs and unions
-// =========================================================================
-
 test "container layout qualifiers: packed and extern detected on structs and unions" {
     // Arrange
     var g = Graph.init(std.testing.allocator, "/tmp/project");
@@ -1466,7 +1396,7 @@ test "container layout qualifiers: packed and extern detected on structs and uni
     // Act
     try parse(source, &g, null, Logger.noop);
 
-    // Assert — collect all named nodes
+    // Assert: collect all named nodes
     var normal: ?*const Node = null;
     var packed_s: ?*const Node = null;
     var packed_backed: ?*const Node = null;
@@ -1548,16 +1478,8 @@ test "container layout qualifiers: packed and extern detected on structs and uni
     }
 }
 
-// =========================================================================
-// Re-export filtering: public re-exports preserved, private aliases filtered
-// =========================================================================
-
-// =========================================================================
-// Type-returning function signature preservation
-// =========================================================================
-
 test "type-returning function signature preserved" {
-    // --- generic_type.zig fixture: Container, Result, Config ---
+    // generic_type.zig fixture: Container, Result, Config
     {
         // Arrange
         var g = Graph.init(std.testing.allocator, "/tmp/project");
@@ -1601,7 +1523,7 @@ test "type-returning function signature preserved" {
         try std.testing.expectEqual(@as(?[]const u8, null), config_node.?.signature);
     }
 
-    // --- inline type-returning function: is_inline and signature ---
+    // inline type-returning function: is_inline and signature
     {
         // Arrange
         var g = Graph.init(std.testing.allocator, "/tmp/project");
@@ -1636,12 +1558,8 @@ test "type-returning function signature preserved" {
     }
 }
 
-// =========================================================================
-// Conditional expressions: comptime_conditional classification
-// =========================================================================
-
 test "conditional expressions classified as constant with comptime_conditional" {
-    // --- Sub-test 1: if-expression with inline structs ---
+    // Sub-test 1: if-expression with inline structs
     {
         // Arrange
         var g = Graph.init(std.testing.allocator, "/tmp/project");
@@ -1695,7 +1613,7 @@ test "conditional expressions classified as constant with comptime_conditional" 
         try std.testing.expectEqual(@as(usize, 0), child_count);
     }
 
-    // --- Sub-test 2: switch-expression with inline structs ---
+    // Sub-test 2: switch-expression with inline structs
     {
         // Arrange
         var g = Graph.init(std.testing.allocator, "/tmp/project");
@@ -1747,7 +1665,7 @@ test "conditional expressions classified as constant with comptime_conditional" 
         try std.testing.expectEqual(@as(usize, 0), child_count);
     }
 
-    // --- Sub-test 3: plain struct is unaffected ---
+    // Sub-test 3: plain struct is unaffected
     {
         // Arrange
         var g = Graph.init(std.testing.allocator, "/tmp/project");
@@ -1977,23 +1895,17 @@ test "re-export filtering: public re-exports preserved, private aliases filtered
     }
 }
 
-// =========================================================================
-// Top-level comptime blocks captured
-// =========================================================================
-
-test "top-level comptime blocks captured" {
+test "top-level comptime blocks produce no nodes" {
     // Arrange
     var g = Graph.init(std.testing.allocator, "/tmp/project");
     defer g.deinit();
     const source =
         \\const std = @import("std");
         \\
-        \\/// Comptime export block.
         \\comptime {
         \\    @export(&std, .{ .name = "main" });
         \\}
         \\
-        \\/// Comptime import block.
         \\comptime {
         \\    if (@import("builtin").is_test) {
         \\        _ = std;
@@ -2007,53 +1919,12 @@ test "top-level comptime blocks captured" {
     // Act
     try parse(source, &g, null, Logger.noop);
 
-    // Assert: two comptime_block nodes exist
-    var comptime_count: usize = 0;
-    var comptime_nodes: [2]?*const Node = .{ null, null };
-    for (g.nodes.items) |*n| {
-        if (n.kind == .comptime_block) {
-            if (comptime_count < 2) comptime_nodes[comptime_count] = n;
-            comptime_count += 1;
-        }
-    }
-    try std.testing.expectEqual(@as(usize, 2), comptime_count);
-
-    // Assert: both have parent equal to the file node (top-level)
-    const file_id: NodeId = @enumFromInt(0);
-    const ct0 = comptime_nodes[0].?;
-    const ct1 = comptime_nodes[1].?;
-    try std.testing.expect(ct0.parent_id != null);
-    try std.testing.expectEqual(file_id, ct0.parent_id.?);
-    try std.testing.expect(ct1.parent_id != null);
-    try std.testing.expectEqual(file_id, ct1.parent_id.?);
-
-    // Assert: both have visibility .private
-    try std.testing.expectEqual(Visibility.private, ct0.visibility);
-    try std.testing.expectEqual(Visibility.private, ct1.visibility);
-
-    // Assert: both have name "comptime"
-    try std.testing.expectEqualStrings("comptime", ct0.name);
-    try std.testing.expectEqualStrings("comptime", ct1.name);
-
-    // Assert: both have lang_meta.zig.is_comptime == true
-    switch (ct0.lang_meta) {
-        .zig => |zm| try std.testing.expect(zm.is_comptime),
-        .none => return error.ExpectedZigMeta,
-    }
-    switch (ct1.lang_meta) {
-        .zig => |zm| try std.testing.expect(zm.is_comptime),
-        .none => return error.ExpectedZigMeta,
+    // Assert: no comptime_block nodes exist (comptime blocks produce zero nodes)
+    for (g.nodes.items) |n| {
+        try std.testing.expect(!std.mem.eql(u8, n.name, "comptime"));
     }
 
-    // Assert: first comptime block has a doc comment
-    try std.testing.expect(ct0.doc != null);
-    try std.testing.expect(std.mem.indexOf(u8, ct0.doc.?, "Comptime export block") != null);
-
-    // Assert: second comptime block has a doc comment
-    try std.testing.expect(ct1.doc != null);
-    try std.testing.expect(std.mem.indexOf(u8, ct1.doc.?, "Comptime import block") != null);
-
-    // Assert: Config still has kind .type_def (existing behavior unaffected)
+    // Assert: Config still has kind .type_def
     var found_config = false;
     for (g.nodes.items) |n| {
         if (std.mem.eql(u8, n.name, "Config")) {
@@ -2063,7 +1934,7 @@ test "top-level comptime blocks captured" {
     }
     try std.testing.expect(found_config);
 
-    // Assert: init still has kind .function (existing behavior unaffected)
+    // Assert: init still has kind .function
     var found_init = false;
     for (g.nodes.items) |n| {
         if (std.mem.eql(u8, n.name, "init")) {
@@ -2073,9 +1944,6 @@ test "top-level comptime blocks captured" {
     }
     try std.testing.expect(found_init);
 
-    // Assert: both comptime blocks have line_start and line_end set
-    try std.testing.expect(ct0.line_start != null);
-    try std.testing.expect(ct0.line_end != null);
-    try std.testing.expect(ct1.line_start != null);
-    try std.testing.expect(ct1.line_end != null);
+    // Assert: only file + std import + Config (type_def) + name (field) + init (function) = 5 nodes
+    try std.testing.expectEqual(@as(usize, 5), g.nodeCount());
 }

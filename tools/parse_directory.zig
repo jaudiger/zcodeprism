@@ -31,7 +31,7 @@ fn countVerbosity(arg: []const u8) u8 {
 
 fn printHelp(stdout: *std.Io.Writer) !void {
     try stdout.print(
-        \\parse-directory — Index all .zig files in a directory and dump the code graph.
+        \\parse-directory - Index all .zig files in a directory and dump the code graph.
         \\
         \\USAGE:
         \\    zig build parse-directory -- <directory> [OPTIONS]
@@ -209,17 +209,7 @@ pub fn main() !void {
         if (n.signature) |sig| {
             try stdout.print("  sig=\"{s}\"", .{sig[0..@min(sig.len, 60)]});
         }
-        switch (n.lang_meta) {
-            .zig => |zm| {
-                if (zm.is_comptime) try stdout.print("  [comptime]", .{});
-                if (zm.is_mutable) try stdout.print("  [mutable]", .{});
-                if (zm.is_extern) try stdout.print("  [extern]", .{});
-                if (zm.is_packed) try stdout.print("  [packed]", .{});
-                if (zm.is_inline) try stdout.print("  [inline]", .{});
-                if (zm.calling_convention) |cc| try stdout.print("  [callconv={s}]", .{cc});
-            },
-            else => {},
-        }
+        try n.lang_meta.writeDebug(stdout);
         try stdout.print("\n", .{});
     }
 
@@ -232,7 +222,8 @@ pub fn main() !void {
         if (n.kind == .file) {
             file_of[i] = i;
         } else if (n.parent_id) |pid| {
-            file_of[i] = file_of[@intFromEnum(pid)];
+            const pid_idx = @intFromEnum(pid);
+            file_of[i] = if (pid_idx < file_of.len) file_of[pid_idx] else NO_FILE;
         } else {
             file_of[i] = NO_FILE;
         }
@@ -255,8 +246,10 @@ pub fn main() !void {
         for (graph.edges.items) |e| {
             const src_name = if (graph.getNode(e.source_id)) |n| n.name else "?";
             const tgt_name = if (graph.getNode(e.target_id)) |n| n.name else "?";
-            const src_file_idx = file_of[@intFromEnum(e.source_id)];
-            const tgt_file_idx = file_of[@intFromEnum(e.target_id)];
+            const src_id_idx = @intFromEnum(e.source_id);
+            const tgt_id_idx = @intFromEnum(e.target_id);
+            const src_file_idx = if (src_id_idx < file_of.len) file_of[src_id_idx] else NO_FILE;
+            const tgt_file_idx = if (tgt_id_idx < file_of.len) file_of[tgt_id_idx] else NO_FILE;
             const src_file_name = fileDisplayName(&graph, src_file_idx);
             const tgt_file_name = fileDisplayName(&graph, tgt_file_idx);
 

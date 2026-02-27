@@ -30,7 +30,7 @@ fn countVerbosity(arg: []const u8) u8 {
 
 fn printHelp(stdout: *std.Io.Writer) !void {
     try stdout.print(
-        \\parse-file — Parse a Zig source file and dump the semantic graph.
+        \\parse-file - Parse a Zig source file and dump the semantic graph.
         \\
         \\USAGE:
         \\    zig build parse-file -- <path-to-zig-file>
@@ -169,19 +169,8 @@ pub fn main() !void {
         if (n.signature) |sig| {
             try stdout.print("  sig=\"{s}\"", .{sig[0..@min(sig.len, 60)]});
         }
-        // Check lang_meta for comptime
-        switch (n.lang_meta) {
-            .zig => |zm| {
-                if (zm.is_comptime) try stdout.print("  [comptime]", .{});
-                if (zm.is_mutable) try stdout.print("  [mutable]", .{});
-                if (zm.is_extern) try stdout.print("  [extern]", .{});
-                if (zm.is_packed) try stdout.print("  [packed]", .{});
-                if (zm.is_inline) try stdout.print("  [inline]", .{});
-                if (zm.comptime_conditional) try stdout.print("  [comptime_conditional]", .{});
-                if (zm.calling_convention) |cc| try stdout.print("  [callconv={s}]", .{cc});
-            },
-            else => {},
-        }
+        // Lang meta flags
+        try n.lang_meta.writeDebug(stdout);
         try stdout.print("\n", .{});
     }
 

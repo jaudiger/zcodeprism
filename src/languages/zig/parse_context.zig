@@ -11,10 +11,6 @@ const Graph = graph_mod.Graph;
 const NodeId = types.NodeId;
 const EdgeType = types.EdgeType;
 
-// =========================================================================
-// KindIds: u16 tree-sitter node kind IDs for fast dispatch
-// =========================================================================
-
 /// Pre-resolved tree-sitter node kind IDs. Built once per parse() call from
 /// `Language.idForNodeKind()`. Replaces all `std.mem.eql(u8, child.kind(), "...")`
 /// patterns with `child.kindId() == k.identifier`, using integer compare
@@ -65,6 +61,7 @@ pub const KindIds = struct {
     comptime_declaration: u16,
     colon: u16,
 
+    /// Resolve all node kind names to their numeric IDs from the given tree-sitter language.
     pub fn init(lang: *const ts.Language) KindIds {
         return .{
             .identifier = lang.idForNodeKind("identifier", true),
@@ -115,10 +112,6 @@ pub const KindIds = struct {
     }
 };
 
-// =========================================================================
-// EdgeSet: hash dedup for candidate edge insertion
-// =========================================================================
-
 const EdgeKey = struct {
     source_id: NodeId,
     target_id: NodeId,
@@ -151,14 +144,11 @@ pub const EdgeSet = struct {
         });
     }
 
+    /// Free the internal hash map storage.
     pub fn deinit(self: *EdgeSet, allocator: std.mem.Allocator) void {
         self.map.deinit(allocator);
     }
 };
-
-// =========================================================================
-// ScopeIndex: parent NodeId to children slice (MAF pattern)
-// =========================================================================
 
 const Node = @import("../../core/node.zig").Node;
 
@@ -182,7 +172,7 @@ pub const ScopeIndex = struct {
     /// `offset` is the index of the first node to include (typically 0 for all nodes,
     /// or the scope_start for file-scoped indices).
     pub fn build(allocator: std.mem.Allocator, nodes: []const Node, offset: usize) !ScopeIndex {
-        // --- Measure ---
+        // Measure
         var child_counts = std.AutoHashMapUnmanaged(u64, u32){};
         defer child_counts.deinit(allocator);
         var total_children: usize = 0;
@@ -197,7 +187,7 @@ pub const ScopeIndex = struct {
         }
         if (total_children == 0) return .{};
 
-        // --- Allocate ---
+        // Allocate
         const storage = try allocator.alloc(u64, total_children);
         errdefer allocator.free(storage);
 
@@ -213,7 +203,7 @@ pub const ScopeIndex = struct {
             }
         }
 
-        // --- Fill ---
+        // Fill
         var write_pos = std.AutoHashMapUnmanaged(u64, u32){};
         defer write_pos.deinit(allocator);
         {
@@ -248,15 +238,12 @@ pub const ScopeIndex = struct {
         return .{ .map = map, .storage = storage };
     }
 
+    /// Free the map and storage array.
     pub fn deinit(self: *ScopeIndex, allocator: std.mem.Allocator) void {
         self.map.deinit(allocator);
         if (self.storage.len > 0) allocator.free(self.storage);
     }
 };
-
-// =========================================================================
-// Import path resolution utility
-// =========================================================================
 
 /// Resolve an import path relative to the importing file's directory.
 /// Joins the directory part of `importer_path` with `import_path`,
@@ -324,10 +311,6 @@ pub fn resolveImportPath(buf: []u8, importer_path: []const u8, import_path: []co
     return buf[0..pos];
 }
 
-// =========================================================================
-// FileIndex: file path to NodeId for fast file lookup
-// =========================================================================
-
 /// Maps file node paths (rel_path) to their NodeId. Built once per parse,
 /// replaces full scans in `findImportTargetFile`. Keys are `file_path`
 /// when available, falling back to `name` (basename) for nodes without
@@ -369,26 +352,21 @@ pub const FileIndex = struct {
         return self.map.get(name);
     }
 
+    /// Free the internal hash map storage.
     pub fn deinit(self: *FileIndex, allocator: std.mem.Allocator) void {
         self.map.deinit(allocator);
     }
 };
 
-// =========================================================================
-// Shared utility functions
-// =========================================================================
-
+/// Return true if `c` is an ASCII letter, digit, or underscore (valid in Zig identifiers).
 pub fn isIdentChar(c: u8) bool {
     return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9') or c == '_';
 }
 
+/// Return true if `c` is an ASCII whitespace character (space, tab, newline, or carriage return).
 pub fn isWhitespace(c: u8) bool {
     return c == ' ' or c == '\t' or c == '\n' or c == '\r';
 }
-
-// =========================================================================
-// Tests: resolveImportPath
-// =========================================================================
 
 test "resolveImportPath: same-directory import" {
     var buf: [512]u8 = undefined;

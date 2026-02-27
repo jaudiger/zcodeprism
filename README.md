@@ -18,6 +18,14 @@ zig build
 zig build test
 ```
 
+To generate test coverage with [kcov](https://github.com/SimonKagworths/kcov):
+
+```sh
+zig build test -Dcoverage=true
+```
+
+Results are written to `kcov-output/`.
+
 ### Debug Tools
 
 | Command | Description |

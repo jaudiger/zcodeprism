@@ -10,6 +10,7 @@ const ast = @import("ast_analysis.zig");
 const cf = @import("cross_file.zig");
 const eb = @import("edge_builder.zig");
 const pc = @import("parse_context.zig");
+const fixtures = @import("test-fixtures");
 
 const KindIds = pc.KindIds;
 const ScopeIndex = pc.ScopeIndex;
@@ -28,10 +29,17 @@ const LangMeta = lang.LangMeta;
 
 /// Parse Zig source code and populate the graph with nodes and edges.
 /// This is the entry point used by the LanguageSupport registry.
-/// `file_path` is the file's relative path within the project, set by the
-/// indexer. When null, import resolution falls back to basename-only lookup.
-pub fn parse(source: []const u8, graph: *anyopaque, file_path: ?[]const u8, logger: Logger) anyerror!void {
-    const g: *Graph = @ptrCast(@alignCast(graph));
+///
+/// `source` - raw Zig source bytes to parse (owned by caller).
+/// `g` - the graph to populate; a file node is always added as the first node.
+/// `file_path` - relative path within the project, used for cross-file import
+///   resolution. When null, import resolution falls back to basename-only lookup.
+/// `logger` - structured logger; pass Logger.noop for silent operation.
+///
+/// Returns `anyerror` because tree-sitter and graph operations may fail.
+/// On tree-sitter parse failure, a bare file node is still created so the
+/// graph remains consistent.
+pub fn parse(source: []const u8, g: *Graph, file_path: ?[]const u8, logger: Logger) anyerror!void {
     const log = logger.withScope("zig-visitor");
 
     log.debug("parsing source", &.{Field.uint("bytes", source.len)});
@@ -76,7 +84,8 @@ pub fn parse(source: []const u8, graph: *anyopaque, file_path: ?[]const u8, logg
         .file_path = file_path,
     });
 
-    // Create nodes from declarations.
+    // -- Phase 1: Node creation --
+    // Walk top-level declarations and recursively create graph nodes.
     var i: u32 = 0;
     while (i < root.childCount()) : (i += 1) {
         const child = root.child(i) orelse continue;
@@ -84,7 +93,9 @@ pub fn parse(source: []const u8, graph: *anyopaque, file_path: ?[]const u8, logg
         try processDeclaration(g, source, child, file_id, &k, log);
     }
 
-    // Build edge resolution context: scope range + import map.
+    // -- Phase 2: Import map construction --
+    // Build edge resolution context (scope range + import map) and lookup indices
+    // needed by the edge walker to resolve cross-file references.
     var ctx = cf.EdgeContext{
         .scope_start = @intFromEnum(file_id),
         .scope_end = g.nodeCount(),
@@ -99,15 +110,16 @@ pub fn parse(source: []const u8, graph: *anyopaque, file_path: ?[]const u8, logg
 
     cf.buildImportMap(g, source, root, &ctx, &file_index, file_path, &k, log);
 
-    // Create edges (calls, uses_type) with cross-file resolution.
+    // -- Phase 3: Edge creation --
+    // Walk the AST a second time to discover call and uses_type relationships,
+    // resolving targets via the scope index, file index, and import map.
     log.debug("building edges", &.{});
     try eb.walkForEdges(g, source, root, &ctx, &k, &scope_index, &file_index, log);
 }
 
-// =========================================================================
-// Node creation
-// =========================================================================
-
+/// Dispatch a single top-level or nested declaration to the appropriate
+/// handler based on its tree-sitter node kind. Unrecognized kinds are
+/// silently skipped (they produce no graph node).
 fn processDeclaration(g: *Graph, source: []const u8, ts_node: ts.Node, parent_id: NodeId, k: *const KindIds, log: Logger) anyerror!void {
     const kid = ts_node.kindId();
 
@@ -124,6 +136,12 @@ fn processDeclaration(g: *Graph, source: []const u8, ts_node: ts.Node, parent_id
     }
 }
 
+/// Process a const/var declaration and add a graph node for it.
+/// Classifies the value to determine the node kind (struct, enum, union,
+/// error set, import, or plain constant). Filters noise constants such as
+/// @This() aliases and private same-name re-exports. Detects Zig-specific
+/// qualifiers (mutable, comptime, packed, extern) and stores them as LangMeta.
+/// Recurses into container bodies for nested declarations.
 fn processVariableDecl(g: *Graph, source: []const u8, ts_node: ts.Node, parent_id: NodeId, k: *const KindIds, log: Logger) anyerror!void {
     const name = ast.getIdentifierName(source, ts_node, k) orelse {
         log.trace("skipping variable: no identifier", &.{});
@@ -205,6 +223,14 @@ fn processVariableDecl(g: *Graph, source: []const u8, ts_node: ts.Node, parent_i
     }
 }
 
+/// Process a function declaration and add a graph node for it.
+/// Handles two cases: (1) type-returning generic functions like
+/// `fn Foo(comptime T: type) type { return struct { ... }; }` are
+/// promoted to type_def/enum_def/union_def nodes with their returned
+/// body's children; (2) regular functions become .function nodes.
+/// Extracts the function signature, visibility, doc comment, and
+/// Zig-specific qualifiers (extern, inline, calling convention).
+/// Recurses into the block body to discover inner type definitions.
 fn processFunctionDecl(g: *Graph, source: []const u8, ts_node: ts.Node, parent_id: NodeId, k: *const KindIds, log: Logger) anyerror!void {
     const name = ast.getIdentifierName(source, ts_node, k) orelse {
         log.trace("skipping function: no identifier", &.{});
@@ -296,8 +322,12 @@ fn processFunctionDecl(g: *Graph, source: []const u8, ts_node: ts.Node, parent_i
     }
 }
 
-/// Extract the function header text (from "fn" keyword to the body block start).
-/// For `pub fn create() svc_mod.Service { ... }`, returns `pub fn create() svc_mod.Service`.
+/// Extract the function header text from the declaration start up to (but
+/// not including) the block body, with trailing whitespace trimmed.
+/// For `pub fn create() svc_mod.Service { ... }`, returns
+/// `pub fn create() svc_mod.Service`.
+/// For extern functions (no block body), uses the full declaration minus
+/// the trailing semicolon. Returns null if byte offsets are out of range.
 fn extractFunctionSignature(source: []const u8, ts_node: ts.Node, k: *const KindIds) ?[]const u8 {
     const start = ts_node.startByte();
     var i: u32 = 0;
@@ -311,7 +341,7 @@ fn extractFunctionSignature(source: []const u8, ts_node: ts.Node, k: *const Kind
             return null;
         }
     }
-    // No block found (extern function) — use full declaration minus trailing semicolon.
+    // No block found (extern function), use full declaration minus trailing semicolon.
     const end = ts_node.endByte();
     if (end > start and end <= source.len) {
         return std.mem.trimRight(u8, source[start..end], " \t\n\r;");
@@ -319,6 +349,9 @@ fn extractFunctionSignature(source: []const u8, ts_node: ts.Node, k: *const Kind
     return null;
 }
 
+/// Process a test declaration and add a .test_def node.
+/// Extracts the test name (string literal, decl-reference, or quoted identifier)
+/// and any preceding doc comment. Recurses into the test body for inner types.
 fn processTestDecl(g: *Graph, source: []const u8, ts_node: ts.Node, parent_id: NodeId, k: *const KindIds, log: Logger) anyerror!void {
     const name = ast.getTestName(source, ts_node, k);
     const doc = ast.collectDocComment(source, ts_node, k);
@@ -346,28 +379,16 @@ fn processTestDecl(g: *Graph, source: []const u8, ts_node: ts.Node, parent_id: N
     }
 }
 
+/// Process a comptime block declaration.
+/// Comptime blocks are syntactic containers, not semantic entities --
+/// they produce no graph node themselves. Instead, inner type definitions
+/// are promoted to children of the enclosing scope (parent_id).
 fn processComptimeDecl(g: *Graph, source: []const u8, ts_node: ts.Node, parent_id: NodeId, k: *const KindIds, log: Logger) anyerror!void {
-    const doc = ast.collectDocComment(source, ts_node, k);
-
-    const ct_id = try g.addNode(.{
-        .id = .root,
-        .name = "comptime",
-        .kind = .comptime_block,
-        .language = .zig,
-        .parent_id = parent_id,
-        .visibility = .private,
-        .doc = doc,
-        .lang_meta = .{ .zig = .{ .is_comptime = true } },
-        .line_start = ts_node.startPoint().row + 1,
-        .line_end = ts_node.endPoint().row + 1,
-    });
-
-    // Discover inner type definitions inside the comptime block body.
     var i: u32 = 0;
     while (i < ts_node.childCount()) : (i += 1) {
         const child = ts_node.child(i) orelse continue;
         if (child.kindId() == k.block) {
-            try discoverInnerTypes(g, source, child, ct_id, k, log);
+            try discoverInnerTypes(g, source, child, parent_id, k, log);
             break;
         }
     }
@@ -406,6 +427,8 @@ fn discoverInnerTypes(g: *Graph, source: []const u8, block: ts.Node, parent_id: 
     }
 }
 
+/// Process a container field (struct field or enum variant) and add a .field node.
+/// Fields are always private. Skips unnamed fields (e.g. padding fields).
 fn processContainerField(g: *Graph, source: []const u8, ts_node: ts.Node, parent_id: NodeId, k: *const KindIds, log: Logger) anyerror!void {
     const name = ast.getIdentifierName(source, ts_node, k) orelse {
         log.trace("skipping field: no identifier", &.{});
@@ -440,17 +463,6 @@ fn isImportSibling(g: *const Graph, parent_id: NodeId, name: []const u8) bool {
     }
     return false;
 }
-
-
-// =========================================================================
-// Tests
-// =========================================================================
-
-const fixtures = @import("test-fixtures");
-
-// ---------------------------------------------------------------------------
-// simple.zig fixture: nodes, visibility, parents, doc comments
-// ---------------------------------------------------------------------------
 
 test "simple fixture: nodes, visibility, parents, doc comments" {
     // Arrange
@@ -502,7 +514,7 @@ test "simple fixture: nodes, visibility, parents, doc comments" {
     }
     try std.testing.expect(found_doc);
 
-    // Assert: parent_id for method manhattan → struct Point
+    // Assert: parent_id for manhattan points to struct Point
     var method_node: ?*const Node = null;
     i = 0;
     while (i < g.nodeCount()) : (i += 1) {
@@ -519,7 +531,7 @@ test "simple fixture: nodes, visibility, parents, doc comments" {
     try std.testing.expectEqual(NodeKind.type_def, method_parent.?.kind);
     try std.testing.expectEqualStrings("Point", method_parent.?.name);
 
-    // Assert: parent_id for struct Point → file node
+    // Assert: parent_id for struct Point points to file node
     var struct_node: ?*const Node = null;
     i = 0;
     while (i < g.nodeCount()) : (i += 1) {
@@ -535,7 +547,7 @@ test "simple fixture: nodes, visibility, parents, doc comments" {
     try std.testing.expect(struct_parent != null);
     try std.testing.expectEqual(NodeKind.file, struct_parent.?.kind);
 
-    // Assert: top-level function defaultPoint → file node
+    // Assert: top-level function defaultPoint points to file node
     var fn_node: ?*const Node = null;
     i = 0;
     while (i < g.nodeCount()) : (i += 1) {
@@ -585,10 +597,6 @@ test "simple fixture: nodes, visibility, parents, doc comments" {
     try std.testing.expectEqual(@as(u32, 75), file_node.?.line_end.?);
 }
 
-// ---------------------------------------------------------------------------
-// simple.zig fixture: unions, enum methods, imports, fields, variants, module doc
-// ---------------------------------------------------------------------------
-
 test "simple fixture: unions, enum methods, imports, fields, variants, module doc" {
     // Arrange
     var g = Graph.init(std.testing.allocator, "/tmp/project");
@@ -597,7 +605,7 @@ test "simple fixture: unions, enum methods, imports, fields, variants, module do
     // Act
     try parse(fixtures.zig.simple, &g, null, Logger.noop);
 
-    // --- unions ---
+    // unions
     // tagged union Shape: union_def, public, doc
     var found_shape = false;
     // plain union RawValue: union_def, private
@@ -623,7 +631,7 @@ test "simple fixture: unions, enum methods, imports, fields, variants, module do
     try std.testing.expect(found_shape);
     try std.testing.expect(found_raw);
 
-    // --- enum method isWarm is function child of Color ---
+    // enum method isWarm is function child of Color
     var color_id: ?NodeId = null;
     var iswarm_node: ?*const Node = null;
     i = 0;
@@ -638,7 +646,7 @@ test "simple fixture: unions, enum methods, imports, fields, variants, module do
     try std.testing.expect(iswarm_node.?.parent_id != null);
     try std.testing.expectEqual(color_id.?, iswarm_node.?.parent_id.?);
 
-    // --- imports ---
+    // imports
     // std is import_decl, private
     var found_std = false;
     // ZigMeta is import_decl (field access)
@@ -667,7 +675,7 @@ test "simple fixture: unions, enum methods, imports, fields, variants, module do
     try std.testing.expect(found_zigmeta);
     try std.testing.expect(found_max);
 
-    // --- struct fields ---
+    // struct fields
     var point_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
         if (n.kind == .type_def and std.mem.eql(u8, n.name, "Point")) {
@@ -692,7 +700,7 @@ test "simple fixture: unions, enum methods, imports, fields, variants, module do
     try std.testing.expect(found_x);
     try std.testing.expect(found_y);
 
-    // --- enum variants ---
+    // enum variants
     var dir_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
         if (n.kind == .enum_def and std.mem.eql(u8, n.name, "Direction")) {
@@ -716,7 +724,7 @@ test "simple fixture: unions, enum methods, imports, fields, variants, module do
     try std.testing.expect(found_south);
     try std.testing.expect(found_east);
 
-    // --- module doc comment ---
+    // module doc comment
     const file_node2 = g.getNode(@enumFromInt(0));
     try std.testing.expect(file_node2 != null);
     try std.testing.expectEqual(NodeKind.file, file_node2.?.kind);
@@ -726,10 +734,6 @@ test "simple fixture: unions, enum methods, imports, fields, variants, module do
     try std.testing.expect(std.mem.indexOf(u8, doc, "Compute the Manhattan") == null);
 }
 
-// ---------------------------------------------------------------------------
-// generic_type.zig fixture: type_def nodes, parents, visibility, doc comments
-// ---------------------------------------------------------------------------
-
 test "generic type fixture: type_def nodes, parents, visibility, doc comments" {
     // Arrange
     var g = Graph.init(std.testing.allocator, "/tmp/project");
@@ -738,7 +742,7 @@ test "generic type fixture: type_def nodes, parents, visibility, doc comments" {
     // Act
     try parse(fixtures.zig.generic_type, &g, null, Logger.noop);
 
-    // --- Container exists as type_def with file as parent ---
+    // Container exists as type_def with file as parent
     var container_node: ?*const Node = null;
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {
@@ -755,7 +759,7 @@ test "generic type fixture: type_def nodes, parents, visibility, doc comments" {
     try std.testing.expect(container_parent != null);
     try std.testing.expectEqual(NodeKind.file, container_parent.?.kind);
 
-    // --- public methods init, deinit, count, isEmpty exist ---
+    // public methods init, deinit, count, isEmpty exist
     var found_init = false;
     var found_deinit = false;
     var found_count = false;
@@ -775,7 +779,7 @@ test "generic type fixture: type_def nodes, parents, visibility, doc comments" {
     try std.testing.expect(found_count);
     try std.testing.expect(found_isEmpty);
 
-    // --- private helper validate exists ---
+    // private helper validate exists
     var found_validate = false;
     i = 0;
     while (i < g.nodeCount()) : (i += 1) {
@@ -789,7 +793,7 @@ test "generic type fixture: type_def nodes, parents, visibility, doc comments" {
     }
     try std.testing.expect(found_validate);
 
-    // --- init has parent Container ---
+    // init has parent Container
     var init_node: ?*const Node = null;
     i = 0;
     while (i < g.nodeCount()) : (i += 1) {
@@ -806,7 +810,7 @@ test "generic type fixture: type_def nodes, parents, visibility, doc comments" {
     try std.testing.expectEqual(NodeKind.type_def, init_parent.?.kind);
     try std.testing.expectEqualStrings("Container", init_parent.?.name);
 
-    // --- Entry has parent Container ---
+    // Entry has parent Container
     var entry_node: ?*const Node = null;
     i = 0;
     while (i < g.nodeCount()) : (i += 1) {
@@ -822,7 +826,7 @@ test "generic type fixture: type_def nodes, parents, visibility, doc comments" {
     try std.testing.expect(entry_parent != null);
     try std.testing.expectEqualStrings("Container", entry_parent.?.name);
 
-    // --- count method has doc ---
+    // count method has doc
     var found_count_doc = false;
     i = 0;
     while (i < g.nodeCount()) : (i += 1) {
@@ -835,7 +839,7 @@ test "generic type fixture: type_def nodes, parents, visibility, doc comments" {
     }
     try std.testing.expect(found_count_doc);
 
-    // --- Result union type and isOk method exist ---
+    // Result union type and isOk method exist
     var found_result = false;
     var found_isOk = false;
     i = 0;
@@ -848,7 +852,7 @@ test "generic type fixture: type_def nodes, parents, visibility, doc comments" {
     try std.testing.expect(found_result);
     try std.testing.expect(found_isOk);
 
-    // --- non-generic Config struct with defaults method ---
+    // non-generic Config struct with defaults method
     var config_node: ?*const Node = null;
     var found_defaults = false;
     i = 0;
@@ -865,10 +869,6 @@ test "generic type fixture: type_def nodes, parents, visibility, doc comments" {
     try std.testing.expectEqual(NodeKind.file, config_parent.?.kind);
 }
 
-// ---------------------------------------------------------------------------
-// file_struct.zig fixture: methods, nested types, Self filtering
-// ---------------------------------------------------------------------------
-
 test "file struct fixture: methods, nested types, Self filtering" {
     // Arrange
     var g = Graph.init(std.testing.allocator, "/tmp/project");
@@ -877,7 +877,7 @@ test "file struct fixture: methods, nested types, Self filtering" {
     // Act
     try parse(fixtures.zig.file_struct, &g, null, Logger.noop);
 
-    // --- methods are direct children of file node ---
+    // methods are direct children of file node
     var found_init = false;
     var found_getValue = false;
     var found_validate = false;
@@ -899,7 +899,7 @@ test "file struct fixture: methods, nested types, Self filtering" {
     try std.testing.expect(found_validate);
     try std.testing.expect(found_isValid);
 
-    // --- Config nested type with file as parent ---
+    // Config nested type with file as parent
     var found_config = false;
     i = 0;
     while (i < g.nodeCount()) : (i += 1) {
@@ -914,7 +914,7 @@ test "file struct fixture: methods, nested types, Self filtering" {
     }
     try std.testing.expect(found_config);
 
-    // --- Self constant is filtered ---
+    // Self constant is filtered
     var found_self = false;
     i = 0;
     while (i < g.nodeCount()) : (i += 1) {
@@ -927,12 +927,8 @@ test "file struct fixture: methods, nested types, Self filtering" {
     try std.testing.expect(!found_self);
 }
 
-// ---------------------------------------------------------------------------
-// Edge case fixtures: empty, comments-only, no-pub, deep nesting, many params, unicode
-// ---------------------------------------------------------------------------
-
 test "edge case fixtures: empty, comments-only, no-pub, deep nesting, many params, unicode" {
-    // --- empty file ---
+    // empty file
     {
         var g = Graph.init(std.testing.allocator, "/tmp/project");
         defer g.deinit();
@@ -945,7 +941,7 @@ test "edge case fixtures: empty, comments-only, no-pub, deep nesting, many param
         try std.testing.expectEqual(NodeKind.file, f.?.kind);
     }
 
-    // --- only comments ---
+    // only comments
     {
         var g = Graph.init(std.testing.allocator, "/tmp/project");
         defer g.deinit();
@@ -957,7 +953,7 @@ test "edge case fixtures: empty, comments-only, no-pub, deep nesting, many param
         try std.testing.expectEqual(NodeKind.file, f.?.kind);
     }
 
-    // --- no pub: all private ---
+    // no pub: all private
     {
         var g = Graph.init(std.testing.allocator, "/tmp/project");
         defer g.deinit();
@@ -975,7 +971,7 @@ test "edge case fixtures: empty, comments-only, no-pub, deep nesting, many param
         try std.testing.expectEqual(@as(usize, 3), fn_count);
     }
 
-    // --- deeply nested: innerMethod → Inner → Middle → Outer → file ---
+    // deeply nested: innerMethod -> Inner -> Middle -> Outer -> file
     {
         var g = Graph.init(std.testing.allocator, "/tmp/project");
         defer g.deinit();
@@ -1009,7 +1005,7 @@ test "edge case fixtures: empty, comments-only, no-pub, deep nesting, many param
         try std.testing.expectEqual(NodeKind.file, file_node.?.kind);
     }
 
-    // --- many params ---
+    // many params
     {
         var g = Graph.init(std.testing.allocator, "/tmp/project");
         defer g.deinit();
@@ -1027,7 +1023,7 @@ test "edge case fixtures: empty, comments-only, no-pub, deep nesting, many param
         try std.testing.expect(found);
     }
 
-    // --- unicode names ---
+    // unicode names
     {
         var g = Graph.init(std.testing.allocator, "/tmp/project");
         defer g.deinit();
@@ -1045,12 +1041,8 @@ test "edge case fixtures: empty, comments-only, no-pub, deep nesting, many param
     }
 }
 
-// ---------------------------------------------------------------------------
-// Decl-reference test names
-// ---------------------------------------------------------------------------
-
 test "decl-reference and string-literal test names" {
-    // --- bare identifier test name ---
+    // bare identifier test name
     {
         var g = Graph.init(std.testing.allocator, "/tmp/project");
         defer g.deinit();
@@ -1070,7 +1062,7 @@ test "decl-reference and string-literal test names" {
         try std.testing.expect(found_test);
     }
 
-    // --- type identifier test name ---
+    // type identifier test name
     {
         var g = Graph.init(std.testing.allocator, "/tmp/project");
         defer g.deinit();
@@ -1092,7 +1084,7 @@ test "decl-reference and string-literal test names" {
         try std.testing.expect(found_test);
     }
 
-    // --- two decl-reference tests get distinct names ---
+    // two decl-reference tests get distinct names
     {
         var g = Graph.init(std.testing.allocator, "/tmp/project");
         defer g.deinit();
@@ -1119,7 +1111,7 @@ test "decl-reference and string-literal test names" {
         try std.testing.expect(found_beta);
     }
 
-    // --- @"quoted identifier" test name ---
+    // @"quoted identifier" test name
     {
         var g = Graph.init(std.testing.allocator, "/tmp/project");
         defer g.deinit();
@@ -1138,7 +1130,7 @@ test "decl-reference and string-literal test names" {
         try std.testing.expect(found_test);
     }
 
-    // --- string-literal test name ---
+    // string-literal test name
     {
         var g = Graph.init(std.testing.allocator, "/tmp/project");
         defer g.deinit();
@@ -1156,12 +1148,8 @@ test "decl-reference and string-literal test names" {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Module doc comment separation
-// ---------------------------------------------------------------------------
-
 test "module doc comment separation" {
-    // --- no module doc → null ---
+    // no module doc -> null
     {
         var g = Graph.init(std.testing.allocator, "/tmp/project");
         defer g.deinit();
@@ -1173,7 +1161,7 @@ test "module doc comment separation" {
         try std.testing.expectEqual(@as(?[]const u8, null), f.?.doc);
     }
 
-    // --- module doc separate from item doc ---
+    // module doc separate from item doc
     {
         var g = Graph.init(std.testing.allocator, "/tmp/project");
         defer g.deinit();
@@ -1207,10 +1195,6 @@ test "module doc comment separation" {
         try std.testing.expect(std.mem.indexOf(u8, item_doc, "Module doc.") == null);
     }
 }
-
-// ---------------------------------------------------------------------------
-// extern_functions.zig fixture: extern/inline qualifiers and calling convention
-// ---------------------------------------------------------------------------
 
 test "extern functions fixture: qualifiers, calling convention, and signatures" {
     // Arrange
@@ -1297,10 +1281,6 @@ test "extern functions fixture: qualifiers, calling convention, and signatures" 
     try std.testing.expectEqual(LangMeta{ .none = {} }, normal_function_node.?.lang_meta);
     try std.testing.expectEqual(LangMeta{ .none = {} }, also_normal_node.?.lang_meta);
 }
-
-// ---------------------------------------------------------------------------
-// mutability.zig fixture: var vs const metadata
-// ---------------------------------------------------------------------------
 
 test "mutability fixture: var vs const metadata" {
     // Arrange

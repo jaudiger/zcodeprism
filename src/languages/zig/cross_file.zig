@@ -24,20 +24,17 @@ const KindIds = pc.KindIds;
 const ScopeIndex = pc.ScopeIndex;
 const FileIndex = pc.FileIndex;
 
-// =========================================================================
-// Cross-file resolution context
-// =========================================================================
-
-/// A symbol located at `chain` within `file_id`.
-/// Empty chain means the whole module.
-/// Non-empty chain means a path extracted from post-import field accesses.
+/// A symbol origin: identifies a node within a target file by file id and access chain.
+/// An empty chain refers to the module itself; a non-empty chain contains the
+/// identifier segments extracted from post-import field accesses (e.g. ["MyType", "init"]).
 pub const SymbolOrigin = struct {
     file_id: NodeId,
     chain: []const []const u8,
 };
 
-/// Groups all context needed during edge creation for one file parse.
-/// Contains the file's node scope range and a map of project-file imports.
+/// Context for cross-file edge creation during a single file parse.
+/// Holds the file's node scope range and a fixed-capacity map of @import bindings
+/// to their resolved target file NodeIds and extraction chains.
 pub const EdgeContext = struct {
     scope_start: usize,
     scope_end: usize,
@@ -47,10 +44,11 @@ pub const EdgeContext = struct {
     import_chain_lens: [max_imports]usize = undefined,
     import_count: usize = 0,
 
-    // Max number of tracked @import bindings per file for cross-file edge resolution.
+    /// Maximum number of tracked @import bindings per file for cross-file edge resolution.
     pub const max_imports = 32;
 
-    /// Returns file_id only, ignoring the extraction chain.
+    /// Look up the target file NodeId for an import binding by name.
+    /// Returns the file_id only, ignoring any extraction chain.
     pub fn findImportTarget(self: *const EdgeContext, name: []const u8) ?NodeId {
         for (self.import_names[0..self.import_count], self.import_targets[0..self.import_count]) |iname, itarget| {
             if (std.mem.eql(u8, iname, name)) return itarget;
@@ -58,7 +56,7 @@ pub const EdgeContext = struct {
         return null;
     }
 
-    /// Full origin including extraction chain.
+    /// Look up the full SymbolOrigin (file id + extraction chain) for an import binding by name.
     pub fn findImportOrigin(self: *const EdgeContext, name: []const u8) ?SymbolOrigin {
         for (0..self.import_count) |i| {
             if (std.mem.eql(u8, self.import_names[i], name)) {
@@ -72,20 +70,27 @@ pub const EdgeContext = struct {
     }
 };
 
-/// Tracks per-function variable assignments from import-qualified expressions.
-/// Used to resolve method calls like `a.deinit()` where `a = alpha.Self.init(42)`.
+/// Tracks variable-to-file bindings within a function scope.
+/// Stores mappings from local variable names to the target file NodeId they
+/// were assigned from via import-qualified expressions, so that later method
+/// calls (e.g. `a.deinit()` where `a = alpha.Self.init(42)`) can be resolved
+/// to the correct cross-file target.
 pub const VarTracker = struct {
     var_names: [max_vars][]const u8 = undefined,
     var_targets: [max_vars]NodeId = undefined,
     var_count: usize = 0,
 
-    // Max number of tracked import-qualified variable bindings per function.
+    /// Maximum number of tracked import-qualified variable bindings per function.
     pub const max_vars = 32;
 
+    /// Record a variable-to-file binding. Logs a warning and drops the binding
+    /// if the tracker is already at capacity.
     pub fn addBinding(self: *VarTracker, name: []const u8, target_file: NodeId, log: Logger) void {
-        // Graceful cap: silently skip excess bindings.
         if (self.var_count >= max_vars) {
-            log.trace("var tracker at capacity", &.{Field.string("name", name)});
+            log.warn("var tracker at capacity, some import-qualified variable edges will be missing", &.{
+                Field.uint("capacity", max_vars),
+                Field.string("dropped", name),
+            });
             return;
         }
         self.var_names[self.var_count] = name;
@@ -93,6 +98,7 @@ pub const VarTracker = struct {
         self.var_count += 1;
     }
 
+    /// Return the target file NodeId associated with a variable name, or null if not tracked.
     pub fn findTarget(self: *const VarTracker, name: []const u8) ?NodeId {
         for (self.var_names[0..self.var_count], self.var_targets[0..self.var_count]) |vname, vtarget| {
             if (std.mem.eql(u8, vname, name)) return vtarget;
@@ -101,51 +107,22 @@ pub const VarTracker = struct {
     }
 };
 
-// =========================================================================
-// Constants
-// =========================================================================
-
-/// Maximum depth for field_expression chains like `a.b.c.d`.
-/// 8 covers realistic Zig qualified paths (e.g., `std.mem.Allocator.Error`)
-/// while bounding stack usage in the recursive descent.
+/// Maximum depth for field_expression chains (e.g. `a.b.c.d`).
+/// 8 covers realistic Zig qualified paths while bounding stack usage.
 pub const max_chain_depth = 8;
 
 /// Maximum AST depth for scanForCalls and scanForTypeIdentifiersScoped.
-/// 256 covers any realistic Zig code while bounding stack usage.
+/// Bounds stack usage in recursive AST traversal.
 pub const max_ast_scan_depth: u32 = 256;
 
 /// Maximum AST depth when searching for `@import` calls inside a declaration.
-/// A standard `const x = @import("path")` has the builtin_function at depth 1-2.
-/// Depth 5 covers realistic patterns (e.g., `@import` inside `if` or `orelse`)
-/// while bounding stack usage in the recursive descent.
+/// Depth 5 covers realistic patterns (e.g. `@import` inside `if` or `orelse`)
+/// while bounding stack usage.
 pub const max_import_search_depth = 5;
 
-// =========================================================================
-// Edge utility
-// =========================================================================
-
-pub fn addEdgeIfNew(g: *Graph, source_id: NodeId, target_id: NodeId, edge_type: EdgeType, log: Logger) !void {
-    if (source_id == target_id) return;
-    const added = try g.addEdgeIfNew(.{
-        .source_id = source_id,
-        .target_id = target_id,
-        .edge_type = edge_type,
-        .source = .tree_sitter,
-    });
-    if (!added) {
-        log.trace("duplicate edge skipped", &.{
-            Field.uint("source", @intFromEnum(source_id)),
-            Field.uint("target", @intFromEnum(target_id)),
-        });
-    }
-}
-
-// =========================================================================
-// Cross-file resolution helpers
-// =========================================================================
-
-/// Collect the chain of identifiers from a (possibly nested) field_expression.
-/// For `alpha.Self.init`, populates out with ["alpha", "Self", "init"] and returns 3.
+/// Collect the chain of identifier segments from a (possibly nested) field_expression.
+/// For `alpha.Self.init`, populates `out` with ["alpha", "Self", "init"] and returns 3.
+/// Truncates silently at `max_chain_depth`.
 pub fn collectFieldExprChain(source: []const u8, node: ts.Node, out: *[max_chain_depth][]const u8, k: *const KindIds) usize {
     return collectChainRecursive(source, node, out, k, 0);
 }
@@ -182,8 +159,9 @@ fn collectChainRecursive(source: []const u8, node: ts.Node, out: *[max_chain_dep
     return depth;
 }
 
-/// Extract the import path from a variable_declaration containing @import("...").
-/// For `const alpha = @import("alpha.zig")`, returns "alpha.zig".
+/// Extract the import path string from a variable_declaration that contains `@import("...")`.
+/// For `const alpha = @import("alpha.zig")`, returns `"alpha.zig"`.
+/// Returns null if the declaration does not contain an @import call.
 pub fn extractImportPath(source: []const u8, var_decl: ts.Node, k: *const KindIds) ?[]const u8 {
     return extractImportPathRecursive(source, var_decl, k, 0);
 }
@@ -214,8 +192,9 @@ fn extractImportPathRecursive(source: []const u8, node: ts.Node, k: *const KindI
     return null;
 }
 
-/// Extract the post-import field access chain from a variable declaration
-/// containing an @import expression. Returns the number of chain segments.
+/// Extract the post-import field access chain from a variable declaration.
+/// For `const T = @import("foo.zig").Bar.Baz`, populates `chain` with
+/// ["Bar", "Baz"] and returns 2. Returns 0 if no field_expression follows the import.
 pub fn extractImportExtractionChain(
     source: []const u8,
     var_decl: ts.Node,
@@ -249,16 +228,20 @@ fn findStringContent(source: []const u8, node: ts.Node, k: *const KindIds) ?[]co
     return null;
 }
 
-/// Build the import map in an EdgeContext by scanning root-level variable declarations.
+/// Populate the import map in `ctx` by scanning root-level variable declarations.
+/// For each declaration classified as import_decl, extracts the import path, resolves
+/// it to a target file NodeId via `file_index`, and records the binding with its
+/// extraction chain. Logs a warning when the import map reaches capacity.
 pub fn buildImportMap(g: *const Graph, source: []const u8, root: ts.Node, ctx: *EdgeContext, file_index: *const FileIndex, importer_path: ?[]const u8, k: *const KindIds, log: Logger) void {
     var i: u32 = 0;
     while (i < root.childCount()) : (i += 1) {
         const child = root.child(i) orelse continue;
         if (!child.isNamed()) continue;
         if (child.kindId() != k.variable_declaration) continue;
-        // Graceful cap: silently skip excess imports.
         if (ctx.import_count >= EdgeContext.max_imports) {
-            log.debug("import map at capacity", &.{});
+            log.warn("import map at capacity, some cross-file edges will be missing", &.{
+                Field.uint("capacity", EdgeContext.max_imports),
+            });
             break;
         }
 
@@ -299,11 +282,11 @@ pub fn buildImportMap(g: *const Graph, source: []const u8, root: ts.Node, ctx: *
     }
 }
 
-/// Resolve an import-qualified chain against a target file.
-/// For chain ["MyType", "init"] with a target file:
-///   - "MyType" as type_def (direct child of file) creates uses_type edge
-///   - "init" as function (direct child of MyType) creates calls edge (if is_call)
-/// Each segment narrows the scope to direct children of the resolved node.
+/// Resolve an import-qualified identifier chain against a target file and create edges.
+/// Walks the chain segment by segment, narrowing scope to direct children of each
+/// resolved node. Creates `uses_type` edges for type containers and `calls` edges
+/// for terminal function references when `is_call` is true. Handles `Self` aliases
+/// and mid-chain function calls by following return types.
 pub fn resolveQualifiedCall(
     g: *Graph,
     caller_id: NodeId,
@@ -374,12 +357,12 @@ pub fn resolveQualifiedCall(
         const resolved_node = g.getNode(resolved_id) orelse return;
 
         if (is_last and is_call and resolved_node.kind == .function) {
-            try addEdgeIfNew(g, caller_id, resolved_id, .calls, log);
+            _ = try g.addEdgeIfNew(.{ .source_id = caller_id, .target_id = resolved_id, .edge_type = .calls });
         } else if (!is_last and resolved_node.kind == .function) {
             // Mid-chain function call (e.g., getClient() in svc.getClient().send()).
             // Create calls edge and follow the function's return type.
             if (is_call) {
-                try addEdgeIfNew(g, caller_id, resolved_id, .calls, log);
+                _ = try g.addEdgeIfNew(.{ .source_id = caller_id, .target_id = resolved_id, .edge_type = .calls });
             }
             if (resolveReturnTypeScope(g, resolved_id, scope_index, file_index)) |return_type_id| {
                 current_scope_id = return_type_id;
@@ -392,7 +375,7 @@ pub fn resolveQualifiedCall(
             const is_type_alias = resolved_node.kind == .constant and
                 resolved_node.name.len > 0 and resolved_node.name[0] >= 'A' and resolved_node.name[0] <= 'Z';
             if (is_type or is_type_alias) {
-                try addEdgeIfNew(g, caller_id, resolved_id, .uses_type, log);
+                _ = try g.addEdgeIfNew(.{ .source_id = caller_id, .target_id = resolved_id, .edge_type = .uses_type });
             }
         }
 
@@ -407,8 +390,10 @@ pub fn resolveQualifiedCall(
     }
 }
 
-/// Check if a variable_declaration's value is rooted in an import-qualified expression.
-/// Returns the target file NodeId if the value starts with an import name.
+/// Check whether a variable_declaration's initializer is rooted in an import-qualified expression.
+/// Scans the declaration's children for call, field, or try expressions whose root
+/// identifier matches a known import name in `ctx`.
+/// Returns the target file NodeId if found, null otherwise.
 pub fn findImportQualifiedRoot(
     source: []const u8,
     var_decl: ts.Node,
@@ -423,8 +408,10 @@ pub fn findImportQualifiedRoot(
     return null;
 }
 
-/// Recursively extract the root import target from an expression.
-/// Handles call_expression, field_expression, and try_expression wrappers.
+/// Recursively extract the root import target from an expression node.
+/// Unwraps call_expression, field_expression, and try_expression wrappers,
+/// collects the identifier chain, and looks up the first segment in `ctx`.
+/// Returns the target file NodeId if the root identifier is a known import, null otherwise.
 pub fn extractExpressionImportRoot(source: []const u8, node: ts.Node, ctx: *const EdgeContext, k: *const KindIds) ?NodeId {
     const kid = node.kindId();
     if (kid == k.call_expression or kid == k.field_expression) {
@@ -445,17 +432,12 @@ pub fn extractExpressionImportRoot(source: []const u8, node: ts.Node, ctx: *cons
     return null;
 }
 
-// =========================================================================
-// Return-type resolution (mid-chain function calls)
-// =========================================================================
-
-/// Given a function node, try to resolve its return type to a type node
-/// in the graph. Returns the type's NodeId (to use as scope for further
-/// chain resolution) or null if the return type can't be resolved.
-///
-/// Parses the return type from the function's stored signature text.
-/// Handles import-qualified types (e.g., `svc_mod.Service`) by resolving
-/// the import in the function's containing file context.
+/// Resolve a function's return type to a type node in the graph.
+/// Parses the return type from the function's stored signature text, stripping
+/// error unions, pointers, and optional markers. Handles import-qualified types
+/// (e.g. `svc_mod.Service`) by resolving the import in the containing file.
+/// Returns the type's NodeId for use as scope in further chain resolution,
+/// or null if the return type cannot be resolved.
 pub fn resolveReturnTypeScope(g: *const Graph, fn_id: NodeId, scope_index: *const ScopeIndex, file_index: *const FileIndex) ?NodeId {
     const fn_node = g.getNode(fn_id) orelse return null;
     const sig = fn_node.signature orelse return null;
@@ -549,10 +531,12 @@ fn findTypeInFile(g: *const Graph, scope_id: NodeId, type_name: []const u8, scop
     return null;
 }
 
-/// For a variable assigned from an import-qualified function call,
-/// try to resolve through the called function's return type to find
-/// the file where the result type lives.
-/// Returns the resolved file NodeId, or null to use the original target.
+/// Resolve a variable's target file through the return type of its initializer.
+/// For a variable assigned from an import-qualified function call, extracts the
+/// full chain, walks it in the target file to locate the called function, then
+/// resolves that function's return type to find the file containing the result type.
+/// Returns the resolved file NodeId, or null if resolution fails (caller should
+/// fall back to the original import target).
 pub fn resolveVarTargetThroughReturnType(
     g: *const Graph,
     source: []const u8,

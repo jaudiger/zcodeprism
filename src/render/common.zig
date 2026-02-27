@@ -2,81 +2,78 @@ const std = @import("std");
 const graph_mod = @import("../core/graph.zig");
 const node_mod = @import("../core/node.zig");
 const types = @import("../core/types.zig");
-const lang = @import("../languages/language.zig");
 
-pub const Graph = graph_mod.Graph;
-pub const Node = node_mod.Node;
-pub const NodeId = types.NodeId;
-pub const NodeKind = types.NodeKind;
-pub const EdgeType = types.EdgeType;
-pub const Language = types.Language;
-pub const Visibility = types.Visibility;
-pub const ExternalInfo = lang.ExternalInfo;
+const Graph = graph_mod.Graph;
+const Node = node_mod.Node;
+const EdgeType = types.EdgeType;
 
-/// Entry in the ID assignment table. Each node that gets a renderer ID
-/// receives a prefix (e.g., "f:", "fn:") and a sequential number.
+/// Maps a graph node to its renderer ID, consisting of a kind prefix
+/// (e.g. "f:", "fn:", "st:") and a sequential number within that kind.
 pub const IdEntry = struct {
     prefix: []const u8,
     num: u32,
 };
 
-/// A node index paired with its sort key for deterministic ordering.
-pub const SortableNode = struct {
-    node_idx: usize,
-    line_start: u32,
-};
-
-/// A phantom package root with its assigned x: ID and child symbols.
+/// Groups a phantom package root node with its assigned x: renderer ID and
+/// the list of child symbols discovered under it.
 pub const PhantomPackage = struct {
     root_idx: usize,
     x_num: u32,
     symbols: std.ArrayListUnmanaged(PhantomSymbol),
 
+    /// Frees all owned qualified_path strings and the symbols list itself.
     pub fn deinit(self: *PhantomPackage, allocator: std.mem.Allocator) void {
         for (self.symbols.items) |sym| allocator.free(sym.qualified_path);
         self.symbols.deinit(allocator);
     }
 };
 
+/// A single symbol within a phantom package, identified by its node index
+/// and its dot-separated qualified path relative to the package root.
 pub const PhantomSymbol = struct {
     node_idx: usize,
     qualified_path: []const u8,
 };
 
-/// Result of looking up which phantom package a node belongs to.
+/// Lookup result mapping a phantom node to its package's x: ID number
+/// and the node's qualified path within that package.
 pub const PhantomNodeInfo = struct {
     pkg_x_num: u32,
     symbol_path: []const u8,
 };
 
-/// Pre-built index mapping parent node indices to their sorted children.
+/// Pre-built index mapping parent node indices to their children, sorted
+/// by line_start. Backed by a single flat allocation (`storage`) with
+/// per-parent slices stored in the hash map.
 pub const ChildrenIndex = struct {
     map: std.AutoHashMapUnmanaged(usize, []const usize),
     storage: []usize,
 
+    /// Frees the hash map and the flat storage array.
     pub fn deinit(self: *ChildrenIndex, allocator: std.mem.Allocator) void {
         self.map.deinit(allocator);
         allocator.free(self.storage);
     }
 
+    /// Returns the sorted child indices for the given parent, or an empty
+    /// slice if the parent has no children.
     pub fn childrenOf(self: *const ChildrenIndex, parent_idx: usize) []const usize {
         return self.map.get(parent_idx) orelse &.{};
     }
 };
 
-/// Controls which nodes and edges are included in rendered output.
-/// Both fields default to `false` — the common case is architecture-focused
-/// output that excludes test noise and external dependency clutter.
+/// Controls which optional node categories appear in rendered output.
+/// Both fields default to false, producing architecture-focused output
+/// that excludes test noise and external dependency clutter.
 pub const FilterOptions = struct {
-    /// When false, `test_def` nodes receive no IDs, produce no section entries,
-    /// and generate no edges. Set to true to include test nodes.
+    /// When true, test_def nodes receive IDs, section entries, and edges.
     include_test_nodes: bool = false,
-    /// When false, external (phantom) nodes receive no IDs, produce no
-    /// section entries ([externals]/subgraphs), and generate no edges.
-    /// Set to true to include external nodes.
+    /// When true, external (phantom) nodes receive IDs, section entries,
+    /// and edges.
     include_external_nodes: bool = false,
 };
 
+/// Returns true if the node is internal (not a phantom/external node).
 pub fn isInternal(n: Node) bool {
     return switch (n.external) {
         .none => true,
@@ -84,16 +81,22 @@ pub fn isInternal(n: Node) bool {
     };
 }
 
+/// Returns true if the node's file_path starts with the given scope prefix.
+/// Returns false when file_path is null.
 pub fn inScope(file_path: ?[]const u8, scope: []const u8) bool {
     const fp = file_path orelse return false;
     return std.mem.startsWith(u8, fp, scope);
 }
 
+/// Formats a usize as a decimal string and appends it to the output buffer.
+/// The caller-provided scratch buffer avoids per-call allocation.
 pub fn appendNum(out: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, val: usize, buf: *[20]u8) !void {
     const s = std.fmt.bufPrint(buf, "{d}", .{val}) catch unreachable;
     try out.appendSlice(allocator, s);
 }
 
+/// Appends the current UTC wall-clock time as an ISO-8601 timestamp
+/// (e.g. "2026-02-14T10:30:00Z") to the output buffer.
 pub fn appendCurrentTimestamp(out: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator) !void {
     const epoch = std.time.timestamp();
     const es = std.time.epoch.EpochSeconds{ .secs = @intCast(@max(0, epoch)) };
@@ -114,6 +117,7 @@ pub fn appendCurrentTimestamp(out: *std.ArrayListUnmanaged(u8), allocator: std.m
     try out.appendSlice(allocator, ts);
 }
 
+/// Returns the canonical string name for an edge type (e.g. .calls -> "calls").
 pub fn edgeTypeName(et: EdgeType) []const u8 {
     return switch (et) {
         .calls => "calls",
@@ -125,7 +129,8 @@ pub fn edgeTypeName(et: EdgeType) []const u8 {
     };
 }
 
-/// Numeric order for prefix-based sorting of IDs.
+/// Returns a numeric sort key for a renderer ID prefix, ensuring
+/// deterministic section ordering (c: < en: < err: < f: < fn: < ...).
 pub fn prefixOrder(prefix: []const u8) u64 {
     if (prefix.len < 2) return 9;
     return switch ((@as(u16, prefix[0]) << 8) | prefix[1]) {
@@ -143,7 +148,8 @@ pub fn prefixOrder(prefix: []const u8) u64 {
     };
 }
 
-/// Numeric sort key for edge types, matching alphabetical order of their names.
+/// Returns a numeric sort key for an edge type, matching alphabetical
+/// order of the canonical names (calls=0, exports=1, ..., uses_type=5).
 pub fn edgeTypeSortKey(et: EdgeType) u8 {
     return switch (et) {
         .calls => 0,
@@ -155,7 +161,8 @@ pub fn edgeTypeSortKey(et: EdgeType) u8 {
     };
 }
 
-/// Walk up the parent chain to find the file node and return its assigned ID number.
+/// Walks up the parent chain from a node to find the enclosing file node
+/// and returns its assigned renderer ID number, or null if not found.
 pub fn findFileId(g: *const Graph, n: Node, ids: []const ?IdEntry) ?u32 {
     var current_id = n.parent_id;
     while (current_id) |pid| {
@@ -171,7 +178,9 @@ pub fn findFileId(g: *const Graph, n: Node, ids: []const ?IdEntry) ?u32 {
     return null;
 }
 
-/// Recursively collect phantom child nodes with their qualified paths.
+/// Recursively collects phantom child nodes under a parent, building
+/// dot-separated qualified paths (e.g. "mem.Allocator"). Each path
+/// string is heap-allocated and owned by the symbols list.
 pub fn collectPhantomSymbols(
     allocator: std.mem.Allocator,
     g: *const Graph,
@@ -189,16 +198,21 @@ pub fn collectPhantomSymbols(
             try path_buf.append(allocator, '.');
         }
         try path_buf.appendSlice(allocator, n.name);
-        const path = try allocator.dupe(u8, path_buf.items);
-        try symbols.append(allocator, .{
-            .node_idx = child_idx,
-            .qualified_path = path,
-        });
+        const path: []const u8 = blk: {
+            const p = try allocator.dupe(u8, path_buf.items);
+            errdefer allocator.free(p);
+            try symbols.append(allocator, .{
+                .node_idx = child_idx,
+                .qualified_path = p,
+            });
+            break :blk p;
+        };
         try collectPhantomSymbols(allocator, g, child_idx, path, symbols, children_index);
     }
 }
 
-/// Mutable state carried through the recursive ID assignment walk.
+/// Mutable counters and index lists accumulated during the recursive
+/// ID assignment walk over all file children.
 pub const IdWalkState = struct {
     st_counter: u32 = 0,
     un_counter: u32 = 0,
@@ -216,6 +230,7 @@ pub const IdWalkState = struct {
     err_indices: std.ArrayListUnmanaged(usize) = .{},
     test_indices: std.ArrayListUnmanaged(usize) = .{},
 
+    /// Frees all per-kind index lists.
     pub fn deinit(self: *IdWalkState, allocator: std.mem.Allocator) void {
         self.struct_indices.deinit(allocator);
         self.union_indices.deinit(allocator);
@@ -227,7 +242,9 @@ pub const IdWalkState = struct {
     }
 };
 
-/// Recursively assign IDs to children of a parent node, collecting indices per section.
+/// Recursively assigns renderer IDs to children of a parent node,
+/// appending each child's index to the appropriate per-kind list in
+/// state. Recurses into type_def, union_def, and module children.
 pub fn assignChildrenIds(
     allocator: std.mem.Allocator,
     g: *const Graph,
@@ -287,13 +304,15 @@ pub fn assignChildrenIds(
                 ids[child_idx] = .{ .prefix = "m:", .num = state.m_counter };
                 try assignChildrenIds(allocator, g, child_idx, ids, filter, children_index, state);
             },
-            .field, .import_decl, .file, .comptime_block => {},
+            .field, .import_decl, .file => {},
         }
     }
 }
 
-/// Build the full ID assignment table and section index lists by walking all files in path order.
-/// Returns the phantom packages list and the x_counter. Caller must deinit phantom_packages entries.
+/// Complete result of the ID assignment pass: the per-node ID table,
+/// per-kind index lists for section rendering, phantom packages,
+/// the children index, and the detected language set. Caller owns
+/// the result and must call deinit to free all allocations.
 pub const IdAssignment = struct {
     ids: []?IdEntry,
     file_indices: std.ArrayListUnmanaged(usize),
@@ -309,6 +328,8 @@ pub const IdAssignment = struct {
     phantom_lookup: std.AutoHashMapUnmanaged(usize, PhantomNodeInfo),
     languages: LanguageSet,
 
+    /// Frees the ID table, all index lists, phantom packages, the
+    /// children index, and the phantom lookup map.
     pub fn deinit(self: *IdAssignment, allocator: std.mem.Allocator) void {
         allocator.free(self.ids);
         self.file_indices.deinit(allocator);
@@ -326,6 +347,10 @@ pub const IdAssignment = struct {
     }
 };
 
+/// Builds the full ID assignment table by walking all in-scope file
+/// nodes in alphabetical path order. Assigns sequential IDs per kind,
+/// collects phantom packages when external nodes are included, and
+/// returns an IdAssignment that the caller must deinit.
 pub fn buildIdAssignment(
     allocator: std.mem.Allocator,
     g: *const Graph,
@@ -334,6 +359,7 @@ pub fn buildIdAssignment(
 ) !IdAssignment {
     const node_count = g.nodes.items.len;
     const ids = try allocator.alloc(?IdEntry, node_count);
+    errdefer allocator.free(ids);
     @memset(ids, null);
 
     // Count children per parent and collect file nodes + languages in one scan.
@@ -372,7 +398,8 @@ pub fn buildIdAssignment(
 
     // Allocate flat storage for the children index.
     const storage = try allocator.alloc(usize, total_children);
-    var map = std.AutoHashMapUnmanaged(usize, []const usize){};
+    var children_index = ChildrenIndex{ .map = .{}, .storage = storage };
+    errdefer children_index.deinit(allocator);
 
     // Compute offsets: each parent gets a contiguous slice in storage.
     var offsets = std.AutoHashMapUnmanaged(usize, usize){};
@@ -426,11 +453,9 @@ pub fn buildIdAssignment(
                 }
             }.lessThan);
 
-            try map.put(allocator, pidx, slice);
+            try children_index.map.put(allocator, pidx, slice);
         }
     }
-
-    var children_index = ChildrenIndex{ .map = map, .storage = storage };
 
     // Sort file nodes by path.
     std.mem.sort(usize, file_nodes.items, g, struct {
@@ -443,7 +468,9 @@ pub fn buildIdAssignment(
 
     // Assign file IDs and walk children.
     var file_indices = std.ArrayListUnmanaged(usize){};
+    errdefer file_indices.deinit(allocator);
     var state = IdWalkState{};
+    errdefer state.deinit(allocator);
     var f_counter: u32 = 0;
 
     for (file_nodes.items) |fi| {
@@ -455,6 +482,10 @@ pub fn buildIdAssignment(
 
     // Collect phantom packages (only when external nodes are included).
     var phantom_packages = std.ArrayListUnmanaged(PhantomPackage){};
+    errdefer {
+        for (phantom_packages.items) |*pkg| pkg.deinit(allocator);
+        phantom_packages.deinit(allocator);
+    }
     var x_counter: u32 = 0;
 
     if (filter.include_external_nodes) {
@@ -470,6 +501,7 @@ pub fn buildIdAssignment(
                         .x_num = x_counter,
                         .symbols = .{},
                     };
+                    errdefer pkg.deinit(allocator);
                     try collectPhantomSymbols(allocator, g, i, "", &pkg.symbols, &children_index);
                     std.mem.sort(PhantomSymbol, pkg.symbols.items, {}, struct {
                         fn lessThan(_: void, a: PhantomSymbol, b: PhantomSymbol) bool {
@@ -484,6 +516,7 @@ pub fn buildIdAssignment(
 
     // Build phantom lookup HashMap.
     var phantom_lookup = std.AutoHashMapUnmanaged(usize, PhantomNodeInfo){};
+    errdefer phantom_lookup.deinit(allocator);
     for (phantom_packages.items) |pkg| {
         try phantom_lookup.put(allocator, pkg.root_idx, .{
             .pkg_x_num = pkg.x_num,
@@ -514,6 +547,8 @@ pub fn buildIdAssignment(
     };
 }
 
+/// Tracks which source languages were encountered during ID assignment.
+/// Used by renderers to emit the "# languages:" header line.
 pub const LanguageSet = struct {
     has_zig: bool,
     has_rust: bool,

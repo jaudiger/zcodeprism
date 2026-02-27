@@ -118,8 +118,6 @@ pub fn renderMermaid(
     try sections.renderClassAssignments(out, allocator, g, ids, assignment.phantom_packages.items, &ghost_map, &num_buf);
 }
 
-// --- Test helpers ---
-
 /// Creates a diverse graph exercising all Mermaid sections.
 ///
 /// Same structure as the CTG test graph:
@@ -334,10 +332,6 @@ fn createMermaidTestGraph(allocator: std.mem.Allocator) !Graph {
     return g;
 }
 
-// ==========================================================================
-// Mermaid Tests: header
-// ==========================================================================
-
 test "header line 1 matches spec" {
     // Arrange
     const allocator = std.testing.allocator;
@@ -411,10 +405,6 @@ test "header line 3 has timestamp" {
     const line3 = lines.next() orelse return error.MissingLine;
     try std.testing.expectEqualStrings("%% generated 2026-02-14T10:30:00Z", line3);
 }
-
-// ==========================================================================
-// Mermaid Tests: structure
-// ==========================================================================
 
 test "starts with flowchart TB" {
     // Arrange
@@ -541,10 +531,6 @@ test "deterministic output" {
     try std.testing.expectEqualSlices(u8, out1.items, out2.items);
 }
 
-// ==========================================================================
-// Mermaid Tests: node shapes
-// ==========================================================================
-
 test "functions use rectangle shape" {
     // Arrange
     const allocator = std.testing.allocator;
@@ -650,10 +636,6 @@ test "methods labeled with parent type" {
     try std.testing.expect(std.mem.indexOf(u8, output, "fn: Tokenizer.next") != null);
 }
 
-// ==========================================================================
-// Mermaid Tests: edges
-// ==========================================================================
-
 test "calls edges use solid arrow" {
     // Arrange
     const allocator = std.testing.allocator;
@@ -695,10 +677,6 @@ test "imports edges use dotted arrow" {
     const output = out.items;
     try std.testing.expect(std.mem.indexOf(u8, output, " -.-> ") != null);
 }
-
-// ==========================================================================
-// Mermaid Tests: edge cases
-// ==========================================================================
 
 test "empty graph renders without crash" {
     // Arrange

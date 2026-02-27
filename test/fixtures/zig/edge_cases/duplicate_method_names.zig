@@ -1,6 +1,6 @@
-/// Two structs with identical method names to test scope-aware name resolution.
-/// The visitor must not resolve Alpha.deinit to Beta.deinit (or vice versa)
-/// just because they share the name "deinit".
+//! Two structs with identical method names to test scope-aware name resolution.
+//! The visitor must not resolve Alpha.deinit to Beta.deinit (or vice versa)
+//! just because they share the name "deinit".
 
 /// First struct with common method names.
 pub const Alpha = struct {

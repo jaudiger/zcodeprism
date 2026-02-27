@@ -1,6 +1,6 @@
-/// Two generic type-returning functions to test scope-aware name resolution
-/// in generic contexts. Each produces a struct with Self, init, deinit,
-/// and a method that calls deinit via self.
+//! Two generic type-returning functions to test scope-aware name resolution
+//! in generic contexts. Each produces a struct with Self, init, deinit,
+//! and a method that calls deinit via self.
 
 /// Generic stack type.
 pub fn Stack(comptime T: type) type {

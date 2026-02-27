@@ -18,8 +18,6 @@ const Metrics = metrics_mod.Metrics;
 const LangMeta = lang.LangMeta;
 const ExternalInfo = lang.ExternalInfo;
 
-// --- JSON writing helpers ---
-
 fn writeStr(writer: *std.Io.Writer, str: []const u8) !void {
     try writer.writeByte('"');
     var start: usize = 0;
@@ -70,8 +68,6 @@ fn writeOptNodeId(writer: *std.Io.Writer, val: ?NodeId) !void {
     }
 }
 
-// --- Node serialization ---
-
 fn writeNodeLine(writer: *std.Io.Writer, n: Node) !void {
     try writer.print("{{\"_type\":\"node\",\"id\":{d},\"name\":", .{@intFromEnum(n.id)});
     try writeStr(writer, n.name);
@@ -111,35 +107,20 @@ fn writeNodeLine(writer: *std.Io.Writer, n: Node) !void {
     }
     // lang_meta
     try writer.writeAll(",\"lang_meta\":");
-    switch (n.lang_meta) {
-        .none => try writer.writeAll("null"),
-        .zig => |zm| {
-            try writer.writeAll("{\"type\":\"zig\"");
-            try writer.print(",\"is_comptime\":{s}", .{if (zm.is_comptime) "true" else "false"});
-            try writer.print(",\"is_mutable\":{s}", .{if (zm.is_mutable) "true" else "false"});
-            try writer.print(",\"is_inline\":{s}", .{if (zm.is_inline) "true" else "false"});
-            try writer.print(",\"is_extern\":{s}", .{if (zm.is_extern) "true" else "false"});
-            try writer.print(",\"is_packed\":{s}", .{if (zm.is_packed) "true" else "false"});
-            try writer.print(",\"comptime_conditional\":{s}", .{if (zm.comptime_conditional) "true" else "false"});
-            try writer.writeAll(",\"calling_convention\":");
-            try writeOptStr(writer, zm.calling_convention);
-            try writer.writeByte('}');
-        },
-    }
+    try n.lang_meta.writeJson(writer);
     // metrics
     try writer.writeAll(",\"metrics\":");
     if (n.metrics) |m| {
         try writer.print("{{\"complexity\":{d},\"lines\":{d},\"fan_in\":{d},\"fan_out\":{d},\"branches\":{d},\"loops\":{d},\"error_paths\":{d},\"nesting_depth_max\":{d},\"structural_hash\":{d}}}", .{
-            m.complexity, m.lines, m.fan_in, m.fan_out,
-            m.branches, m.loops, m.error_paths, m.nesting_depth_max, m.structural_hash,
+            m.complexity,      m.lines, m.fan_in,      m.fan_out,
+            m.branches,        m.loops, m.error_paths, m.nesting_depth_max,
+            m.structural_hash,
         });
     } else {
         try writer.writeAll("null");
     }
     try writer.writeAll("}\n");
 }
-
-// --- Edge serialization ---
 
 fn writeEdgeLine(writer: *std.Io.Writer, e: Edge) !void {
     try writer.print("{{\"_type\":\"edge\",\"source_id\":{d},\"target_id\":{d},\"edge_type\":\"{t}\",\"source\":\"{t}\"}}\n", .{
@@ -149,8 +130,6 @@ fn writeEdgeLine(writer: *std.Io.Writer, e: Edge) !void {
         e.source,
     });
 }
-
-// --- Import helpers ---
 
 fn jsonStr(val: std.json.Value) ?[]const u8 {
     return switch (val) {
@@ -215,29 +194,6 @@ fn parseExternal(g: *Graph, val: std.json.Value) !ExternalInfo {
     }
 }
 
-fn parseLangMeta(val: std.json.Value) LangMeta {
-    switch (val) {
-        .null => return .{ .none = {} },
-        .object => |obj| {
-            const type_val = obj.get("type") orelse return .{ .none = {} };
-            if (type_val != .string) return .{ .none = {} };
-            if (std.mem.eql(u8, type_val.string, "zig")) {
-                return .{ .zig = .{
-                    .is_comptime = if (obj.get("is_comptime")) |v| (v == .bool and v.bool) else false,
-                    .is_mutable = if (obj.get("is_mutable")) |v| (v == .bool and v.bool) else false,
-                    .is_inline = if (obj.get("is_inline")) |v| (v == .bool and v.bool) else false,
-                    .is_extern = if (obj.get("is_extern")) |v| (v == .bool and v.bool) else false,
-                    .is_packed = if (obj.get("is_packed")) |v| (v == .bool and v.bool) else false,
-                    .comptime_conditional = if (obj.get("comptime_conditional")) |v| (v == .bool and v.bool) else false,
-                    .calling_convention = if (obj.get("calling_convention")) |v| jsonOptStr(v) else null,
-                } };
-            }
-            return .{ .none = {} };
-        },
-        else => return .{ .none = {} },
-    }
-}
-
 fn parseMetrics(val: std.json.Value) ?Metrics {
     switch (val) {
         .null => return null,
@@ -285,7 +241,7 @@ fn parseMetrics(val: std.json.Value) ?Metrics {
     }
 }
 
-/// Comptime lookup table mapping EdgeType integer value to alphabetical rank.
+/// Comptime lookup table mapping each EdgeType discriminant to its alphabetical rank.
 const edge_type_sort_rank = blk: {
     const fields = @typeInfo(EdgeType).@"enum".fields;
     const n = fields.len;
@@ -313,11 +269,12 @@ fn edgeLessThan(_: void, a: Edge, b: Edge) bool {
     return @intFromEnum(a.target_id) < @intFromEnum(b.target_id);
 }
 
-// --- Public API ---
-
-/// Export a graph to JSONL format, writing to the provided writer.
-/// Each line is a self-contained JSON object with a `_type` field
-/// indicating whether it's a "node" or "edge".
+/// Export a graph to JSONL format, writing one JSON object per line.
+///
+/// Nodes are emitted first (ordered by id), then edges (sorted alphabetically
+/// by edge_type, then by source_id, then by target_id). Each line contains a
+/// `_type` field set to "node" or "edge". The `allocator` is used for a
+/// temporary sorted-edge copy; `g` is not modified.
 pub fn exportJsonl(allocator: std.mem.Allocator, g: *const Graph, writer: *std.Io.Writer) !void {
     // Nodes (already sorted by id, sequential in the graph)
     for (g.nodes.items) |n| {
@@ -339,6 +296,11 @@ pub fn exportJsonl(allocator: std.mem.Allocator, g: *const Graph, writer: *std.I
 }
 
 /// Import a graph from JSONL-formatted bytes.
+///
+/// Each non-empty line in `data` must be a JSON object with `_type` set to
+/// "node" or "edge". Lines with unrecognized types or missing required fields
+/// are silently skipped. Edges referencing out-of-bounds node ids are also
+/// skipped. The caller owns the returned Graph and must call `deinit()` on it.
 pub fn importJsonl(allocator: std.mem.Allocator, data: []const u8) !Graph {
     var g = Graph.init(allocator, "");
     errdefer g.deinit();
@@ -411,8 +373,22 @@ pub fn importJsonl(allocator: std.mem.Allocator, data: []const u8) !Graph {
             // external
             const external = if (obj.get("external")) |v| try parseExternal(&g, v) else ExternalInfo{ .none = {} };
 
-            // lang_meta
-            const lang_meta = if (obj.get("lang_meta")) |v| parseLangMeta(v) else LangMeta{ .none = {} };
+            // lang_meta (parseJson dupes string data; register with graph)
+            const lang_meta = if (obj.get("lang_meta")) |v| blk: {
+                const meta = try LangMeta.parseJson(allocator, v);
+                switch (meta) {
+                    .zig => |zm| {
+                        if (zm.calling_convention) |cc| {
+                            g.addOwnedBuffer(cc) catch {
+                                allocator.free(cc);
+                                return error.OutOfMemory;
+                            };
+                        }
+                    },
+                    .none => {},
+                }
+                break :blk meta;
+            } else LangMeta{ .none = {} };
 
             // metrics
             const metrics = if (obj.get("metrics")) |v| parseMetrics(v) else null;
@@ -456,6 +432,9 @@ pub fn importJsonl(allocator: std.mem.Allocator, data: []const u8) !Graph {
                 break :blk std.meta.stringToEnum(EdgeSource, s) orelse .tree_sitter;
             } else .tree_sitter;
 
+            // Skip edges that reference out-of-bounds node IDs.
+            if (src_id >= g.nodes.items.len or tgt_id >= g.nodes.items.len) continue;
+
             _ = try g.addEdge(.{
                 .source_id = @enumFromInt(src_id),
                 .target_id = @enumFromInt(tgt_id),
@@ -466,10 +445,9 @@ pub fn importJsonl(allocator: std.mem.Allocator, data: []const u8) !Graph {
     }
 
     try g.rebuildEdgeIndex();
+    try g.freeze();
     return g;
 }
-
-// --- Test helpers ---
 
 /// Build a test graph with 3 diverse nodes and 2 edges for use in tests.
 fn createTestGraph(allocator: std.mem.Allocator) !Graph {
@@ -538,11 +516,9 @@ fn createTestGraph(allocator: std.mem.Allocator) !Graph {
     return g;
 }
 
-// --- Tests ---
-
 // Nominal tests
 
-test "jsonl round-trip preserves nodes" {
+test "jsonl round-trip preserves nodes and edges" {
     // Arrange
     var g = try createTestGraph(std.testing.allocator);
     defer g.deinit();
@@ -556,7 +532,7 @@ test "jsonl round-trip preserves nodes" {
     var loaded = try importJsonl(std.testing.allocator, aw.written());
     defer loaded.deinit();
 
-    // Assert
+    // Assert: nodes
     try std.testing.expectEqual(g.nodeCount(), loaded.nodeCount());
     for (g.nodes.items, loaded.nodes.items) |original, restored| {
         try std.testing.expectEqualStrings(original.name, restored.name);
@@ -564,24 +540,8 @@ test "jsonl round-trip preserves nodes" {
         try std.testing.expectEqual(original.language, restored.language);
         try std.testing.expectEqual(original.visibility, restored.visibility);
     }
-}
 
-test "jsonl round-trip preserves edges" {
-    // Arrange
-    var g = try createTestGraph(std.testing.allocator);
-    defer g.deinit();
-
-    var aw = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer aw.deinit();
-
-    // Act
-    try exportJsonl(std.testing.allocator, &g, &aw.writer);
-    try aw.writer.flush();
-    var loaded = try importJsonl(std.testing.allocator, aw.written());
-    defer loaded.deinit();
-
-    // Assert: compare as sets: sort both sides by canonical edge order
-    // because exportJsonl sorts edges and the original may have insertion order.
+    // Assert: edges (compare as sets via canonical sort order)
     try std.testing.expectEqual(g.edgeCount(), loaded.edgeCount());
 
     const orig_sorted = try std.testing.allocator.alloc(Edge, g.edgeCount());
@@ -624,7 +584,7 @@ test "jsonl lines are valid json" {
     }
 }
 
-test "jsonl nodes have _type node" {
+test "jsonl records have correct _type field" {
     // Arrange
     var g = try createTestGraph(std.testing.allocator);
     defer g.deinit();
@@ -636,37 +596,9 @@ test "jsonl nodes have _type node" {
     try exportJsonl(std.testing.allocator, &g, &aw.writer);
     try aw.writer.flush();
 
-    // Assert: node lines have _type "node"
+    // Assert: count node and edge lines by _type
     var line_iter = std.mem.splitScalar(u8, aw.written(), '\n');
     var node_count: usize = 0;
-    while (line_iter.next()) |line| {
-        if (line.len == 0) continue;
-        const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, line, .{});
-        defer parsed.deinit();
-        const obj = parsed.value.object;
-        if (obj.get("_type")) |type_val| {
-            if (std.mem.eql(u8, type_val.string, "node")) {
-                node_count += 1;
-            }
-        }
-    }
-    try std.testing.expectEqual(g.nodeCount(), node_count);
-}
-
-test "jsonl edges have _type edge" {
-    // Arrange
-    var g = try createTestGraph(std.testing.allocator);
-    defer g.deinit();
-
-    var aw = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer aw.deinit();
-
-    // Act
-    try exportJsonl(std.testing.allocator, &g, &aw.writer);
-    try aw.writer.flush();
-
-    // Assert: edge lines have _type "edge"
-    var line_iter = std.mem.splitScalar(u8, aw.written(), '\n');
     var edge_count: usize = 0;
     while (line_iter.next()) |line| {
         if (line.len == 0) continue;
@@ -674,15 +606,15 @@ test "jsonl edges have _type edge" {
         defer parsed.deinit();
         const obj = parsed.value.object;
         if (obj.get("_type")) |type_val| {
-            if (std.mem.eql(u8, type_val.string, "edge")) {
-                edge_count += 1;
-            }
+            if (std.mem.eql(u8, type_val.string, "node")) node_count += 1;
+            if (std.mem.eql(u8, type_val.string, "edge")) edge_count += 1;
         }
     }
+    try std.testing.expectEqual(g.nodeCount(), node_count);
     try std.testing.expectEqual(g.edgeCount(), edge_count);
 }
 
-test "jsonl nodes sorted by id" {
+test "jsonl output is sorted" {
     // Arrange
     var g = try createTestGraph(std.testing.allocator);
     defer g.deinit();
@@ -695,57 +627,36 @@ test "jsonl nodes sorted by id" {
     try aw.writer.flush();
 
     // Assert: node ids are in ascending order
-    var line_iter = std.mem.splitScalar(u8, aw.written(), '\n');
-    var prev_id: ?i64 = null;
-    while (line_iter.next()) |line| {
-        if (line.len == 0) continue;
-        const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, line, .{});
-        defer parsed.deinit();
-        const obj = parsed.value.object;
-        const type_val = obj.get("_type") orelse continue;
-        if (!std.mem.eql(u8, type_val.string, "node")) continue;
-        const id = obj.get("id").?.integer;
-        if (prev_id) |prev| {
-            try std.testing.expect(id > prev);
-        }
-        prev_id = id;
-    }
-}
-
-test "jsonl edges sorted by type then source then target" {
-    // Arrange
-    var g = try createTestGraph(std.testing.allocator);
-    defer g.deinit();
-
-    var aw = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer aw.deinit();
-
-    // Act
-    try exportJsonl(std.testing.allocator, &g, &aw.writer);
-    try aw.writer.flush();
-
-    // Assert: edges are sorted by edge_type alphabetically, then source_id, then target_id
     const EdgeKey = struct { edge_type: []const u8, source_id: i64, target_id: i64 };
     var edges: std.ArrayListUnmanaged(EdgeKey) = .{};
     defer edges.deinit(std.testing.allocator);
 
     var line_iter = std.mem.splitScalar(u8, aw.written(), '\n');
+    var prev_node_id: ?i64 = null;
     while (line_iter.next()) |line| {
         if (line.len == 0) continue;
         const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, line, .{});
         defer parsed.deinit();
         const obj = parsed.value.object;
         const type_val = obj.get("_type") orelse continue;
-        if (!std.mem.eql(u8, type_val.string, "edge")) continue;
-        try edges.append(std.testing.allocator, .{
-            .edge_type = try std.testing.allocator.dupe(u8, obj.get("edge_type").?.string),
-            .source_id = obj.get("source_id").?.integer,
-            .target_id = obj.get("target_id").?.integer,
-        });
+
+        if (std.mem.eql(u8, type_val.string, "node")) {
+            const id = obj.get("id").?.integer;
+            if (prev_node_id) |prev| {
+                try std.testing.expect(id > prev);
+            }
+            prev_node_id = id;
+        } else if (std.mem.eql(u8, type_val.string, "edge")) {
+            try edges.append(std.testing.allocator, .{
+                .edge_type = try std.testing.allocator.dupe(u8, obj.get("edge_type").?.string),
+                .source_id = obj.get("source_id").?.integer,
+                .target_id = obj.get("target_id").?.integer,
+            });
+        }
     }
     defer for (edges.items) |e| std.testing.allocator.free(@constCast(e.edge_type));
 
-    // Verify sorted order
+    // Assert: edges are sorted by edge_type alphabetically, then source_id, then target_id
     for (0..edges.items.len -| 1) |i| {
         const a = edges.items[i];
         const b = edges.items[i + 1];
@@ -783,7 +694,7 @@ test "jsonl empty graph" {
     }
     try std.testing.expectEqual(@as(usize, 0), line_count);
 
-    // Import the empty output → empty graph
+    // Import the empty output, expect an empty graph
     var loaded = try importJsonl(std.testing.allocator, aw.written());
     defer loaded.deinit();
     try std.testing.expectEqual(@as(usize, 0), loaded.nodeCount());

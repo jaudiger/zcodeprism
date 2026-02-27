@@ -30,8 +30,6 @@ pub fn unmapFile(mapped: []const u8) void {
     std.posix.munmap(aligned_ptr[0..mapped.len]);
 }
 
-// --- Tests ---
-
 const fixtures = @import("test-fixtures");
 
 test "mmap reads file content" {

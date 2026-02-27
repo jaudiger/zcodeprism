@@ -3,6 +3,7 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const coverage = b.option(bool, "coverage", "Generate test coverage with kcov") orelse false;
 
     // --- Dependencies ---
 
@@ -144,6 +145,19 @@ pub fn build(b: *std.Build) void {
 
     // --- Tests ---
 
+    const test_step = b.step("test", "Run unit tests");
+
+    // kcov arguments for coverage mode
+    const kcov_args: []const ?[]const u8 = &.{
+        "kcov", "--include-pattern=src/", "kcov-output", null,
+    };
+
+    // Test fixtures module
+    const fixture_mod = b.createModule(.{
+        .root_source_file = b.path("test/fixture_data.zig"),
+    });
+
+    // Library unit tests (inline tests in src/)
     const test_mod = b.createModule(.{
         .root_source_file = b.path("src/lib.zig"),
         .target = target,
@@ -151,20 +165,11 @@ pub fn build(b: *std.Build) void {
     });
     test_mod.addImport("tree-sitter", ts_dep.module("tree_sitter"));
     test_mod.linkLibrary(ts_zig_dep.artifact("tree-sitter-zig"));
-
-    // Test fixtures module
-    const fixture_mod = b.createModule(.{
-        .root_source_file = b.path("test/fixture_data.zig"),
-    });
     test_mod.addImport("test-fixtures", fixture_mod);
 
-    const lib_unit_tests = b.addTest(.{
+    addTestStep(b, test_step, b.addTest(.{
         .root_module = test_mod,
-    });
-    const run_lib_unit_tests = b.addRunArtifact(lib_unit_tests);
-
-    const test_step = b.step("test", "Run unit tests");
-    test_step.dependOn(&run_lib_unit_tests.step);
+    }), coverage, kcov_args);
 
     // --- Integration tests ---
 
@@ -185,10 +190,9 @@ pub fn build(b: *std.Build) void {
     parsing_test_mod.addImport("test-helpers", helpers_mod);
     parsing_test_mod.linkLibrary(ts_zig_dep.artifact("tree-sitter-zig"));
 
-    const parsing_tests = b.addTest(.{
+    addTestStep(b, test_step, b.addTest(.{
         .root_module = parsing_test_mod,
-    });
-    test_step.dependOn(&b.addRunArtifact(parsing_tests).step);
+    }), coverage, kcov_args);
 
     // Zig indexer integration tests (multi-file indexing)
     const indexer_test_mod = b.createModule(.{
@@ -201,8 +205,18 @@ pub fn build(b: *std.Build) void {
     indexer_test_mod.addImport("test-helpers", helpers_mod);
     indexer_test_mod.linkLibrary(ts_zig_dep.artifact("tree-sitter-zig"));
 
-    const indexer_tests = b.addTest(.{
+    addTestStep(b, test_step, b.addTest(.{
         .root_module = indexer_test_mod,
-    });
-    test_step.dependOn(&b.addRunArtifact(indexer_tests).step);
+    }), coverage, kcov_args);
+}
+
+fn addTestStep(
+    b: *std.Build,
+    test_step: *std.Build.Step,
+    test_artifact: *std.Build.Step.Compile,
+    cov: bool,
+    kcov_args: []const ?[]const u8,
+) void {
+    if (cov) test_artifact.setExecCmd(kcov_args);
+    test_step.dependOn(&b.addRunArtifact(test_artifact).step);
 }

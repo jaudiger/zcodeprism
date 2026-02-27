@@ -8,16 +8,24 @@ const Graph = graph_mod.Graph;
 const Node = node_mod.Node;
 const NodeId = types.NodeId;
 const NodeKind = types.NodeKind;
+const Language = types.Language;
+const ExternalInfo = lang.ExternalInfo;
 
-/// Manages phantom nodes, i.e. nodes representing external symbols (stdlib, dependencies)
-/// that are referenced but not defined in the project.
-/// Phantom nodes are deduplicated: multiple references to the same qualified name
-/// share a single node.
+/// Deduplicated store for phantom nodes -- external symbols (stdlib, dependencies)
+/// referenced but not defined in the project.
+///
+/// Multiple references to the same qualified name share a single node.
+/// Intermediate segments in a dotted path (e.g. "std.mem" in "std.mem.Allocator")
+/// are created automatically as `.module` phantom nodes.
 pub const PhantomManager = struct {
     graph: *Graph,
     allocator: std.mem.Allocator,
     lookup: std.StringHashMapUnmanaged(NodeId),
 
+    /// Creates a new PhantomManager backed by the given graph.
+    ///
+    /// `allocator` -- used for the internal lookup table keys; must outlive the manager.
+    /// `graph` -- the graph into which phantom nodes are inserted.
     pub fn init(allocator: std.mem.Allocator, graph: *Graph) PhantomManager {
         return .{
             .graph = graph,
@@ -26,9 +34,17 @@ pub const PhantomManager = struct {
         };
     }
 
-    /// Get the phantom node for a qualified name, creating it if it doesn't exist.
-    /// For example, "std.mem.Allocator" creates a chain: std → std.mem → std.mem.Allocator.
-    pub fn getOrCreate(self: *PhantomManager, qualified_name: []const u8, kind: NodeKind) !NodeId {
+    /// Returns the phantom NodeId for `qualified_name`, creating it (and any
+    /// missing intermediate segments) on first encounter.
+    ///
+    /// Dotted names are split on '.'; intermediate segments become `.module`
+    /// nodes while the leaf receives the caller-supplied `kind`.
+    /// For example, "std.mem.Allocator" produces the chain:
+    ///   std (.module) -> std.mem (.module) -> std.mem.Allocator (`kind`).
+    ///
+    /// `language` and `external` are forwarded to every newly created node.
+    /// Returns `error.OutOfMemory` if the graph or lookup allocation fails.
+    pub fn getOrCreate(self: *PhantomManager, qualified_name: []const u8, kind: NodeKind, language: Language, external: ExternalInfo) !NodeId {
         // Fast path: already created.
         if (self.lookup.get(qualified_name)) |id| return id;
 
@@ -53,21 +69,28 @@ pub const PhantomManager = struct {
             const node_kind: NodeKind = if (prefix_len == qualified_name.len) kind else .module;
 
             // Dupe segment name for the node, owned by graph.
-            const duped_name = try self.allocator.dupe(u8, segment);
-            try self.graph.addOwnedBuffer(duped_name);
+            const duped_name = blk: {
+                const d = try self.allocator.dupe(u8, segment);
+                errdefer self.allocator.free(d);
+                try self.graph.addOwnedBuffer(d);
+                break :blk d;
+            };
 
             const node_id = try self.graph.addNode(Node{
                 .id = .root,
                 .name = duped_name,
                 .kind = node_kind,
-                .language = .zig,
+                .language = language,
                 .parent_id = parent_id,
-                .external = .{ .stdlib = {} },
+                .external = external,
             });
 
             // Dupe prefix for the lookup key, owned by PhantomManager, freed in deinit.
-            const duped_prefix = try self.allocator.dupe(u8, prefix);
-            try self.lookup.put(self.allocator, duped_prefix, node_id);
+            {
+                const duped_prefix = try self.allocator.dupe(u8, prefix);
+                errdefer self.allocator.free(duped_prefix);
+                try self.lookup.put(self.allocator, duped_prefix, node_id);
+            }
 
             parent_id = node_id;
         }
@@ -75,6 +98,9 @@ pub const PhantomManager = struct {
         return self.lookup.get(qualified_name).?;
     }
 
+    /// Frees all lookup-key memory owned by this manager.
+    ///
+    /// Does not free the phantom nodes themselves; those are owned by the graph.
     pub fn deinit(self: *PhantomManager) void {
         var it = self.lookup.iterator();
         while (it.next()) |entry| {

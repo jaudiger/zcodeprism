@@ -18,13 +18,14 @@ const Metrics = metrics_mod.Metrics;
 const LangMeta = lang.LangMeta;
 const ExternalInfo = lang.ExternalInfo;
 
-/// Magic bytes identifying a ZCodePrism binary file.
+/// Magic bytes identifying a ZCodePrism binary file ("ZCPRISM\0").
 pub const MAGIC: [8]u8 = "ZCPRISM\x00".*;
 
 /// Current binary format version.
 pub const VERSION: u32 = 1;
 
-/// Header for the binary storage format.
+/// Fixed-size header at the start of a binary graph file.
+/// Contains magic, version, counts, and byte offsets for each table section.
 pub const BinaryHeader = struct {
     magic: [8]u8 = MAGIC,
     version: u32 = VERSION,
@@ -38,8 +39,6 @@ pub const BinaryHeader = struct {
     string_table_size: u64 = 0,
 };
 
-// --- Internal constants ---
-
 const HEADER_SIZE: usize = 72;
 const NODE_RECORD_SIZE: usize = 96;
 const EDGE_RECORD_SIZE: usize = 24;
@@ -51,8 +50,6 @@ const FLAG_HAS_METRICS: u8 = 0x02;
 const FLAG_HAS_PARENT: u8 = 0x04;
 const FLAG_HAS_LINE_START: u8 = 0x08;
 const FLAG_HAS_LINE_END: u8 = 0x10;
-
-// --- Internal types ---
 
 const StringRef = struct {
     offset: u32,
@@ -67,8 +64,6 @@ const NodeRefs = struct {
     ext_version: StringRef,
     lang_meta: StringRef,
 };
-
-// --- String table builder ---
 
 const StringTableBuilder = struct {
     bytes: std.ArrayListUnmanaged(u8) = .{},
@@ -100,83 +95,48 @@ const StringTableBuilder = struct {
     }
 };
 
-// --- LangMeta encoding ---
-
-fn encodeLangMeta(stb: *StringTableBuilder, allocator: std.mem.Allocator, meta: LangMeta) !StringRef {
-    switch (meta) {
-        .none => return .{ .offset = 0, .len = 0 },
-        .zig => |zm| {
-            // Encode as: [tag=1][flags][optional calling_convention string]
-            var buf: [256]u8 = undefined;
-            buf[0] = 1; // tag = zig
-            var flags: u8 = 0;
-            if (zm.is_comptime) flags |= 0x01;
-            if (zm.is_inline) flags |= 0x02;
-            if (zm.is_extern) flags |= 0x04;
-            if (zm.comptime_conditional) flags |= 0x08;
-            if (zm.is_mutable) flags |= 0x10;
-            if (zm.is_packed) flags |= 0x20;
-            buf[1] = flags;
-            var len: usize = 2;
-            if (zm.calling_convention) |cc| {
-                if (cc.len <= buf.len - 2) {
-                    @memcpy(buf[2..][0..cc.len], cc);
-                    len += cc.len;
-                }
-            }
-            return stb.intern(allocator, buf[0..len]);
-        },
-    }
-}
-
-fn decodeLangMeta(data: []const u8) LangMeta {
-    if (data.len == 0) return .{ .none = {} };
-    if (data[0] == 1 and data.len >= 2) {
-        const flags = data[1];
-        return .{ .zig = .{
-            .is_comptime = flags & 0x01 != 0,
-            .is_inline = flags & 0x02 != 0,
-            .is_extern = flags & 0x04 != 0,
-            .comptime_conditional = flags & 0x08 != 0,
-            .is_mutable = flags & 0x10 != 0,
-            .is_packed = flags & 0x20 != 0,
-            .calling_convention = if (data.len > 2) data[2..] else null,
-        } };
-    }
-    return .{ .none = {} };
-}
-
-// --- Helpers ---
-
 fn alignTo8(offset: usize) usize {
     return (offset + 7) & ~@as(usize, 7);
 }
 
 fn writeStringRef(buf: []u8, offset: usize, ref: StringRef) void {
     std.mem.writeInt(u32, buf[offset..][0..4], ref.offset, .little);
-    std.mem.writeInt(u32, buf[offset + 4..][0..4], ref.len, .little);
+    std.mem.writeInt(u32, buf[offset + 4 ..][0..4], ref.len, .little);
 }
 
 fn readStringRef(buf: []const u8, offset: usize) StringRef {
     return .{
         .offset = std.mem.readInt(u32, buf[offset..][0..4], .little),
-        .len = std.mem.readInt(u32, buf[offset + 4..][0..4], .little),
+        .len = std.mem.readInt(u32, buf[offset + 4 ..][0..4], .little),
     };
 }
 
-fn resolveStr(st_data: []const u8, ref: StringRef) []const u8 {
+fn resolveStr(st_data: []const u8, ref: StringRef) error{InvalidFormat}![]const u8 {
     if (ref.len == 0) return "";
+    const end: usize = @as(usize, ref.offset) + @as(usize, ref.len);
+    if (end > st_data.len) return error.InvalidFormat;
     return st_data[ref.offset..][0..ref.len];
 }
 
-fn resolveOptStr(st_data: []const u8, ref: StringRef) ?[]const u8 {
+fn resolveOptStr(st_data: []const u8, ref: StringRef) error{InvalidFormat}!?[]const u8 {
     if (ref.len == 0) return null;
+    const end: usize = @as(usize, ref.offset) + @as(usize, ref.len);
+    if (end > st_data.len) return error.InvalidFormat;
     return st_data[ref.offset..][0..ref.len];
 }
 
-// --- Public API ---
+/// Validate that a StringRef's range falls within the string table.
+fn validateStringRef(st_data: []const u8, ref: StringRef) error{InvalidFormat}!void {
+    if (ref.len == 0) return;
+    const end: usize = @as(usize, ref.offset) + @as(usize, ref.len);
+    if (end > st_data.len) return error.InvalidFormat;
+}
 
-/// Save a graph to a binary file.
+/// Serialize a graph to the binary storage format and write it to `path`.
+///
+/// Uses the MAF pattern: measures string table sizes, allocates a single
+/// output buffer, fills all table sections, then writes the file atomically.
+/// The caller owns `g`; this function does not modify it.
 pub fn save(allocator: std.mem.Allocator, g: *const Graph, path: []const u8) !void {
     // Measure: build string table, compute refs per node
     var stb = StringTableBuilder{};
@@ -201,13 +161,7 @@ pub fn save(allocator: std.mem.Allocator, g: *const Graph, path: []const u8) !vo
             },
             else => {},
         }
-        switch (n.lang_meta) {
-            .zig => |zm| {
-                total_string_bytes += 2; // tag + flags
-                if (zm.calling_convention) |cc| total_string_bytes += cc.len;
-            },
-            .none => {},
-        }
+        total_string_bytes += n.lang_meta.binarySize();
     }
     try stb.ensureBytesCapacity(allocator, total_string_bytes);
 
@@ -222,7 +176,11 @@ pub fn save(allocator: std.mem.Allocator, g: *const Graph, path: []const u8) !vo
             .signature = try stb.internOptional(allocator, n.signature),
             .doc = try stb.internOptional(allocator, n.doc),
             .ext_version = try stb.internOptional(allocator, ext_version),
-            .lang_meta = try encodeLangMeta(&stb, allocator, n.lang_meta),
+            .lang_meta = blk: {
+                var meta_buf: [256]u8 = undefined;
+                const meta_len = n.lang_meta.encodeBinary(&meta_buf);
+                break :blk if (meta_len > 0) try stb.intern(allocator, meta_buf[0..meta_len]) else .{ .offset = 0, .len = 0 };
+            },
         };
     }
 
@@ -288,21 +246,21 @@ pub fn save(allocator: std.mem.Allocator, g: *const Graph, path: []const u8) !vo
         // padding [13..16] already zero
         // parent_id (u64) at offset 16
         if (n.parent_id) |pid| {
-            std.mem.writeInt(u64, buf[base + 16..][0..8], @intFromEnum(pid), .little);
+            std.mem.writeInt(u64, buf[base + 16 ..][0..8], @intFromEnum(pid), .little);
         }
         // line_start (u32) at offset 24
         if (n.line_start) |ls| {
-            std.mem.writeInt(u32, buf[base + 24..][0..4], ls, .little);
+            std.mem.writeInt(u32, buf[base + 24 ..][0..4], ls, .little);
         }
         // line_end (u32) at offset 28
         if (n.line_end) |le| {
-            std.mem.writeInt(u32, buf[base + 28..][0..4], le, .little);
+            std.mem.writeInt(u32, buf[base + 28 ..][0..4], le, .little);
         }
         // content_hash ([12]u8) at offset 32
         if (n.content_hash) |ch| {
-            @memcpy(buf[base + 32..][0..12], &ch);
+            @memcpy(buf[base + 32 ..][0..12], &ch);
         }
-        // String refs: 6 refs × 8 bytes each starting at offset 44
+        // String refs: 6 refs x 8 bytes each starting at offset 44
         const refs = node_refs[i];
         writeStringRef(buf, base + 44, refs.name);
         writeStringRef(buf, base + 52, refs.file_path);
@@ -317,7 +275,7 @@ pub fn save(allocator: std.mem.Allocator, g: *const Graph, path: []const u8) !vo
     for (g.edges.items, 0..) |e, i| {
         const base = edge_table_offset + i * EDGE_RECORD_SIZE;
         std.mem.writeInt(u64, buf[base..][0..8], @intFromEnum(e.source_id), .little);
-        std.mem.writeInt(u64, buf[base + 8..][0..8], @intFromEnum(e.target_id), .little);
+        std.mem.writeInt(u64, buf[base + 8 ..][0..8], @intFromEnum(e.target_id), .little);
         buf[base + 16] = @intFromEnum(e.edge_type);
         buf[base + 17] = @intFromEnum(e.source);
         // padding [18..24] already zero
@@ -328,15 +286,15 @@ pub fn save(allocator: std.mem.Allocator, g: *const Graph, path: []const u8) !vo
         if (n.metrics) |m| {
             const base = metrics_table_offset + i * METRICS_RECORD_SIZE;
             std.mem.writeInt(u16, buf[base..][0..2], m.complexity, .little);
-            std.mem.writeInt(u32, buf[base + 2..][0..4], m.lines, .little);
-            std.mem.writeInt(u16, buf[base + 6..][0..2], m.fan_in, .little);
-            std.mem.writeInt(u16, buf[base + 8..][0..2], m.fan_out, .little);
-            std.mem.writeInt(u16, buf[base + 10..][0..2], m.branches, .little);
-            std.mem.writeInt(u16, buf[base + 12..][0..2], m.loops, .little);
-            std.mem.writeInt(u16, buf[base + 14..][0..2], m.error_paths, .little);
+            std.mem.writeInt(u32, buf[base + 2 ..][0..4], m.lines, .little);
+            std.mem.writeInt(u16, buf[base + 6 ..][0..2], m.fan_in, .little);
+            std.mem.writeInt(u16, buf[base + 8 ..][0..2], m.fan_out, .little);
+            std.mem.writeInt(u16, buf[base + 10 ..][0..2], m.branches, .little);
+            std.mem.writeInt(u16, buf[base + 12 ..][0..2], m.loops, .little);
+            std.mem.writeInt(u16, buf[base + 14 ..][0..2], m.error_paths, .little);
             buf[base + 16] = m.nesting_depth_max;
             // padding at 17 already zero
-            std.mem.writeInt(u32, buf[base + 18..][0..4], m.structural_hash, .little);
+            std.mem.writeInt(u32, buf[base + 18 ..][0..4], m.structural_hash, .little);
             // padding [22..24] already zero
         }
     }
@@ -352,7 +310,12 @@ pub fn save(allocator: std.mem.Allocator, g: *const Graph, path: []const u8) !vo
     try file.writeAll(buf);
 }
 
-/// Load a graph from a binary file.
+/// Deserialize a graph from a binary file at `path`.
+///
+/// Validates the header magic, version, and table bounds before parsing.
+/// Returns `error.InvalidMagic` or `error.UnsupportedVersion` for header
+/// mismatches, and `error.InvalidFormat` for truncated or corrupt data.
+/// The caller owns the returned Graph and must call `deinit()` on it.
 pub fn load(allocator: std.mem.Allocator, path: []const u8) !Graph {
     // Read file
     const file = try std.fs.cwd().openFile(path, .{});
@@ -381,13 +344,25 @@ pub fn load(allocator: std.mem.Allocator, path: []const u8) !Graph {
     const sto: usize = @intCast(std.mem.readInt(u64, buf[56..64], .little));
     const st_size: usize = @intCast(std.mem.readInt(u64, buf[64..72], .little));
 
+    // Validate that all table regions fit within the file buffer.
+    // Use overflow-safe arithmetic since counts are read from untrusted data.
+    const node_table_end = std.math.add(usize, nto, std.math.mul(usize, nc, NODE_RECORD_SIZE) catch return error.InvalidFormat) catch return error.InvalidFormat;
+    const edge_table_end = std.math.add(usize, eto, std.math.mul(usize, ec, EDGE_RECORD_SIZE) catch return error.InvalidFormat) catch return error.InvalidFormat;
+    const metrics_table_end = std.math.add(usize, mto, std.math.mul(usize, nc, METRICS_RECORD_SIZE) catch return error.InvalidFormat) catch return error.InvalidFormat;
+    const string_table_end = std.math.add(usize, sto, st_size) catch return error.InvalidFormat;
+
+    if (node_table_end > bytes_read or
+        edge_table_end > bytes_read or
+        metrics_table_end > bytes_read or
+        string_table_end > bytes_read) return error.InvalidFormat;
+
     var g = Graph.init(allocator, "");
     errdefer g.deinit();
 
     try g.nodes.ensureTotalCapacity(allocator, nc);
     try g.edges.ensureTotalCapacity(allocator, ec);
 
-    // Single dupe of string table region — all node strings resolve into this buffer
+    // Single dupe of string table region; all node strings resolve into this buffer
     const st_data: []const u8 = if (st_size > 0) blk: {
         const data = try g.allocator.dupe(u8, buf[sto..][0..st_size]);
         errdefer g.allocator.free(data);
@@ -415,77 +390,84 @@ pub fn load(allocator: std.mem.Allocator, path: []const u8) !Graph {
         const lang_meta_ref = readStringRef(buf, base + 84);
 
         // Resolve strings from duped string table (zero additional allocations)
-        const name = resolveStr(st_data, name_ref);
-        const file_path = resolveOptStr(st_data, file_path_ref);
-        const signature = resolveOptStr(st_data, sig_ref);
-        const doc = resolveOptStr(st_data, doc_ref);
+        const name = try resolveStr(st_data, name_ref);
+        const file_path = try resolveOptStr(st_data, file_path_ref);
+        const signature = try resolveOptStr(st_data, sig_ref);
+        const doc = try resolveOptStr(st_data, doc_ref);
 
         // External info
         const external_kind = buf[base + 11];
         const external: ExternalInfo = switch (external_kind) {
             0 => .{ .none = {} },
             1 => .{ .stdlib = {} },
-            2 => .{ .dependency = .{ .version = resolveOptStr(st_data, ext_ver_ref) } },
+            2 => .{ .dependency = .{ .version = try resolveOptStr(st_data, ext_ver_ref) } },
             else => .{ .none = {} },
         };
 
         // LangMeta
-        const lang_meta: LangMeta = if (lang_meta_ref.len > 0)
-            decodeLangMeta(st_data[lang_meta_ref.offset..][0..lang_meta_ref.len])
-        else
-            .{ .none = {} };
+        const lang_meta: LangMeta = if (lang_meta_ref.len > 0) blk: {
+            try validateStringRef(st_data, lang_meta_ref);
+            break :blk LangMeta.decodeBinary(st_data[lang_meta_ref.offset..][0..lang_meta_ref.len]);
+        } else .{ .none = {} };
 
         // Metrics
         const metrics: ?Metrics = if (has_metrics) blk: {
             const mbase = mto + i * METRICS_RECORD_SIZE;
             break :blk .{
                 .complexity = std.mem.readInt(u16, buf[mbase..][0..2], .little),
-                .lines = std.mem.readInt(u32, buf[mbase + 2..][0..4], .little),
-                .fan_in = std.mem.readInt(u16, buf[mbase + 6..][0..2], .little),
-                .fan_out = std.mem.readInt(u16, buf[mbase + 8..][0..2], .little),
-                .branches = std.mem.readInt(u16, buf[mbase + 10..][0..2], .little),
-                .loops = std.mem.readInt(u16, buf[mbase + 12..][0..2], .little),
-                .error_paths = std.mem.readInt(u16, buf[mbase + 14..][0..2], .little),
+                .lines = std.mem.readInt(u32, buf[mbase + 2 ..][0..4], .little),
+                .fan_in = std.mem.readInt(u16, buf[mbase + 6 ..][0..2], .little),
+                .fan_out = std.mem.readInt(u16, buf[mbase + 8 ..][0..2], .little),
+                .branches = std.mem.readInt(u16, buf[mbase + 10 ..][0..2], .little),
+                .loops = std.mem.readInt(u16, buf[mbase + 12 ..][0..2], .little),
+                .error_paths = std.mem.readInt(u16, buf[mbase + 14 ..][0..2], .little),
                 .nesting_depth_max = buf[mbase + 16],
-                .structural_hash = std.mem.readInt(u32, buf[mbase + 18..][0..4], .little),
+                .structural_hash = std.mem.readInt(u32, buf[mbase + 18 ..][0..4], .little),
             };
         } else null;
 
         g.nodes.appendAssumeCapacity(.{
             .id = @enumFromInt(std.mem.readInt(u64, buf[base..][0..8], .little)),
             .name = name,
-            .kind = @enumFromInt(buf[base + 8]),
-            .language = @enumFromInt(buf[base + 9]),
+            .kind = std.meta.intToEnum(NodeKind, buf[base + 8]) catch return error.InvalidFormat,
+            .language = std.meta.intToEnum(types.Language, buf[base + 9]) catch return error.InvalidFormat,
             .file_path = file_path,
-            .line_start = if (has_line_start) std.mem.readInt(u32, buf[base + 24..][0..4], .little) else null,
-            .line_end = if (has_line_end) std.mem.readInt(u32, buf[base + 28..][0..4], .little) else null,
-            .parent_id = if (has_parent) @as(NodeId, @enumFromInt(std.mem.readInt(u64, buf[base + 16..][0..8], .little))) else null,
-            .visibility = @enumFromInt(buf[base + 10]),
+            .line_start = if (has_line_start) std.mem.readInt(u32, buf[base + 24 ..][0..4], .little) else null,
+            .line_end = if (has_line_end) std.mem.readInt(u32, buf[base + 28 ..][0..4], .little) else null,
+            .parent_id = if (has_parent) @as(NodeId, @enumFromInt(std.mem.readInt(u64, buf[base + 16 ..][0..8], .little))) else null,
+            .visibility = std.meta.intToEnum(Visibility, buf[base + 10]) catch return error.InvalidFormat,
             .doc = doc,
             .signature = signature,
-            .content_hash = if (has_content_hash) buf[base + 32..][0..12].* else null,
+            .content_hash = if (has_content_hash) buf[base + 32 ..][0..12].* else null,
             .metrics = metrics,
             .lang_meta = lang_meta,
             .external = external,
         });
     }
 
-    // Parse edges
+    // Parse edges, skipping any that reference out-of-bounds node IDs.
     for (0..ec) |i| {
         const base = eto + i * EDGE_RECORD_SIZE;
+        const src_id = std.mem.readInt(u64, buf[base..][0..8], .little);
+        const tgt_id = std.mem.readInt(u64, buf[base + 8 ..][0..8], .little);
+        if (src_id >= nc or tgt_id >= nc) continue;
         g.edges.appendAssumeCapacity(.{
-            .source_id = @enumFromInt(std.mem.readInt(u64, buf[base..][0..8], .little)),
-            .target_id = @enumFromInt(std.mem.readInt(u64, buf[base + 8..][0..8], .little)),
-            .edge_type = @enumFromInt(buf[base + 16]),
-            .source = @enumFromInt(buf[base + 17]),
+            .source_id = @enumFromInt(src_id),
+            .target_id = @enumFromInt(tgt_id),
+            .edge_type = std.meta.intToEnum(EdgeType, buf[base + 16]) catch return error.InvalidFormat,
+            .source = std.meta.intToEnum(EdgeSource, buf[base + 17]) catch return error.InvalidFormat,
         });
     }
 
     try g.rebuildEdgeIndex();
+    try g.freeze();
     return g;
 }
 
-/// Append new nodes/edges to an existing binary file.
+/// Append new nodes and edges to an existing binary file at `path`.
+///
+/// Loads the current file, merges in the nodes and edges from `g`,
+/// then performs a full save (compaction) back to the same path.
 pub fn append(allocator: std.mem.Allocator, g: *const Graph, path: []const u8) !void {
     // Load existing graph
     var existing = try load(allocator, path);
@@ -504,8 +486,6 @@ pub fn append(allocator: std.mem.Allocator, g: *const Graph, path: []const u8) !
     // Full save (compaction)
     try save(allocator, &existing, path);
 }
-
-// --- Test helpers ---
 
 /// Build a test graph with 3 diverse nodes and 2 edges for use in tests.
 fn createTestGraph(allocator: std.mem.Allocator) !Graph {
@@ -583,11 +563,9 @@ fn createTestGraph(allocator: std.mem.Allocator) !Graph {
     return g;
 }
 
-// --- Tests ---
-
 // Nominal tests
 
-test "binary round-trip preserves nodes" {
+test "binary round-trip preserves nodes, edges, and metrics" {
     // Arrange
     var g = try createTestGraph(std.testing.allocator);
     defer g.deinit();
@@ -604,7 +582,7 @@ test "binary round-trip preserves nodes" {
     var loaded = try load(std.testing.allocator, file_path);
     defer loaded.deinit();
 
-    // Assert
+    // Assert: nodes
     try std.testing.expectEqual(g.nodeCount(), loaded.nodeCount());
     for (g.nodes.items, loaded.nodes.items) |original, restored| {
         try std.testing.expectEqualStrings(original.name, restored.name);
@@ -615,26 +593,8 @@ test "binary round-trip preserves nodes" {
         try std.testing.expectEqual(original.line_start, restored.line_start);
         try std.testing.expectEqual(original.line_end, restored.line_end);
     }
-}
 
-test "binary round-trip preserves edges" {
-    // Arrange
-    var g = try createTestGraph(std.testing.allocator);
-    defer g.deinit();
-
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
-    defer std.testing.allocator.free(path);
-    const file_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/test.bin", .{path});
-    defer std.testing.allocator.free(file_path);
-
-    // Act
-    try save(std.testing.allocator, &g, file_path);
-    var loaded = try load(std.testing.allocator, file_path);
-    defer loaded.deinit();
-
-    // Assert
+    // Assert: edges
     try std.testing.expectEqual(g.edgeCount(), loaded.edgeCount());
     for (g.edges.items, loaded.edges.items) |original, restored| {
         try std.testing.expectEqual(original.source_id, restored.source_id);
@@ -642,26 +602,8 @@ test "binary round-trip preserves edges" {
         try std.testing.expectEqual(original.edge_type, restored.edge_type);
         try std.testing.expectEqual(original.source, restored.source);
     }
-}
 
-test "binary round-trip preserves metrics" {
-    // Arrange
-    var g = try createTestGraph(std.testing.allocator);
-    defer g.deinit();
-
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
-    defer std.testing.allocator.free(path);
-    const file_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/test.bin", .{path});
-    defer std.testing.allocator.free(file_path);
-
-    // Act
-    try save(std.testing.allocator, &g, file_path);
-    var loaded = try load(std.testing.allocator, file_path);
-    defer loaded.deinit();
-
-    // Assert: node 1 has metrics
+    // Assert: metrics (node 1 has metrics)
     const original_metrics = g.getNode(@enumFromInt(1)).?.metrics.?;
     const loaded_metrics = loaded.getNode(@enumFromInt(1)).?.metrics.?;
     try std.testing.expectEqual(original_metrics.complexity, loaded_metrics.complexity);
@@ -675,7 +617,7 @@ test "binary round-trip preserves metrics" {
     try std.testing.expectEqual(original_metrics.structural_hash, loaded_metrics.structural_hash);
 }
 
-test "binary header has correct magic" {
+test "binary header has correct magic, version, and counts" {
     // Arrange
     var g = try createTestGraph(std.testing.allocator);
     defer g.deinit();
@@ -690,58 +632,21 @@ test "binary header has correct magic" {
     // Act
     try save(std.testing.allocator, &g, file_path);
 
-    // Assert: first 8 bytes are MAGIC
-    const file = try tmp.dir.openFile("test.bin", .{});
-    defer file.close();
-    var header_buf: [8]u8 = undefined;
-    const bytes_read = try file.readAll(&header_buf);
-    try std.testing.expectEqual(@as(usize, 8), bytes_read);
-    try std.testing.expectEqualSlices(u8, &MAGIC, &header_buf);
-}
-
-test "binary header has version 1" {
-    // Arrange
-    var g = try createTestGraph(std.testing.allocator);
-    defer g.deinit();
-
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
-    defer std.testing.allocator.free(path);
-    const file_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/test.bin", .{path});
-    defer std.testing.allocator.free(file_path);
-
-    // Act
-    try save(std.testing.allocator, &g, file_path);
-
-    // Assert: bytes 8..12 are VERSION (little-endian u32)
+    // Assert: magic bytes
     const file = try tmp.dir.openFile("test.bin", .{});
     defer file.close();
     var header_buf: [12]u8 = undefined;
     const bytes_read = try file.readAll(&header_buf);
     try std.testing.expectEqual(@as(usize, 12), bytes_read);
+    try std.testing.expectEqualSlices(u8, &MAGIC, header_buf[0..8]);
+
+    // Assert: version
     const version = std.mem.readInt(u32, header_buf[8..12], .little);
     try std.testing.expectEqual(VERSION, version);
-}
 
-test "binary header has correct counts" {
-    // Arrange
-    var g = try createTestGraph(std.testing.allocator);
-    defer g.deinit();
-
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
-    defer std.testing.allocator.free(path);
-    const file_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/test.bin", .{path});
-    defer std.testing.allocator.free(file_path);
-
-    // Act
-    try save(std.testing.allocator, &g, file_path);
+    // Assert: counts
     var loaded = try load(std.testing.allocator, file_path);
     defer loaded.deinit();
-
-    // Assert
     try std.testing.expectEqual(@as(usize, 3), loaded.nodeCount());
     try std.testing.expectEqual(@as(usize, 2), loaded.edgeCount());
 }
@@ -1108,4 +1013,87 @@ test "compaction after append" {
     var loaded_post = try load(std.testing.allocator, file_path);
     defer loaded_post.deinit();
     try std.testing.expectEqual(@as(usize, 5), loaded_post.nodeCount());
+}
+
+test "load rejects truncated file with table regions past EOF" {
+    // Arrange: valid header claiming 1 node, but file is only the header
+    var header: [HEADER_SIZE]u8 = undefined;
+    @memset(&header, 0);
+    @memcpy(header[0..8], &MAGIC);
+    std.mem.writeInt(u32, header[8..12], VERSION, .little);
+    std.mem.writeInt(u64, header[16..24], 1, .little); // nc = 1
+    std.mem.writeInt(u64, header[32..40], HEADER_SIZE, .little); // nto
+    std.mem.writeInt(u64, header[40..48], HEADER_SIZE, .little); // eto
+    std.mem.writeInt(u64, header[48..56], HEADER_SIZE, .little); // mto
+    std.mem.writeInt(u64, header[56..64], HEADER_SIZE, .little); // sto
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(path);
+    const file_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/malformed.bin", .{path});
+    defer std.testing.allocator.free(file_path);
+
+    const file = try tmp.dir.createFile("malformed.bin", .{});
+    defer file.close();
+    try file.writeAll(&header);
+
+    // Act / Assert: node table (72 + 96 = 168) exceeds 72-byte file
+    const result = load(std.testing.allocator, file_path);
+    try std.testing.expectError(error.InvalidFormat, result);
+}
+
+test "load rejects corrupt string ref past string table" {
+    // Arrange: save a valid graph, then corrupt a name StringRef
+    var g = Graph.init(std.testing.allocator, "/tmp/test-project");
+    defer g.deinit();
+    _ = try g.addNode(.{ .id = .root, .name = "n", .kind = .file, .language = .zig });
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(path);
+    const file_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/malformed.bin", .{path});
+    defer std.testing.allocator.free(file_path);
+
+    try save(std.testing.allocator, &g, file_path);
+
+    // Overwrite name StringRef (node base + 44) with out-of-bounds offset
+    const raw_file = try std.fs.cwd().openFile(file_path, .{ .mode = .read_write });
+    defer raw_file.close();
+    try raw_file.seekTo(HEADER_SIZE + 44);
+    var ref_buf: [8]u8 = undefined;
+    std.mem.writeInt(u32, ref_buf[0..4], 0xFFFF, .little);
+    std.mem.writeInt(u32, ref_buf[4..8], 10, .little);
+    try raw_file.writeAll(&ref_buf);
+
+    // Act / Assert
+    const result = load(std.testing.allocator, file_path);
+    try std.testing.expectError(error.InvalidFormat, result);
+}
+
+test "load rejects invalid enum discriminant" {
+    // Arrange: save a valid graph, then corrupt the NodeKind byte
+    var g = Graph.init(std.testing.allocator, "/tmp/test-project");
+    defer g.deinit();
+    _ = try g.addNode(.{ .id = .root, .name = "n", .kind = .file, .language = .zig });
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(path);
+    const file_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/malformed.bin", .{path});
+    defer std.testing.allocator.free(file_path);
+
+    try save(std.testing.allocator, &g, file_path);
+
+    // Overwrite NodeKind byte (node base + 8) with invalid value
+    const raw_file = try std.fs.cwd().openFile(file_path, .{ .mode = .read_write });
+    defer raw_file.close();
+    try raw_file.seekTo(HEADER_SIZE + 8);
+    try raw_file.writeAll(&[_]u8{0xFF});
+
+    // Act / Assert
+    const result = load(std.testing.allocator, file_path);
+    try std.testing.expectError(error.InvalidFormat, result);
 }

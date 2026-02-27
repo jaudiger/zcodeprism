@@ -1,5 +1,6 @@
 const std = @import("std");
 
+/// Entry point for the zcodeprism CLI. Parses arguments and dispatches commands.
 pub fn main() !void {
     var stdout_buffer: [4096]u8 = undefined;
     var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);

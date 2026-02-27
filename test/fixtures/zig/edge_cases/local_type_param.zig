@@ -24,12 +24,12 @@ pub fn processPoint(p: Point) i32 {
     return p.manhattan();
 }
 
-/// Takes an external type parameter — should NOT create a local calls edge.
+/// Takes an external type parameter, so should NOT create a local calls edge.
 pub fn externalParam(allocator: std.mem.Allocator) void {
     _ = allocator;
 }
 
-/// Takes a pointer-to-Point parameter — pointer types are not handled
+/// Takes a pointer-to-Point parameter. Pointer types are not handled
 /// by the simple bare-identifier check, so no local calls edge expected.
 pub fn pointerParam(p: *Point) void {
     p.scale(2);

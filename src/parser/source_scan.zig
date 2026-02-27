@@ -1,24 +1,35 @@
 const std = @import("std");
 const graph_mod = @import("../core/graph.zig");
+const logging = @import("../logging.zig");
 const types = @import("../core/types.zig");
 const phantom_mod = @import("../core/phantom.zig");
 const metrics_mod = @import("../core/metrics.zig");
+const lang = @import("../languages/language.zig");
 
+const Field = logging.Field;
+const Logger = logging.Logger;
 const Graph = graph_mod.Graph;
 const NodeId = types.NodeId;
 const NodeKind = types.NodeKind;
+const Language = types.Language;
+const ExternalInfo = lang.ExternalInfo;
 
-/// A function's node ID and line range, used to map source positions to functions.
+/// A function's node ID and its inclusive line range within a source file.
+/// Used internally to map source positions back to the enclosing function node.
 const FnRange = struct { id: NodeId, line_start: u32, line_end: u32 };
 const EdgeType = types.EdgeType;
 const EdgeSource = types.EdgeSource;
 const PhantomManager = phantom_mod.PhantomManager;
 const Metrics = metrics_mod.Metrics;
 
+/// Return true if `c` is an ASCII identifier character (letter, digit, or underscore).
 pub fn isIdentChar(c: u8) bool {
     return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9') or c == '_';
 }
 
+/// Return true if `text` starts with `keyword` at a word boundary.
+/// A match requires that the character immediately after the keyword (if any)
+/// is not an identifier character, preventing partial matches inside longer words.
 pub fn matchKeyword(text: []const u8, keyword: []const u8) bool {
     if (text.len < keyword.len) return false;
     if (!std.mem.startsWith(u8, text, keyword)) return false;
@@ -26,6 +37,9 @@ pub fn matchKeyword(text: []const u8, keyword: []const u8) bool {
     return true;
 }
 
+/// Extract the byte slice spanning lines `line_start` through `line_end` (1-based, inclusive).
+/// Returns a sub-slice of `source`. If `source` is empty, returns it unchanged.
+/// If `line_end` extends past the end of the file, returns through the last byte.
 pub fn extractLineRange(source: []const u8, line_start: u32, line_end: u32) []const u8 {
     if (source.len == 0) return source;
     var current_line: u32 = 1;
@@ -49,6 +63,10 @@ pub fn extractLineRange(source: []const u8, line_start: u32, line_end: u32) []co
     return source;
 }
 
+/// Return true if `node_id` is a descendant of `ancestor_id` in the parent chain.
+/// Walks up the parent_id links from `node_id`, returning true if `ancestor_id`
+/// is encountered within 100 hops. Returns false if the chain is broken (null
+/// parent) or if the hop limit is reached.
 pub fn isDescendantOf(graph: *const Graph, node_id: NodeId, ancestor_id: NodeId) bool {
     var current = node_id;
     var hops: usize = 0;
@@ -61,15 +79,10 @@ pub fn isDescendantOf(graph: *const Graph, node_id: NodeId, ancestor_id: NodeId)
     return false;
 }
 
-pub fn addEdgeIfNew(graph: *Graph, source_id: NodeId, target_id: NodeId, edge_type: EdgeType, edge_source: EdgeSource) !void {
-    _ = try graph.addEdgeIfNew(.{
-        .source_id = source_id,
-        .target_id = target_id,
-        .edge_type = edge_type,
-        .source = edge_source,
-    });
-}
-
+/// Compute and attach metrics (line count, cyclomatic complexity) to every
+/// function node in the index range `[file_idx, file_end_idx)`.
+/// `source` must be the full source text of the file that owns these nodes.
+/// Non-function nodes and functions without line information are skipped.
 pub fn computeMetricsForNodes(graph: *Graph, source: []const u8, file_idx: usize, file_end_idx: usize) void {
     const end = @min(file_end_idx, graph.nodes.items.len);
     for (graph.nodes.items[file_idx..end]) |*n| {
@@ -113,6 +126,9 @@ fn computeComplexity(fn_source: []const u8) u16 {
     return complexity;
 }
 
+/// Count the number of lines (1-based) from the start of `source` up to `byte_pos`.
+/// Counts newline characters in `source[0..min(byte_pos, source.len)]` and adds one
+/// for the first line. If `byte_pos` is zero, returns 1.
 pub fn countLinesUpTo(source: []const u8, byte_pos: usize) u32 {
     var line: u32 = 1;
     const end = @min(byte_pos, source.len);
@@ -122,6 +138,9 @@ pub fn countLinesUpTo(source: []const u8, byte_pos: usize) u32 {
     return line;
 }
 
+/// Find the function node that contains the given source `line` within the
+/// subtree rooted at `file_id`. Returns the NodeId of the first function whose
+/// line range includes `line`, or null if no enclosing function is found.
 pub fn findContainingFunction(graph: *const Graph, file_id: NodeId, line: u32) ?NodeId {
     for (graph.nodes.items, 0..) |n, i| {
         if (n.kind != .function) continue;
@@ -147,6 +166,14 @@ fn isInsideLineComment(source: []const u8, pos: usize) bool {
     return false;
 }
 
+/// Scan `source` for references to the standard library (prefixed by `std_name`)
+/// and create phantom nodes for each unique chain (e.g. std.mem.Allocator).
+/// For PascalCase leaf segments (type references), a `uses_type` edge is added
+/// from the enclosing function to the phantom node.
+///
+/// `file_idx` and `file_end_idx` delimit the node range belonging to this file
+/// in `graph`. `phantom` manages deduplication of phantom nodes. `external`
+/// provides the external-origin metadata attached to each phantom.
 pub fn resolveStdPhantoms(
     graph: *Graph,
     source: []const u8,
@@ -154,10 +181,14 @@ pub fn resolveStdPhantoms(
     file_end_idx: usize,
     phantom: *PhantomManager,
     std_name: []const u8,
+    language: Language,
+    external: ExternalInfo,
+    log: Logger,
 ) !void {
     // Pre-build function line index from file-scoped nodes.
     var fn_ranges: [256]FnRange = undefined;
     var fn_count: usize = 0;
+    var fn_cap_warned = false;
     const end = @min(file_end_idx, graph.nodes.items.len);
     for (graph.nodes.items[file_idx..end], file_idx..) |n, i| {
         if (n.kind != .function) continue;
@@ -166,6 +197,11 @@ pub fn resolveStdPhantoms(
         if (fn_count < fn_ranges.len) {
             fn_ranges[fn_count] = .{ .id = @enumFromInt(i), .line_start = ls, .line_end = le };
             fn_count += 1;
+        } else if (!fn_cap_warned) {
+            log.warn("function range tracker at capacity, some phantom uses_type edges will be missing", &.{
+                Field.uint("capacity", fn_ranges.len),
+            });
+            fn_cap_warned = true;
         }
     }
 
@@ -216,7 +252,7 @@ pub fn resolveStdPhantoms(
 
             const kind: NodeKind = if (leaf[0] >= 'A' and leaf[0] <= 'Z') .type_def else .module;
 
-            const phantom_id = try phantom.getOrCreate(chain, kind);
+            const phantom_id = try phantom.getOrCreate(chain, kind, language, external);
 
             // For type references (PascalCase leaf), create uses_type edge from
             // the containing function using the running line counter.
@@ -230,7 +266,7 @@ pub fn resolveStdPhantoms(
                 // Find containing function from pre-built index.
                 const fn_id = findFnByLine(fn_ranges[0..fn_count], current_line);
                 if (fn_id) |fid| {
-                    try addEdgeIfNew(graph, fid, phantom_id, .uses_type, .phantom);
+                    _ = try graph.addEdgeIfNew(.{ .source_id = fid, .target_id = phantom_id, .edge_type = .uses_type, .source = .phantom });
                 }
             }
         } else {

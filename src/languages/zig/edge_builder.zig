@@ -24,9 +24,16 @@ const KindIds = pc.KindIds;
 const ScopeIndex = pc.ScopeIndex;
 const FileIndex = pc.FileIndex;
 
-/// Tracks per-function local variable bindings from struct literal or
-/// static-method-call initializers. Used to resolve method calls like
-/// `p.manhattan()` where `const p = Point{ .x = 3, .y = -4 }`.
+/// Maps local variable names to their inferred struct type names within a
+/// single function body.
+///
+/// Populated during the prescan phase from struct literal initializers
+/// (`const p = Point{ .x = 3 }`) and static method calls (`const b = Builder.init(5)`).
+/// Consumed during call scanning to resolve method calls like `p.manhattan()`
+/// back to the correct struct's method.
+///
+/// Fixed capacity: holds up to 32 bindings per function. Excess bindings
+/// are dropped with a warning logged.
 const LocalTypeTracker = struct {
     var_names: [max_vars][]const u8 = undefined,
     type_names: [max_vars][]const u8 = undefined,
@@ -34,13 +41,22 @@ const LocalTypeTracker = struct {
 
     const max_vars = 32;
 
-    fn addBinding(self: *LocalTypeTracker, name: []const u8, type_name: []const u8) void {
-        if (self.var_count >= max_vars) return;
+    /// Record that local variable `name` was initialized from type `type_name`.
+    /// Drops the binding with a warning if at capacity.
+    fn addBinding(self: *LocalTypeTracker, name: []const u8, type_name: []const u8, log: Logger) void {
+        if (self.var_count >= max_vars) {
+            log.warn("local type tracker at capacity, some struct-literal edges will be missing", &.{
+                Field.uint("capacity", max_vars),
+                Field.string("dropped", name),
+            });
+            return;
+        }
         self.var_names[self.var_count] = name;
         self.type_names[self.var_count] = type_name;
         self.var_count += 1;
     }
 
+    /// Return the type name bound to `name`, or null if not tracked.
     fn findTypeName(self: *const LocalTypeTracker, name: []const u8) ?[]const u8 {
         for (self.var_names[0..self.var_count], self.type_names[0..self.var_count]) |vname, tname| {
             if (std.mem.eql(u8, vname, name)) return tname;
@@ -49,9 +65,16 @@ const LocalTypeTracker = struct {
     }
 };
 
-/// Tracks per-function parameter bindings whose type is import-qualified.
-/// Used to resolve method calls like `svc.process()` where the parameter
-/// `svc` has type `svc_mod.Service` (an import-qualified struct from another file).
+/// Maps function parameter names to their import-qualified type origins.
+///
+/// Populated during prescan from parameter declarations whose type is a
+/// dotted import path (e.g., `svc: svc_mod.Service` or `p: *math.Point`).
+/// Each binding stores the resolved target file NodeId and the remaining
+/// member chain so that `svc.process()` can be resolved as a cross-file
+/// call to `Service.process` in the target file.
+///
+/// Fixed capacity: holds up to 16 bindings per function. Excess bindings
+/// are dropped with a warning logged.
 const ParamTypeTracker = struct {
     names: [max_params][]const u8 = undefined,
     target_files: [max_params]NodeId = undefined,
@@ -61,8 +84,18 @@ const ParamTypeTracker = struct {
 
     const max_params = 16;
 
-    fn addBinding(self: *ParamTypeTracker, name: []const u8, target_file: NodeId, chain: []const []const u8) void {
-        if (self.count >= max_params or chain.len == 0) return;
+    /// Record that parameter `name` has an import-qualified type rooted at
+    /// `target_file` with the given member chain. No-op if chain is empty.
+    /// Drops the binding with a warning if at capacity.
+    fn addBinding(self: *ParamTypeTracker, name: []const u8, target_file: NodeId, chain: []const []const u8, log: Logger) void {
+        if (chain.len == 0) return;
+        if (self.count >= max_params) {
+            log.warn("param type tracker at capacity, some import-qualified param edges will be missing", &.{
+                Field.uint("capacity", max_params),
+                Field.string("dropped", name),
+            });
+            return;
+        }
         self.names[self.count] = name;
         self.target_files[self.count] = target_file;
         const copy_len = @min(chain.len, cf.max_chain_depth);
@@ -73,6 +106,7 @@ const ParamTypeTracker = struct {
         self.count += 1;
     }
 
+    /// Return the SymbolOrigin for parameter `name`, or null if not tracked.
     fn findOrigin(self: *const ParamTypeTracker, name: []const u8) ?cf.SymbolOrigin {
         for (0..self.count) |i| {
             if (std.mem.eql(u8, self.names[i], name)) {
@@ -86,12 +120,11 @@ const ParamTypeTracker = struct {
     }
 };
 
-// =========================================================================
-// ScanContext: per-function/test scan state
-// =========================================================================
-
-/// Groups all per-function scan state into one struct passed by pointer,
-/// replacing many loose parameters on scanForCalls and scanForTypeIdentifiers.
+/// Bundles all state needed to scan a single function or test body for edges.
+///
+/// Created once per function/test declaration inside walkForEdges, then
+/// passed by const pointer to scanForCalls and scanForTypeIdentifiersScoped.
+/// Owns no memory; all pointers borrow from the caller's stack or the graph.
 const ScanContext = struct {
     g: *Graph,
     source: []const u8,
@@ -108,32 +141,40 @@ const ScanContext = struct {
     log: Logger,
 };
 
-// =========================================================================
-// Edge creation
-// =========================================================================
-
+/// Recursively walk a tree-sitter AST and create call/uses_type edges in the graph.
+///
+/// For each function or test declaration encountered, this function:
+///   1. Matches the AST node to its corresponding graph node (by name + line).
+///   2. Pre-scans the body to populate variable, local-type, and param-type trackers.
+///   3. Scans call expressions to create `calls` edges.
+///   4. Scans type identifiers to create `uses_type` edges.
+///
+/// The walk recurses into named children only; anonymous nodes are skipped at
+/// this level because declarations are always named in tree-sitter.
+///
+/// `source` is the full file content (borrowed, not owned).
+/// `ctx` provides import/scope boundaries for the current file.
+/// Returns `error.OutOfMemory` if graph edge insertion fails.
 pub fn walkForEdges(g: *Graph, source: []const u8, ts_node: ts.Node, ctx: *const EdgeContext, k: *const KindIds, scope_index: *const ScopeIndex, file_index: *const FileIndex, log: Logger) !void {
     const kid = ts_node.kindId();
 
     if (kid == k.function_declaration) {
         if (ast.getIdentifierName(source, ts_node, k)) |name| {
-            // Look up the function node by name and line position to correctly
-            // identify which graph node corresponds to this AST declaration
-            // when multiple functions share the same name.
+            // Phase 1: Match AST declaration to graph node by name + line.
             const decl_line = ts_node.startPoint().row + 1;
             if (findFunctionByNameAndLine(g, name, decl_line, ctx.scope_start, ctx.scope_end)) |fn_id| {
                 const fn_node = g.getNode(fn_id);
                 _ = if (fn_node) |n| n.parent_id else null; // Scope walk starts at fn_id and walks up through parents.
                 const caller_scope_id: ?NodeId = fn_id;
 
-                // Build all per-function trackers in a single block walk.
+                // Phase 2: Prescan -- populate all per-function trackers in a single block walk.
                 var var_tracker = VarTracker{};
                 var local_type_tracker = LocalTypeTracker{};
                 var param_type_tracker = ParamTypeTracker{};
-                prescanForParamTypeBindings(source, ts_node, ctx, k, &param_type_tracker);
+                prescanForParamTypeBindings(source, ts_node, ctx, k, &param_type_tracker, log);
                 prescanBlock(g, source, ts_node, ctx, k, &var_tracker, &local_type_tracker, &param_type_tracker, scope_index, file_index, log);
 
-                // Build ScanContext for this function.
+                // Phase 3: Build ScanContext, then scan for call and type edges.
                 const sctx = ScanContext{
                     .g = g,
                     .source = source,
@@ -150,10 +191,10 @@ pub fn walkForEdges(g: *Graph, source: []const u8, ts_node: ts.Node, ctx: *const
                     .log = log,
                 };
 
-                // Scan function body for call expressions.
+                // Phase 3a: scan for call expressions -> `calls` edges.
                 try scanForCalls(&sctx, ts_node, 0);
 
-                // Scan full function node (signature + body) for type references.
+                // Phase 3b: scan for type identifiers -> `uses_type` edges.
                 try scanForTypeIdentifiersScoped(&sctx, ts_node, 0);
             } else {
                 log.trace("function not found in graph", &.{
@@ -163,19 +204,20 @@ pub fn walkForEdges(g: *Graph, source: []const u8, ts_node: ts.Node, ctx: *const
             }
         }
     } else if (kid == k.test_declaration) {
+        // Phase 1: Match test AST node to graph node by name.
         const test_name = ast.getTestName(source, ts_node, k);
         if (findTestByName(g, test_name, ctx.scope_start, ctx.scope_end)) |test_id| {
             _ = g.getNode(test_id); // Scope walk starts at test_id and walks up through parents.
             const test_parent_id: ?NodeId = test_id;
 
-            // Build all per-test trackers in a single block walk.
+            // Phase 2: Prescan -- populate all per-test trackers.
             var var_tracker = VarTracker{};
             var local_type_tracker = LocalTypeTracker{};
             var param_type_tracker = ParamTypeTracker{};
-            prescanForParamTypeBindings(source, ts_node, ctx, k, &param_type_tracker);
+            prescanForParamTypeBindings(source, ts_node, ctx, k, &param_type_tracker, log);
             prescanBlock(g, source, ts_node, ctx, k, &var_tracker, &local_type_tracker, &param_type_tracker, scope_index, file_index, log);
 
-            // Build ScanContext for this test.
+            // Phase 3: Build ScanContext, then scan for call and type edges.
             const sctx = ScanContext{
                 .g = g,
                 .source = source,
@@ -192,19 +234,19 @@ pub fn walkForEdges(g: *Graph, source: []const u8, ts_node: ts.Node, ctx: *const
                 .log = log,
             };
 
-            // Scan test body for call expressions.
+            // Phase 3a: scan for call expressions -> `calls` edges.
             try scanForCalls(&sctx, ts_node, 0);
 
-            // Scan test node for type references.
+            // Phase 3b: scan for type identifiers -> `uses_type` edges.
             try scanForTypeIdentifiersScoped(&sctx, ts_node, 0);
         } else {
             log.trace("test not found in graph", &.{Field.string("name", test_name)});
         }
     }
 
-    // Recurse into named children only. Declarations (fn, test, struct) are always
-    // named nodes in tree-sitter, so skipping anonymous nodes is safe and avoids
-    // descending into expression-level subtrees that walkForEdges doesn't handle.
+    // Phase 4: Recurse into named children to find nested declarations.
+    // Anonymous nodes are skipped because declarations (fn, test, struct)
+    // are always named nodes in tree-sitter.
     var i: u32 = 0;
     while (i < ts_node.namedChildCount()) : (i += 1) {
         const child = ts_node.namedChild(i) orelse continue;
@@ -212,7 +254,16 @@ pub fn walkForEdges(g: *Graph, source: []const u8, ts_node: ts.Node, ctx: *const
     }
 }
 
-/// Resolve a call through a SymbolOrigin by prepending its chain to the call chain.
+/// Resolve a call or reference through a SymbolOrigin by prepending the
+/// origin's member chain to the call-site chain, then delegating to
+/// `cf.resolveQualifiedCall`.
+///
+/// For example, if `svc` maps to origin `(file=services.zig, chain=["Service"])`
+/// and the call site is `svc.process()`, the combined chain becomes
+/// `["Service", "process"]` resolved against `services.zig`.
+///
+/// `is_call` controls whether the resulting edge is `calls` (true) or
+/// `uses_type` (false).
 fn resolveOriginCall(
     sctx: *const ScanContext,
     origin: cf.SymbolOrigin,
@@ -233,29 +284,45 @@ fn resolveOriginCall(
     }
     if (len == 0) return;
     try cf.resolveQualifiedCall(
-        sctx.g, sctx.caller_id, origin.file_id,
-        resolve_chain[0..len], is_call,
-        sctx.scope_index, sctx.file_index, sctx.log,
+        sctx.g,
+        sctx.caller_id,
+        origin.file_id,
+        resolve_chain[0..len],
+        is_call,
+        sctx.scope_index,
+        sctx.file_index,
+        sctx.log,
     );
 }
 
+/// Recursively scan an AST subtree for call_expression nodes and create
+/// `calls` edges in the graph.
+///
+/// Handles three call shapes:
+///   - Bare calls (`foo()`) -- resolved in the caller's scope.
+///   - Qualified calls (`a.b()`) -- resolved via import tracker, var tracker,
+///     local-type tracker, param tracker, or receiver classification fallback.
+///   - Single-segment field expressions -- treated as bare calls.
+///
+/// Recurses into all children (including anonymous nodes) but stops at
+/// nested function/test declarations to respect scope boundaries.
+/// Depth is capped at `cf.max_ast_scan_depth` to avoid runaway recursion.
 fn scanForCalls(sctx: *const ScanContext, ts_node: ts.Node, depth: u32) !void {
-    // Graceful cap: stop descending, edges in deeper subtrees are skipped.
+    // Depth guard: stop descending, edges in deeper subtrees are skipped.
     if (depth >= cf.max_ast_scan_depth) {
         sctx.log.trace("scan depth cap reached", &.{Field.uint("depth", depth)});
         return;
     }
+    // -- Dispatch: classify call expression shape and resolve target --
     if (ts_node.kindId() == sctx.k.call_expression) {
         if (ts_node.namedChild(0)) |fn_ref| {
             const fn_ref_kid = fn_ref.kindId();
 
             if (fn_ref_kid == sctx.k.identifier) {
-                // Bare call: foo(). Resolve within caller's scope.
+                // Shape: bare call -- foo(). Resolve within caller's scope.
                 const callee_name = ts_api.nodeText(sctx.source, fn_ref);
                 if (findFunctionByNameScoped(sctx.g, callee_name, sctx.edge_ctx.scope_start, sctx.edge_ctx.scope_end, sctx.caller_parent_id, sctx.scope_index)) |callee_id| {
-                    if (@intFromEnum(sctx.caller_id) != @intFromEnum(callee_id)) {
-                        try cf.addEdgeIfNew(sctx.g, sctx.caller_id, callee_id, .calls, sctx.log);
-                    }
+                    _ = try sctx.g.addEdgeIfNew(.{ .source_id = sctx.caller_id, .target_id = callee_id, .edge_type = .calls });
                 } else if (sctx.edge_ctx.findImportOrigin(callee_name)) |origin| {
                     // Direct extraction: bare call to imported symbol.
                     if (origin.chain.len > 0) {
@@ -265,13 +332,14 @@ fn scanForCalls(sctx: *const ScanContext, ts_node: ts.Node, depth: u32) !void {
                     sctx.log.trace("bare call unresolved", &.{Field.string("callee", callee_name)});
                 }
             } else if (fn_ref_kid == sctx.k.field_expression) {
-                // Qualified call: extract full chain from nested field_expression.
+                // Shape: qualified call -- extract full chain from nested field_expression.
                 var chain: [cf.max_chain_depth][]const u8 = undefined;
                 const chain_len = cf.collectFieldExprChain(sctx.source, fn_ref, &chain, sctx.k);
 
                 if (chain_len >= 2) {
                     const root_name = chain[0];
 
+                    // Resolution cascade: try each tracker in priority order.
                     if (sctx.edge_ctx.findImportOrigin(root_name)) |origin| {
                         // Import-qualified call: prepend extraction chain.
                         try resolveOriginCall(sctx, origin, chain[1..chain_len], true);
@@ -288,7 +356,7 @@ fn scanForCalls(sctx: *const ScanContext, ts_node: ts.Node, depth: u32) !void {
                                 if (n.kind == .function and
                                     std.mem.eql(u8, n.name, leaf_name))
                                 {
-                                    try cf.addEdgeIfNew(sctx.g, sctx.caller_id, @enumFromInt(child_idx), .calls, sctx.log);
+                                    _ = try sctx.g.addEdgeIfNew(.{ .source_id = sctx.caller_id, .target_id = @enumFromInt(child_idx), .edge_type = .calls });
                                     break;
                                 }
                             }
@@ -305,17 +373,13 @@ fn scanForCalls(sctx: *const ScanContext, ts_node: ts.Node, depth: u32) !void {
                             .self_receiver => {
                                 // self.method(). Resolve in caller's parent scope.
                                 if (findFunctionByNameScoped(sctx.g, leaf_name, sctx.edge_ctx.scope_start, sctx.edge_ctx.scope_end, sctx.caller_parent_id, sctx.scope_index)) |callee_id| {
-                                    if (@intFromEnum(sctx.caller_id) != @intFromEnum(callee_id)) {
-                                        try cf.addEdgeIfNew(sctx.g, sctx.caller_id, callee_id, .calls, sctx.log);
-                                    }
+                                    _ = try sctx.g.addEdgeIfNew(.{ .source_id = sctx.caller_id, .target_id = callee_id, .edge_type = .calls });
                                 }
                             },
                             .local_type => {
                                 // Type.staticMethod(). Resolve in caller's scope.
                                 if (findFunctionByNameScoped(sctx.g, leaf_name, sctx.edge_ctx.scope_start, sctx.edge_ctx.scope_end, sctx.caller_parent_id, sctx.scope_index)) |callee_id| {
-                                    if (@intFromEnum(sctx.caller_id) != @intFromEnum(callee_id)) {
-                                        try cf.addEdgeIfNew(sctx.g, sctx.caller_id, callee_id, .calls, sctx.log);
-                                    }
+                                    _ = try sctx.g.addEdgeIfNew(.{ .source_id = sctx.caller_id, .target_id = callee_id, .edge_type = .calls });
                                 }
                             },
                             .external => {
@@ -331,18 +395,16 @@ fn scanForCalls(sctx: *const ScanContext, ts_node: ts.Node, depth: u32) !void {
                 } else if (chain_len == 1) {
                     // Single-segment field expression, treat as bare call.
                     if (findFunctionByNameScoped(sctx.g, chain[0], sctx.edge_ctx.scope_start, sctx.edge_ctx.scope_end, sctx.caller_parent_id, sctx.scope_index)) |callee_id| {
-                        if (@intFromEnum(sctx.caller_id) != @intFromEnum(callee_id)) {
-                            try cf.addEdgeIfNew(sctx.g, sctx.caller_id, callee_id, .calls, sctx.log);
-                        }
+                        _ = try sctx.g.addEdgeIfNew(.{ .source_id = sctx.caller_id, .target_id = callee_id, .edge_type = .calls });
                     }
                 }
             }
         }
     }
 
-    // Recurse into all children, not just named ones. Call expressions like
-    // `foo()` can appear inside anonymous nodes (e.g., assignment right-hand sides,
-    // return values) that namedChild() would skip. Stop at scope boundaries.
+    // -- Recurse: descend into all children (including anonymous nodes)
+    // because call expressions can appear inside assignment RHS, return
+    // values, etc. Stop at fn/test boundaries to respect scope.
     var i: u32 = 0;
     while (i < ts_node.childCount()) : (i += 1) {
         const child = ts_node.child(i) orelse continue;
@@ -353,10 +415,21 @@ fn scanForCalls(sctx: *const ScanContext, ts_node: ts.Node, depth: u32) !void {
     }
 }
 
-/// Classify the receiver (first child) of a field_expression to determine
-/// whether it refers to `self`, a locally-defined type, or an external entity.
+/// Classification of the leftmost receiver in a field_expression chain.
+///
+/// - `self_receiver`: the identifier is literally "self".
+/// - `local_type`: the identifier names a type or type-alias defined in the
+///   current file's scope, or a parameter whose type is a local type.
+/// - `external`: none of the above; the receiver comes from outside the file
+///   (e.g., an untracked import or a runtime value).
 const ReceiverKind = enum { self_receiver, local_type, external };
 
+/// Determine whether the receiver of a field_expression refers to `self`,
+/// a locally-defined type, or an external entity.
+///
+/// Walks the leftmost spine of the field_expression to find the root
+/// identifier, then checks (in order): literal "self", scope-visible type
+/// name, and parameter type name. Falls back to `external` if none match.
 fn classifyReceiver(g: *const Graph, source: []const u8, field_expr: ts.Node, scope_start: usize, scope_end: usize, caller_parent_id: ?NodeId, fn_decl_node: ts.Node, k: *const KindIds, scope_index: *const ScopeIndex) ReceiverKind {
     // The receiver is the first named child of the outermost field_expression.
     // For nested chains like `a.b.c()`, we want the leftmost identifier.
@@ -438,10 +511,6 @@ fn getLeftmostIdentifier(node: ts.Node, k: *const KindIds) ?ts.Node {
     return null;
 }
 
-// =========================================================================
-// Merged prescan: single block walk populating all three trackers
-// =========================================================================
-
 /// Pre-scan a function/test body, populating VarTracker (import-qualified
 /// variable bindings), LocalTypeTracker (struct literal/static call bindings),
 /// and ParamTypeTracker (if-capture bindings) in a single block walk.
@@ -468,6 +537,8 @@ fn prescanBlock(
     }
 }
 
+/// Recursively walk a block node, populating VarTracker, LocalTypeTracker,
+/// and ParamTypeTracker from variable declarations and if-capture patterns.
 fn scanBlockPrescan(
     g: *const Graph,
     source: []const u8,
@@ -495,7 +566,7 @@ fn scanBlockPrescan(
             }
             // LocalTypeTracker: struct literal or static method call initializer.
             if (extractStructLiteralType(source, child)) |type_name| {
-                local_tracker.addBinding(var_name, type_name);
+                local_tracker.addBinding(var_name, type_name, log);
             }
             continue;
         }
@@ -524,7 +595,7 @@ fn scanBlockPrescan(
 
             if (cond_ident != null and capture_name != null) {
                 if (param_tracker.findOrigin(cond_ident.?)) |origin| {
-                    param_tracker.addBinding(capture_name.?, origin.file_id, origin.chain);
+                    param_tracker.addBinding(capture_name.?, origin.file_id, origin.chain, log);
                 }
             }
         }
@@ -580,10 +651,6 @@ fn extractStructLiteralType(source: []const u8, var_decl: ts.Node) ?[]const u8 {
     return source[start + id_start .. start + pos];
 }
 
-// =========================================================================
-// Parameter type binding prescan
-// =========================================================================
-
 /// Pre-scan a function's parameter list for import-qualified types.
 /// For each parameter whose type is `mod.Type` (possibly wrapped in `*` or `?`),
 /// record a binding from the parameter name to the import target file and type chain.
@@ -593,6 +660,7 @@ fn prescanForParamTypeBindings(
     ctx: *const EdgeContext,
     k: *const KindIds,
     tracker: *ParamTypeTracker,
+    log: Logger,
 ) void {
     // Find the "parameters" child of the function_declaration.
     var i: u32 = 0;
@@ -625,7 +693,7 @@ fn prescanForParamTypeBindings(
             const chain_len = extractParamTypeChain(source, type_node, &chain, k);
             if (chain_len >= 2) {
                 if (ctx.findImportTarget(chain[0])) |target_file_id| {
-                    tracker.addBinding(name, target_file_id, chain[1..chain_len]);
+                    tracker.addBinding(name, target_file_id, chain[1..chain_len], log);
                 }
             }
         }
@@ -718,6 +786,9 @@ fn unwrapTypeNode(type_node: ts.Node, k: *const KindIds) ts.Node {
     return type_node;
 }
 
+/// Recursively scan an AST subtree for type identifiers and create
+/// `uses_type` edges. Skips edges to the caller's own child declarations.
+/// Stops at nested fn/test boundaries. Depth-capped.
 fn scanForTypeIdentifiersScoped(sctx: *const ScanContext, ts_node: ts.Node, depth: u32) !void {
     // Graceful cap: stop descending, type refs in deeper subtrees are skipped.
     if (depth >= cf.max_ast_scan_depth) return;
@@ -733,7 +804,7 @@ fn scanForTypeIdentifiersScoped(sctx: *const ScanContext, ts_node: ts.Node, dept
         const target_node = sctx.g.getNode(target_id);
         const is_own_child = if (target_node) |tn| tn.parent_id != null and tn.parent_id.? == sctx.caller_id else false;
         if (!is_own_child) {
-            try cf.addEdgeIfNew(sctx.g, sctx.caller_id, target_id, .uses_type, sctx.log);
+            _ = try sctx.g.addEdgeIfNew(.{ .source_id = sctx.caller_id, .target_id = target_id, .edge_type = .uses_type });
         }
     }
 
@@ -766,10 +837,6 @@ fn findTypeCrossFile(g: *const Graph, name: []const u8, ctx: *const EdgeContext,
     if (match_count == 1) return match;
     return null;
 }
-
-// =========================================================================
-// Graph lookup functions
-// =========================================================================
 
 /// Find a type/constant node by name, with scope-aware resolution.
 /// Walks up the parent_id chain from caller_parent_id, preferring
@@ -813,6 +880,10 @@ fn isTypeReference(n: @import("../../core/node.zig").Node, name: []const u8) boo
     return false;
 }
 
+/// Find a function node by name with scope-aware resolution.
+/// Walks up the parent_id chain from caller_parent_id, preferring the
+/// narrowest scope. Falls back to flat file-scope search, returning
+/// null if ambiguous (more than one match).
 fn findFunctionByNameScoped(g: *const Graph, name: []const u8, scope_start: usize, scope_end: usize, caller_parent_id: ?NodeId, scope_index: *const ScopeIndex) ?NodeId {
     if (caller_parent_id) |cpid| {
         // Walk up the parent chain, searching at each scope level.
@@ -870,6 +941,8 @@ fn findFunctionByNameAndLine(g: *const Graph, name: []const u8, line: u32, scope
     return null;
 }
 
+/// Find a test_def node by name within the given scope range.
+/// Returns the first match, or null if no test with that name exists.
 fn findTestByName(g: *const Graph, name: []const u8, scope_start: usize, scope_end: usize) ?NodeId {
     const scoped_nodes = g.nodes.items[scope_start..scope_end];
     for (scoped_nodes, scope_start..) |n, i| {

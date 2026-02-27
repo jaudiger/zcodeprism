@@ -66,7 +66,7 @@ pub fn main() !void {
 
 fn printHelp(stdout: *std.Io.Writer) !void {
     try stdout.print(
-        \\dump-ast — Dump the raw tree-sitter AST for a source file.
+        \\dump-ast - Dump the raw tree-sitter AST for a source file.
         \\
         \\USAGE:
         \\    zig build dump-ast -- <path-to-source-file>
@@ -84,6 +84,8 @@ fn printHelp(stdout: *std.Io.Writer) !void {
     , .{});
     try stdout.flush();
 }
+
+const max_depth: u32 = 256;
 
 fn dumpNode(stdout: *std.Io.Writer, source: []const u8, node: ts.Node, depth: u32) !void {
     // Indent.
@@ -106,6 +108,16 @@ fn dumpNode(stdout: *std.Io.Writer, source: []const u8, node: ts.Node, depth: u3
         try stdout.print("{s}  [{d}:{d}-{d}:{d}]  ({d} bytes)\n", .{
             kind, start.row + 1, start.column, end.row + 1, end.column, text.len,
         });
+    }
+
+    // Stop recursion at max depth to prevent stack overflow.
+    if (depth >= max_depth) {
+        var d2: u32 = 0;
+        while (d2 < depth + 1) : (d2 += 1) {
+            try stdout.print("  ", .{});
+        }
+        try stdout.print("... (truncated at depth {})\n", .{max_depth});
+        return;
     }
 
     // Recurse into children.

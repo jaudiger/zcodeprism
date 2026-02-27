@@ -8,21 +8,30 @@ const Graph = graph_mod.Graph;
 const appendNum = common.appendNum;
 const appendCurrentTimestamp = common.appendCurrentTimestamp;
 
-/// Options controlling CTG rendering output.
+/// Configuration for a single CTG rendering pass.
+/// Required: project_name. Optional fields control snapshot metadata,
+/// scope filtering, timestamp override, and node category filtering.
 pub const RenderOptions = struct {
+    /// Project name emitted in the header line.
     project_name: []const u8,
+    /// When set, a "# snapshot:" header line is emitted with this name.
     snapshot_name: ?[]const u8 = null,
+    /// 12-byte hex hash of the source tree, shown alongside snapshot_name.
     source_hash: ?[12]u8 = null,
+    /// Path prefix filter: only nodes whose file_path starts with this
+    /// value are included. Null means no filtering (all files).
     scope: ?[]const u8 = null,
-    /// For deterministic tests; null = use system clock.
+    /// Explicit timestamp for the "# generated" header line.
+    /// When null, the current system clock is used.
     timestamp: ?[]const u8 = null,
+    /// Controls inclusion of test_def and external (phantom) nodes.
     filter: common.FilterOptions = .{},
 };
 
-/// Render the graph in Compact Text Graph (CTG) format.
-///
-/// The output is deterministic: same graph + same options = byte-identical output.
-/// See `docs/zcodeprism-ctg-spec.md` for the full format specification.
+/// Renders the graph in Compact Text Graph (CTG) format, appending the
+/// result to `out`. Output is deterministic: identical graph + options
+/// produces byte-identical output. See docs/zcodeprism-ctg-spec.md for
+/// the full format specification.
 pub fn renderCtg(
     allocator: std.mem.Allocator,
     g: *const Graph,
@@ -114,7 +123,7 @@ pub fn renderCtg(
         try out.append(allocator, '\n');
     }
 
-    // Sections — each renderer returns early if it has no content.
+    // Sections: each renderer returns early if it has no content.
     // A blank line separates the header from the first section and each section from the next.
     try out.append(allocator, '\n');
     var written = false;
@@ -175,8 +184,6 @@ pub fn renderCtg(
         }
     }
 }
-
-// --- Test helpers ---
 
 /// Creates a diverse graph exercising all CTG sections.
 ///
@@ -397,10 +404,6 @@ fn createSingleFileGraph(allocator: std.mem.Allocator) !Graph {
 
     return g;
 }
-
-// ==========================================================================
-// CTG Tests: nominal
-// ==========================================================================
 
 test "header line 1 matches spec" {
     // Arrange
@@ -948,10 +951,6 @@ test "deterministic output" {
     try std.testing.expectEqualSlices(u8, out1.items, out2.items);
 }
 
-// ==========================================================================
-// CTG Tests: edge cases
-// ==========================================================================
-
 test "empty graph renders without crash" {
     // Arrange
     const allocator = std.testing.allocator;
@@ -1049,10 +1048,6 @@ test "phantom nodes in externals section" {
     try std.testing.expect(std.mem.indexOf(u8, ext_section, "(stdlib)") != null);
     try std.testing.expect(std.mem.indexOf(u8, ext_section, "std") != null);
 }
-
-// ==========================================================================
-// CTG Tests: snapshot
-// ==========================================================================
 
 test "snapshot line present when options set" {
     // Arrange

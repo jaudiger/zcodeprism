@@ -8,7 +8,6 @@ const NodeId = types.NodeId;
 const EdgeType = types.EdgeType;
 
 const IdEntry = common.IdEntry;
-const SortableNode = common.SortableNode;
 const PhantomPackage = common.PhantomPackage;
 
 const isInternal = common.isInternal;
@@ -21,6 +20,10 @@ const findFileId = common.findFileId;
 const ChildrenIndex = common.ChildrenIndex;
 const PhantomNodeInfo = common.PhantomNodeInfo;
 
+/// Render the [files] CTG section listing each file node with its ID, path, and line count.
+///
+/// Each line is formatted as: `f:N path NL` where N is the file ID number and
+/// NL is the total number of lines. Skips output entirely when file_indices is empty.
 pub fn renderFilesSection(
     out: *std.ArrayListUnmanaged(u8),
     allocator: std.mem.Allocator,
@@ -44,6 +47,11 @@ pub fn renderFilesSection(
     }
 }
 
+/// Render the [structs] CTG section listing each struct with its ID, name, location, and visibility.
+///
+/// For each struct, also renders child fields (dot-prefixed) and methods on
+/// indented continuation lines via renderContainerChildren. Skips output
+/// entirely when struct_indices is empty.
 pub fn renderStructsSection(
     out: *std.ArrayListUnmanaged(u8),
     allocator: std.mem.Allocator,
@@ -79,6 +87,11 @@ pub fn renderStructsSection(
     }
 }
 
+/// Render the [unions] CTG section listing each union with its ID, name, location, and visibility.
+///
+/// For each union, also renders child fields and methods on indented
+/// continuation lines via renderContainerChildren. Skips output entirely
+/// when union_indices is empty.
 pub fn renderUnionsSection(
     out: *std.ArrayListUnmanaged(u8),
     allocator: std.mem.Allocator,
@@ -159,6 +172,9 @@ fn renderContainerChildren(
     if (has_methods) try out.append(allocator, '\n');
 }
 
+/// Render the [enums] CTG section listing each enum with its ID, name, location, and visibility.
+///
+/// Skips output entirely when enum_indices is empty.
 pub fn renderEnumsSection(
     out: *std.ArrayListUnmanaged(u8),
     allocator: std.mem.Allocator,
@@ -191,6 +207,11 @@ pub fn renderEnumsSection(
     }
 }
 
+/// Render the [functions] CTG section listing each top-level function with its ID, name, location, and visibility.
+///
+/// Only includes functions whose parent is a file or module (not struct/union
+/// methods, which appear under their container). Skips output entirely when
+/// fn_indices is empty.
 pub fn renderFunctionsSection(
     out: *std.ArrayListUnmanaged(u8),
     allocator: std.mem.Allocator,
@@ -225,6 +246,9 @@ pub fn renderFunctionsSection(
     }
 }
 
+/// Render the [constants] CTG section listing each constant with its ID, name, location, and visibility.
+///
+/// Skips output entirely when const_indices is empty.
 pub fn renderConstantsSection(
     out: *std.ArrayListUnmanaged(u8),
     allocator: std.mem.Allocator,
@@ -258,6 +282,10 @@ pub fn renderConstantsSection(
     }
 }
 
+/// Render the [errors] CTG section listing each error definition with its ID, name, and location.
+///
+/// Error nodes do not include a visibility marker. Skips output entirely
+/// when err_indices is empty.
 pub fn renderErrorsSection(
     out: *std.ArrayListUnmanaged(u8),
     allocator: std.mem.Allocator,
@@ -287,6 +315,10 @@ pub fn renderErrorsSection(
     }
 }
 
+/// Render the [tests] CTG section listing each test definition with its ID, quoted name, location, and line count.
+///
+/// Each test line includes the number of lines (line_end - line_start + 1).
+/// Skips output entirely when test_indices is empty.
 pub fn renderTestsSection(
     out: *std.ArrayListUnmanaged(u8),
     allocator: std.mem.Allocator,
@@ -323,6 +355,11 @@ pub fn renderTestsSection(
     }
 }
 
+/// Render the [externals] CTG section listing phantom packages and their child symbols.
+///
+/// Each package line shows its x:N ID, name, and source (stdlib or dependency
+/// with optional version). Child symbols are listed on indented lines below
+/// their package. Skips output entirely when phantom_packages is empty.
 pub fn renderExternalsSection(
     out: *std.ArrayListUnmanaged(u8),
     allocator: std.mem.Allocator,
@@ -358,6 +395,13 @@ pub fn renderExternalsSection(
     }
 }
 
+/// Render the [edges] CTG section listing all graph edges grouped by source and type.
+///
+/// Edges are sorted by type (alphabetical), then by source ID, then by target
+/// ID. Consecutive edges sharing the same source and type are merged onto a
+/// single line with multiple space-separated targets. Phantom targets are
+/// rendered as x:N:path. Respects scope filtering and the include_external_nodes
+/// filter option. Skips output entirely when no qualifying edges exist.
 pub fn renderEdgesSection(
     out: *std.ArrayListUnmanaged(u8),
     allocator: std.mem.Allocator,

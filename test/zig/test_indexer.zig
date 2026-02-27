@@ -13,10 +13,6 @@ const Language = zcodeprism.types.Language;
 
 const indexDirectory = zcodeprism.indexer.indexDirectory;
 
-// ---------------------------------------------------------------------------
-// Fixture setup helpers
-// ---------------------------------------------------------------------------
-
 /// Write project fixture files into a temporary directory and return the real path.
 fn setupProjectFixtures(tmp_dir: *std.testing.TmpDir) ![]const u8 {
     try tmp_dir.dir.writeFile(.{ .sub_path = "main.zig", .data = fixtures.zig.project.main_zig });
@@ -105,10 +101,6 @@ fn writeDirImportsFixtures(dir: std.fs.Dir) !void {
     try dir.writeFile(.{ .sub_path = "compress/flate/inner.zig", .data = fixtures.zig.dir_imports.compress_flate_inner_zig });
 }
 
-// ===========================================================================
-// Project fixture: file nodes, imports, calls, phantom nodes, metrics
-// ===========================================================================
-
 test "project fixture: file nodes, imports, calls, phantom nodes, metrics" {
     // Arrange
     var g = Graph.init(std.testing.allocator, "/tmp/project");
@@ -119,26 +111,26 @@ test "project fixture: file nodes, imports, calls, phantom nodes, metrics" {
     // Act
     _ = indexProjectFixtures(&g, &tmp_dir) catch |err| return err;
 
-    // --- file nodes ---
+    // file nodes
     try std.testing.expectEqual(@as(usize, 3), helpers.countNodesByKind(&g, .file));
 
-    // --- import edges ---
+    // import edges
     const main_file = helpers.findNode(&g, "main.zig", .file) orelse return error.TestExpectedEqual;
     const parser_file = helpers.findNode(&g, "parser.zig", .file) orelse return error.TestExpectedEqual;
     const utils_file = helpers.findNode(&g, "utils.zig", .file) orelse return error.TestExpectedEqual;
     try std.testing.expect(helpers.hasEdge(&g, main_file.id, parser_file.id, .imports));
     try std.testing.expect(helpers.hasEdge(&g, main_file.id, utils_file.id, .imports));
 
-    // --- cross-file calls edge ---
+    // cross-file calls edge
     const process_fn = helpers.findNode(&g, "processInput", .function) orelse return error.TestExpectedEqual;
     const parse_fn = helpers.findNode(&g, "parse", .function) orelse return error.TestExpectedEqual;
     try std.testing.expect(helpers.hasEdge(&g, process_fn.id, parse_fn.id, .calls));
 
-    // --- cross-file uses_type edge ---
+    // cross-file uses_type edge
     const parser_type = helpers.findNode(&g, "Parser", .type_def) orelse return error.TestExpectedEqual;
     try std.testing.expect(helpers.hasEdge(&g, process_fn.id, parser_type.id, .uses_type));
 
-    // --- phantom nodes for std ---
+    // phantom nodes for std
     var found_stdlib = false;
     for (g.nodes.items) |n| {
         switch (n.external) {
@@ -151,7 +143,7 @@ test "project fixture: file nodes, imports, calls, phantom nodes, metrics" {
     }
     try std.testing.expect(found_stdlib);
 
-    // --- phantom nodes have no file_path ---
+    // phantom nodes have no file_path
     for (g.nodes.items) |n| {
         switch (n.external) {
             .stdlib => try std.testing.expectEqual(@as(?[]const u8, null), n.file_path),
@@ -159,7 +151,7 @@ test "project fixture: file nodes, imports, calls, phantom nodes, metrics" {
         }
     }
 
-    // --- phantom nodes have no line numbers ---
+    // phantom nodes have no line numbers
     for (g.nodes.items) |n| {
         switch (n.external) {
             .stdlib => {
@@ -170,7 +162,7 @@ test "project fixture: file nodes, imports, calls, phantom nodes, metrics" {
         }
     }
 
-    // --- phantom edges have source phantom ---
+    // phantom edges have source phantom
     for (g.edges.items) |e| {
         const target = g.getNode(e.target_id) orelse continue;
         switch (target.external) {
@@ -179,14 +171,14 @@ test "project fixture: file nodes, imports, calls, phantom nodes, metrics" {
         }
     }
 
-    // --- file nodes have content_hash ---
+    // file nodes have content_hash
     for (g.nodes.items) |n| {
         if (n.kind == .file) {
             try std.testing.expect(n.content_hash != null);
         }
     }
 
-    // --- all non-phantom nodes have language=.zig ---
+    // all non-phantom nodes have language=.zig
     for (g.nodes.items) |n| {
         switch (n.external) {
             .none => try std.testing.expectEqual(Language.zig, n.language),
@@ -194,14 +186,14 @@ test "project fixture: file nodes, imports, calls, phantom nodes, metrics" {
         }
     }
 
-    // --- parent_id chain is consistent ---
+    // parent_id chain is consistent
     for (g.nodes.items) |n| {
         if (n.parent_id) |pid| {
             try std.testing.expect(g.getNode(pid) != null);
         }
     }
 
-    // --- no parent_id cycles ---
+    // no parent_id cycles
     for (g.nodes.items) |n| {
         var current_id: ?NodeId = n.parent_id;
         var hops: usize = 0;
@@ -213,7 +205,7 @@ test "project fixture: file nodes, imports, calls, phantom nodes, metrics" {
         }
     }
 
-    // --- metrics computed ---
+    // metrics computed
     var found_complexity = false;
     for (g.nodes.items) |n| {
         if (n.kind == .function) {
@@ -227,7 +219,7 @@ test "project fixture: file nodes, imports, calls, phantom nodes, metrics" {
     }
     try std.testing.expect(found_complexity);
 
-    // --- metrics lines counted ---
+    // metrics lines counted
     for (g.nodes.items) |n| {
         if (n.kind == .function) {
             if (n.metrics) |m| {
@@ -239,7 +231,7 @@ test "project fixture: file nodes, imports, calls, phantom nodes, metrics" {
         }
     }
 
-    // --- utils.zig has no project import edges ---
+    // utils.zig has no project import edges
     for (g.edges.items) |e| {
         if (e.source_id == utils_file.id and e.edge_type == .imports) {
             const target = g.getNode(e.target_id) orelse continue;
@@ -251,12 +243,8 @@ test "project fixture: file nodes, imports, calls, phantom nodes, metrics" {
     }
 }
 
-// ===========================================================================
-// Incremental indexing
-// ===========================================================================
-
 test "incremental indexing: skip unchanged, detect changes" {
-    // --- skips unchanged files ---
+    // skips unchanged files
     {
         var g = Graph.init(std.testing.allocator, "/tmp/project");
         defer g.deinit();
@@ -271,7 +259,7 @@ test "incremental indexing: skip unchanged, detect changes" {
         try std.testing.expect(result2.files_skipped > 0);
     }
 
-    // --- detects changed file ---
+    // detects changed file
     {
         var g = Graph.init(std.testing.allocator, "/tmp/project");
         defer g.deinit();
@@ -292,7 +280,7 @@ test "incremental indexing: skip unchanged, detect changes" {
         try std.testing.expect(result2.files_indexed > 0);
     }
 
-    // --- content_hash changes when file changes ---
+    // content_hash changes when file changes
     {
         var g = Graph.init(std.testing.allocator, "/tmp/project");
         defer g.deinit();
@@ -321,12 +309,8 @@ test "incremental indexing: skip unchanged, detect changes" {
     }
 }
 
-// ===========================================================================
-// Edge cases
-// ===========================================================================
-
 test "edge cases: single file, no zig files, exclude paths" {
-    // --- single file project ---
+    // single file project
     {
         var g = Graph.init(std.testing.allocator, "/tmp/project");
         defer g.deinit();
@@ -346,7 +330,7 @@ test "edge cases: single file, no zig files, exclude paths" {
         try std.testing.expect(g.nodeCount() > 1);
     }
 
-    // --- directory with no zig files ---
+    // directory with no zig files
     {
         var g = Graph.init(std.testing.allocator, "/tmp/project");
         defer g.deinit();
@@ -366,7 +350,7 @@ test "edge cases: single file, no zig files, exclude paths" {
         try std.testing.expectEqual(@as(usize, 0), g.nodeCount());
     }
 
-    // --- respects exclude_paths ---
+    // respects exclude_paths
     {
         var g = Graph.init(std.testing.allocator, "/tmp/project");
         defer g.deinit();
@@ -386,10 +370,6 @@ test "edge cases: single file, no zig files, exclude paths" {
     }
 }
 
-// ===========================================================================
-// Phantom nodes: deduplication, parent chain
-// ===========================================================================
-
 test "phantom nodes: deduplication, parent chain" {
     // Arrange
     var g = Graph.init(std.testing.allocator, "/tmp/project");
@@ -399,7 +379,7 @@ test "phantom nodes: deduplication, parent chain" {
 
     _ = indexProjectFixtures(&g, &tmp_dir) catch |err| return err;
 
-    // --- phantom node for std.mem.Allocator exists ---
+    // phantom node for std.mem.Allocator exists
     var found_allocator = false;
     for (g.nodes.items) |n| {
         switch (n.external) {
@@ -414,7 +394,7 @@ test "phantom nodes: deduplication, parent chain" {
     }
     try std.testing.expect(found_allocator);
 
-    // --- phantom nodes are deduplicated ---
+    // phantom nodes are deduplicated
     var alloc_count: usize = 0;
     for (g.nodes.items) |n| {
         switch (n.external) {
@@ -428,7 +408,7 @@ test "phantom nodes: deduplication, parent chain" {
     }
     try std.testing.expectEqual(@as(usize, 1), alloc_count);
 
-    // --- phantom node parent chain: Allocator → mem → std ---
+    // phantom node parent chain: Allocator -> mem -> std
     var allocator_node: ?*const Node = null;
     for (g.nodes.items) |*n| {
         switch (n.external) {
@@ -451,10 +431,6 @@ test "phantom nodes: deduplication, parent chain" {
     const std_node = g.getNode(mem_node.parent_id.?) orelse return error.TestExpectedEqual;
     try std.testing.expect(std.mem.indexOf(u8, std_node.name, "std") != null);
 }
-
-// ===========================================================================
-// Name collision: cross-file init/deinit resolution
-// ===========================================================================
 
 test "name collision: cross-file init/deinit resolution" {
     // Arrange
@@ -498,10 +474,6 @@ test "name collision: cross-file init/deinit resolution" {
     try std.testing.expect(helpers.findNodeInFile(&g, "init", .function, alpha_file.id) != null);
     try std.testing.expect(helpers.findNodeInFile(&g, "init", .function, beta_file.id) != null);
 }
-
-// ===========================================================================
-// Test block: import-assigned variable method call resolution
-// ===========================================================================
 
 test "test block resolves method call on import-assigned variable" {
     // Arrange
@@ -571,7 +543,7 @@ test "parameter method call: basic parameter" {
     try std.testing.expect(!helpers.hasEdge(&g, handle_fn, process_fn, .uses_type));
     // handle() also has uses_type to Service struct
     try std.testing.expect(helpers.hasEdge(&g, handle_fn, service_type, .uses_type));
-    // direction is handle → process, not reverse
+    // direction is handle -> process, not reverse
     try std.testing.expect(!helpers.hasEdge(&g, process_fn, handle_fn, .calls));
     // handle() does NOT call Service.reset() (only process() is called)
     try std.testing.expect(!helpers.hasEdge(&g, handle_fn, reset_fn, .calls));
@@ -735,7 +707,7 @@ test "parameter method call: return value from imported function" {
 }
 
 test "parameter method call: negative tests" {
-    // --- no calls edge when parameter method is not called ---
+    // no calls edge when parameter method is not called
     {
         var g = Graph.init(std.testing.allocator, "/tmp/param");
         defer g.deinit();
@@ -759,10 +731,6 @@ test "parameter method call: negative tests" {
         try std.testing.expect(helpers.hasEdge(&g, no_calls_fn, service_type, .uses_type));
     }
 }
-
-// ===========================================================================
-// Directory-relative import resolution
-// ===========================================================================
 
 test "dir imports: same-directory resolution with duplicate basenames" {
     // Arrange
@@ -970,10 +938,6 @@ test "dir imports: cross-file call edges resolve to correct targets" {
     try std.testing.expect(!helpers.hasEdge(&g, read_fn, validate_fn, .calls));
 }
 
-// ===========================================================================
-// Inner struct call: cross-file edges from test block inner struct
-// ===========================================================================
-
 /// Write direct_extraction fixture files into a temporary directory.
 fn writeDirectExtractionTypeFixtures(dir: std.fs.Dir) !void {
     try dir.writeFile(.{ .sub_path = "provider.zig", .data = fixtures.zig.direct_extraction.provider_zig });
@@ -1040,10 +1004,6 @@ test "inner struct call: cross-file edges from test block inner struct" {
     try std.testing.expect(direct_test_id != null);
     try std.testing.expect(helpers.hasEdge(&g, direct_test_id.?, another_fn, .calls));
 }
-
-// ===========================================================================
-// Direct extraction: cross-file edges from @import("...").Symbol patterns
-// ===========================================================================
 
 test "direct extraction type: qualified method call creates cross-file calls edge" {
     // Arrange

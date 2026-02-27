@@ -28,7 +28,7 @@ fn countVerbosity(arg: []const u8) u8 {
 
 fn printHelp(stdout: *std.Io.Writer) !void {
     try stdout.print(
-        \\render-graph — Index and render a code graph in CTG or Mermaid format.
+        \\render-graph - Index and render a code graph in CTG or Mermaid format.
         \\
         \\USAGE:
         \\    zig build render-graph -- <directory> [OPTIONS]

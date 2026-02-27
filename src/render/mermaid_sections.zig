@@ -22,10 +22,12 @@ const prefixOrder = common.prefixOrder;
 const ChildrenIndex = common.ChildrenIndex;
 const PhantomNodeInfo = common.PhantomNodeInfo;
 
-// ---------------------------------------------------------------------------
-// File subgraph rendering
-// ---------------------------------------------------------------------------
-
+/// Render Mermaid subgraph blocks for each file, containing all renderable descendant nodes.
+///
+/// Each file becomes a `subgraph f_N["path"]` block. Internal descendants
+/// (structs, functions, enums, etc.) are collected recursively via the
+/// children index, sorted by ID, and rendered inside the block using
+/// kind-specific Mermaid shapes.
 pub fn renderFileSubgraphs(
     out: *std.ArrayListUnmanaged(u8),
     allocator: std.mem.Allocator,
@@ -89,7 +91,7 @@ fn collectDescendants(
     for (children_index.childrenOf(parent_idx)) |ci| {
         const n = g.nodes.items[ci];
         if (!isInternal(n)) continue;
-        if (n.kind == .file or n.kind == .field or n.kind == .import_decl or n.kind == .comptime_block) continue;
+        if (n.kind == .file or n.kind == .field or n.kind == .import_decl) continue;
         if (ids[ci]) |id_entry| {
             try result.append(allocator, .{ .node_idx = ci, .id = id_entry });
         }
@@ -165,14 +167,16 @@ fn renderNodeShape(
             try appendEscaped(out, allocator, n.name);
             try out.appendSlice(allocator, "\")");
         },
-        .file, .field, .import_decl, .comptime_block => {},
+        .file, .field, .import_decl => {},
     }
 }
 
-// ---------------------------------------------------------------------------
-// Phantom subgraph rendering
-// ---------------------------------------------------------------------------
-
+/// Render Mermaid subgraph blocks for each phantom (external) package and its child symbols.
+///
+/// Each package becomes a `subgraph x_name["name (source)"]` block. Child
+/// symbols are rendered as rectangular nodes with Mermaid IDs derived from
+/// the package x:N number and the symbol's qualified path (dots replaced
+/// by underscores).
 pub fn renderPhantomSubgraphs(
     out: *std.ArrayListUnmanaged(u8),
     allocator: std.mem.Allocator,
@@ -213,11 +217,13 @@ pub fn renderPhantomSubgraphs(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Ghost node rendering
-// ---------------------------------------------------------------------------
-
-/// Build a map from out-of-scope internal node index → ghost ID number.
+/// Build a map from out-of-scope internal node indices to sequential ghost ID numbers.
+///
+/// Scans all edges to find targets that are internal nodes outside the given
+/// scope but referenced by in-scope sources. Each unique target gets a
+/// deduplicated ghost ID (starting at 1). Fields and import_decl nodes are
+/// excluded. The caller uses the resulting ghost_map to render placeholder
+/// "ghost" nodes in the Mermaid output.
 pub fn buildGhostNodes(
     allocator: std.mem.Allocator,
     g: *const Graph,
@@ -252,6 +258,12 @@ pub fn buildGhostNodes(
     }
 }
 
+/// Render ghost node declarations as Mermaid nodes with the ghost_style CSS class.
+///
+/// Ghost nodes represent out-of-scope internal nodes that are referenced by
+/// in-scope edges. Each is rendered as `g_N["kind: name ..."]:::ghost_style`,
+/// sorted by ascending ghost ID number. The "..." suffix visually indicates
+/// that the node's full definition lives elsewhere.
 pub fn renderGhostNodes(
     out: *std.ArrayListUnmanaged(u8),
     allocator: std.mem.Allocator,
@@ -308,14 +320,18 @@ fn nodeKindPrefix(kind: NodeKind) []const u8 {
         .file => "file",
         .field => "field",
         .import_decl => "import",
-        .comptime_block => "comptime",
     };
 }
 
-// ---------------------------------------------------------------------------
-// Edge rendering
-// ---------------------------------------------------------------------------
-
+/// Render all qualifying graph edges as Mermaid arrow statements.
+///
+/// Each edge is rendered as `    source_id arrow target_id` where the arrow
+/// style depends on edge type: `-->` for calls/uses_type, `-.->` for imports,
+/// `==>` for implements. Edges of type similar_to and exports are excluded.
+/// Targets may be regular internal nodes, phantom symbols (x_N_path), or
+/// ghost nodes (g_N). Edges are sorted by type, then source, then target
+/// for deterministic output. Respects scope filtering, the
+/// include_external_nodes filter option, and ghost node resolution.
 pub fn renderEdges(
     out: *std.ArrayListUnmanaged(u8),
     allocator: std.mem.Allocator,
@@ -394,7 +410,7 @@ pub fn renderEdges(
         });
     }
 
-    // Sort: type (alpha) → source → target.
+    // Sort: type (alpha), then source, then target.
     std.mem.sort(MermaidEdge, entries.items, {}, struct {
         fn lessThan(_: void, a: MermaidEdge, b: MermaidEdge) bool {
             const a_key = edgeTypeSortKey(a.edge_type);
@@ -448,10 +464,13 @@ fn mermaidArrow(et: EdgeType) []const u8 {
     };
 }
 
-// ---------------------------------------------------------------------------
-// Class assignment rendering
-// ---------------------------------------------------------------------------
-
+/// Render Mermaid `class` statements that assign CSS style classes to all rendered nodes.
+///
+/// Groups internal nodes, phantom symbols, and ghost nodes by their style
+/// class (fn_style, st_style, en_style, etc.) and emits one
+/// `class id1,id2,... style_name` line per non-empty group. Within each
+/// group, nodes are sorted by their prefix order and ID number for
+/// deterministic output.
 pub fn renderClassAssignments(
     out: *std.ArrayListUnmanaged(u8),
     allocator: std.mem.Allocator,
@@ -481,7 +500,7 @@ pub fn renderClassAssignments(
     // Internal nodes with IDs.
     for (g.nodes.items, 0..) |n, i| {
         const id_entry = ids[i] orelse continue;
-        if (n.kind == .file or n.kind == .field or n.kind == .import_decl or n.kind == .comptime_block) continue;
+        if (n.kind == .file or n.kind == .field or n.kind == .import_decl) continue;
 
         const style: StyleClass = switch (n.kind) {
             .function => .fn_style,
@@ -552,8 +571,9 @@ pub fn renderClassAssignments(
 
     // Render one "class id1,id2 style_name" line per style.
     const style_names = [_][]const u8{
-        "const_style", "en_style", "err_style", "fn_style",
-        "ghost_style", "phantom_style", "st_style", "test_style", "un_style",
+        "const_style", "en_style",      "err_style", "fn_style",
+        "ghost_style", "phantom_style", "st_style",  "test_style",
+        "un_style",
     };
 
     for (style_names, 0..) |style_name, style_idx| {
@@ -611,10 +631,6 @@ pub fn renderClassAssignments(
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Shared Mermaid utilities
-// ---------------------------------------------------------------------------
 
 /// Render a Mermaid-safe ID from a CTG-style prefix and number.
 /// Replaces ":" with "_" so "fn:1" becomes "fn_1".

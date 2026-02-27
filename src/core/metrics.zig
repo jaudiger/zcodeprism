@@ -14,8 +14,6 @@ pub const Metrics = struct {
     structural_hash: u32 = 0,
 };
 
-// --- Tests ---
-
 test "metrics default values are all zero" {
     // Arrange
     const m = Metrics{};

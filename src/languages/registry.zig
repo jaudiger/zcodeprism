@@ -1,27 +1,51 @@
 const std = @import("std");
-const lang = @import("language.zig");
+const lang_support = @import("language_support.zig");
 const visitor = @import("zig/visitor.zig");
+const zig_hooks = @import("zig/indexer_hooks.zig");
 
-const LanguageSupport = lang.LanguageSupport;
+const LanguageSupport = lang_support.LanguageSupport;
 
 const zig_support = LanguageSupport{
     .name = "zig",
     .extensions = &.{".zig"},
     .parseFn = &visitor.parse,
     .lsp_config = null,
+    .excluded_dirs = &.{ ".zig-cache", "zig-out" },
+    .build_files = &.{ "build.zig.zon", "build.zig" },
+    .import_granularity = .file,
+    .extractImportsFn = &zig_hooks.extractImports,
+    .resolveImportPathFn = &zig_hooks.resolveImportPath,
+    .parseBuildConfigFn = &zig_hooks.parseBuildConfig,
+    .resolvePhantomsFn = &zig_hooks.resolvePhantoms,
 };
 
-/// Static registry for language support lookup by file extension.
+const all_languages = [_]*const LanguageSupport{&zig_support};
+
+/// Static registry that maps file extensions to language support descriptors.
+///
+/// All entries are comptime constants; the registry requires no allocator
+/// and no initialization at runtime.
 pub const Registry = struct {
-    /// Look up language support by file extension (e.g. ".zig", ".rs").
-    /// Returns null if no language support is registered for the extension.
+    /// Returns the language support descriptor for the given file extension.
+    ///
+    /// `ext` must include the leading dot (e.g. ".zig").
+    /// Returns null when no language is registered for the extension.
     pub fn getByExtension(ext: []const u8) ?*const LanguageSupport {
-        if (std.mem.eql(u8, ext, ".zig")) return &zig_support;
+        for (&all_languages) |ls| {
+            for (ls.extensions) |e| {
+                if (std.mem.eql(u8, ext, e)) return ls;
+            }
+        }
         return null;
     }
-};
 
-// --- Tests ---
+    /// Returns a slice of all registered language support descriptors.
+    ///
+    /// The indexer uses this to collect excluded directories across all languages.
+    pub fn allLanguages() []const *const LanguageSupport {
+        return &all_languages;
+    }
+};
 
 test "lookup by .zig extension returns zig support" {
     // Act

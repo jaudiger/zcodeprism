@@ -13,13 +13,13 @@ pub const Resource = struct {
     }
 };
 
-/// Calls ArenaAllocator.init — "init" collides with Resource.init.
+/// Calls ArenaAllocator.init where "init" collides with Resource.init.
 /// Should not create a calls edge to Resource.init.
 pub fn externalInit(child_allocator: std.mem.Allocator) std.heap.ArenaAllocator {
     return std.heap.ArenaAllocator.init(child_allocator);
 }
 
-/// Calls arena.deinit() — "deinit" collides with Resource.deinit.
+/// Calls arena.deinit() where "deinit" collides with Resource.deinit.
 /// Should not create a calls edge to Resource.deinit.
 pub fn externalDeinit(arena: *std.heap.ArenaAllocator) void {
     arena.deinit();
