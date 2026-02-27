@@ -89,7 +89,7 @@ pub fn main() !void {
     defer allocator.free(dir_path);
 
     // Parse optional flags.
-    var exclude_list: std.ArrayListUnmanaged([]const u8) = .{};
+    var exclude_list: std.ArrayList([]const u8) = .{};
     defer exclude_list.deinit(allocator);
     var verbosity: u8 = 0;
 
@@ -291,7 +291,7 @@ pub fn main() !void {
                 key: SummaryKey,
                 count: u32,
             };
-            var entries = std.ArrayListUnmanaged(Entry){};
+            var entries = std.ArrayList(Entry){};
             defer entries.deinit(allocator);
             try entries.ensureTotalCapacity(allocator, summary_map.count());
 

@@ -31,14 +31,14 @@ pub const Direction = enum {
 /// outEdges, inEdges, neighbors.
 pub const Graph = struct {
     allocator: std.mem.Allocator,
-    nodes: std.ArrayListUnmanaged(Node),
-    edges: std.ArrayListUnmanaged(Edge),
+    nodes: std.ArrayList(Node),
+    edges: std.ArrayList(Edge),
     project_root: []const u8,
     // Pre-computed CSR adjacency index. Built by freeze(), enables O(1) lookups.
     adjacency: ?Adjacency = null,
     // Tracks allocated buffers (source files, duped strings) that node slices point into.
     // Freed on deinit so that node name/doc/signature slices remain valid for the graph's lifetime.
-    owned_buffers: std.ArrayListUnmanaged([]const u8),
+    owned_buffers: std.ArrayList([]const u8),
     // Hash index for edge deduplication. Maps (source, target, type) to void.
     edge_index: std.AutoHashMapUnmanaged(EdgeKey, void),
 

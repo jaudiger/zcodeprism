@@ -25,7 +25,7 @@ const PhantomNodeInfo = common.PhantomNodeInfo;
 /// Each line is formatted as: `f:N path NL` where N is the file ID number and
 /// NL is the total number of lines. Skips output entirely when file_indices is empty.
 pub fn renderFilesSection(
-    out: *std.ArrayListUnmanaged(u8),
+    out: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
     g: *const Graph,
     file_indices: []const usize,
@@ -53,7 +53,7 @@ pub fn renderFilesSection(
 /// indented continuation lines via renderContainerChildren. Skips output
 /// entirely when struct_indices is empty.
 pub fn renderStructsSection(
-    out: *std.ArrayListUnmanaged(u8),
+    out: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
     g: *const Graph,
     struct_indices: []const usize,
@@ -93,7 +93,7 @@ pub fn renderStructsSection(
 /// continuation lines via renderContainerChildren. Skips output entirely
 /// when union_indices is empty.
 pub fn renderUnionsSection(
-    out: *std.ArrayListUnmanaged(u8),
+    out: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
     g: *const Graph,
     union_indices: []const usize,
@@ -128,7 +128,7 @@ pub fn renderUnionsSection(
 }
 
 fn renderContainerChildren(
-    out: *std.ArrayListUnmanaged(u8),
+    out: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
     g: *const Graph,
     struct_idx: usize,
@@ -176,7 +176,7 @@ fn renderContainerChildren(
 ///
 /// Skips output entirely when enum_indices is empty.
 pub fn renderEnumsSection(
-    out: *std.ArrayListUnmanaged(u8),
+    out: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
     g: *const Graph,
     enum_indices: []const usize,
@@ -213,7 +213,7 @@ pub fn renderEnumsSection(
 /// methods, which appear under their container). Skips output entirely when
 /// fn_indices is empty.
 pub fn renderFunctionsSection(
-    out: *std.ArrayListUnmanaged(u8),
+    out: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
     g: *const Graph,
     fn_indices: []const usize,
@@ -250,7 +250,7 @@ pub fn renderFunctionsSection(
 ///
 /// Skips output entirely when const_indices is empty.
 pub fn renderConstantsSection(
-    out: *std.ArrayListUnmanaged(u8),
+    out: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
     g: *const Graph,
     const_indices: []const usize,
@@ -287,7 +287,7 @@ pub fn renderConstantsSection(
 /// Error nodes do not include a visibility marker. Skips output entirely
 /// when err_indices is empty.
 pub fn renderErrorsSection(
-    out: *std.ArrayListUnmanaged(u8),
+    out: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
     g: *const Graph,
     err_indices: []const usize,
@@ -320,7 +320,7 @@ pub fn renderErrorsSection(
 /// Each test line includes the number of lines (line_end - line_start + 1).
 /// Skips output entirely when test_indices is empty.
 pub fn renderTestsSection(
-    out: *std.ArrayListUnmanaged(u8),
+    out: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
     g: *const Graph,
     test_indices: []const usize,
@@ -361,7 +361,7 @@ pub fn renderTestsSection(
 /// with optional version). Child symbols are listed on indented lines below
 /// their package. Skips output entirely when phantom_packages is empty.
 pub fn renderExternalsSection(
-    out: *std.ArrayListUnmanaged(u8),
+    out: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
     g: *const Graph,
     phantom_packages: []const PhantomPackage,
@@ -403,7 +403,7 @@ pub fn renderExternalsSection(
 /// rendered as x:N:path. Respects scope filtering and the include_external_nodes
 /// filter option. Skips output entirely when no qualifying edges exist.
 pub fn renderEdgesSection(
-    out: *std.ArrayListUnmanaged(u8),
+    out: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
     g: *const Graph,
     ids: []const ?IdEntry,
@@ -420,7 +420,7 @@ pub fn renderEdgesSection(
         target_idx: usize,
     };
 
-    var entries = std.ArrayListUnmanaged(EdgeEntry){};
+    var entries = std.ArrayList(EdgeEntry){};
     defer entries.deinit(allocator);
 
     for (g.edges.items) |e| {

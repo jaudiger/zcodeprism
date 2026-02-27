@@ -97,7 +97,7 @@ pub fn indexDirectory(
     var dir = try std.fs.openDirAbsolute(project_root, .{ .iterate = true });
     defer dir.close();
 
-    var file_entries = std.ArrayListUnmanaged(FileEntry){};
+    var file_entries = std.ArrayList(FileEntry){};
     defer file_entries.deinit(allocator);
 
     {
@@ -184,7 +184,7 @@ pub fn indexDirectory(
     }
 
     // Parse each file through the visitor in dependency order.
-    var file_infos = std.ArrayListUnmanaged(FileInfo){};
+    var file_infos = std.ArrayList(FileInfo){};
     defer file_infos.deinit(allocator);
 
     for (file_entries.items, 0..) |fe, entry_idx| {
@@ -377,7 +377,7 @@ fn topoSortFiles(allocator: std.mem.Allocator, entries: []FileEntry) !void {
     @memset(in_degree, 0);
 
     // Adjacency: for each file, which files import it (reverse edges for Kahn's).
-    var adj = try allocator.alloc(std.ArrayListUnmanaged(usize), n);
+    var adj = try allocator.alloc(std.ArrayList(usize), n);
     defer {
         for (adj) |*a| a.deinit(allocator);
         allocator.free(adj);

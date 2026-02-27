@@ -86,7 +86,7 @@ fn extractDependencyNames(allocator: std.mem.Allocator, content: []const u8) !Bu
     pos += 1;
 
     // Collect field names at depth 1 inside the dependencies block.
-    var names = std.ArrayListUnmanaged([]u8){};
+    var names = std.ArrayList([]u8){};
     errdefer {
         for (names.items) |n| allocator.free(n);
         names.deinit(allocator);

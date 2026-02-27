@@ -69,7 +69,7 @@ pub fn main() !void {
     var include_test_nodes: bool = false;
     var include_external_nodes: bool = false;
     var verbosity: u8 = 0;
-    var exclude_list: std.ArrayListUnmanaged([]const u8) = .{};
+    var exclude_list: std.ArrayList([]const u8) = .{};
     defer exclude_list.deinit(allocator);
 
     while (args.next()) |arg| {
@@ -159,7 +159,7 @@ pub fn main() !void {
     };
 
     // Render.
-    var out: std.ArrayListUnmanaged(u8) = .{};
+    var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
     const render_common = zcodeprism.render_common;

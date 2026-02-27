@@ -66,7 +66,7 @@ const NodeRefs = struct {
 };
 
 const StringTableBuilder = struct {
-    bytes: std.ArrayListUnmanaged(u8) = .{},
+    bytes: std.ArrayList(u8) = .{},
     index: std.StringHashMapUnmanaged(StringRef) = .{},
 
     fn deinit(self: *StringTableBuilder, allocator: std.mem.Allocator) void {

@@ -36,7 +36,7 @@ pub fn renderCtg(
     allocator: std.mem.Allocator,
     g: *const Graph,
     options: RenderOptions,
-    out: *std.ArrayListUnmanaged(u8),
+    out: *std.ArrayList(u8),
 ) !void {
     var assignment = try common.buildIdAssignment(allocator, g, options.scope, options.filter);
     defer assignment.deinit(allocator);
@@ -410,7 +410,7 @@ test "header line 1 matches spec" {
     const allocator = std.testing.allocator;
     var g = try createCtgTestGraph(allocator);
     defer g.deinit();
-    var out: std.ArrayListUnmanaged(u8) = .{};
+    var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
     const options = RenderOptions{
@@ -433,7 +433,7 @@ test "header line 2 has stats" {
     const allocator = std.testing.allocator;
     var g = try createCtgTestGraph(allocator);
     defer g.deinit();
-    var out: std.ArrayListUnmanaged(u8) = .{};
+    var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
     const options = RenderOptions{
@@ -459,7 +459,7 @@ test "header line 3 has languages" {
     const allocator = std.testing.allocator;
     var g = try createCtgTestGraph(allocator);
     defer g.deinit();
-    var out: std.ArrayListUnmanaged(u8) = .{};
+    var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
     const options = RenderOptions{
@@ -484,7 +484,7 @@ test "header line 4 has timestamp" {
     const allocator = std.testing.allocator;
     var g = try createCtgTestGraph(allocator);
     defer g.deinit();
-    var out: std.ArrayListUnmanaged(u8) = .{};
+    var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
     const options = RenderOptions{
@@ -510,7 +510,7 @@ test "sections appear in correct order" {
     const allocator = std.testing.allocator;
     var g = try createCtgTestGraph(allocator);
     defer g.deinit();
-    var out: std.ArrayListUnmanaged(u8) = .{};
+    var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
     const options = RenderOptions{
@@ -549,7 +549,7 @@ test "file IDs use f: prefix" {
     const allocator = std.testing.allocator;
     var g = try createCtgTestGraph(allocator);
     defer g.deinit();
-    var out: std.ArrayListUnmanaged(u8) = .{};
+    var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
     const options = RenderOptions{
@@ -581,7 +581,7 @@ test "function IDs use fn: prefix" {
     const allocator = std.testing.allocator;
     var g = try createCtgTestGraph(allocator);
     defer g.deinit();
-    var out: std.ArrayListUnmanaged(u8) = .{};
+    var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
     const options = RenderOptions{
@@ -614,7 +614,7 @@ test "struct IDs use st: prefix" {
     const allocator = std.testing.allocator;
     var g = try createCtgTestGraph(allocator);
     defer g.deinit();
-    var out: std.ArrayListUnmanaged(u8) = .{};
+    var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
     const options = RenderOptions{
@@ -647,7 +647,7 @@ test "enum IDs use en: prefix" {
     const allocator = std.testing.allocator;
     var g = try createCtgTestGraph(allocator);
     defer g.deinit();
-    var out: std.ArrayListUnmanaged(u8) = .{};
+    var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
     const options = RenderOptions{
@@ -703,7 +703,7 @@ test "union IDs use un: prefix" {
         .visibility = .public,
     });
 
-    var out: std.ArrayListUnmanaged(u8) = .{};
+    var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
     const options = RenderOptions{
@@ -740,7 +740,7 @@ test "constant IDs use c: prefix" {
     const allocator = std.testing.allocator;
     var g = try createCtgTestGraph(allocator);
     defer g.deinit();
-    var out: std.ArrayListUnmanaged(u8) = .{};
+    var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
     const options = RenderOptions{
@@ -773,7 +773,7 @@ test "error IDs use err: prefix" {
     const allocator = std.testing.allocator;
     var g = try createCtgTestGraph(allocator);
     defer g.deinit();
-    var out: std.ArrayListUnmanaged(u8) = .{};
+    var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
     const options = RenderOptions{
@@ -806,7 +806,7 @@ test "test IDs use t: prefix" {
     const allocator = std.testing.allocator;
     var g = try createCtgTestGraph(allocator);
     defer g.deinit();
-    var out: std.ArrayListUnmanaged(u8) = .{};
+    var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
     const options = RenderOptions{
@@ -839,7 +839,7 @@ test "external IDs use x: prefix" {
     const allocator = std.testing.allocator;
     var g = try createCtgTestGraph(allocator);
     defer g.deinit();
-    var out: std.ArrayListUnmanaged(u8) = .{};
+    var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
     const options = RenderOptions{
@@ -873,7 +873,7 @@ test "files sorted by path alphabetical" {
     const allocator = std.testing.allocator;
     var g = try createCtgTestGraph(allocator);
     defer g.deinit();
-    var out: std.ArrayListUnmanaged(u8) = .{};
+    var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
     const options = RenderOptions{
@@ -896,7 +896,7 @@ test "edges sorted by type then source then target" {
     const allocator = std.testing.allocator;
     var g = try createCtgTestGraph(allocator);
     defer g.deinit();
-    var out: std.ArrayListUnmanaged(u8) = .{};
+    var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
     const options = RenderOptions{
@@ -930,12 +930,12 @@ test "deterministic output" {
 
     var g1 = try createCtgTestGraph(allocator);
     defer g1.deinit();
-    var out1: std.ArrayListUnmanaged(u8) = .{};
+    var out1: std.ArrayList(u8) = .{};
     defer out1.deinit(allocator);
 
     var g2 = try createCtgTestGraph(allocator);
     defer g2.deinit();
-    var out2: std.ArrayListUnmanaged(u8) = .{};
+    var out2: std.ArrayList(u8) = .{};
     defer out2.deinit(allocator);
 
     const options = RenderOptions{
@@ -956,7 +956,7 @@ test "empty graph renders without crash" {
     const allocator = std.testing.allocator;
     var g = Graph.init(allocator, "/tmp/project");
     defer g.deinit();
-    var out: std.ArrayListUnmanaged(u8) = .{};
+    var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
     const options = RenderOptions{
@@ -978,7 +978,7 @@ test "single file no functions" {
     const allocator = std.testing.allocator;
     var g = try createSingleFileGraph(allocator);
     defer g.deinit();
-    var out: std.ArrayListUnmanaged(u8) = .{};
+    var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
     const options = RenderOptions{
@@ -1000,7 +1000,7 @@ test "with scope filters nodes" {
     const allocator = std.testing.allocator;
     var g = try createCtgTestGraph(allocator);
     defer g.deinit();
-    var out: std.ArrayListUnmanaged(u8) = .{};
+    var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
     const options = RenderOptions{
@@ -1029,7 +1029,7 @@ test "phantom nodes in externals section" {
     const allocator = std.testing.allocator;
     var g = try createCtgTestGraph(allocator);
     defer g.deinit();
-    var out: std.ArrayListUnmanaged(u8) = .{};
+    var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
     const options = RenderOptions{
@@ -1054,7 +1054,7 @@ test "snapshot line present when options set" {
     const allocator = std.testing.allocator;
     var g = try createCtgTestGraph(allocator);
     defer g.deinit();
-    var out: std.ArrayListUnmanaged(u8) = .{};
+    var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
     const options = RenderOptions{
@@ -1077,7 +1077,7 @@ test "snapshot line absent for export" {
     const allocator = std.testing.allocator;
     var g = try createCtgTestGraph(allocator);
     defer g.deinit();
-    var out: std.ArrayListUnmanaged(u8) = .{};
+    var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
     const options = RenderOptions{

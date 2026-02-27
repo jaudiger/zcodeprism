@@ -29,7 +29,7 @@ const PhantomNodeInfo = common.PhantomNodeInfo;
 /// children index, sorted by ID, and rendered inside the block using
 /// kind-specific Mermaid shapes.
 pub fn renderFileSubgraphs(
-    out: *std.ArrayListUnmanaged(u8),
+    out: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
     g: *const Graph,
     file_indices: []const usize,
@@ -49,7 +49,7 @@ pub fn renderFileSubgraphs(
         try out.appendSlice(allocator, "\"]\n");
 
         // Collect all descendants of this file that have IDs.
-        var file_members = std.ArrayListUnmanaged(MermaidNode){};
+        var file_members = std.ArrayList(MermaidNode){};
         defer file_members.deinit(allocator);
         try collectDescendants(g, ids, children_index, fi, &file_members, allocator);
 
@@ -85,7 +85,7 @@ fn collectDescendants(
     ids: []const ?IdEntry,
     children_index: *const ChildrenIndex,
     parent_idx: usize,
-    result: *std.ArrayListUnmanaged(MermaidNode),
+    result: *std.ArrayList(MermaidNode),
     allocator: std.mem.Allocator,
 ) !void {
     for (children_index.childrenOf(parent_idx)) |ci| {
@@ -102,7 +102,7 @@ fn collectDescendants(
 
 /// Render a node in its Mermaid shape syntax.
 fn renderNodeShape(
-    out: *std.ArrayListUnmanaged(u8),
+    out: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
     g: *const Graph,
     n: Node,
@@ -178,7 +178,7 @@ fn renderNodeShape(
 /// the package x:N number and the symbol's qualified path (dots replaced
 /// by underscores).
 pub fn renderPhantomSubgraphs(
-    out: *std.ArrayListUnmanaged(u8),
+    out: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
     g: *const Graph,
     phantom_packages: []const PhantomPackage,
@@ -265,14 +265,14 @@ pub fn buildGhostNodes(
 /// sorted by ascending ghost ID number. The "..." suffix visually indicates
 /// that the node's full definition lives elsewhere.
 pub fn renderGhostNodes(
-    out: *std.ArrayListUnmanaged(u8),
+    out: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
     g: *const Graph,
     ghost_map: *const std.AutoHashMapUnmanaged(usize, u32),
     num_buf: *[20]u8,
 ) !void {
     // Collect and sort by ghost ID.
-    var entries = std.ArrayListUnmanaged(GhostEntry){};
+    var entries = std.ArrayList(GhostEntry){};
     defer entries.deinit(allocator);
 
     var it = ghost_map.iterator();
@@ -333,7 +333,7 @@ fn nodeKindPrefix(kind: NodeKind) []const u8 {
 /// for deterministic output. Respects scope filtering, the
 /// include_external_nodes filter option, and ghost node resolution.
 pub fn renderEdges(
-    out: *std.ArrayListUnmanaged(u8),
+    out: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
     g: *const Graph,
     ids: []const ?IdEntry,
@@ -353,7 +353,7 @@ pub fn renderEdges(
         target_is_phantom: bool,
     };
 
-    var entries = std.ArrayListUnmanaged(MermaidEdge){};
+    var entries = std.ArrayList(MermaidEdge){};
     defer entries.deinit(allocator);
 
     for (g.edges.items) |e| {
@@ -472,7 +472,7 @@ fn mermaidArrow(et: EdgeType) []const u8 {
 /// group, nodes are sorted by their prefix order and ID number for
 /// deterministic output.
 pub fn renderClassAssignments(
-    out: *std.ArrayListUnmanaged(u8),
+    out: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
     g: *const Graph,
     ids: []const ?IdEntry,
@@ -494,7 +494,7 @@ pub fn renderClassAssignments(
         ghost_num: u32,
     };
 
-    var entries = std.ArrayListUnmanaged(ClassEntry){};
+    var entries = std.ArrayList(ClassEntry){};
     defer entries.deinit(allocator);
 
     // Internal nodes with IDs.
@@ -580,7 +580,7 @@ pub fn renderClassAssignments(
         const target_style: StyleClass = @enumFromInt(style_idx);
 
         // Collect IDs for this style.
-        var id_strings = std.ArrayListUnmanaged(u8){};
+        var id_strings = std.ArrayList(u8){};
         defer id_strings.deinit(allocator);
         var count: usize = 0;
 
@@ -634,7 +634,7 @@ pub fn renderClassAssignments(
 
 /// Render a Mermaid-safe ID from a CTG-style prefix and number.
 /// Replaces ":" with "_" so "fn:1" becomes "fn_1".
-fn appendMermaidId(out: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, prefix: []const u8, num: u32, buf: *[20]u8) !void {
+fn appendMermaidId(out: *std.ArrayList(u8), allocator: std.mem.Allocator, prefix: []const u8, num: u32, buf: *[20]u8) !void {
     // Strip trailing colon and append underscore.
     if (prefix.len > 0 and prefix[prefix.len - 1] == ':') {
         try out.appendSlice(allocator, prefix[0 .. prefix.len - 1]);
@@ -646,7 +646,7 @@ fn appendMermaidId(out: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocato
 }
 
 /// Append a string with Mermaid-special characters escaped.
-fn appendEscaped(out: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, s: []const u8) !void {
+fn appendEscaped(out: *std.ArrayList(u8), allocator: std.mem.Allocator, s: []const u8) !void {
     var start: usize = 0;
     for (s, 0..) |c, i| {
         const replacement: ?[]const u8 = switch (c) {
@@ -665,7 +665,7 @@ fn appendEscaped(out: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator,
 }
 
 /// Append a string but replace dots with underscores (for Mermaid IDs).
-fn appendDotToUnderscore(out: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, s: []const u8) !void {
+fn appendDotToUnderscore(out: *std.ArrayList(u8), allocator: std.mem.Allocator, s: []const u8) !void {
     var start: usize = 0;
     for (s, 0..) |c, i| {
         if (c == '.') {

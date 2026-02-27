@@ -25,7 +25,7 @@ pub fn renderMermaid(
     allocator: std.mem.Allocator,
     g: *const Graph,
     options: MermaidOptions,
-    out: *std.ArrayListUnmanaged(u8),
+    out: *std.ArrayList(u8),
 ) !void {
     var assignment = try common.buildIdAssignment(allocator, g, options.scope, options.filter);
     defer assignment.deinit(allocator);
@@ -337,7 +337,7 @@ test "header line 1 matches spec" {
     const allocator = std.testing.allocator;
     var g = try createMermaidTestGraph(allocator);
     defer g.deinit();
-    var out: std.ArrayListUnmanaged(u8) = .{};
+    var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
     const options = MermaidOptions{
@@ -360,7 +360,7 @@ test "header line 2 has stats" {
     const allocator = std.testing.allocator;
     var g = try createMermaidTestGraph(allocator);
     defer g.deinit();
-    var out: std.ArrayListUnmanaged(u8) = .{};
+    var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
     const options = MermaidOptions{
@@ -386,7 +386,7 @@ test "header line 3 has timestamp" {
     const allocator = std.testing.allocator;
     var g = try createMermaidTestGraph(allocator);
     defer g.deinit();
-    var out: std.ArrayListUnmanaged(u8) = .{};
+    var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
     const options = MermaidOptions{
@@ -411,7 +411,7 @@ test "starts with flowchart TB" {
     const allocator = std.testing.allocator;
     var g = try createMermaidTestGraph(allocator);
     defer g.deinit();
-    var out: std.ArrayListUnmanaged(u8) = .{};
+    var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
     const options = MermaidOptions{
@@ -438,7 +438,7 @@ test "sections appear in correct order" {
     const allocator = std.testing.allocator;
     var g = try createMermaidTestGraph(allocator);
     defer g.deinit();
-    var out: std.ArrayListUnmanaged(u8) = .{};
+    var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
     const options = MermaidOptions{
@@ -472,7 +472,7 @@ test "classDef styles are alphabetical" {
     const allocator = std.testing.allocator;
     var g = try createMermaidTestGraph(allocator);
     defer g.deinit();
-    var out: std.ArrayListUnmanaged(u8) = .{};
+    var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
     const options = MermaidOptions{
@@ -510,12 +510,12 @@ test "deterministic output" {
 
     var g1 = try createMermaidTestGraph(allocator);
     defer g1.deinit();
-    var out1: std.ArrayListUnmanaged(u8) = .{};
+    var out1: std.ArrayList(u8) = .{};
     defer out1.deinit(allocator);
 
     var g2 = try createMermaidTestGraph(allocator);
     defer g2.deinit();
-    var out2: std.ArrayListUnmanaged(u8) = .{};
+    var out2: std.ArrayList(u8) = .{};
     defer out2.deinit(allocator);
 
     const options = MermaidOptions{
@@ -536,7 +536,7 @@ test "functions use rectangle shape" {
     const allocator = std.testing.allocator;
     var g = try createMermaidTestGraph(allocator);
     defer g.deinit();
-    var out: std.ArrayListUnmanaged(u8) = .{};
+    var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
     const options = MermaidOptions{
@@ -557,7 +557,7 @@ test "structs use subroutine shape" {
     const allocator = std.testing.allocator;
     var g = try createMermaidTestGraph(allocator);
     defer g.deinit();
-    var out: std.ArrayListUnmanaged(u8) = .{};
+    var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
     const options = MermaidOptions{
@@ -578,7 +578,7 @@ test "enums use hexagon shape" {
     const allocator = std.testing.allocator;
     var g = try createMermaidTestGraph(allocator);
     defer g.deinit();
-    var out: std.ArrayListUnmanaged(u8) = .{};
+    var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
     const options = MermaidOptions{
@@ -599,7 +599,7 @@ test "constants use parallelogram shape" {
     const allocator = std.testing.allocator;
     var g = try createMermaidTestGraph(allocator);
     defer g.deinit();
-    var out: std.ArrayListUnmanaged(u8) = .{};
+    var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
     const options = MermaidOptions{
@@ -620,7 +620,7 @@ test "methods labeled with parent type" {
     const allocator = std.testing.allocator;
     var g = try createMermaidTestGraph(allocator);
     defer g.deinit();
-    var out: std.ArrayListUnmanaged(u8) = .{};
+    var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
     const options = MermaidOptions{
@@ -641,7 +641,7 @@ test "calls edges use solid arrow" {
     const allocator = std.testing.allocator;
     var g = try createMermaidTestGraph(allocator);
     defer g.deinit();
-    var out: std.ArrayListUnmanaged(u8) = .{};
+    var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
     const options = MermaidOptions{
@@ -662,7 +662,7 @@ test "imports edges use dotted arrow" {
     const allocator = std.testing.allocator;
     var g = try createMermaidTestGraph(allocator);
     defer g.deinit();
-    var out: std.ArrayListUnmanaged(u8) = .{};
+    var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
     const options = MermaidOptions{
@@ -683,7 +683,7 @@ test "empty graph renders without crash" {
     const allocator = std.testing.allocator;
     var g = Graph.init(allocator, "/tmp/project");
     defer g.deinit();
-    var out: std.ArrayListUnmanaged(u8) = .{};
+    var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
     const options = MermaidOptions{
@@ -705,7 +705,7 @@ test "phantom nodes in subgraphs" {
     const allocator = std.testing.allocator;
     var g = try createMermaidTestGraph(allocator);
     defer g.deinit();
-    var out: std.ArrayListUnmanaged(u8) = .{};
+    var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
     const options = MermaidOptions{
@@ -729,7 +729,7 @@ test "scoped export creates ghost nodes" {
     const allocator = std.testing.allocator;
     var g = try createMermaidTestGraph(allocator);
     defer g.deinit();
-    var out: std.ArrayListUnmanaged(u8) = .{};
+    var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
     // Scope to src/main. main.zig calls method_next which is in src/lib.zig (out of scope)

@@ -19,7 +19,7 @@ pub const IdEntry = struct {
 pub const PhantomPackage = struct {
     root_idx: usize,
     x_num: u32,
-    symbols: std.ArrayListUnmanaged(PhantomSymbol),
+    symbols: std.ArrayList(PhantomSymbol),
 
     /// Frees all owned qualified_path strings and the symbols list itself.
     pub fn deinit(self: *PhantomPackage, allocator: std.mem.Allocator) void {
@@ -90,14 +90,14 @@ pub fn inScope(file_path: ?[]const u8, scope: []const u8) bool {
 
 /// Formats a usize as a decimal string and appends it to the output buffer.
 /// The caller-provided scratch buffer avoids per-call allocation.
-pub fn appendNum(out: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, val: usize, buf: *[20]u8) !void {
+pub fn appendNum(out: *std.ArrayList(u8), allocator: std.mem.Allocator, val: usize, buf: *[20]u8) !void {
     const s = std.fmt.bufPrint(buf, "{d}", .{val}) catch unreachable;
     try out.appendSlice(allocator, s);
 }
 
 /// Appends the current UTC wall-clock time as an ISO-8601 timestamp
 /// (e.g. "2026-02-14T10:30:00Z") to the output buffer.
-pub fn appendCurrentTimestamp(out: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator) !void {
+pub fn appendCurrentTimestamp(out: *std.ArrayList(u8), allocator: std.mem.Allocator) !void {
     const epoch = std.time.timestamp();
     const es = std.time.epoch.EpochSeconds{ .secs = @intCast(@max(0, epoch)) };
     const day = es.getEpochDay();
@@ -186,12 +186,12 @@ pub fn collectPhantomSymbols(
     g: *const Graph,
     parent_idx: usize,
     parent_path: []const u8,
-    symbols: *std.ArrayListUnmanaged(PhantomSymbol),
+    symbols: *std.ArrayList(PhantomSymbol),
     children_index: *const ChildrenIndex,
 ) !void {
     for (children_index.childrenOf(parent_idx)) |child_idx| {
         const n = g.nodes.items[child_idx];
-        var path_buf = std.ArrayListUnmanaged(u8){};
+        var path_buf = std.ArrayList(u8){};
         defer path_buf.deinit(allocator);
         if (parent_path.len > 0) {
             try path_buf.appendSlice(allocator, parent_path);
@@ -222,13 +222,13 @@ pub const IdWalkState = struct {
     err_counter: u32 = 0,
     t_counter: u32 = 0,
     m_counter: u32 = 0,
-    struct_indices: std.ArrayListUnmanaged(usize) = .{},
-    union_indices: std.ArrayListUnmanaged(usize) = .{},
-    enum_indices: std.ArrayListUnmanaged(usize) = .{},
-    fn_indices: std.ArrayListUnmanaged(usize) = .{},
-    const_indices: std.ArrayListUnmanaged(usize) = .{},
-    err_indices: std.ArrayListUnmanaged(usize) = .{},
-    test_indices: std.ArrayListUnmanaged(usize) = .{},
+    struct_indices: std.ArrayList(usize) = .{},
+    union_indices: std.ArrayList(usize) = .{},
+    enum_indices: std.ArrayList(usize) = .{},
+    fn_indices: std.ArrayList(usize) = .{},
+    const_indices: std.ArrayList(usize) = .{},
+    err_indices: std.ArrayList(usize) = .{},
+    test_indices: std.ArrayList(usize) = .{},
 
     /// Frees all per-kind index lists.
     pub fn deinit(self: *IdWalkState, allocator: std.mem.Allocator) void {
@@ -315,15 +315,15 @@ pub fn assignChildrenIds(
 /// the result and must call deinit to free all allocations.
 pub const IdAssignment = struct {
     ids: []?IdEntry,
-    file_indices: std.ArrayListUnmanaged(usize),
-    struct_indices: std.ArrayListUnmanaged(usize),
-    union_indices: std.ArrayListUnmanaged(usize),
-    enum_indices: std.ArrayListUnmanaged(usize),
-    fn_indices: std.ArrayListUnmanaged(usize),
-    const_indices: std.ArrayListUnmanaged(usize),
-    err_indices: std.ArrayListUnmanaged(usize),
-    test_indices: std.ArrayListUnmanaged(usize),
-    phantom_packages: std.ArrayListUnmanaged(PhantomPackage),
+    file_indices: std.ArrayList(usize),
+    struct_indices: std.ArrayList(usize),
+    union_indices: std.ArrayList(usize),
+    enum_indices: std.ArrayList(usize),
+    fn_indices: std.ArrayList(usize),
+    const_indices: std.ArrayList(usize),
+    err_indices: std.ArrayList(usize),
+    test_indices: std.ArrayList(usize),
+    phantom_packages: std.ArrayList(PhantomPackage),
     children_index: ChildrenIndex,
     phantom_lookup: std.AutoHashMapUnmanaged(usize, PhantomNodeInfo),
     languages: LanguageSet,
@@ -367,7 +367,7 @@ pub fn buildIdAssignment(
     defer child_counts.deinit(allocator);
     var total_children: usize = 0;
     var languages = LanguageSet{ .has_zig = false, .has_rust = false };
-    var file_nodes = std.ArrayListUnmanaged(usize){};
+    var file_nodes = std.ArrayList(usize){};
     defer file_nodes.deinit(allocator);
 
     for (g.nodes.items, 0..) |n, i| {
@@ -467,7 +467,7 @@ pub fn buildIdAssignment(
     }.lessThan);
 
     // Assign file IDs and walk children.
-    var file_indices = std.ArrayListUnmanaged(usize){};
+    var file_indices = std.ArrayList(usize){};
     errdefer file_indices.deinit(allocator);
     var state = IdWalkState{};
     errdefer state.deinit(allocator);
@@ -481,7 +481,7 @@ pub fn buildIdAssignment(
     }
 
     // Collect phantom packages (only when external nodes are included).
-    var phantom_packages = std.ArrayListUnmanaged(PhantomPackage){};
+    var phantom_packages = std.ArrayList(PhantomPackage){};
     errdefer {
         for (phantom_packages.items) |*pkg| pkg.deinit(allocator);
         phantom_packages.deinit(allocator);
