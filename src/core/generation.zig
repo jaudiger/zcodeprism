@@ -15,9 +15,9 @@ pub const GraphGeneration = struct {
     /// Create a new generation with the given id and source hash.
     /// Allocates an internal arena from `backing_allocator` for the graph.
     pub fn init(backing_allocator: std.mem.Allocator, generation_id: u64, source_hash: [12]u8) GraphGeneration {
-        var arena = std.heap.ArenaAllocator.init(backing_allocator);
+        const arena = std.heap.ArenaAllocator.init(backing_allocator);
         return .{
-            .graph = Graph.init(arena.allocator(), ""),
+            .graph = Graph.init(""),
             .arena = arena,
             .ref_count = std.atomic.Value(u32).init(0),
             .source_hash = source_hash,
@@ -35,7 +35,7 @@ pub const GraphGeneration = struct {
         const prev = self.ref_count.fetchSub(1, .monotonic);
         if (prev == 1) {
             // Last reference released, free the arena
-            self.graph.deinit();
+            self.graph.deinit(self.arena.allocator());
             self.arena.deinit();
         }
     }

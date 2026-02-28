@@ -126,8 +126,8 @@ pub fn main() !void {
     };
 
     // Index the directory.
-    var graph = Graph.init(allocator, dir_path);
-    defer graph.deinit();
+    var graph = Graph.init(dir_path);
+    defer graph.deinit(allocator);
 
     const result = indexer.indexDirectory(allocator, dir_path, &graph, options) catch |err| {
         try stdout.print("Index error: {}\n", .{err});

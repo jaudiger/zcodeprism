@@ -154,7 +154,7 @@ pub fn indexDirectory(
 
     if (file_entries.items.len == 0) {
         log.debug("no files to index", &.{});
-        try graph.freeze();
+        try graph.freeze(allocator);
         return result;
     }
 
@@ -165,10 +165,10 @@ pub fn indexDirectory(
         const est_nodes: u32 = @intCast(file_count * 30);
         const est_edges: u32 = @intCast(file_count * 20);
         const est_bufs: u32 = @intCast(graph.owned_buffers.items.len + file_count * 2);
-        try graph.nodes.ensureTotalCapacity(graph.allocator, est_nodes);
-        try graph.edges.ensureTotalCapacity(graph.allocator, est_edges);
-        try graph.edge_index.ensureTotalCapacity(graph.allocator, est_edges);
-        try graph.owned_buffers.ensureTotalCapacity(graph.allocator, est_bufs);
+        try graph.nodes.ensureTotalCapacity(allocator, est_nodes);
+        try graph.edges.ensureTotalCapacity(allocator, est_edges);
+        try graph.edge_index.ensureTotalCapacity(allocator, est_edges);
+        try graph.owned_buffers.ensureTotalCapacity(allocator, est_bufs);
     }
 
     // Topological sort: imported files are parsed before their importers.
@@ -211,14 +211,14 @@ pub fn indexDirectory(
 
         // Graph owns the backing memory for all node slices (name, doc, signature).
         // Ownership must be established before parse_fn, which creates those slices.
-        try graph.addOwnedBuffer(fe.content);
+        try graph.addOwnedBuffer(allocator, fe.content);
         file_entries.items[entry_idx].content_consumed = true;
-        try graph.addOwnedBuffer(fe.rel_path);
+        try graph.addOwnedBuffer(allocator, fe.rel_path);
         file_entries.items[entry_idx].path_consumed = true;
 
         // Call visitor via language support. Creates file node + children + edges.
         log.debug("parsing file", &.{Field.string("path", fe.rel_path)});
-        parse_fn(fe.content, graph, fe.rel_path, log) catch {
+        parse_fn(allocator, fe.content, graph, fe.rel_path, log) catch {
             log.warn("file parse error", &.{Field.string("path", fe.rel_path)});
             result.files_errored += 1;
             continue;
@@ -293,20 +293,20 @@ pub fn indexDirectory(
             };
 
             if (target_idx) |tidx| {
-                _ = try graph.addEdgeIfNew(.{ .source_id = file_id, .target_id = @enumFromInt(file_infos.items[tidx].idx), .edge_type = .imports });
+                _ = try graph.addEdgeIfNew(allocator, .{ .source_id = file_id, .target_id = @enumFromInt(file_infos.items[tidx].idx), .edge_type = .imports });
             }
         }
     }
 
     // Phantom nodes for external references.
     log.debug("resolving phantom nodes", &.{Field.uint("file_count", file_infos.items.len)});
-    var phantom = PhantomManager.init(allocator, graph);
-    defer phantom.deinit();
+    var phantom = PhantomManager.init(graph);
+    defer phantom.deinit(allocator);
 
     for (file_infos.items) |fi| {
         if (fi.lang_support.resolvePhantomsFn) |resolve_phantoms| {
             const bc_ptr: ?*const lang.BuildConfig = if (build_config) |*bc| bc else null;
-            try resolve_phantoms(graph, fi.source, fi.idx, fi.scope_end, &phantom, bc_ptr, log);
+            try resolve_phantoms(allocator, graph, fi.source, fi.idx, fi.scope_end, &phantom, bc_ptr, log);
         }
     }
 
@@ -318,7 +318,7 @@ pub fn indexDirectory(
         Field.uint("edges", graph.edgeCount()),
     });
 
-    try graph.freeze();
+    try graph.freeze(allocator);
     return result;
 }
 

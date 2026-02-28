@@ -137,8 +137,8 @@ pub fn main() !void {
     const name = project_name orelse std.fs.path.basename(dir_path);
 
     // Index the directory.
-    var graph = Graph.init(allocator, dir_path);
-    defer graph.deinit();
+    var graph = Graph.init(dir_path);
+    defer graph.deinit(allocator);
 
     const min_level: logging.Level = switch (verbosity) {
         0 => .warn,

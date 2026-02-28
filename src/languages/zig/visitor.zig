@@ -39,7 +39,7 @@ const LangMeta = lang.LangMeta;
 /// Returns `anyerror` because tree-sitter and graph operations may fail.
 /// On tree-sitter parse failure, a bare file node is still created so the
 /// graph remains consistent.
-pub fn parse(source: []const u8, g: *Graph, file_path: ?[]const u8, logger: Logger) anyerror!void {
+pub fn parse(allocator: std.mem.Allocator, source: []const u8, g: *Graph, file_path: ?[]const u8, logger: Logger) anyerror!void {
     const log = logger.withScope("zig-visitor");
 
     log.debug("parsing source", &.{Field.uint("bytes", source.len)});
@@ -52,7 +52,7 @@ pub fn parse(source: []const u8, g: *Graph, file_path: ?[]const u8, logger: Logg
     const tree = ts_api.parseSource(ts_lang, source) orelse {
         log.warn("tree-sitter parse failed", &.{});
         // If tree-sitter parsing fails, create a bare file node.
-        _ = try g.addNode(.{
+        _ = try g.addNode(allocator, .{
             .id = .root,
             .name = "",
             .kind = .file,
@@ -72,7 +72,7 @@ pub fn parse(source: []const u8, g: *Graph, file_path: ?[]const u8, logger: Logg
     const module_doc = ast.collectModuleDocComment(source, root, &k);
 
     // Create file node (always the first node).
-    const file_id = try g.addNode(.{
+    const file_id = try g.addNode(allocator, .{
         .id = .root,
         .name = "",
         .kind = .file,
@@ -90,7 +90,7 @@ pub fn parse(source: []const u8, g: *Graph, file_path: ?[]const u8, logger: Logg
     while (i < root.childCount()) : (i += 1) {
         const child = root.child(i) orelse continue;
         if (!child.isNamed()) continue;
-        try processDeclaration(g, source, child, file_id, &k, log);
+        try processDeclaration(allocator, g, source, child, file_id, &k, log);
     }
 
     // -- Phase 2: Import map construction --
@@ -102,11 +102,11 @@ pub fn parse(source: []const u8, g: *Graph, file_path: ?[]const u8, logger: Logg
     };
 
     // Build lookup indices for scope-based and file-based resolution.
-    var file_index = try FileIndex.build(g.allocator, g.nodes.items);
-    defer file_index.deinit(g.allocator);
+    var file_index = try FileIndex.build(allocator, g.nodes.items);
+    defer file_index.deinit(allocator);
 
-    var scope_index = try ScopeIndex.build(g.allocator, g.nodes.items, 0);
-    defer scope_index.deinit(g.allocator);
+    var scope_index = try ScopeIndex.build(allocator, g.nodes.items, 0);
+    defer scope_index.deinit(allocator);
 
     cf.buildImportMap(g, source, root, &ctx, &file_index, file_path, &k, log);
 
@@ -114,25 +114,25 @@ pub fn parse(source: []const u8, g: *Graph, file_path: ?[]const u8, logger: Logg
     // Walk the AST a second time to discover call and uses_type relationships,
     // resolving targets via the scope index, file index, and import map.
     log.debug("building edges", &.{});
-    try eb.walkForEdges(g, source, root, &ctx, &k, &scope_index, &file_index, log);
+    try eb.walkForEdges(allocator, g, source, root, &ctx, &k, &scope_index, &file_index, log);
 }
 
 /// Dispatch a single top-level or nested declaration to the appropriate
 /// handler based on its tree-sitter node kind. Unrecognized kinds are
 /// silently skipped (they produce no graph node).
-fn processDeclaration(g: *Graph, source: []const u8, ts_node: ts.Node, parent_id: NodeId, k: *const KindIds, log: Logger) anyerror!void {
+fn processDeclaration(allocator: std.mem.Allocator, g: *Graph, source: []const u8, ts_node: ts.Node, parent_id: NodeId, k: *const KindIds, log: Logger) anyerror!void {
     const kid = ts_node.kindId();
 
     if (kid == k.variable_declaration) {
-        try processVariableDecl(g, source, ts_node, parent_id, k, log);
+        try processVariableDecl(allocator, g, source, ts_node, parent_id, k, log);
     } else if (kid == k.function_declaration) {
-        try processFunctionDecl(g, source, ts_node, parent_id, k, log);
+        try processFunctionDecl(allocator, g, source, ts_node, parent_id, k, log);
     } else if (kid == k.test_declaration) {
-        try processTestDecl(g, source, ts_node, parent_id, k, log);
+        try processTestDecl(allocator, g, source, ts_node, parent_id, k, log);
     } else if (kid == k.container_field) {
-        try processContainerField(g, source, ts_node, parent_id, k, log);
+        try processContainerField(allocator, g, source, ts_node, parent_id, k, log);
     } else if (kid == k.comptime_declaration) {
-        try processComptimeDecl(g, source, ts_node, parent_id, k, log);
+        try processComptimeDecl(allocator, g, source, ts_node, parent_id, k, log);
     }
 }
 
@@ -142,7 +142,7 @@ fn processDeclaration(g: *Graph, source: []const u8, ts_node: ts.Node, parent_id
 /// @This() aliases and private same-name re-exports. Detects Zig-specific
 /// qualifiers (mutable, comptime, packed, extern) and stores them as LangMeta.
 /// Recurses into container bodies for nested declarations.
-fn processVariableDecl(g: *Graph, source: []const u8, ts_node: ts.Node, parent_id: NodeId, k: *const KindIds, log: Logger) anyerror!void {
+fn processVariableDecl(allocator: std.mem.Allocator, g: *Graph, source: []const u8, ts_node: ts.Node, parent_id: NodeId, k: *const KindIds, log: Logger) anyerror!void {
     const name = ast.getIdentifierName(source, ts_node, k) orelse {
         log.trace("skipping variable: no identifier", &.{});
         return;
@@ -198,7 +198,7 @@ fn processVariableDecl(g: *Graph, source: []const u8, ts_node: ts.Node, parent_i
     else
         null;
 
-    const node_id = try g.addNode(.{
+    const node_id = try g.addNode(allocator, .{
         .id = .root,
         .name = name,
         .kind = kind,
@@ -218,7 +218,7 @@ fn processVariableDecl(g: *Graph, source: []const u8, ts_node: ts.Node, parent_i
         while (i < body.childCount()) : (i += 1) {
             const child = body.child(i) orelse continue;
             if (!child.isNamed()) continue;
-            try processDeclaration(g, source, child, node_id, k, log);
+            try processDeclaration(allocator, g, source, child, node_id, k, log);
         }
     }
 }
@@ -231,7 +231,7 @@ fn processVariableDecl(g: *Graph, source: []const u8, ts_node: ts.Node, parent_i
 /// Extracts the function signature, visibility, doc comment, and
 /// Zig-specific qualifiers (extern, inline, calling convention).
 /// Recurses into the block body to discover inner type definitions.
-fn processFunctionDecl(g: *Graph, source: []const u8, ts_node: ts.Node, parent_id: NodeId, k: *const KindIds, log: Logger) anyerror!void {
+fn processFunctionDecl(allocator: std.mem.Allocator, g: *Graph, source: []const u8, ts_node: ts.Node, parent_id: NodeId, k: *const KindIds, log: Logger) anyerror!void {
     const name = ast.getIdentifierName(source, ts_node, k) orelse {
         log.trace("skipping function: no identifier", &.{});
         return;
@@ -263,7 +263,7 @@ fn processFunctionDecl(g: *Graph, source: []const u8, ts_node: ts.Node, parent_i
                 .is_inline = is_inline,
             } } else .{ .none = {} };
 
-            const type_id = try g.addNode(.{
+            const type_id = try g.addNode(allocator, .{
                 .id = .root,
                 .name = name,
                 .kind = kind,
@@ -281,7 +281,7 @@ fn processFunctionDecl(g: *Graph, source: []const u8, ts_node: ts.Node, parent_i
             while (i < body_info.body.childCount()) : (i += 1) {
                 const child = body_info.body.child(i) orelse continue;
                 if (!child.isNamed()) continue;
-                try processDeclaration(g, source, child, type_id, k, log);
+                try processDeclaration(allocator, g, source, child, type_id, k, log);
             }
             return;
         } else {
@@ -297,7 +297,7 @@ fn processFunctionDecl(g: *Graph, source: []const u8, ts_node: ts.Node, parent_i
         .calling_convention = if (is_extern) ast.extractCallingConvention(source, ts_node, k) else null,
     } } else .{ .none = {} };
 
-    const fn_id = try g.addNode(.{
+    const fn_id = try g.addNode(allocator, .{
         .id = .root,
         .name = name,
         .kind = .function,
@@ -316,7 +316,7 @@ fn processFunctionDecl(g: *Graph, source: []const u8, ts_node: ts.Node, parent_i
     while (fi < ts_node.childCount()) : (fi += 1) {
         const child = ts_node.child(fi) orelse continue;
         if (child.kindId() == k.block) {
-            try discoverInnerTypes(g, source, child, fn_id, k, log);
+            try discoverInnerTypes(allocator, g, source, child, fn_id, k, log);
             break;
         }
     }
@@ -352,11 +352,11 @@ fn extractFunctionSignature(source: []const u8, ts_node: ts.Node, k: *const Kind
 /// Process a test declaration and add a .test_def node.
 /// Extracts the test name (string literal, decl-reference, or quoted identifier)
 /// and any preceding doc comment. Recurses into the test body for inner types.
-fn processTestDecl(g: *Graph, source: []const u8, ts_node: ts.Node, parent_id: NodeId, k: *const KindIds, log: Logger) anyerror!void {
+fn processTestDecl(allocator: std.mem.Allocator, g: *Graph, source: []const u8, ts_node: ts.Node, parent_id: NodeId, k: *const KindIds, log: Logger) anyerror!void {
     const name = ast.getTestName(source, ts_node, k);
     const doc = ast.collectDocComment(source, ts_node, k);
 
-    const test_id = try g.addNode(.{
+    const test_id = try g.addNode(allocator, .{
         .id = .root,
         .name = name,
         .kind = .test_def,
@@ -373,7 +373,7 @@ fn processTestDecl(g: *Graph, source: []const u8, ts_node: ts.Node, parent_id: N
     while (i < ts_node.childCount()) : (i += 1) {
         const child = ts_node.child(i) orelse continue;
         if (child.kindId() == k.block) {
-            try discoverInnerTypes(g, source, child, test_id, k, log);
+            try discoverInnerTypes(allocator, g, source, child, test_id, k, log);
             break;
         }
     }
@@ -383,12 +383,12 @@ fn processTestDecl(g: *Graph, source: []const u8, ts_node: ts.Node, parent_id: N
 /// Comptime blocks are syntactic containers, not semantic entities --
 /// they produce no graph node themselves. Instead, inner type definitions
 /// are promoted to children of the enclosing scope (parent_id).
-fn processComptimeDecl(g: *Graph, source: []const u8, ts_node: ts.Node, parent_id: NodeId, k: *const KindIds, log: Logger) anyerror!void {
+fn processComptimeDecl(allocator: std.mem.Allocator, g: *Graph, source: []const u8, ts_node: ts.Node, parent_id: NodeId, k: *const KindIds, log: Logger) anyerror!void {
     var i: u32 = 0;
     while (i < ts_node.childCount()) : (i += 1) {
         const child = ts_node.child(i) orelse continue;
         if (child.kindId() == k.block) {
-            try discoverInnerTypes(g, source, child, parent_id, k, log);
+            try discoverInnerTypes(allocator, g, source, child, parent_id, k, log);
             break;
         }
     }
@@ -399,7 +399,7 @@ fn processComptimeDecl(g: *Graph, source: []const u8, ts_node: ts.Node, parent_i
 /// recursively handles nested declarations (methods, fields, inner types).
 /// Also recurses into nested blocks (if/while/for/comptime bodies) to catch
 /// type definitions at any depth within the block.
-fn discoverInnerTypes(g: *Graph, source: []const u8, block: ts.Node, parent_id: NodeId, k: *const KindIds, log: Logger) anyerror!void {
+fn discoverInnerTypes(allocator: std.mem.Allocator, g: *Graph, source: []const u8, block: ts.Node, parent_id: NodeId, k: *const KindIds, log: Logger) anyerror!void {
     var i: u32 = 0;
     while (i < block.childCount()) : (i += 1) {
         const child = block.child(i) orelse continue;
@@ -408,7 +408,7 @@ fn discoverInnerTypes(g: *Graph, source: []const u8, block: ts.Node, parent_id: 
         if (kid == k.variable_declaration) {
             const classification = ast.classifyVariableValue(source, child, k);
             if (classification.body != null) {
-                try processVariableDecl(g, source, child, parent_id, k, log);
+                try processVariableDecl(allocator, g, source, child, parent_id, k, log);
             }
             continue;
         }
@@ -422,21 +422,21 @@ fn discoverInnerTypes(g: *Graph, source: []const u8, block: ts.Node, parent_id: 
             kid == k.expression_statement or
             kid == k.defer_statement)
         {
-            try discoverInnerTypes(g, source, child, parent_id, k, log);
+            try discoverInnerTypes(allocator, g, source, child, parent_id, k, log);
         }
     }
 }
 
 /// Process a container field (struct field or enum variant) and add a .field node.
 /// Fields are always private. Skips unnamed fields (e.g. padding fields).
-fn processContainerField(g: *Graph, source: []const u8, ts_node: ts.Node, parent_id: NodeId, k: *const KindIds, log: Logger) anyerror!void {
+fn processContainerField(allocator: std.mem.Allocator, g: *Graph, source: []const u8, ts_node: ts.Node, parent_id: NodeId, k: *const KindIds, log: Logger) anyerror!void {
     const name = ast.getIdentifierName(source, ts_node, k) orelse {
         log.trace("skipping field: no identifier", &.{});
         return;
     };
     const doc = ast.collectDocComment(source, ts_node, k);
 
-    _ = try g.addNode(.{
+    _ = try g.addNode(allocator, .{
         .id = .root,
         .name = name,
         .kind = .field,
@@ -466,11 +466,11 @@ fn isImportSibling(g: *const Graph, parent_id: NodeId, name: []const u8) bool {
 
 test "simple fixture: nodes, visibility, parents, doc comments" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/project");
-    defer g.deinit();
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
 
     // Act
-    try parse(fixtures.zig.simple, &g, null, Logger.noop);
+    try parse(std.testing.allocator, fixtures.zig.simple, &g, null, Logger.noop);
 
     // Assert: at least one node of each kind exists
     var found_pub_fn = false;
@@ -599,11 +599,11 @@ test "simple fixture: nodes, visibility, parents, doc comments" {
 
 test "simple fixture: unions, enum methods, imports, fields, variants, module doc" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/project");
-    defer g.deinit();
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
 
     // Act
-    try parse(fixtures.zig.simple, &g, null, Logger.noop);
+    try parse(std.testing.allocator, fixtures.zig.simple, &g, null, Logger.noop);
 
     // unions
     // tagged union Shape: union_def, public, doc
@@ -736,11 +736,11 @@ test "simple fixture: unions, enum methods, imports, fields, variants, module do
 
 test "generic type fixture: type_def nodes, parents, visibility, doc comments" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/project");
-    defer g.deinit();
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
 
     // Act
-    try parse(fixtures.zig.generic_type, &g, null, Logger.noop);
+    try parse(std.testing.allocator, fixtures.zig.generic_type, &g, null, Logger.noop);
 
     // Container exists as type_def with file as parent
     var container_node: ?*const Node = null;
@@ -871,11 +871,11 @@ test "generic type fixture: type_def nodes, parents, visibility, doc comments" {
 
 test "file struct fixture: methods, nested types, Self filtering" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/project");
-    defer g.deinit();
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
 
     // Act
-    try parse(fixtures.zig.file_struct, &g, null, Logger.noop);
+    try parse(std.testing.allocator, fixtures.zig.file_struct, &g, null, Logger.noop);
 
     // methods are direct children of file node
     var found_init = false;
@@ -930,9 +930,9 @@ test "file struct fixture: methods, nested types, Self filtering" {
 test "edge case fixtures: empty, comments-only, no-pub, deep nesting, many params, unicode" {
     // empty file
     {
-        var g = Graph.init(std.testing.allocator, "/tmp/project");
-        defer g.deinit();
-        try parse(fixtures.zig.edge_cases.empty, &g, null, Logger.noop);
+        var g = Graph.init("/tmp/project");
+        defer g.deinit(std.testing.allocator);
+        try parse(std.testing.allocator, fixtures.zig.edge_cases.empty, &g, null, Logger.noop);
 
         try std.testing.expectEqual(@as(usize, 1), g.nodeCount());
         try std.testing.expectEqual(@as(usize, 0), g.edgeCount());
@@ -943,9 +943,9 @@ test "edge case fixtures: empty, comments-only, no-pub, deep nesting, many param
 
     // only comments
     {
-        var g = Graph.init(std.testing.allocator, "/tmp/project");
-        defer g.deinit();
-        try parse(fixtures.zig.edge_cases.only_comments, &g, null, Logger.noop);
+        var g = Graph.init("/tmp/project");
+        defer g.deinit(std.testing.allocator);
+        try parse(std.testing.allocator, fixtures.zig.edge_cases.only_comments, &g, null, Logger.noop);
 
         try std.testing.expectEqual(@as(usize, 1), g.nodeCount());
         const f = g.getNode(@enumFromInt(0));
@@ -955,9 +955,9 @@ test "edge case fixtures: empty, comments-only, no-pub, deep nesting, many param
 
     // no pub: all private
     {
-        var g = Graph.init(std.testing.allocator, "/tmp/project");
-        defer g.deinit();
-        try parse(fixtures.zig.edge_cases.no_pub, &g, null, Logger.noop);
+        var g = Graph.init("/tmp/project");
+        defer g.deinit(std.testing.allocator);
+        try parse(std.testing.allocator, fixtures.zig.edge_cases.no_pub, &g, null, Logger.noop);
 
         var fn_count: usize = 0;
         var i: usize = 0;
@@ -973,9 +973,9 @@ test "edge case fixtures: empty, comments-only, no-pub, deep nesting, many param
 
     // deeply nested: innerMethod -> Inner -> Middle -> Outer -> file
     {
-        var g = Graph.init(std.testing.allocator, "/tmp/project");
-        defer g.deinit();
-        try parse(fixtures.zig.edge_cases.deeply_nested, &g, null, Logger.noop);
+        var g = Graph.init("/tmp/project");
+        defer g.deinit(std.testing.allocator);
+        try parse(std.testing.allocator, fixtures.zig.edge_cases.deeply_nested, &g, null, Logger.noop);
 
         var inner_method: ?*const Node = null;
         var i: usize = 0;
@@ -1007,9 +1007,9 @@ test "edge case fixtures: empty, comments-only, no-pub, deep nesting, many param
 
     // many params
     {
-        var g = Graph.init(std.testing.allocator, "/tmp/project");
-        defer g.deinit();
-        try parse(fixtures.zig.edge_cases.many_params, &g, null, Logger.noop);
+        var g = Graph.init("/tmp/project");
+        defer g.deinit(std.testing.allocator);
+        try parse(std.testing.allocator, fixtures.zig.edge_cases.many_params, &g, null, Logger.noop);
 
         var found = false;
         var i: usize = 0;
@@ -1025,9 +1025,9 @@ test "edge case fixtures: empty, comments-only, no-pub, deep nesting, many param
 
     // unicode names
     {
-        var g = Graph.init(std.testing.allocator, "/tmp/project");
-        defer g.deinit();
-        try parse(fixtures.zig.edge_cases.unicode_names, &g, null, Logger.noop);
+        var g = Graph.init("/tmp/project");
+        defer g.deinit(std.testing.allocator);
+        try parse(std.testing.allocator, fixtures.zig.edge_cases.unicode_names, &g, null, Logger.noop);
 
         var found_cafe = false;
         var found_resume = false;
@@ -1044,13 +1044,13 @@ test "edge case fixtures: empty, comments-only, no-pub, deep nesting, many param
 test "decl-reference and string-literal test names" {
     // bare identifier test name
     {
-        var g = Graph.init(std.testing.allocator, "/tmp/project");
-        defer g.deinit();
+        var g = Graph.init("/tmp/project");
+        defer g.deinit(std.testing.allocator);
         const source =
             \\fn helper() i32 { return 42; }
             \\test helper { _ = helper(); }
         ;
-        try parse(source, &g, null, Logger.noop);
+        try parse(std.testing.allocator, source, &g, null, Logger.noop);
         var found_test = false;
         for (g.nodes.items) |n| {
             if (n.kind == .test_def) {
@@ -1064,15 +1064,15 @@ test "decl-reference and string-literal test names" {
 
     // type identifier test name
     {
-        var g = Graph.init(std.testing.allocator, "/tmp/project");
-        defer g.deinit();
+        var g = Graph.init("/tmp/project");
+        defer g.deinit(std.testing.allocator);
         const source =
             \\const Foo = struct {
             \\    pub fn bar() void {}
             \\};
             \\test Foo { Foo.bar(); }
         ;
-        try parse(source, &g, null, Logger.noop);
+        try parse(std.testing.allocator, source, &g, null, Logger.noop);
         var found_test = false;
         for (g.nodes.items) |n| {
             if (n.kind == .test_def) {
@@ -1086,15 +1086,15 @@ test "decl-reference and string-literal test names" {
 
     // two decl-reference tests get distinct names
     {
-        var g = Graph.init(std.testing.allocator, "/tmp/project");
-        defer g.deinit();
+        var g = Graph.init("/tmp/project");
+        defer g.deinit(std.testing.allocator);
         const source =
             \\fn alpha() i32 { return 1; }
             \\fn beta() i32 { return 2; }
             \\test alpha { _ = alpha(); }
             \\test beta { _ = beta(); }
         ;
-        try parse(source, &g, null, Logger.noop);
+        try parse(std.testing.allocator, source, &g, null, Logger.noop);
         var test_count: usize = 0;
         var found_alpha = false;
         var found_beta = false;
@@ -1113,12 +1113,12 @@ test "decl-reference and string-literal test names" {
 
     // @"quoted identifier" test name
     {
-        var g = Graph.init(std.testing.allocator, "/tmp/project");
-        defer g.deinit();
+        var g = Graph.init("/tmp/project");
+        defer g.deinit(std.testing.allocator);
         const source =
             \\test @"edge case name" {}
         ;
-        try parse(source, &g, null, Logger.noop);
+        try parse(std.testing.allocator, source, &g, null, Logger.noop);
         var found_test = false;
         for (g.nodes.items) |n| {
             if (n.kind == .test_def) {
@@ -1132,13 +1132,13 @@ test "decl-reference and string-literal test names" {
 
     // string-literal test name
     {
-        var g = Graph.init(std.testing.allocator, "/tmp/project");
-        defer g.deinit();
+        var g = Graph.init("/tmp/project");
+        defer g.deinit(std.testing.allocator);
         const source =
             \\fn foo() void {}
             \\test "calls foo" { _ = foo(); }
         ;
-        try parse(source, &g, null, Logger.noop);
+        try parse(std.testing.allocator, source, &g, null, Logger.noop);
         for (g.nodes.items) |n| {
             if (n.kind == .test_def) {
                 try std.testing.expectEqualStrings("calls foo", n.name);
@@ -1151,9 +1151,9 @@ test "decl-reference and string-literal test names" {
 test "module doc comment separation" {
     // no module doc -> null
     {
-        var g = Graph.init(std.testing.allocator, "/tmp/project");
-        defer g.deinit();
-        try parse("const x = 42;\n", &g, null, Logger.noop);
+        var g = Graph.init("/tmp/project");
+        defer g.deinit(std.testing.allocator);
+        try parse(std.testing.allocator, "const x = 42;\n", &g, null, Logger.noop);
 
         const f = g.getNode(@enumFromInt(0));
         try std.testing.expect(f != null);
@@ -1163,14 +1163,14 @@ test "module doc comment separation" {
 
     // module doc separate from item doc
     {
-        var g = Graph.init(std.testing.allocator, "/tmp/project");
-        defer g.deinit();
+        var g = Graph.init("/tmp/project");
+        defer g.deinit(std.testing.allocator);
         const source =
             \\//! Module doc.
             \\/// Item doc.
             \\const x = 42;
         ;
-        try parse(source, &g, null, Logger.noop);
+        try parse(std.testing.allocator, source, &g, null, Logger.noop);
 
         const f = g.getNode(@enumFromInt(0));
         try std.testing.expect(f != null);
@@ -1198,11 +1198,11 @@ test "module doc comment separation" {
 
 test "extern functions fixture: qualifiers, calling convention, and signatures" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/project");
-    defer g.deinit();
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
 
     // Act
-    try parse(fixtures.zig.edge_cases.extern_functions, &g, null, Logger.noop);
+    try parse(std.testing.allocator, fixtures.zig.edge_cases.extern_functions, &g, null, Logger.noop);
 
     // Assert: find all function nodes
     var c_write_node: ?*const Node = null;
@@ -1284,11 +1284,11 @@ test "extern functions fixture: qualifiers, calling convention, and signatures" 
 
 test "mutability fixture: var vs const metadata" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/project");
-    defer g.deinit();
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
 
     // Act
-    try parse(fixtures.zig.edge_cases.mutability, &g, null, Logger.noop);
+    try parse(std.testing.allocator, fixtures.zig.edge_cases.mutability, &g, null, Logger.noop);
 
     // Assert: find relevant nodes
     var max_size_node: ?*const Node = null;

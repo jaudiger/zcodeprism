@@ -15,11 +15,11 @@ const parse = zcodeprism.visitor.parse;
 
 test "simple fixture: edge creation" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/project");
-    defer g.deinit();
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
 
     // Act
-    try parse(fixtures.zig.simple, &g, null, Logger.noop);
+    try parse(std.testing.allocator, fixtures.zig.simple, &g, null, Logger.noop);
 
     // Assert: at least one calls edge exists (manhattan calls abs)
     var found_calls = false;
@@ -119,11 +119,11 @@ test "simple fixture: edge creation" {
 
 test "file struct fixture: edge creation" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/project");
-    defer g.deinit();
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
 
     // Act
-    try parse(fixtures.zig.file_struct, &g, null, Logger.noop);
+    try parse(std.testing.allocator, fixtures.zig.file_struct, &g, null, Logger.noop);
 
     // Assert: isValid has a calls edge to validate (via self.validate())
     var isValid_id: ?NodeId = null;
@@ -160,11 +160,11 @@ test "file struct fixture: edge creation" {
 
 test "generic type fixture: edge creation" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/project");
-    defer g.deinit();
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
 
     // Act
-    try parse(fixtures.zig.generic_type, &g, null, Logger.noop);
+    try parse(std.testing.allocator, fixtures.zig.generic_type, &g, null, Logger.noop);
 
     // Assert: isEmpty calls count (via self.count())
     var caller_id: ?NodeId = null;
@@ -235,13 +235,13 @@ test "generic type fixture: edge creation" {
 test "test block edges" {
     // test block creates calls edge to local function
     {
-        var g = Graph.init(std.testing.allocator, "/tmp/project");
-        defer g.deinit();
+        var g = Graph.init("/tmp/project");
+        defer g.deinit(std.testing.allocator);
         const source =
             \\fn helper() i32 { return 42; }
             \\test "uses helper" { _ = helper(); }
         ;
-        try parse(source, &g, null, Logger.noop);
+        try parse(std.testing.allocator, source, &g, null, Logger.noop);
 
         var test_id: ?NodeId = null;
         var helper_id: ?NodeId = null;
@@ -264,15 +264,15 @@ test "test block edges" {
 
     // test block creates calls edge to method via dot syntax
     {
-        var g = Graph.init(std.testing.allocator, "/tmp/project");
-        defer g.deinit();
+        var g = Graph.init("/tmp/project");
+        defer g.deinit(std.testing.allocator);
         const source =
             \\const Foo = struct {
             \\    pub fn bar() void {}
             \\};
             \\test "calls bar" { Foo.bar(); }
         ;
-        try parse(source, &g, null, Logger.noop);
+        try parse(std.testing.allocator, source, &g, null, Logger.noop);
 
         var test_id: ?NodeId = null;
         var bar_id: ?NodeId = null;
@@ -295,15 +295,15 @@ test "test block edges" {
 
     // test block with no local calls has no edges
     {
-        var g = Graph.init(std.testing.allocator, "/tmp/project");
-        defer g.deinit();
+        var g = Graph.init("/tmp/project");
+        defer g.deinit(std.testing.allocator);
         const source =
             \\test "standalone" {
             \\    const x: i32 = 42;
             \\    _ = x;
             \\}
         ;
-        try parse(source, &g, null, Logger.noop);
+        try parse(std.testing.allocator, source, &g, null, Logger.noop);
 
         var test_id: ?NodeId = null;
         for (g.nodes.items, 0..) |n, idx| {
@@ -323,15 +323,15 @@ test "test block edges" {
 
     // decl-reference test edges are attributed to correct node
     {
-        var g = Graph.init(std.testing.allocator, "/tmp/project");
-        defer g.deinit();
+        var g = Graph.init("/tmp/project");
+        defer g.deinit(std.testing.allocator);
         const source =
             \\fn alpha() i32 { return 1; }
             \\fn beta() i32 { return 2; }
             \\test alpha { _ = alpha(); }
             \\test beta { _ = beta(); }
         ;
-        try parse(source, &g, null, Logger.noop);
+        try parse(std.testing.allocator, source, &g, null, Logger.noop);
 
         var test_alpha_id: ?NodeId = null;
         var test_beta_id: ?NodeId = null;
@@ -370,8 +370,8 @@ test "test block edges" {
 test "nested scope isolation" {
     // test block does not leak calls from nested function
     {
-        var g = Graph.init(std.testing.allocator, "/tmp/project");
-        defer g.deinit();
+        var g = Graph.init("/tmp/project");
+        defer g.deinit(std.testing.allocator);
         const source =
             \\fn helper() void {}
             \\test "outer" {
@@ -381,7 +381,7 @@ test "nested scope isolation" {
             \\    S.inner();
             \\}
         ;
-        try parse(source, &g, null, Logger.noop);
+        try parse(std.testing.allocator, source, &g, null, Logger.noop);
 
         var test_id: ?NodeId = null;
         var helper_id: ?NodeId = null;
@@ -430,8 +430,8 @@ test "nested scope isolation" {
 
     // function does not leak calls from nested function
     {
-        var g = Graph.init(std.testing.allocator, "/tmp/project");
-        defer g.deinit();
+        var g = Graph.init("/tmp/project");
+        defer g.deinit(std.testing.allocator);
         const source =
             \\fn target() void {}
             \\fn outer() void {
@@ -441,7 +441,7 @@ test "nested scope isolation" {
             \\    S.nested();
             \\}
         ;
-        try parse(source, &g, null, Logger.noop);
+        try parse(std.testing.allocator, source, &g, null, Logger.noop);
 
         var outer_id: ?NodeId = null;
         var target_id: ?NodeId = null;
@@ -478,8 +478,8 @@ test "nested scope isolation" {
 
     // nested function gets its own calls edge not parent's
     {
-        var g = Graph.init(std.testing.allocator, "/tmp/project");
-        defer g.deinit();
+        var g = Graph.init("/tmp/project");
+        defer g.deinit(std.testing.allocator);
         const source =
             \\fn alpha() void {}
             \\fn beta() void {}
@@ -491,7 +491,7 @@ test "nested scope isolation" {
             \\    S.child();
             \\}
         ;
-        try parse(source, &g, null, Logger.noop);
+        try parse(std.testing.allocator, source, &g, null, Logger.noop);
 
         var parent_id: ?NodeId = null;
         var child_id: ?NodeId = null;
@@ -532,8 +532,8 @@ test "nested scope isolation" {
 
     // function does not leak uses_type from nested function
     {
-        var g = Graph.init(std.testing.allocator, "/tmp/project");
-        defer g.deinit();
+        var g = Graph.init("/tmp/project");
+        defer g.deinit(std.testing.allocator);
         const source =
             \\const MyType = struct {};
             \\fn outer() void {
@@ -543,7 +543,7 @@ test "nested scope isolation" {
             \\    _ = S.nested;
             \\}
         ;
-        try parse(source, &g, null, Logger.noop);
+        try parse(std.testing.allocator, source, &g, null, Logger.noop);
 
         var outer_id: ?NodeId = null;
         var nested_id: ?NodeId = null;
@@ -582,14 +582,14 @@ test "nested scope isolation" {
 test "type alias edges" {
     // uses_type edge for type alias in parameter
     {
-        var g = Graph.init(std.testing.allocator, "/tmp/project");
-        defer g.deinit();
+        var g = Graph.init("/tmp/project");
+        defer g.deinit(std.testing.allocator);
         const source =
             \\const Foo = struct { val: i32 };
             \\const Bar = Foo;
             \\fn useBar(b: Bar) void { _ = b; }
         ;
-        try parse(source, &g, null, Logger.noop);
+        try parse(std.testing.allocator, source, &g, null, Logger.noop);
 
         var useBar_id: ?NodeId = null;
         var bar_id: ?NodeId = null;
@@ -612,14 +612,14 @@ test "type alias edges" {
 
     // uses_type edge for type alias in return type
     {
-        var g = Graph.init(std.testing.allocator, "/tmp/project");
-        defer g.deinit();
+        var g = Graph.init("/tmp/project");
+        defer g.deinit(std.testing.allocator);
         const source =
             \\const MyError = error{ Oops, Bad };
             \\const Err = MyError;
             \\fn doStuff() Err!void {}
         ;
-        try parse(source, &g, null, Logger.noop);
+        try parse(std.testing.allocator, source, &g, null, Logger.noop);
 
         var doStuff_id: ?NodeId = null;
         var err_id: ?NodeId = null;
@@ -642,14 +642,14 @@ test "type alias edges" {
 
     // uses_type edge not created for non-type constant
     {
-        var g = Graph.init(std.testing.allocator, "/tmp/project");
-        defer g.deinit();
+        var g = Graph.init("/tmp/project");
+        defer g.deinit(std.testing.allocator);
         const source =
             \\const Limit = struct {};
             \\const max = 100;
             \\fn process(l: Limit) void { _ = l; }
         ;
-        try parse(source, &g, null, Logger.noop);
+        try parse(std.testing.allocator, source, &g, null, Logger.noop);
 
         var process_id: ?NodeId = null;
         var limit_id: ?NodeId = null;
@@ -677,15 +677,15 @@ test "type alias edges" {
 
     // uses_type edge for aliased type works alongside direct type
     {
-        var g = Graph.init(std.testing.allocator, "/tmp/project");
-        defer g.deinit();
+        var g = Graph.init("/tmp/project");
+        defer g.deinit(std.testing.allocator);
         const source =
             \\const Direct = struct {};
             \\const Other = struct {};
             \\const Alias = Other;
             \\fn both(d: Direct, a: Alias) void { _ = d; _ = a; }
         ;
-        try parse(source, &g, null, Logger.noop);
+        try parse(std.testing.allocator, source, &g, null, Logger.noop);
 
         var both_id: ?NodeId = null;
         var direct_id: ?NodeId = null;
@@ -715,8 +715,8 @@ test "type alias edges" {
 test "advanced uses_type edges" {
     // struct literal construction in body
     {
-        var g = Graph.init(std.testing.allocator, "/tmp/project");
-        defer g.deinit();
+        var g = Graph.init("/tmp/project");
+        defer g.deinit(std.testing.allocator);
         const source =
             \\const Config = struct { max: i32 = 0 };
             \\fn makeDefault() void {
@@ -724,7 +724,7 @@ test "advanced uses_type edges" {
             \\    _ = c;
             \\}
         ;
-        try parse(source, &g, null, Logger.noop);
+        try parse(std.testing.allocator, source, &g, null, Logger.noop);
 
         var makeDefault_id: ?NodeId = null;
         var config_id: ?NodeId = null;
@@ -747,8 +747,8 @@ test "advanced uses_type edges" {
 
     // static method call in body
     {
-        var g = Graph.init(std.testing.allocator, "/tmp/project");
-        defer g.deinit();
+        var g = Graph.init("/tmp/project");
+        defer g.deinit(std.testing.allocator);
         const source =
             \\const Builder = struct {
             \\    val: i32,
@@ -761,7 +761,7 @@ test "advanced uses_type edges" {
             \\    _ = b;
             \\}
         ;
-        try parse(source, &g, null, Logger.noop);
+        try parse(std.testing.allocator, source, &g, null, Logger.noop);
 
         var create_id: ?NodeId = null;
         var builder_id: ?NodeId = null;
@@ -784,15 +784,15 @@ test "advanced uses_type edges" {
 
     // no duplicate uses_type edge when type in both signature and body
     {
-        var g = Graph.init(std.testing.allocator, "/tmp/project");
-        defer g.deinit();
+        var g = Graph.init("/tmp/project");
+        defer g.deinit(std.testing.allocator);
         const source =
             \\const Item = struct { id: i32 = 0 };
             \\fn process(item: Item) Item {
             \\    return Item{ .id = item.id + 1 };
             \\}
         ;
-        try parse(source, &g, null, Logger.noop);
+        try parse(std.testing.allocator, source, &g, null, Logger.noop);
 
         var process_id: ?NodeId = null;
         var item_id: ?NodeId = null;
@@ -814,8 +814,8 @@ test "advanced uses_type edges" {
 
     // type passed as comptime argument
     {
-        var g = Graph.init(std.testing.allocator, "/tmp/project");
-        defer g.deinit();
+        var g = Graph.init("/tmp/project");
+        defer g.deinit(std.testing.allocator);
         const source =
             \\const Payload = struct { data: i32 = 0 };
             \\fn serialize(comptime T: type, val: T) void { _ = val; }
@@ -824,7 +824,7 @@ test "advanced uses_type edges" {
             \\    serialize(Payload, p);
             \\}
         ;
-        try parse(source, &g, null, Logger.noop);
+        try parse(std.testing.allocator, source, &g, null, Logger.noop);
 
         var doWork_id: ?NodeId = null;
         var payload_id: ?NodeId = null;
@@ -847,8 +847,8 @@ test "advanced uses_type edges" {
 
     // type in generic container instantiation
     {
-        var g = Graph.init(std.testing.allocator, "/tmp/project");
-        defer g.deinit();
+        var g = Graph.init("/tmp/project");
+        defer g.deinit(std.testing.allocator);
         const source =
             \\const Element = struct { val: i32 = 0 };
             \\fn Container(comptime T: type) type {
@@ -858,7 +858,7 @@ test "advanced uses_type edges" {
             \\    _ = Container(Element);
             \\}
         ;
-        try parse(source, &g, null, Logger.noop);
+        try parse(std.testing.allocator, source, &g, null, Logger.noop);
 
         var build_id: ?NodeId = null;
         var element_id: ?NodeId = null;
@@ -881,8 +881,8 @@ test "advanced uses_type edges" {
 
     // no uses_type edge for non-type identifier argument
     {
-        var g = Graph.init(std.testing.allocator, "/tmp/project");
-        defer g.deinit();
+        var g = Graph.init("/tmp/project");
+        defer g.deinit(std.testing.allocator);
         const source =
             \\const Config = struct {};
             \\const max = 100;
@@ -891,7 +891,7 @@ test "advanced uses_type edges" {
             \\    helper(max);
             \\}
         ;
-        try parse(source, &g, null, Logger.noop);
+        try parse(std.testing.allocator, source, &g, null, Logger.noop);
 
         var run_id: ?NodeId = null;
         var helper_id: ?NodeId = null;
@@ -927,11 +927,11 @@ test "advanced uses_type edges" {
 
 test "local-type parameter edges" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/project");
-    defer g.deinit();
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
 
     // Act
-    try parse(fixtures.zig.edge_cases.local_type_param, &g, null, Logger.noop);
+    try parse(std.testing.allocator, fixtures.zig.edge_cases.local_type_param, &g, null, Logger.noop);
 
     // Assert: processPoint has a calls edge to manhattan
     var processPoint_id: ?NodeId = null;
@@ -998,11 +998,11 @@ test "local-type parameter edges" {
 
 test "duplicate method names: scope resolution" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/project");
-    defer g.deinit();
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
 
     // Act
-    try parse(fixtures.zig.edge_cases.duplicate_method_names, &g, null, Logger.noop);
+    try parse(std.testing.allocator, fixtures.zig.edge_cases.duplicate_method_names, &g, null, Logger.noop);
 
     // Assert: @This() aliases are filtered -- no Self constants exist
     var self_count: usize = 0;
@@ -1108,11 +1108,11 @@ test "duplicate method names: scope resolution" {
 
 test "external method collision: no false edges" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/project");
-    defer g.deinit();
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
 
     // Act
-    try parse(fixtures.zig.edge_cases.external_method_collision, &g, null, Logger.noop);
+    try parse(std.testing.allocator, fixtures.zig.edge_cases.external_method_collision, &g, null, Logger.noop);
 
     // Find Resource struct and its methods
     var resource_id: ?NodeId = null;
@@ -1183,11 +1183,11 @@ test "external method collision: no false edges" {
 
 test "generic dual self: Self filtering and resolution" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/project");
-    defer g.deinit();
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
 
     // Act
-    try parse(fixtures.zig.edge_cases.generic_dual_self, &g, null, Logger.noop);
+    try parse(std.testing.allocator, fixtures.zig.edge_cases.generic_dual_self, &g, null, Logger.noop);
 
     // Assert: no Self constants exist
     var self_count: usize = 0;
@@ -1264,11 +1264,11 @@ test "generic dual self: Self filtering and resolution" {
 
 test "generic type: self-reference prevention" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/project");
-    defer g.deinit();
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
 
     // Act
-    try parse(fixtures.zig.generic_type, &g, null, Logger.noop);
+    try parse(std.testing.allocator, fixtures.zig.generic_type, &g, null, Logger.noop);
 
     // Assert: no Self constants exist
     for (g.nodes.items) |n| {
@@ -1301,8 +1301,8 @@ test "generic type: self-reference prevention" {
 
 test "union classification: union_def distinct from type_def" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/project");
-    defer g.deinit();
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
     const source =
         \\const MyStruct = struct { x: i32 };
         \\const TaggedUnion = union(enum) { int: i32, none };
@@ -1311,7 +1311,7 @@ test "union classification: union_def distinct from type_def" {
     ;
 
     // Act
-    try parse(source, &g, null, Logger.noop);
+    try parse(std.testing.allocator, source, &g, null, Logger.noop);
 
     // Assert: struct -> type_def, union -> union_def, enum -> enum_def
     var struct_node: ?*const Node = null;
@@ -1346,15 +1346,15 @@ test "union classification: union_def distinct from type_def" {
 
 test "uses_type edges can target union_def nodes" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/project");
-    defer g.deinit();
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
     const source =
         \\const Value = union(enum) { int: i32, none };
         \\fn process(v: Value) void { _ = v; }
     ;
 
     // Act
-    try parse(source, &g, null, Logger.noop);
+    try parse(std.testing.allocator, source, &g, null, Logger.noop);
 
     // Assert
     var fn_id: ?NodeId = null;
@@ -1378,8 +1378,8 @@ test "uses_type edges can target union_def nodes" {
 
 test "container layout qualifiers: packed and extern detected on structs and unions" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/project");
-    defer g.deinit();
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
     const source =
         \\const Normal = struct { x: i32 };
         \\const Packed = packed struct { x: i32, y: u8 };
@@ -1394,7 +1394,7 @@ test "container layout qualifiers: packed and extern detected on structs and uni
     ;
 
     // Act
-    try parse(source, &g, null, Logger.noop);
+    try parse(std.testing.allocator, source, &g, null, Logger.noop);
 
     // Assert: collect all named nodes
     var normal: ?*const Node = null;
@@ -1482,11 +1482,11 @@ test "type-returning function signature preserved" {
     // generic_type.zig fixture: Container, Result, Config
     {
         // Arrange
-        var g = Graph.init(std.testing.allocator, "/tmp/project");
-        defer g.deinit();
+        var g = Graph.init("/tmp/project");
+        defer g.deinit(std.testing.allocator);
 
         // Act
-        try parse(fixtures.zig.generic_type, &g, null, Logger.noop);
+        try parse(std.testing.allocator, fixtures.zig.generic_type, &g, null, Logger.noop);
 
         // Assert: find Container, Result, Config nodes
         var container_node: ?*const Node = null;
@@ -1526,8 +1526,8 @@ test "type-returning function signature preserved" {
     // inline type-returning function: is_inline and signature
     {
         // Arrange
-        var g = Graph.init(std.testing.allocator, "/tmp/project");
-        defer g.deinit();
+        var g = Graph.init("/tmp/project");
+        defer g.deinit(std.testing.allocator);
         const source =
             \\inline fn Wrapper(comptime T: type) type {
             \\    return struct { val: T };
@@ -1535,7 +1535,7 @@ test "type-returning function signature preserved" {
         ;
 
         // Act
-        try parse(source, &g, null, Logger.noop);
+        try parse(std.testing.allocator, source, &g, null, Logger.noop);
 
         // Assert: find Wrapper node
         var wrapper_node: ?*const Node = null;
@@ -1562,8 +1562,8 @@ test "conditional expressions classified as constant with comptime_conditional" 
     // Sub-test 1: if-expression with inline structs
     {
         // Arrange
-        var g = Graph.init(std.testing.allocator, "/tmp/project");
-        defer g.deinit();
+        var g = Graph.init("/tmp/project");
+        defer g.deinit(std.testing.allocator);
         const source =
             \\const flag = true;
             \\pub const system = if (flag)
@@ -1573,7 +1573,7 @@ test "conditional expressions classified as constant with comptime_conditional" 
         ;
 
         // Act
-        try parse(source, &g, null, Logger.noop);
+        try parse(std.testing.allocator, source, &g, null, Logger.noop);
 
         // Assert: system has kind .constant (NOT .type_def)
         var system_node: ?*const Node = null;
@@ -1616,8 +1616,8 @@ test "conditional expressions classified as constant with comptime_conditional" 
     // Sub-test 2: switch-expression with inline structs
     {
         // Arrange
-        var g = Graph.init(std.testing.allocator, "/tmp/project");
-        defer g.deinit();
+        var g = Graph.init("/tmp/project");
+        defer g.deinit(std.testing.allocator);
         const source =
             \\const Mode = enum { fast, safe };
             \\const mode: Mode = .fast;
@@ -1628,7 +1628,7 @@ test "conditional expressions classified as constant with comptime_conditional" 
         ;
 
         // Act
-        try parse(source, &g, null, Logger.noop);
+        try parse(std.testing.allocator, source, &g, null, Logger.noop);
 
         // Assert: backend has kind .constant (NOT .type_def)
         var backend_node: ?*const Node = null;
@@ -1668,8 +1668,8 @@ test "conditional expressions classified as constant with comptime_conditional" 
     // Sub-test 3: plain struct is unaffected
     {
         // Arrange
-        var g = Graph.init(std.testing.allocator, "/tmp/project");
-        defer g.deinit();
+        var g = Graph.init("/tmp/project");
+        defer g.deinit(std.testing.allocator);
         const source =
             \\pub const Config = struct {
             \\    name: []const u8,
@@ -1678,7 +1678,7 @@ test "conditional expressions classified as constant with comptime_conditional" 
         ;
 
         // Act
-        try parse(source, &g, null, Logger.noop);
+        try parse(std.testing.allocator, source, &g, null, Logger.noop);
 
         // Assert: Config has kind .type_def (unchanged, no conditional)
         var config_node: ?*const Node = null;
@@ -1721,8 +1721,8 @@ test "conditional expressions classified as constant with comptime_conditional" 
 
 test "error set variant names captured in signature" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/project");
-    defer g.deinit();
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
     const source =
         \\/// Multi-member error set.
         \\pub const FileError = error{
@@ -1745,7 +1745,7 @@ test "error set variant names captured in signature" {
     ;
 
     // Act
-    try parse(source, &g, null, Logger.noop);
+    try parse(std.testing.allocator, source, &g, null, Logger.noop);
 
     // Assert 1: FileError has kind .error_def
     var file_error_node: ?*const Node = null;
@@ -1819,8 +1819,8 @@ test "error set variant names captured in signature" {
 
 test "re-export filtering: public re-exports preserved, private aliases filtered" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/project");
-    defer g.deinit();
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
     const source =
         \\const std = @import("std");
         \\const utils = @import("utils.zig");
@@ -1847,7 +1847,7 @@ test "re-export filtering: public re-exports preserved, private aliases filtered
     ;
 
     // Act
-    try parse(source, &g, null, Logger.noop);
+    try parse(std.testing.allocator, source, &g, null, Logger.noop);
 
     // Assert: collect all nodes by name
     var found_iovec = false;
@@ -1897,8 +1897,8 @@ test "re-export filtering: public re-exports preserved, private aliases filtered
 
 test "top-level comptime blocks produce no nodes" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/project");
-    defer g.deinit();
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
     const source =
         \\const std = @import("std");
         \\
@@ -1917,7 +1917,7 @@ test "top-level comptime blocks produce no nodes" {
     ;
 
     // Act
-    try parse(source, &g, null, Logger.noop);
+    try parse(std.testing.allocator, source, &g, null, Logger.noop);
 
     // Assert: no comptime_block nodes exist (comptime blocks produce zero nodes)
     for (g.nodes.items) |n| {

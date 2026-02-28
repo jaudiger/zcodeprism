@@ -50,7 +50,7 @@ pub fn renderMermaid(
     var num_buf: [20]u8 = undefined;
 
     // Header: 3 comment lines.
-    try out.appendSlice(allocator, "%% zcodeprism mermaid \xe2\x80\x94 ");
+    try out.appendSlice(allocator, "%% zcodeprism mermaid -- ");
     try out.appendSlice(allocator, options.project_name);
     try out.append(allocator, '\n');
 
@@ -131,11 +131,11 @@ pub fn renderMermaid(
 /// - 2 phantom nodes: std (module, stdlib) + Allocator (type_def, stdlib, parent=std)
 /// - 5 edges: imports, 2x calls, 2x uses_type
 fn createMermaidTestGraph(allocator: std.mem.Allocator) !Graph {
-    var g = Graph.init(allocator, "/tmp/project");
-    errdefer g.deinit();
+    var g = Graph.init("/tmp/project");
+    errdefer g.deinit(allocator);
 
     // File nodes
-    const lib_file = try g.addNode(.{
+    const lib_file = try g.addNode(allocator, .{
         .id = .root,
         .name = "src/lib.zig",
         .kind = .file,
@@ -146,7 +146,7 @@ fn createMermaidTestGraph(allocator: std.mem.Allocator) !Graph {
         .visibility = .public,
     });
 
-    const main_file = try g.addNode(.{
+    const main_file = try g.addNode(allocator, .{
         .id = .root,
         .name = "src/main.zig",
         .kind = .file,
@@ -158,7 +158,7 @@ fn createMermaidTestGraph(allocator: std.mem.Allocator) !Graph {
     });
 
     // Struct: Tokenizer under lib.zig
-    const tokenizer_struct = try g.addNode(.{
+    const tokenizer_struct = try g.addNode(allocator, .{
         .id = .root,
         .name = "Tokenizer",
         .kind = .type_def,
@@ -172,7 +172,7 @@ fn createMermaidTestGraph(allocator: std.mem.Allocator) !Graph {
     });
 
     // Field: source under Tokenizer
-    _ = try g.addNode(.{
+    _ = try g.addNode(allocator, .{
         .id = .root,
         .name = "source",
         .kind = .field,
@@ -186,7 +186,7 @@ fn createMermaidTestGraph(allocator: std.mem.Allocator) !Graph {
     });
 
     // Method: next under Tokenizer
-    const method_next = try g.addNode(.{
+    const method_next = try g.addNode(allocator, .{
         .id = .root,
         .name = "next",
         .kind = .function,
@@ -200,7 +200,7 @@ fn createMermaidTestGraph(allocator: std.mem.Allocator) !Graph {
     });
 
     // Enum: TokenKind under lib.zig
-    _ = try g.addNode(.{
+    _ = try g.addNode(allocator, .{
         .id = .root,
         .name = "TokenKind",
         .kind = .enum_def,
@@ -213,7 +213,7 @@ fn createMermaidTestGraph(allocator: std.mem.Allocator) !Graph {
     });
 
     // Function: main (pub) under main.zig
-    const fn_main = try g.addNode(.{
+    const fn_main = try g.addNode(allocator, .{
         .id = .root,
         .name = "main",
         .kind = .function,
@@ -228,7 +228,7 @@ fn createMermaidTestGraph(allocator: std.mem.Allocator) !Graph {
     });
 
     // Function: helper (private) under main.zig
-    const fn_helper = try g.addNode(.{
+    const fn_helper = try g.addNode(allocator, .{
         .id = .root,
         .name = "helper",
         .kind = .function,
@@ -242,7 +242,7 @@ fn createMermaidTestGraph(allocator: std.mem.Allocator) !Graph {
     });
 
     // Constant: MAX_SIZE under main.zig
-    _ = try g.addNode(.{
+    _ = try g.addNode(allocator, .{
         .id = .root,
         .name = "MAX_SIZE",
         .kind = .constant,
@@ -256,7 +256,7 @@ fn createMermaidTestGraph(allocator: std.mem.Allocator) !Graph {
     });
 
     // Error: ParseError under lib.zig
-    _ = try g.addNode(.{
+    _ = try g.addNode(allocator, .{
         .id = .root,
         .name = "ParseError",
         .kind = .error_def,
@@ -268,7 +268,7 @@ fn createMermaidTestGraph(allocator: std.mem.Allocator) !Graph {
     });
 
     // Test: under main.zig
-    _ = try g.addNode(.{
+    _ = try g.addNode(allocator, .{
         .id = .root,
         .name = "main works correctly",
         .kind = .test_def,
@@ -280,7 +280,7 @@ fn createMermaidTestGraph(allocator: std.mem.Allocator) !Graph {
     });
 
     // Phantom: std (module, stdlib)
-    const phantom_std = try g.addNode(.{
+    const phantom_std = try g.addNode(allocator, .{
         .id = .root,
         .name = "std",
         .kind = .module,
@@ -289,7 +289,7 @@ fn createMermaidTestGraph(allocator: std.mem.Allocator) !Graph {
     });
 
     // Phantom: Allocator (type_def, stdlib, parent=std)
-    const phantom_allocator = try g.addNode(.{
+    const phantom_allocator = try g.addNode(allocator, .{
         .id = .root,
         .name = "Allocator",
         .kind = .type_def,
@@ -299,31 +299,31 @@ fn createMermaidTestGraph(allocator: std.mem.Allocator) !Graph {
     });
 
     // Edges
-    _ = try g.addEdge(.{
+    _ = try g.addEdge(allocator, .{
         .source_id = main_file,
         .target_id = lib_file,
         .edge_type = .imports,
     });
 
-    _ = try g.addEdge(.{
+    _ = try g.addEdge(allocator, .{
         .source_id = fn_main,
         .target_id = fn_helper,
         .edge_type = .calls,
     });
 
-    _ = try g.addEdge(.{
+    _ = try g.addEdge(allocator, .{
         .source_id = fn_main,
         .target_id = method_next,
         .edge_type = .calls,
     });
 
-    _ = try g.addEdge(.{
+    _ = try g.addEdge(allocator, .{
         .source_id = fn_main,
         .target_id = tokenizer_struct,
         .edge_type = .uses_type,
     });
 
-    _ = try g.addEdge(.{
+    _ = try g.addEdge(allocator, .{
         .source_id = fn_helper,
         .target_id = phantom_allocator,
         .edge_type = .uses_type,
@@ -336,7 +336,7 @@ test "header line 1 matches spec" {
     // Arrange
     const allocator = std.testing.allocator;
     var g = try createMermaidTestGraph(allocator);
-    defer g.deinit();
+    defer g.deinit(allocator);
     var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
@@ -348,18 +348,18 @@ test "header line 1 matches spec" {
     // Act
     try renderMermaid(allocator, &g, options, &out);
 
-    // Assert: first line: "%% zcodeprism mermaid \xe2\x80\x94 myproject"
+    // Assert: first line: "%% zcodeprism mermaid -- myproject"
     const output = out.items;
     const first_line_end = std.mem.indexOfScalar(u8, output, '\n') orelse output.len;
     const first_line = output[0..first_line_end];
-    try std.testing.expectEqualStrings("%% zcodeprism mermaid \xe2\x80\x94 myproject", first_line);
+    try std.testing.expectEqualStrings("%% zcodeprism mermaid -- myproject", first_line);
 }
 
 test "header line 2 has stats" {
     // Arrange
     const allocator = std.testing.allocator;
     var g = try createMermaidTestGraph(allocator);
-    defer g.deinit();
+    defer g.deinit(allocator);
     var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
@@ -385,7 +385,7 @@ test "header line 3 has timestamp" {
     // Arrange
     const allocator = std.testing.allocator;
     var g = try createMermaidTestGraph(allocator);
-    defer g.deinit();
+    defer g.deinit(allocator);
     var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
@@ -410,7 +410,7 @@ test "starts with flowchart TB" {
     // Arrange
     const allocator = std.testing.allocator;
     var g = try createMermaidTestGraph(allocator);
-    defer g.deinit();
+    defer g.deinit(allocator);
     var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
@@ -437,7 +437,7 @@ test "sections appear in correct order" {
     // Arrange
     const allocator = std.testing.allocator;
     var g = try createMermaidTestGraph(allocator);
-    defer g.deinit();
+    defer g.deinit(allocator);
     var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
@@ -471,7 +471,7 @@ test "classDef styles are alphabetical" {
     // Arrange
     const allocator = std.testing.allocator;
     var g = try createMermaidTestGraph(allocator);
-    defer g.deinit();
+    defer g.deinit(allocator);
     var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
@@ -509,12 +509,12 @@ test "deterministic output" {
     const allocator = std.testing.allocator;
 
     var g1 = try createMermaidTestGraph(allocator);
-    defer g1.deinit();
+    defer g1.deinit(allocator);
     var out1: std.ArrayList(u8) = .{};
     defer out1.deinit(allocator);
 
     var g2 = try createMermaidTestGraph(allocator);
-    defer g2.deinit();
+    defer g2.deinit(allocator);
     var out2: std.ArrayList(u8) = .{};
     defer out2.deinit(allocator);
 
@@ -535,7 +535,7 @@ test "functions use rectangle shape" {
     // Arrange
     const allocator = std.testing.allocator;
     var g = try createMermaidTestGraph(allocator);
-    defer g.deinit();
+    defer g.deinit(allocator);
     var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
@@ -556,7 +556,7 @@ test "structs use subroutine shape" {
     // Arrange
     const allocator = std.testing.allocator;
     var g = try createMermaidTestGraph(allocator);
-    defer g.deinit();
+    defer g.deinit(allocator);
     var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
@@ -577,7 +577,7 @@ test "enums use hexagon shape" {
     // Arrange
     const allocator = std.testing.allocator;
     var g = try createMermaidTestGraph(allocator);
-    defer g.deinit();
+    defer g.deinit(allocator);
     var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
@@ -598,7 +598,7 @@ test "constants use parallelogram shape" {
     // Arrange
     const allocator = std.testing.allocator;
     var g = try createMermaidTestGraph(allocator);
-    defer g.deinit();
+    defer g.deinit(allocator);
     var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
@@ -619,7 +619,7 @@ test "methods labeled with parent type" {
     // Arrange
     const allocator = std.testing.allocator;
     var g = try createMermaidTestGraph(allocator);
-    defer g.deinit();
+    defer g.deinit(allocator);
     var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
@@ -640,7 +640,7 @@ test "calls edges use solid arrow" {
     // Arrange
     const allocator = std.testing.allocator;
     var g = try createMermaidTestGraph(allocator);
-    defer g.deinit();
+    defer g.deinit(allocator);
     var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
@@ -661,7 +661,7 @@ test "imports edges use dotted arrow" {
     // Arrange
     const allocator = std.testing.allocator;
     var g = try createMermaidTestGraph(allocator);
-    defer g.deinit();
+    defer g.deinit(allocator);
     var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
@@ -681,8 +681,8 @@ test "imports edges use dotted arrow" {
 test "empty graph renders without crash" {
     // Arrange
     const allocator = std.testing.allocator;
-    var g = Graph.init(allocator, "/tmp/project");
-    defer g.deinit();
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(allocator);
     var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
@@ -704,7 +704,7 @@ test "phantom nodes in subgraphs" {
     // Arrange
     const allocator = std.testing.allocator;
     var g = try createMermaidTestGraph(allocator);
-    defer g.deinit();
+    defer g.deinit(allocator);
     var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
@@ -728,7 +728,7 @@ test "scoped export creates ghost nodes" {
     // Arrange
     const allocator = std.testing.allocator;
     var g = try createMermaidTestGraph(allocator);
-    defer g.deinit();
+    defer g.deinit(allocator);
     var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 

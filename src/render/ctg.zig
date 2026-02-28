@@ -61,8 +61,8 @@ pub fn renderCtg(
 
     const langs = assignment.languages;
 
-    // Header line 1: project name with em dash (U+2014).
-    try out.appendSlice(allocator, "# zcodeprism graph \xe2\x80\x94 ");
+    // Header line 1: project name.
+    try out.appendSlice(allocator, "# zcodeprism graph -- ");
     try out.appendSlice(allocator, options.project_name);
     try out.append(allocator, '\n');
 
@@ -198,10 +198,10 @@ pub fn renderCtg(
 /// - 2 phantom nodes: std (module, stdlib) + Allocator (type_def, stdlib, parent=std)
 /// - 5 edges: imports, 2x calls, 2x uses_type
 fn createCtgTestGraph(allocator: std.mem.Allocator) !Graph {
-    var g = Graph.init(allocator, "/tmp/project");
-    errdefer g.deinit();
+    var g = Graph.init("/tmp/project");
+    errdefer g.deinit(allocator);
 
-    const lib_file = try g.addNode(.{
+    const lib_file = try g.addNode(allocator, .{
         .id = .root,
         .name = "src/lib.zig",
         .kind = .file,
@@ -212,7 +212,7 @@ fn createCtgTestGraph(allocator: std.mem.Allocator) !Graph {
         .visibility = .public,
     });
 
-    const main_file = try g.addNode(.{
+    const main_file = try g.addNode(allocator, .{
         .id = .root,
         .name = "src/main.zig",
         .kind = .file,
@@ -223,7 +223,7 @@ fn createCtgTestGraph(allocator: std.mem.Allocator) !Graph {
         .visibility = .public,
     });
 
-    const tokenizer_struct = try g.addNode(.{
+    const tokenizer_struct = try g.addNode(allocator, .{
         .id = .root,
         .name = "Tokenizer",
         .kind = .type_def,
@@ -236,7 +236,7 @@ fn createCtgTestGraph(allocator: std.mem.Allocator) !Graph {
         .signature = "pub const Tokenizer = struct",
     });
 
-    _ = try g.addNode(.{
+    _ = try g.addNode(allocator, .{
         .id = .root,
         .name = "source",
         .kind = .field,
@@ -249,7 +249,7 @@ fn createCtgTestGraph(allocator: std.mem.Allocator) !Graph {
         .signature = "source: []const u8",
     });
 
-    const method_next = try g.addNode(.{
+    const method_next = try g.addNode(allocator, .{
         .id = .root,
         .name = "next",
         .kind = .function,
@@ -262,7 +262,7 @@ fn createCtgTestGraph(allocator: std.mem.Allocator) !Graph {
         .signature = "pub fn next(self: *Tokenizer) ?Token",
     });
 
-    _ = try g.addNode(.{
+    _ = try g.addNode(allocator, .{
         .id = .root,
         .name = "TokenKind",
         .kind = .enum_def,
@@ -274,7 +274,7 @@ fn createCtgTestGraph(allocator: std.mem.Allocator) !Graph {
         .visibility = .public,
     });
 
-    const fn_main = try g.addNode(.{
+    const fn_main = try g.addNode(allocator, .{
         .id = .root,
         .name = "main",
         .kind = .function,
@@ -288,7 +288,7 @@ fn createCtgTestGraph(allocator: std.mem.Allocator) !Graph {
         .doc = "/// Entry point.",
     });
 
-    const fn_helper = try g.addNode(.{
+    const fn_helper = try g.addNode(allocator, .{
         .id = .root,
         .name = "helper",
         .kind = .function,
@@ -301,7 +301,7 @@ fn createCtgTestGraph(allocator: std.mem.Allocator) !Graph {
         .signature = "fn helper() void",
     });
 
-    _ = try g.addNode(.{
+    _ = try g.addNode(allocator, .{
         .id = .root,
         .name = "MAX_SIZE",
         .kind = .constant,
@@ -314,7 +314,7 @@ fn createCtgTestGraph(allocator: std.mem.Allocator) !Graph {
         .signature = "pub const MAX_SIZE: usize = 1024",
     });
 
-    _ = try g.addNode(.{
+    _ = try g.addNode(allocator, .{
         .id = .root,
         .name = "ParseError",
         .kind = .error_def,
@@ -325,7 +325,7 @@ fn createCtgTestGraph(allocator: std.mem.Allocator) !Graph {
         .parent_id = lib_file,
     });
 
-    _ = try g.addNode(.{
+    _ = try g.addNode(allocator, .{
         .id = .root,
         .name = "main works correctly",
         .kind = .test_def,
@@ -336,7 +336,7 @@ fn createCtgTestGraph(allocator: std.mem.Allocator) !Graph {
         .parent_id = main_file,
     });
 
-    const phantom_std = try g.addNode(.{
+    const phantom_std = try g.addNode(allocator, .{
         .id = .root,
         .name = "std",
         .kind = .module,
@@ -344,7 +344,7 @@ fn createCtgTestGraph(allocator: std.mem.Allocator) !Graph {
         .external = .{ .stdlib = {} },
     });
 
-    const phantom_allocator = try g.addNode(.{
+    const phantom_allocator = try g.addNode(allocator, .{
         .id = .root,
         .name = "Allocator",
         .kind = .type_def,
@@ -353,31 +353,31 @@ fn createCtgTestGraph(allocator: std.mem.Allocator) !Graph {
         .parent_id = phantom_std,
     });
 
-    _ = try g.addEdge(.{
+    _ = try g.addEdge(allocator, .{
         .source_id = main_file,
         .target_id = lib_file,
         .edge_type = .imports,
     });
 
-    _ = try g.addEdge(.{
+    _ = try g.addEdge(allocator, .{
         .source_id = fn_main,
         .target_id = fn_helper,
         .edge_type = .calls,
     });
 
-    _ = try g.addEdge(.{
+    _ = try g.addEdge(allocator, .{
         .source_id = fn_main,
         .target_id = method_next,
         .edge_type = .calls,
     });
 
-    _ = try g.addEdge(.{
+    _ = try g.addEdge(allocator, .{
         .source_id = fn_main,
         .target_id = tokenizer_struct,
         .edge_type = .uses_type,
     });
 
-    _ = try g.addEdge(.{
+    _ = try g.addEdge(allocator, .{
         .source_id = fn_helper,
         .target_id = phantom_allocator,
         .edge_type = .uses_type,
@@ -388,10 +388,10 @@ fn createCtgTestGraph(allocator: std.mem.Allocator) !Graph {
 
 /// Creates a graph with a single file node and no functions.
 fn createSingleFileGraph(allocator: std.mem.Allocator) !Graph {
-    var g = Graph.init(allocator, "/tmp/project");
-    errdefer g.deinit();
+    var g = Graph.init("/tmp/project");
+    errdefer g.deinit(allocator);
 
-    _ = try g.addNode(.{
+    _ = try g.addNode(allocator, .{
         .id = .root,
         .name = "src/empty.zig",
         .kind = .file,
@@ -409,7 +409,7 @@ test "header line 1 matches spec" {
     // Arrange
     const allocator = std.testing.allocator;
     var g = try createCtgTestGraph(allocator);
-    defer g.deinit();
+    defer g.deinit(allocator);
     var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
@@ -421,18 +421,18 @@ test "header line 1 matches spec" {
     // Act
     try renderCtg(allocator, &g, options, &out);
 
-    // Assert: first line: "# zcodeprism graph \xe2\x80\x94 myproject"
+    // Assert: first line: "# zcodeprism graph -- myproject"
     const output = out.items;
     const first_line_end = std.mem.indexOfScalar(u8, output, '\n') orelse output.len;
     const first_line = output[0..first_line_end];
-    try std.testing.expectEqualStrings("# zcodeprism graph \xe2\x80\x94 myproject", first_line);
+    try std.testing.expectEqualStrings("# zcodeprism graph -- myproject", first_line);
 }
 
 test "header line 2 has stats" {
     // Arrange
     const allocator = std.testing.allocator;
     var g = try createCtgTestGraph(allocator);
-    defer g.deinit();
+    defer g.deinit(allocator);
     var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
@@ -458,7 +458,7 @@ test "header line 3 has languages" {
     // Arrange
     const allocator = std.testing.allocator;
     var g = try createCtgTestGraph(allocator);
-    defer g.deinit();
+    defer g.deinit(allocator);
     var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
@@ -483,7 +483,7 @@ test "header line 4 has timestamp" {
     // Arrange
     const allocator = std.testing.allocator;
     var g = try createCtgTestGraph(allocator);
-    defer g.deinit();
+    defer g.deinit(allocator);
     var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
@@ -509,7 +509,7 @@ test "sections appear in correct order" {
     // Arrange
     const allocator = std.testing.allocator;
     var g = try createCtgTestGraph(allocator);
-    defer g.deinit();
+    defer g.deinit(allocator);
     var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
@@ -548,7 +548,7 @@ test "file IDs use f: prefix" {
     // Arrange
     const allocator = std.testing.allocator;
     var g = try createCtgTestGraph(allocator);
-    defer g.deinit();
+    defer g.deinit(allocator);
     var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
@@ -580,7 +580,7 @@ test "function IDs use fn: prefix" {
     // Arrange
     const allocator = std.testing.allocator;
     var g = try createCtgTestGraph(allocator);
-    defer g.deinit();
+    defer g.deinit(allocator);
     var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
@@ -613,7 +613,7 @@ test "struct IDs use st: prefix" {
     // Arrange
     const allocator = std.testing.allocator;
     var g = try createCtgTestGraph(allocator);
-    defer g.deinit();
+    defer g.deinit(allocator);
     var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
@@ -646,7 +646,7 @@ test "enum IDs use en: prefix" {
     // Arrange
     const allocator = std.testing.allocator;
     var g = try createCtgTestGraph(allocator);
-    defer g.deinit();
+    defer g.deinit(allocator);
     var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
@@ -678,10 +678,10 @@ test "enum IDs use en: prefix" {
 test "union IDs use un: prefix" {
     // Arrange
     const allocator = std.testing.allocator;
-    var g = Graph.init(allocator, "/tmp/project");
-    defer g.deinit();
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(allocator);
 
-    const file_id = try g.addNode(.{
+    const file_id = try g.addNode(allocator, .{
         .id = .root,
         .name = "src/lib.zig",
         .kind = .file,
@@ -691,7 +691,7 @@ test "union IDs use un: prefix" {
         .line_end = 50,
         .visibility = .public,
     });
-    _ = try g.addNode(.{
+    _ = try g.addNode(allocator, .{
         .id = .root,
         .name = "Value",
         .kind = .union_def,
@@ -739,7 +739,7 @@ test "constant IDs use c: prefix" {
     // Arrange
     const allocator = std.testing.allocator;
     var g = try createCtgTestGraph(allocator);
-    defer g.deinit();
+    defer g.deinit(allocator);
     var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
@@ -772,7 +772,7 @@ test "error IDs use err: prefix" {
     // Arrange
     const allocator = std.testing.allocator;
     var g = try createCtgTestGraph(allocator);
-    defer g.deinit();
+    defer g.deinit(allocator);
     var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
@@ -805,7 +805,7 @@ test "test IDs use t: prefix" {
     // Arrange
     const allocator = std.testing.allocator;
     var g = try createCtgTestGraph(allocator);
-    defer g.deinit();
+    defer g.deinit(allocator);
     var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
@@ -838,7 +838,7 @@ test "external IDs use x: prefix" {
     // Arrange
     const allocator = std.testing.allocator;
     var g = try createCtgTestGraph(allocator);
-    defer g.deinit();
+    defer g.deinit(allocator);
     var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
@@ -872,7 +872,7 @@ test "files sorted by path alphabetical" {
     // Arrange
     const allocator = std.testing.allocator;
     var g = try createCtgTestGraph(allocator);
-    defer g.deinit();
+    defer g.deinit(allocator);
     var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
@@ -895,7 +895,7 @@ test "edges sorted by type then source then target" {
     // Arrange
     const allocator = std.testing.allocator;
     var g = try createCtgTestGraph(allocator);
-    defer g.deinit();
+    defer g.deinit(allocator);
     var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
@@ -929,12 +929,12 @@ test "deterministic output" {
     const allocator = std.testing.allocator;
 
     var g1 = try createCtgTestGraph(allocator);
-    defer g1.deinit();
+    defer g1.deinit(allocator);
     var out1: std.ArrayList(u8) = .{};
     defer out1.deinit(allocator);
 
     var g2 = try createCtgTestGraph(allocator);
-    defer g2.deinit();
+    defer g2.deinit(allocator);
     var out2: std.ArrayList(u8) = .{};
     defer out2.deinit(allocator);
 
@@ -954,8 +954,8 @@ test "deterministic output" {
 test "empty graph renders without crash" {
     // Arrange
     const allocator = std.testing.allocator;
-    var g = Graph.init(allocator, "/tmp/project");
-    defer g.deinit();
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(allocator);
     var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
@@ -977,7 +977,7 @@ test "single file no functions" {
     // Arrange
     const allocator = std.testing.allocator;
     var g = try createSingleFileGraph(allocator);
-    defer g.deinit();
+    defer g.deinit(allocator);
     var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
@@ -999,7 +999,7 @@ test "with scope filters nodes" {
     // Arrange
     const allocator = std.testing.allocator;
     var g = try createCtgTestGraph(allocator);
-    defer g.deinit();
+    defer g.deinit(allocator);
     var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
@@ -1028,7 +1028,7 @@ test "phantom nodes in externals section" {
     // Arrange
     const allocator = std.testing.allocator;
     var g = try createCtgTestGraph(allocator);
-    defer g.deinit();
+    defer g.deinit(allocator);
     var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
@@ -1053,7 +1053,7 @@ test "snapshot line present when options set" {
     // Arrange
     const allocator = std.testing.allocator;
     var g = try createCtgTestGraph(allocator);
-    defer g.deinit();
+    defer g.deinit(allocator);
     var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 
@@ -1076,7 +1076,7 @@ test "snapshot line absent for export" {
     // Arrange
     const allocator = std.testing.allocator;
     var g = try createCtgTestGraph(allocator);
-    defer g.deinit();
+    defer g.deinit(allocator);
     var out: std.ArrayList(u8) = .{};
     defer out.deinit(allocator);
 

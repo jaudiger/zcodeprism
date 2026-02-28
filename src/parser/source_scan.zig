@@ -175,6 +175,7 @@ fn isInsideLineComment(source: []const u8, pos: usize) bool {
 /// in `graph`. `phantom` manages deduplication of phantom nodes. `external`
 /// provides the external-origin metadata attached to each phantom.
 pub fn resolveStdPhantoms(
+    allocator: std.mem.Allocator,
     graph: *Graph,
     source: []const u8,
     file_idx: usize,
@@ -252,7 +253,7 @@ pub fn resolveStdPhantoms(
 
             const kind: NodeKind = if (leaf[0] >= 'A' and leaf[0] <= 'Z') .type_def else .module;
 
-            const phantom_id = try phantom.getOrCreate(chain, kind, language, external);
+            const phantom_id = try phantom.getOrCreate(allocator, chain, kind, language, external);
 
             // For type references (PascalCase leaf), create uses_type edge from
             // the containing function using the running line counter.
@@ -266,7 +267,7 @@ pub fn resolveStdPhantoms(
                 // Find containing function from pre-built index.
                 const fn_id = findFnByLine(fn_ranges[0..fn_count], current_line);
                 if (fn_id) |fid| {
-                    _ = try graph.addEdgeIfNew(.{ .source_id = fid, .target_id = phantom_id, .edge_type = .uses_type, .source = .phantom });
+                    _ = try graph.addEdgeIfNew(allocator, .{ .source_id = fid, .target_id = phantom_id, .edge_type = .uses_type, .source = .phantom });
                 }
             }
         } else {

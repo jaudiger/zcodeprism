@@ -356,17 +356,17 @@ pub fn load(allocator: std.mem.Allocator, path: []const u8) !Graph {
         metrics_table_end > bytes_read or
         string_table_end > bytes_read) return error.InvalidFormat;
 
-    var g = Graph.init(allocator, "");
-    errdefer g.deinit();
+    var g = Graph.init("");
+    errdefer g.deinit(allocator);
 
     try g.nodes.ensureTotalCapacity(allocator, nc);
     try g.edges.ensureTotalCapacity(allocator, ec);
 
     // Single dupe of string table region; all node strings resolve into this buffer
     const st_data: []const u8 = if (st_size > 0) blk: {
-        const data = try g.allocator.dupe(u8, buf[sto..][0..st_size]);
-        errdefer g.allocator.free(data);
-        try g.addOwnedBuffer(data);
+        const data = try allocator.dupe(u8, buf[sto..][0..st_size]);
+        errdefer allocator.free(data);
+        try g.addOwnedBuffer(allocator, data);
         break :blk data;
     } else "";
 
@@ -459,8 +459,8 @@ pub fn load(allocator: std.mem.Allocator, path: []const u8) !Graph {
         });
     }
 
-    try g.rebuildEdgeIndex();
-    try g.freeze();
+    try g.rebuildEdgeIndex(allocator);
+    try g.freeze(allocator);
     return g;
 }
 
@@ -471,16 +471,16 @@ pub fn load(allocator: std.mem.Allocator, path: []const u8) !Graph {
 pub fn append(allocator: std.mem.Allocator, g: *const Graph, path: []const u8) !void {
     // Load existing graph
     var existing = try load(allocator, path);
-    defer existing.deinit();
+    defer existing.deinit(allocator);
 
     // Merge new nodes
     for (g.nodes.items) |n| {
-        _ = try existing.addNode(n);
+        _ = try existing.addNode(allocator, n);
     }
 
     // Merge new edges
     for (g.edges.items) |e| {
-        _ = try existing.addEdge(e);
+        _ = try existing.addEdge(allocator, e);
     }
 
     // Full save (compaction)
@@ -489,10 +489,10 @@ pub fn append(allocator: std.mem.Allocator, g: *const Graph, path: []const u8) !
 
 /// Build a test graph with 3 diverse nodes and 2 edges for use in tests.
 fn createTestGraph(allocator: std.mem.Allocator) !Graph {
-    var g = Graph.init(allocator, "/tmp/test-project");
+    var g = Graph.init("/tmp/test-project");
 
     // Node 0: file node (minimal fields)
-    _ = try g.addNode(.{
+    _ = try g.addNode(allocator, .{
         .id = .root,
         .name = "main.zig",
         .kind = .file,
@@ -504,7 +504,7 @@ fn createTestGraph(allocator: std.mem.Allocator) !Graph {
     });
 
     // Node 1: function with metrics, doc, signature, and ZigMeta
-    _ = try g.addNode(.{
+    _ = try g.addNode(allocator, .{
         .id = .root,
         .name = "process",
         .kind = .function,
@@ -532,7 +532,7 @@ fn createTestGraph(allocator: std.mem.Allocator) !Graph {
     });
 
     // Node 2: type_def with external=none
-    _ = try g.addNode(.{
+    _ = try g.addNode(allocator, .{
         .id = .root,
         .name = "Config",
         .kind = .type_def,
@@ -545,7 +545,7 @@ fn createTestGraph(allocator: std.mem.Allocator) !Graph {
     });
 
     // Edge 0: function uses type
-    _ = try g.addEdge(.{
+    _ = try g.addEdge(allocator, .{
         .source_id = @enumFromInt(1),
         .target_id = @enumFromInt(2),
         .edge_type = .uses_type,
@@ -553,7 +553,7 @@ fn createTestGraph(allocator: std.mem.Allocator) !Graph {
     });
 
     // Edge 1: file exports function
-    _ = try g.addEdge(.{
+    _ = try g.addEdge(allocator, .{
         .source_id = @enumFromInt(0),
         .target_id = @enumFromInt(1),
         .edge_type = .exports,
@@ -568,7 +568,7 @@ fn createTestGraph(allocator: std.mem.Allocator) !Graph {
 test "binary round-trip preserves nodes, edges, and metrics" {
     // Arrange
     var g = try createTestGraph(std.testing.allocator);
-    defer g.deinit();
+    defer g.deinit(std.testing.allocator);
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -580,7 +580,7 @@ test "binary round-trip preserves nodes, edges, and metrics" {
     // Act
     try save(std.testing.allocator, &g, file_path);
     var loaded = try load(std.testing.allocator, file_path);
-    defer loaded.deinit();
+    defer loaded.deinit(std.testing.allocator);
 
     // Assert: nodes
     try std.testing.expectEqual(g.nodeCount(), loaded.nodeCount());
@@ -620,7 +620,7 @@ test "binary round-trip preserves nodes, edges, and metrics" {
 test "binary header has correct magic, version, and counts" {
     // Arrange
     var g = try createTestGraph(std.testing.allocator);
-    defer g.deinit();
+    defer g.deinit(std.testing.allocator);
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -646,7 +646,7 @@ test "binary header has correct magic, version, and counts" {
 
     // Assert: counts
     var loaded = try load(std.testing.allocator, file_path);
-    defer loaded.deinit();
+    defer loaded.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(usize, 3), loaded.nodeCount());
     try std.testing.expectEqual(@as(usize, 2), loaded.edgeCount());
 }
@@ -655,8 +655,8 @@ test "binary header has correct magic, version, and counts" {
 
 test "binary save/load empty graph" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/test-project");
-    defer g.deinit();
+    var g = Graph.init("/tmp/test-project");
+    defer g.deinit(std.testing.allocator);
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -668,7 +668,7 @@ test "binary save/load empty graph" {
     // Act
     try save(std.testing.allocator, &g, file_path);
     var loaded = try load(std.testing.allocator, file_path);
-    defer loaded.deinit();
+    defer loaded.deinit(std.testing.allocator);
 
     // Assert
     try std.testing.expectEqual(@as(usize, 0), loaded.nodeCount());
@@ -677,10 +677,10 @@ test "binary save/load empty graph" {
 
 test "binary save/load single node" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/test-project");
-    defer g.deinit();
+    var g = Graph.init("/tmp/test-project");
+    defer g.deinit(std.testing.allocator);
 
-    _ = try g.addNode(.{
+    _ = try g.addNode(std.testing.allocator, .{
         .id = .root,
         .name = "only_node",
         .kind = .file,
@@ -697,7 +697,7 @@ test "binary save/load single node" {
     // Act
     try save(std.testing.allocator, &g, file_path);
     var loaded = try load(std.testing.allocator, file_path);
-    defer loaded.deinit();
+    defer loaded.deinit(std.testing.allocator);
 
     // Assert
     try std.testing.expectEqual(@as(usize, 1), loaded.nodeCount());
@@ -707,10 +707,10 @@ test "binary save/load single node" {
 
 test "binary preserves phantom nodes" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/test-project");
-    defer g.deinit();
+    var g = Graph.init("/tmp/test-project");
+    defer g.deinit(std.testing.allocator);
 
-    _ = try g.addNode(.{
+    _ = try g.addNode(std.testing.allocator, .{
         .id = .root,
         .name = "std",
         .kind = .module,
@@ -728,7 +728,7 @@ test "binary preserves phantom nodes" {
     // Act
     try save(std.testing.allocator, &g, file_path);
     var loaded = try load(std.testing.allocator, file_path);
-    defer loaded.deinit();
+    defer loaded.deinit(std.testing.allocator);
 
     // Assert
     const loaded_node = loaded.getNode(.root).?;
@@ -737,10 +737,10 @@ test "binary preserves phantom nodes" {
 
 test "binary preserves null optional fields" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/test-project");
-    defer g.deinit();
+    var g = Graph.init("/tmp/test-project");
+    defer g.deinit(std.testing.allocator);
 
-    _ = try g.addNode(.{
+    _ = try g.addNode(std.testing.allocator, .{
         .id = .root,
         .name = "bare",
         .kind = .function,
@@ -758,7 +758,7 @@ test "binary preserves null optional fields" {
     // Act
     try save(std.testing.allocator, &g, file_path);
     var loaded = try load(std.testing.allocator, file_path);
-    defer loaded.deinit();
+    defer loaded.deinit(std.testing.allocator);
 
     // Assert
     const n = loaded.getNode(.root).?;
@@ -770,15 +770,15 @@ test "binary preserves null optional fields" {
 
 test "binary preserves long strings" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/test-project");
-    defer g.deinit();
+    var g = Graph.init("/tmp/test-project");
+    defer g.deinit(std.testing.allocator);
 
     // Create a 10KB doc comment
     const long_doc = try std.testing.allocator.alloc(u8, 10 * 1024);
     defer std.testing.allocator.free(long_doc);
     @memset(long_doc, 'A');
 
-    _ = try g.addNode(.{
+    _ = try g.addNode(std.testing.allocator, .{
         .id = .root,
         .name = "verbose",
         .kind = .function,
@@ -796,7 +796,7 @@ test "binary preserves long strings" {
     // Act
     try save(std.testing.allocator, &g, file_path);
     var loaded = try load(std.testing.allocator, file_path);
-    defer loaded.deinit();
+    defer loaded.deinit(std.testing.allocator);
 
     // Assert
     const loaded_doc = loaded.getNode(.root).?.doc.?;
@@ -806,10 +806,10 @@ test "binary preserves long strings" {
 
 test "binary preserves ZigMeta" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/test-project");
-    defer g.deinit();
+    var g = Graph.init("/tmp/test-project");
+    defer g.deinit(std.testing.allocator);
 
-    _ = try g.addNode(.{
+    _ = try g.addNode(std.testing.allocator, .{
         .id = .root,
         .name = "comptime_fn",
         .kind = .function,
@@ -827,7 +827,7 @@ test "binary preserves ZigMeta" {
     // Act
     try save(std.testing.allocator, &g, file_path);
     var loaded = try load(std.testing.allocator, file_path);
-    defer loaded.deinit();
+    defer loaded.deinit(std.testing.allocator);
 
     // Assert
     const meta = loaded.getNode(.root).?.lang_meta;
@@ -836,10 +836,10 @@ test "binary preserves ZigMeta" {
 
 test "binary preserves LangMeta.none" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/test-project");
-    defer g.deinit();
+    var g = Graph.init("/tmp/test-project");
+    defer g.deinit(std.testing.allocator);
 
-    _ = try g.addNode(.{
+    _ = try g.addNode(std.testing.allocator, .{
         .id = .root,
         .name = "plain",
         .kind = .function,
@@ -857,7 +857,7 @@ test "binary preserves LangMeta.none" {
     // Act
     try save(std.testing.allocator, &g, file_path);
     var loaded = try load(std.testing.allocator, file_path);
-    defer loaded.deinit();
+    defer loaded.deinit(std.testing.allocator);
 
     // Assert
     try std.testing.expectEqual(LangMeta.none, loaded.getNode(.root).?.lang_meta);
@@ -865,10 +865,10 @@ test "binary preserves LangMeta.none" {
 
 test "binary round-trip preserves union_def kind" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/test-project");
-    defer g.deinit();
+    var g = Graph.init("/tmp/test-project");
+    defer g.deinit(std.testing.allocator);
 
-    _ = try g.addNode(.{
+    _ = try g.addNode(std.testing.allocator, .{
         .id = .root,
         .name = "MyUnion",
         .kind = .union_def,
@@ -887,7 +887,7 @@ test "binary round-trip preserves union_def kind" {
     // Act
     try save(std.testing.allocator, &g, file_path);
     var loaded = try load(std.testing.allocator, file_path);
-    defer loaded.deinit();
+    defer loaded.deinit(std.testing.allocator);
 
     // Assert
     try std.testing.expectEqual(NodeKind.union_def, loaded.getNode(.root).?.kind);
@@ -895,10 +895,10 @@ test "binary round-trip preserves union_def kind" {
 
 test "binary round-trip preserves is_packed metadata" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/test-project");
-    defer g.deinit();
+    var g = Graph.init("/tmp/test-project");
+    defer g.deinit(std.testing.allocator);
 
-    _ = try g.addNode(.{
+    _ = try g.addNode(std.testing.allocator, .{
         .id = .root,
         .name = "PackedStruct",
         .kind = .type_def,
@@ -906,7 +906,7 @@ test "binary round-trip preserves is_packed metadata" {
         .lang_meta = .{ .zig = .{ .is_packed = true } },
     });
 
-    _ = try g.addNode(.{
+    _ = try g.addNode(std.testing.allocator, .{
         .id = .root,
         .name = "ExternStruct",
         .kind = .type_def,
@@ -924,7 +924,7 @@ test "binary round-trip preserves is_packed metadata" {
     // Act
     try save(std.testing.allocator, &g, file_path);
     var loaded = try load(std.testing.allocator, file_path);
-    defer loaded.deinit();
+    defer loaded.deinit(std.testing.allocator);
 
     // Assert
     const packed_meta = loaded.getNode(@enumFromInt(0)).?.lang_meta;
@@ -941,7 +941,7 @@ test "binary round-trip preserves is_packed metadata" {
 test "append adds new nodes" {
     // Arrange
     var g = try createTestGraph(std.testing.allocator);
-    defer g.deinit();
+    defer g.deinit(std.testing.allocator);
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -954,15 +954,15 @@ test "append adds new nodes" {
     try save(std.testing.allocator, &g, file_path);
 
     // Build a graph with 2 additional nodes
-    var extra = Graph.init(std.testing.allocator, "/tmp/test-project");
-    defer extra.deinit();
-    _ = try extra.addNode(.{
+    var extra = Graph.init("/tmp/test-project");
+    defer extra.deinit(std.testing.allocator);
+    _ = try extra.addNode(std.testing.allocator, .{
         .id = .root,
         .name = "helper",
         .kind = .function,
         .language = .zig,
     });
-    _ = try extra.addNode(.{
+    _ = try extra.addNode(std.testing.allocator, .{
         .id = .root,
         .name = "util",
         .kind = .function,
@@ -974,14 +974,14 @@ test "append adds new nodes" {
 
     // Assert
     var loaded = try load(std.testing.allocator, file_path);
-    defer loaded.deinit();
+    defer loaded.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(usize, 5), loaded.nodeCount());
 }
 
 test "compaction after append" {
     // Arrange
     var g = try createTestGraph(std.testing.allocator);
-    defer g.deinit();
+    defer g.deinit(std.testing.allocator);
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -994,24 +994,24 @@ test "compaction after append" {
     try save(std.testing.allocator, &g, file_path);
 
     // Append multiple small graphs
-    var extra1 = Graph.init(std.testing.allocator, "/tmp/test-project");
-    defer extra1.deinit();
-    _ = try extra1.addNode(.{ .id = .root, .name = "a1", .kind = .function, .language = .zig });
+    var extra1 = Graph.init("/tmp/test-project");
+    defer extra1.deinit(std.testing.allocator);
+    _ = try extra1.addNode(std.testing.allocator, .{ .id = .root, .name = "a1", .kind = .function, .language = .zig });
     try append(std.testing.allocator, &extra1, file_path);
 
-    var extra2 = Graph.init(std.testing.allocator, "/tmp/test-project");
-    defer extra2.deinit();
-    _ = try extra2.addNode(.{ .id = .root, .name = "a2", .kind = .function, .language = .zig });
+    var extra2 = Graph.init("/tmp/test-project");
+    defer extra2.deinit(std.testing.allocator);
+    _ = try extra2.addNode(std.testing.allocator, .{ .id = .root, .name = "a2", .kind = .function, .language = .zig });
     try append(std.testing.allocator, &extra2, file_path);
 
     // Act: full save (compaction) after appends
     var loaded_pre = try load(std.testing.allocator, file_path);
-    defer loaded_pre.deinit();
+    defer loaded_pre.deinit(std.testing.allocator);
     try save(std.testing.allocator, &loaded_pre, file_path);
 
     // Assert: data preserved after compaction
     var loaded_post = try load(std.testing.allocator, file_path);
-    defer loaded_post.deinit();
+    defer loaded_post.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(usize, 5), loaded_post.nodeCount());
 }
 
@@ -1045,9 +1045,9 @@ test "load rejects truncated file with table regions past EOF" {
 
 test "load rejects corrupt string ref past string table" {
     // Arrange: save a valid graph, then corrupt a name StringRef
-    var g = Graph.init(std.testing.allocator, "/tmp/test-project");
-    defer g.deinit();
-    _ = try g.addNode(.{ .id = .root, .name = "n", .kind = .file, .language = .zig });
+    var g = Graph.init("/tmp/test-project");
+    defer g.deinit(std.testing.allocator);
+    _ = try g.addNode(std.testing.allocator, .{ .id = .root, .name = "n", .kind = .file, .language = .zig });
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -1074,9 +1074,9 @@ test "load rejects corrupt string ref past string table" {
 
 test "load rejects invalid enum discriminant" {
     // Arrange: save a valid graph, then corrupt the NodeKind byte
-    var g = Graph.init(std.testing.allocator, "/tmp/test-project");
-    defer g.deinit();
-    _ = try g.addNode(.{ .id = .root, .name = "n", .kind = .file, .language = .zig });
+    var g = Graph.init("/tmp/test-project");
+    defer g.deinit(std.testing.allocator);
+    _ = try g.addNode(std.testing.allocator, .{ .id = .root, .name = "n", .kind = .file, .language = .zig });
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

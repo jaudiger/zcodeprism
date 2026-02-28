@@ -155,7 +155,7 @@ const ScanContext = struct {
 /// `source` is the full file content (borrowed, not owned).
 /// `ctx` provides import/scope boundaries for the current file.
 /// Returns `error.OutOfMemory` if graph edge insertion fails.
-pub fn walkForEdges(g: *Graph, source: []const u8, ts_node: ts.Node, ctx: *const EdgeContext, k: *const KindIds, scope_index: *const ScopeIndex, file_index: *const FileIndex, log: Logger) !void {
+pub fn walkForEdges(allocator: std.mem.Allocator, g: *Graph, source: []const u8, ts_node: ts.Node, ctx: *const EdgeContext, k: *const KindIds, scope_index: *const ScopeIndex, file_index: *const FileIndex, log: Logger) !void {
     const kid = ts_node.kindId();
 
     if (kid == k.function_declaration) {
@@ -192,10 +192,10 @@ pub fn walkForEdges(g: *Graph, source: []const u8, ts_node: ts.Node, ctx: *const
                 };
 
                 // Phase 3a: scan for call expressions -> `calls` edges.
-                try scanForCalls(&sctx, ts_node, 0);
+                try scanForCalls(allocator, &sctx, ts_node, 0);
 
                 // Phase 3b: scan for type identifiers -> `uses_type` edges.
-                try scanForTypeIdentifiersScoped(&sctx, ts_node, 0);
+                try scanForTypeIdentifiersScoped(allocator, &sctx, ts_node, 0);
             } else {
                 log.trace("function not found in graph", &.{
                     Field.string("name", name),
@@ -235,10 +235,10 @@ pub fn walkForEdges(g: *Graph, source: []const u8, ts_node: ts.Node, ctx: *const
             };
 
             // Phase 3a: scan for call expressions -> `calls` edges.
-            try scanForCalls(&sctx, ts_node, 0);
+            try scanForCalls(allocator, &sctx, ts_node, 0);
 
             // Phase 3b: scan for type identifiers -> `uses_type` edges.
-            try scanForTypeIdentifiersScoped(&sctx, ts_node, 0);
+            try scanForTypeIdentifiersScoped(allocator, &sctx, ts_node, 0);
         } else {
             log.trace("test not found in graph", &.{Field.string("name", test_name)});
         }
@@ -250,7 +250,7 @@ pub fn walkForEdges(g: *Graph, source: []const u8, ts_node: ts.Node, ctx: *const
     var i: u32 = 0;
     while (i < ts_node.namedChildCount()) : (i += 1) {
         const child = ts_node.namedChild(i) orelse continue;
-        try walkForEdges(g, source, child, ctx, k, scope_index, file_index, log);
+        try walkForEdges(allocator, g, source, child, ctx, k, scope_index, file_index, log);
     }
 }
 
@@ -265,6 +265,7 @@ pub fn walkForEdges(g: *Graph, source: []const u8, ts_node: ts.Node, ctx: *const
 /// `is_call` controls whether the resulting edge is `calls` (true) or
 /// `uses_type` (false).
 fn resolveOriginCall(
+    allocator: std.mem.Allocator,
     sctx: *const ScanContext,
     origin: cf.SymbolOrigin,
     call_chain: []const []const u8,
@@ -284,6 +285,7 @@ fn resolveOriginCall(
     }
     if (len == 0) return;
     try cf.resolveQualifiedCall(
+        allocator,
         sctx.g,
         sctx.caller_id,
         origin.file_id,
@@ -307,7 +309,7 @@ fn resolveOriginCall(
 /// Recurses into all children (including anonymous nodes) but stops at
 /// nested function/test declarations to respect scope boundaries.
 /// Depth is capped at `cf.max_ast_scan_depth` to avoid runaway recursion.
-fn scanForCalls(sctx: *const ScanContext, ts_node: ts.Node, depth: u32) !void {
+fn scanForCalls(allocator: std.mem.Allocator, sctx: *const ScanContext, ts_node: ts.Node, depth: u32) !void {
     // Depth guard: stop descending, edges in deeper subtrees are skipped.
     if (depth >= cf.max_ast_scan_depth) {
         sctx.log.trace("scan depth cap reached", &.{Field.uint("depth", depth)});
@@ -322,11 +324,11 @@ fn scanForCalls(sctx: *const ScanContext, ts_node: ts.Node, depth: u32) !void {
                 // Shape: bare call -- foo(). Resolve within caller's scope.
                 const callee_name = ts_api.nodeText(sctx.source, fn_ref);
                 if (findFunctionByNameScoped(sctx.g, callee_name, sctx.edge_ctx.scope_start, sctx.edge_ctx.scope_end, sctx.caller_parent_id, sctx.scope_index)) |callee_id| {
-                    _ = try sctx.g.addEdgeIfNew(.{ .source_id = sctx.caller_id, .target_id = callee_id, .edge_type = .calls });
+                    _ = try sctx.g.addEdgeIfNew(allocator, .{ .source_id = sctx.caller_id, .target_id = callee_id, .edge_type = .calls });
                 } else if (sctx.edge_ctx.findImportOrigin(callee_name)) |origin| {
                     // Direct extraction: bare call to imported symbol.
                     if (origin.chain.len > 0) {
-                        try resolveOriginCall(sctx, origin, &.{}, true);
+                        try resolveOriginCall(allocator, sctx, origin, &.{}, true);
                     }
                 } else {
                     sctx.log.trace("bare call unresolved", &.{Field.string("callee", callee_name)});
@@ -342,10 +344,10 @@ fn scanForCalls(sctx: *const ScanContext, ts_node: ts.Node, depth: u32) !void {
                     // Resolution cascade: try each tracker in priority order.
                     if (sctx.edge_ctx.findImportOrigin(root_name)) |origin| {
                         // Import-qualified call: prepend extraction chain.
-                        try resolveOriginCall(sctx, origin, chain[1..chain_len], true);
+                        try resolveOriginCall(allocator, sctx, origin, chain[1..chain_len], true);
                     } else if (sctx.var_tracker.findTarget(root_name)) |target_file_id| {
                         // Variable method call: a.deinit() where a was assigned from import.
-                        try cf.resolveQualifiedCall(sctx.g, sctx.caller_id, target_file_id, chain[1..chain_len], true, sctx.scope_index, sctx.file_index, sctx.log);
+                        try cf.resolveQualifiedCall(allocator, sctx.g, sctx.caller_id, target_file_id, chain[1..chain_len], true, sctx.scope_index, sctx.file_index, sctx.log);
                     } else if (sctx.local_tracker.findTypeName(root_name)) |type_name| {
                         // Struct-literal local variable: p.method() where const p = Point{...}.
                         // Resolve method as a child of the type using the scope index.
@@ -356,14 +358,14 @@ fn scanForCalls(sctx: *const ScanContext, ts_node: ts.Node, depth: u32) !void {
                                 if (n.kind == .function and
                                     std.mem.eql(u8, n.name, leaf_name))
                                 {
-                                    _ = try sctx.g.addEdgeIfNew(.{ .source_id = sctx.caller_id, .target_id = @enumFromInt(child_idx), .edge_type = .calls });
+                                    _ = try sctx.g.addEdgeIfNew(allocator, .{ .source_id = sctx.caller_id, .target_id = @enumFromInt(child_idx), .edge_type = .calls });
                                     break;
                                 }
                             }
                         }
                     } else if (sctx.param_tracker.findOrigin(root_name)) |origin| {
                         // Parameter with import-qualified type.
-                        try resolveOriginCall(sctx, origin, chain[1..chain_len], true);
+                        try resolveOriginCall(allocator, sctx, origin, chain[1..chain_len], true);
                     } else {
                         // Fallback: use the AST to determine if the receiver is
                         // local (self or a known local type) vs external.
@@ -373,13 +375,13 @@ fn scanForCalls(sctx: *const ScanContext, ts_node: ts.Node, depth: u32) !void {
                             .self_receiver => {
                                 // self.method(). Resolve in caller's parent scope.
                                 if (findFunctionByNameScoped(sctx.g, leaf_name, sctx.edge_ctx.scope_start, sctx.edge_ctx.scope_end, sctx.caller_parent_id, sctx.scope_index)) |callee_id| {
-                                    _ = try sctx.g.addEdgeIfNew(.{ .source_id = sctx.caller_id, .target_id = callee_id, .edge_type = .calls });
+                                    _ = try sctx.g.addEdgeIfNew(allocator, .{ .source_id = sctx.caller_id, .target_id = callee_id, .edge_type = .calls });
                                 }
                             },
                             .local_type => {
                                 // Type.staticMethod(). Resolve in caller's scope.
                                 if (findFunctionByNameScoped(sctx.g, leaf_name, sctx.edge_ctx.scope_start, sctx.edge_ctx.scope_end, sctx.caller_parent_id, sctx.scope_index)) |callee_id| {
-                                    _ = try sctx.g.addEdgeIfNew(.{ .source_id = sctx.caller_id, .target_id = callee_id, .edge_type = .calls });
+                                    _ = try sctx.g.addEdgeIfNew(allocator, .{ .source_id = sctx.caller_id, .target_id = callee_id, .edge_type = .calls });
                                 }
                             },
                             .external => {
@@ -395,7 +397,7 @@ fn scanForCalls(sctx: *const ScanContext, ts_node: ts.Node, depth: u32) !void {
                 } else if (chain_len == 1) {
                     // Single-segment field expression, treat as bare call.
                     if (findFunctionByNameScoped(sctx.g, chain[0], sctx.edge_ctx.scope_start, sctx.edge_ctx.scope_end, sctx.caller_parent_id, sctx.scope_index)) |callee_id| {
-                        _ = try sctx.g.addEdgeIfNew(.{ .source_id = sctx.caller_id, .target_id = callee_id, .edge_type = .calls });
+                        _ = try sctx.g.addEdgeIfNew(allocator, .{ .source_id = sctx.caller_id, .target_id = callee_id, .edge_type = .calls });
                     }
                 }
             }
@@ -411,7 +413,7 @@ fn scanForCalls(sctx: *const ScanContext, ts_node: ts.Node, depth: u32) !void {
         const child_kid = child.kindId();
         if (child_kid == sctx.k.function_declaration or
             child_kid == sctx.k.test_declaration) continue;
-        try scanForCalls(sctx, child, depth + 1);
+        try scanForCalls(allocator, sctx, child, depth + 1);
     }
 }
 
@@ -789,7 +791,7 @@ fn unwrapTypeNode(type_node: ts.Node, k: *const KindIds) ts.Node {
 /// Recursively scan an AST subtree for type identifiers and create
 /// `uses_type` edges. Skips edges to the caller's own child declarations.
 /// Stops at nested fn/test boundaries. Depth-capped.
-fn scanForTypeIdentifiersScoped(sctx: *const ScanContext, ts_node: ts.Node, depth: u32) !void {
+fn scanForTypeIdentifiersScoped(allocator: std.mem.Allocator, sctx: *const ScanContext, ts_node: ts.Node, depth: u32) !void {
     // Graceful cap: stop descending, type refs in deeper subtrees are skipped.
     if (depth >= cf.max_ast_scan_depth) return;
     const kid = ts_node.kindId();
@@ -804,7 +806,7 @@ fn scanForTypeIdentifiersScoped(sctx: *const ScanContext, ts_node: ts.Node, dept
         const target_node = sctx.g.getNode(target_id);
         const is_own_child = if (target_node) |tn| tn.parent_id != null and tn.parent_id.? == sctx.caller_id else false;
         if (!is_own_child) {
-            _ = try sctx.g.addEdgeIfNew(.{ .source_id = sctx.caller_id, .target_id = target_id, .edge_type = .uses_type });
+            _ = try sctx.g.addEdgeIfNew(allocator, .{ .source_id = sctx.caller_id, .target_id = target_id, .edge_type = .uses_type });
         }
     }
 
@@ -815,7 +817,7 @@ fn scanForTypeIdentifiersScoped(sctx: *const ScanContext, ts_node: ts.Node, dept
         const child_kid = child.kindId();
         if (child_kid == sctx.k.function_declaration or
             child_kid == sctx.k.test_declaration) continue;
-        try scanForTypeIdentifiersScoped(sctx, child, depth + 1);
+        try scanForTypeIdentifiersScoped(allocator, sctx, child, depth + 1);
     }
 }
 

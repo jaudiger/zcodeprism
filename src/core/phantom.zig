@@ -19,17 +19,14 @@ const ExternalInfo = lang.ExternalInfo;
 /// are created automatically as `.module` phantom nodes.
 pub const PhantomManager = struct {
     graph: *Graph,
-    allocator: std.mem.Allocator,
     lookup: std.StringHashMapUnmanaged(NodeId),
 
     /// Creates a new PhantomManager backed by the given graph.
     ///
-    /// `allocator` -- used for the internal lookup table keys; must outlive the manager.
     /// `graph` -- the graph into which phantom nodes are inserted.
-    pub fn init(allocator: std.mem.Allocator, graph: *Graph) PhantomManager {
+    pub fn init(graph: *Graph) PhantomManager {
         return .{
             .graph = graph,
-            .allocator = allocator,
             .lookup = .{},
         };
     }
@@ -44,7 +41,7 @@ pub const PhantomManager = struct {
     ///
     /// `language` and `external` are forwarded to every newly created node.
     /// Returns `error.OutOfMemory` if the graph or lookup allocation fails.
-    pub fn getOrCreate(self: *PhantomManager, qualified_name: []const u8, kind: NodeKind, language: Language, external: ExternalInfo) !NodeId {
+    pub fn getOrCreate(self: *PhantomManager, allocator: std.mem.Allocator, qualified_name: []const u8, kind: NodeKind, language: Language, external: ExternalInfo) !NodeId {
         // Fast path: already created.
         if (self.lookup.get(qualified_name)) |id| return id;
 
@@ -70,13 +67,13 @@ pub const PhantomManager = struct {
 
             // Dupe segment name for the node, owned by graph.
             const duped_name = blk: {
-                const d = try self.allocator.dupe(u8, segment);
-                errdefer self.allocator.free(d);
-                try self.graph.addOwnedBuffer(d);
+                const d = try allocator.dupe(u8, segment);
+                errdefer allocator.free(d);
+                try self.graph.addOwnedBuffer(allocator, d);
                 break :blk d;
             };
 
-            const node_id = try self.graph.addNode(Node{
+            const node_id = try self.graph.addNode(allocator, Node{
                 .id = .root,
                 .name = duped_name,
                 .kind = node_kind,
@@ -87,9 +84,9 @@ pub const PhantomManager = struct {
 
             // Dupe prefix for the lookup key, owned by PhantomManager, freed in deinit.
             {
-                const duped_prefix = try self.allocator.dupe(u8, prefix);
-                errdefer self.allocator.free(duped_prefix);
-                try self.lookup.put(self.allocator, duped_prefix, node_id);
+                const duped_prefix = try allocator.dupe(u8, prefix);
+                errdefer allocator.free(duped_prefix);
+                try self.lookup.put(allocator, duped_prefix, node_id);
             }
 
             parent_id = node_id;
@@ -101,11 +98,12 @@ pub const PhantomManager = struct {
     /// Frees all lookup-key memory owned by this manager.
     ///
     /// Does not free the phantom nodes themselves; those are owned by the graph.
-    pub fn deinit(self: *PhantomManager) void {
+    /// `allocator` must be the same allocator used for all prior getOrCreate calls.
+    pub fn deinit(self: *PhantomManager, allocator: std.mem.Allocator) void {
         var it = self.lookup.iterator();
         while (it.next()) |entry| {
-            self.allocator.free(@constCast(entry.key_ptr.*));
+            allocator.free(@constCast(entry.key_ptr.*));
         }
-        self.lookup.deinit(self.allocator);
+        self.lookup.deinit(allocator);
     }
 };

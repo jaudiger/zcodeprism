@@ -28,17 +28,20 @@ pub const ParseBuildConfigFn = lang.ParseBuildConfigFn;
 /// Function pointer type for language-specific source parsers.
 ///
 /// Parses `source` and populates `graph` with the resulting nodes and edges.
+/// `allocator` is passed through to graph mutation methods.
 /// `file_path`, when provided, is stored on each created node for location tracking.
 /// Returns an error if the underlying tree-sitter parse or graph mutation fails.
-pub const ParseFn = *const fn (source: []const u8, graph: *Graph, file_path: ?[]const u8, logger: Logger) anyerror!void;
+pub const ParseFn = *const fn (allocator: std.mem.Allocator, source: []const u8, graph: *Graph, file_path: ?[]const u8, logger: Logger) anyerror!void;
 
 /// Function pointer type for resolving phantom (external) references in a single file.
 ///
 /// Scans nodes in the range `[file_idx, scope_end)` of `graph`, identifies unresolved
 /// references, and registers them as phantom nodes via `phantom_mgr`.
+/// `allocator` is passed through to graph and phantom mutation methods.
 /// `build_config`, when provided, supplies dependency paths for import resolution.
 /// Returns an error if graph access or phantom registration fails.
 pub const ResolvePhantomsFn = *const fn (
+    allocator: std.mem.Allocator,
     graph: *Graph,
     source: []const u8,
     file_idx: usize,

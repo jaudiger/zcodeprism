@@ -288,6 +288,7 @@ pub fn buildImportMap(g: *const Graph, source: []const u8, root: ts.Node, ctx: *
 /// for terminal function references when `is_call` is true. Handles `Self` aliases
 /// and mid-chain function calls by following return types.
 pub fn resolveQualifiedCall(
+    allocator: std.mem.Allocator,
     g: *Graph,
     caller_id: NodeId,
     target_file_id: NodeId,
@@ -357,12 +358,12 @@ pub fn resolveQualifiedCall(
         const resolved_node = g.getNode(resolved_id) orelse return;
 
         if (is_last and is_call and resolved_node.kind == .function) {
-            _ = try g.addEdgeIfNew(.{ .source_id = caller_id, .target_id = resolved_id, .edge_type = .calls });
+            _ = try g.addEdgeIfNew(allocator, .{ .source_id = caller_id, .target_id = resolved_id, .edge_type = .calls });
         } else if (!is_last and resolved_node.kind == .function) {
             // Mid-chain function call (e.g., getClient() in svc.getClient().send()).
             // Create calls edge and follow the function's return type.
             if (is_call) {
-                _ = try g.addEdgeIfNew(.{ .source_id = caller_id, .target_id = resolved_id, .edge_type = .calls });
+                _ = try g.addEdgeIfNew(allocator, .{ .source_id = caller_id, .target_id = resolved_id, .edge_type = .calls });
             }
             if (resolveReturnTypeScope(g, resolved_id, scope_index, file_index)) |return_type_id| {
                 current_scope_id = return_type_id;
@@ -375,7 +376,7 @@ pub fn resolveQualifiedCall(
             const is_type_alias = resolved_node.kind == .constant and
                 resolved_node.name.len > 0 and resolved_node.name[0] >= 'A' and resolved_node.name[0] <= 'Z';
             if (is_type or is_type_alias) {
-                _ = try g.addEdgeIfNew(.{ .source_id = caller_id, .target_id = resolved_id, .edge_type = .uses_type });
+                _ = try g.addEdgeIfNew(allocator, .{ .source_id = caller_id, .target_id = resolved_id, .edge_type = .uses_type });
             }
         }
 

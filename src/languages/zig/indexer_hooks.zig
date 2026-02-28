@@ -145,6 +145,7 @@ fn isIdentChar(c: u8) bool {
 /// edge, then delegates to `source_scan.resolveStdPhantoms` for member-level
 /// phantom resolution.
 pub fn resolvePhantoms(
+    allocator: std.mem.Allocator,
     graph: *Graph,
     source: []const u8,
     file_idx: usize,
@@ -165,13 +166,13 @@ pub fn resolvePhantoms(
         const import_path = n.signature orelse continue;
         if (std.mem.eql(u8, import_path, "std")) {
             std_import_name = n.name;
-            const std_id = try phantom.getOrCreate("std", .module, .zig, .{ .stdlib = {} });
-            _ = try graph.addEdgeIfNew(.{ .source_id = file_id, .target_id = std_id, .edge_type = .imports, .source = .phantom });
+            const std_id = try phantom.getOrCreate(allocator, "std", .module, .zig, .{ .stdlib = {} });
+            _ = try graph.addEdgeIfNew(allocator, .{ .source_id = file_id, .target_id = std_id, .edge_type = .imports, .source = .phantom });
             break;
         }
     }
 
     if (std_import_name) |sname| {
-        try source_scan.resolveStdPhantoms(graph, source, file_idx, scope_end, phantom, sname, .zig, .{ .stdlib = {} }, log);
+        try source_scan.resolveStdPhantoms(allocator, graph, source, file_idx, scope_end, phantom, sname, .zig, .{ .stdlib = {} }, log);
     }
 }

@@ -103,8 +103,8 @@ fn writeDirImportsFixtures(dir: std.fs.Dir) !void {
 
 test "project fixture: file nodes, imports, calls, phantom nodes, metrics" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/project");
-    defer g.deinit();
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
@@ -246,8 +246,8 @@ test "project fixture: file nodes, imports, calls, phantom nodes, metrics" {
 test "incremental indexing: skip unchanged, detect changes" {
     // skips unchanged files
     {
-        var g = Graph.init(std.testing.allocator, "/tmp/project");
-        defer g.deinit();
+        var g = Graph.init("/tmp/project");
+        defer g.deinit(std.testing.allocator);
         var tmp_dir = std.testing.tmpDir(.{});
         defer tmp_dir.cleanup();
         const project_root = setupProjectFixtures(&tmp_dir) catch return error.SkipZigTest;
@@ -261,8 +261,8 @@ test "incremental indexing: skip unchanged, detect changes" {
 
     // detects changed file
     {
-        var g = Graph.init(std.testing.allocator, "/tmp/project");
-        defer g.deinit();
+        var g = Graph.init("/tmp/project");
+        defer g.deinit(std.testing.allocator);
         var tmp_dir = std.testing.tmpDir(.{});
         defer tmp_dir.cleanup();
         const project_root = setupProjectFixtures(&tmp_dir) catch return error.SkipZigTest;
@@ -282,8 +282,8 @@ test "incremental indexing: skip unchanged, detect changes" {
 
     // content_hash changes when file changes
     {
-        var g = Graph.init(std.testing.allocator, "/tmp/project");
-        defer g.deinit();
+        var g = Graph.init("/tmp/project");
+        defer g.deinit(std.testing.allocator);
         var tmp_dir = std.testing.tmpDir(.{});
         defer tmp_dir.cleanup();
         const project_root = setupProjectFixtures(&tmp_dir) catch return error.SkipZigTest;
@@ -299,8 +299,8 @@ test "incremental indexing: skip unchanged, detect changes" {
             .data = "pub fn changed() void {}\n",
         });
 
-        var g2 = Graph.init(std.testing.allocator, "/tmp/project");
-        defer g2.deinit();
+        var g2 = Graph.init("/tmp/project");
+        defer g2.deinit(std.testing.allocator);
         _ = indexDirectory(std.testing.allocator, project_root, &g2, .{}) catch |err| return err;
 
         const utils_node2 = helpers.findNode(&g2, "utils.zig", .file) orelse return error.TestExpectedEqual;
@@ -312,8 +312,8 @@ test "incremental indexing: skip unchanged, detect changes" {
 test "edge cases: single file, no zig files, exclude paths" {
     // single file project
     {
-        var g = Graph.init(std.testing.allocator, "/tmp/project");
-        defer g.deinit();
+        var g = Graph.init("/tmp/project");
+        defer g.deinit(std.testing.allocator);
         var tmp_dir = std.testing.tmpDir(.{});
         defer tmp_dir.cleanup();
 
@@ -332,8 +332,8 @@ test "edge cases: single file, no zig files, exclude paths" {
 
     // directory with no zig files
     {
-        var g = Graph.init(std.testing.allocator, "/tmp/project");
-        defer g.deinit();
+        var g = Graph.init("/tmp/project");
+        defer g.deinit(std.testing.allocator);
         var tmp_dir = std.testing.tmpDir(.{});
         defer tmp_dir.cleanup();
 
@@ -352,8 +352,8 @@ test "edge cases: single file, no zig files, exclude paths" {
 
     // respects exclude_paths
     {
-        var g = Graph.init(std.testing.allocator, "/tmp/project");
-        defer g.deinit();
+        var g = Graph.init("/tmp/project");
+        defer g.deinit(std.testing.allocator);
         var tmp_dir = std.testing.tmpDir(.{});
         defer tmp_dir.cleanup();
         const project_root = setupProjectFixtures(&tmp_dir) catch return error.SkipZigTest;
@@ -372,8 +372,8 @@ test "edge cases: single file, no zig files, exclude paths" {
 
 test "phantom nodes: deduplication, parent chain" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/project");
-    defer g.deinit();
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
@@ -434,8 +434,8 @@ test "phantom nodes: deduplication, parent chain" {
 
 test "name collision: cross-file init/deinit resolution" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/collision");
-    defer g.deinit();
+    var g = Graph.init("/tmp/collision");
+    defer g.deinit(std.testing.allocator);
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
     try writeCollisionFixtures(tmp_dir.dir);
@@ -477,8 +477,8 @@ test "name collision: cross-file init/deinit resolution" {
 
 test "test block resolves method call on import-assigned variable" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/project");
-    defer g.deinit();
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
@@ -519,8 +519,8 @@ test "test block resolves method call on import-assigned variable" {
 
 test "parameter method call: basic parameter" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/param");
-    defer g.deinit();
+    var g = Graph.init("/tmp/param");
+    defer g.deinit(std.testing.allocator);
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
     try writeBasicParamFixtures(tmp_dir.dir);
@@ -551,8 +551,8 @@ test "parameter method call: basic parameter" {
 
 test "parameter method call: pointer parameter" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/param");
-    defer g.deinit();
+    var g = Graph.init("/tmp/param");
+    defer g.deinit(std.testing.allocator);
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
     try writePointerParamFixtures(tmp_dir.dir);
@@ -576,8 +576,8 @@ test "parameter method call: pointer parameter" {
 
 test "parameter method call: optional parameter" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/param");
-    defer g.deinit();
+    var g = Graph.init("/tmp/param");
+    defer g.deinit(std.testing.allocator);
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
     try writeOptionalParamFixtures(tmp_dir.dir);
@@ -598,8 +598,8 @@ test "parameter method call: optional parameter" {
 
 test "parameter method call: chained cross-file" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/param");
-    defer g.deinit();
+    var g = Graph.init("/tmp/param");
+    defer g.deinit(std.testing.allocator);
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
     try writeChainedParamFixtures(tmp_dir.dir);
@@ -624,8 +624,8 @@ test "parameter method call: chained cross-file" {
 
 test "parameter method call: multiple parameters" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/param");
-    defer g.deinit();
+    var g = Graph.init("/tmp/param");
+    defer g.deinit(std.testing.allocator);
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
     try writeMultiParamFixtures(tmp_dir.dir);
@@ -657,8 +657,8 @@ test "parameter method call: multiple parameters" {
 
 test "parameter method call: self method calling parameter method" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/param");
-    defer g.deinit();
+    var g = Graph.init("/tmp/param");
+    defer g.deinit(std.testing.allocator);
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
     try writeSelfCallsParamFixtures(tmp_dir.dir);
@@ -682,8 +682,8 @@ test "parameter method call: self method calling parameter method" {
 
 test "parameter method call: return value from imported function" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/param");
-    defer g.deinit();
+    var g = Graph.init("/tmp/param");
+    defer g.deinit(std.testing.allocator);
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
     try writeReturnValueFixtures(tmp_dir.dir);
@@ -709,8 +709,8 @@ test "parameter method call: return value from imported function" {
 test "parameter method call: negative tests" {
     // no calls edge when parameter method is not called
     {
-        var g = Graph.init(std.testing.allocator, "/tmp/param");
-        defer g.deinit();
+        var g = Graph.init("/tmp/param");
+        defer g.deinit(std.testing.allocator);
         var tmp_dir = std.testing.tmpDir(.{});
         defer tmp_dir.cleanup();
         try writeNoCallsFixtures(tmp_dir.dir);
@@ -734,8 +734,8 @@ test "parameter method call: negative tests" {
 
 test "dir imports: same-directory resolution with duplicate basenames" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/dir_imports");
-    defer g.deinit();
+    var g = Graph.init("/tmp/dir_imports");
+    defer g.deinit(std.testing.allocator);
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
     try writeDirImportsFixtures(tmp_dir.dir);
@@ -775,8 +775,8 @@ test "dir imports: same-directory resolution with duplicate basenames" {
 
 test "dir imports: dot-slash prefix resolves to same directory" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/dir_imports");
-    defer g.deinit();
+    var g = Graph.init("/tmp/dir_imports");
+    defer g.deinit(std.testing.allocator);
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
     try writeDirImportsFixtures(tmp_dir.dir);
@@ -804,8 +804,8 @@ test "dir imports: dot-slash prefix resolves to same directory" {
 
 test "dir imports: subdirectory import resolves across directories" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/dir_imports");
-    defer g.deinit();
+    var g = Graph.init("/tmp/dir_imports");
+    defer g.deinit(std.testing.allocator);
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
     try writeDirImportsFixtures(tmp_dir.dir);
@@ -833,8 +833,8 @@ test "dir imports: subdirectory import resolves across directories" {
 
 test "dir imports: parent directory import resolves across directories" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/dir_imports");
-    defer g.deinit();
+    var g = Graph.init("/tmp/dir_imports");
+    defer g.deinit(std.testing.allocator);
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
     try writeDirImportsFixtures(tmp_dir.dir);
@@ -862,8 +862,8 @@ test "dir imports: parent directory import resolves across directories" {
 
 test "dir imports: subdirectory import from root" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/dir_imports");
-    defer g.deinit();
+    var g = Graph.init("/tmp/dir_imports");
+    defer g.deinit(std.testing.allocator);
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
     try writeDirImportsFixtures(tmp_dir.dir);
@@ -891,8 +891,8 @@ test "dir imports: subdirectory import from root" {
 
 test "dir imports: cross-file call edges resolve to correct targets" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/dir_imports");
-    defer g.deinit();
+    var g = Graph.init("/tmp/dir_imports");
+    defer g.deinit(std.testing.allocator);
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
     try writeDirImportsFixtures(tmp_dir.dir);
@@ -958,8 +958,8 @@ fn writeInnerStructCallFixtures(dir: std.fs.Dir) !void {
 
 test "inner struct call: cross-file edges from test block inner struct" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/inner_struct_call");
-    defer g.deinit();
+    var g = Graph.init("/tmp/inner_struct_call");
+    defer g.deinit(std.testing.allocator);
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
     try writeInnerStructCallFixtures(tmp_dir.dir);
@@ -1007,8 +1007,8 @@ test "inner struct call: cross-file edges from test block inner struct" {
 
 test "direct extraction type: qualified method call creates cross-file calls edge" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/direct_extraction");
-    defer g.deinit();
+    var g = Graph.init("/tmp/direct_extraction");
+    defer g.deinit(std.testing.allocator);
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
     try writeDirectExtractionTypeFixtures(tmp_dir.dir);
@@ -1038,8 +1038,8 @@ test "direct extraction type: qualified method call creates cross-file calls edg
 
 test "direct extraction fn: bare call creates cross-file calls edge" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/direct_extraction");
-    defer g.deinit();
+    var g = Graph.init("/tmp/direct_extraction");
+    defer g.deinit(std.testing.allocator);
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
     try writeDirectExtractionFnFixtures(tmp_dir.dir);

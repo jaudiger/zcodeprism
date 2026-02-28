@@ -30,7 +30,6 @@ pub const Direction = enum {
 /// Query phase: call freeze() once, then use getNode, getChildren,
 /// outEdges, inEdges, neighbors.
 pub const Graph = struct {
-    allocator: std.mem.Allocator,
     nodes: std.ArrayList(Node),
     edges: std.ArrayList(Edge),
     project_root: []const u8,
@@ -45,9 +44,8 @@ pub const Graph = struct {
     /// Create an empty graph rooted at the given project directory.
     /// The caller owns the returned Graph and must call deinit() when done.
     /// `project_root` is borrowed, not duped -- it must outlive the Graph.
-    pub fn init(allocator: std.mem.Allocator, project_root: []const u8) Graph {
+    pub fn init(project_root: []const u8) Graph {
         return .{
-            .allocator = allocator,
             .nodes = .{},
             .edges = .{},
             .project_root = project_root,
@@ -59,18 +57,19 @@ pub const Graph = struct {
     /// Release all memory owned by the graph.
     /// Frees owned buffers, node/edge arrays, the adjacency index, and
     /// the edge dedup map. The Graph is left in an undefined state.
-    pub fn deinit(self: *Graph) void {
+    /// `allocator` must be the same allocator used for all prior mutations.
+    pub fn deinit(self: *Graph, allocator: std.mem.Allocator) void {
         // Free owned buffers first -- node name/doc/signature slices
         // may point into these, so they must outlive the node array.
         for (self.owned_buffers.items) |buf| {
-            self.allocator.free(buf);
+            allocator.free(buf);
         }
-        self.owned_buffers.deinit(self.allocator);
-        self.nodes.deinit(self.allocator);
-        self.edges.deinit(self.allocator);
+        self.owned_buffers.deinit(allocator);
+        self.nodes.deinit(allocator);
+        self.edges.deinit(allocator);
         // Adjacency is optional; only present after freeze().
-        if (self.adjacency) |*adj| adj.deinit(self.allocator);
-        self.edge_index.deinit(self.allocator);
+        if (self.adjacency) |*adj| adj.deinit(allocator);
+        self.edge_index.deinit(allocator);
         self.* = undefined;
     }
 
@@ -79,23 +78,23 @@ pub const Graph = struct {
     /// name/doc/signature slices borrow into. Each buffer must be added
     /// exactly once; adding the same pointer twice causes a double-free.
     /// Returns `error.OutOfMemory` if the internal list cannot grow.
-    pub fn addOwnedBuffer(self: *Graph, buf: []const u8) !void {
+    pub fn addOwnedBuffer(self: *Graph, allocator: std.mem.Allocator, buf: []const u8) !void {
         if (std.debug.runtime_safety) {
             for (self.owned_buffers.items) |existing| {
                 std.debug.assert(existing.ptr != buf.ptr);
             }
         }
-        try self.owned_buffers.append(self.allocator, buf);
+        try self.owned_buffers.append(allocator, buf);
     }
 
     /// Append a node to the graph and return its sequentially assigned NodeId.
     /// The node's `id` field is overwritten with the assigned value.
     /// Returns `error.OutOfMemory` if the backing array cannot grow.
-    pub fn addNode(self: *Graph, node: Node) !NodeId {
+    pub fn addNode(self: *Graph, allocator: std.mem.Allocator, node: Node) !NodeId {
         const id: NodeId = @enumFromInt(self.nodes.items.len);
         var stored = node;
         stored.id = id;
-        try self.nodes.append(self.allocator, stored);
+        try self.nodes.append(allocator, stored);
         return id;
     }
 
@@ -104,11 +103,11 @@ pub const Graph = struct {
     /// dedup index. Does not check for duplicates -- use addEdgeIfNew()
     /// when deduplication is needed.
     /// Returns `error.OutOfMemory` if the backing array or hash map cannot grow.
-    pub fn addEdge(self: *Graph, edge: Edge) !EdgeId {
+    pub fn addEdge(self: *Graph, allocator: std.mem.Allocator, edge: Edge) !EdgeId {
         const id: EdgeId = @enumFromInt(self.edges.items.len);
-        try self.edges.append(self.allocator, edge);
+        try self.edges.append(allocator, edge);
         errdefer _ = self.edges.pop();
-        try self.edge_index.put(self.allocator, edge.key(), {});
+        try self.edge_index.put(allocator, edge.key(), {});
         return id;
     }
 
@@ -116,13 +115,13 @@ pub const Graph = struct {
     /// already exists. Self-loops (source == target) are silently rejected.
     /// Returns true if the edge was inserted, false if it was a duplicate
     /// or a self-loop. Returns `error.OutOfMemory` on allocation failure.
-    pub fn addEdgeIfNew(self: *Graph, edge: Edge) !bool {
+    pub fn addEdgeIfNew(self: *Graph, allocator: std.mem.Allocator, edge: Edge) !bool {
         if (edge.source_id == edge.target_id) return false;
         const k = edge.key();
-        const gop = try self.edge_index.getOrPut(self.allocator, k);
+        const gop = try self.edge_index.getOrPut(allocator, k);
         if (gop.found_existing) return false;
         errdefer self.edge_index.removeByPtr(gop.key_ptr);
-        try self.edges.append(self.allocator, edge);
+        try self.edges.append(allocator, edge);
         return true;
     }
 
@@ -130,9 +129,9 @@ pub const Graph = struct {
     /// Call this after bulk-loading edges (e.g. from storage deserialization)
     /// that bypassed addEdge/addEdgeIfNew. Clears the existing index and
     /// repopulates it in one pass. Returns `error.OutOfMemory` on failure.
-    pub fn rebuildEdgeIndex(self: *Graph) !void {
+    pub fn rebuildEdgeIndex(self: *Graph, allocator: std.mem.Allocator) !void {
         self.edge_index.clearRetainingCapacity();
-        try self.edge_index.ensureTotalCapacity(self.allocator, @intCast(self.edges.items.len));
+        try self.edge_index.ensureTotalCapacity(allocator, @intCast(self.edges.items.len));
         for (self.edges.items) |e| {
             self.edge_index.putAssumeCapacity(e.key(), {});
         }
@@ -144,11 +143,11 @@ pub const Graph = struct {
     /// inEdges, neighbors). Safe to call multiple times; each call frees the
     /// previous index and rebuilds from scratch.
     /// Returns `error.OutOfMemory` if the index cannot be allocated.
-    pub fn freeze(self: *Graph) !void {
+    pub fn freeze(self: *Graph, allocator: std.mem.Allocator) !void {
         // Free the old index if re-freezing after incremental mutations.
-        if (self.adjacency) |*adj| adj.deinit(self.allocator);
+        if (self.adjacency) |*adj| adj.deinit(allocator);
         self.adjacency = try adjacency_mod.buildAdjacency(
-            self.allocator,
+            allocator,
             self.nodes.items,
             self.edges.items,
         );
@@ -257,17 +256,17 @@ pub const Graph = struct {
 
 test "addNode returns sequential ids" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/project");
-    defer g.deinit();
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
 
     const n1 = Node{ .id = .root, .name = "a", .kind = .function, .language = .zig };
     const n2 = Node{ .id = .root, .name = "b", .kind = .function, .language = .zig };
     const n3 = Node{ .id = .root, .name = "c", .kind = .function, .language = .zig };
 
     // Act
-    const id1 = try g.addNode(n1);
-    const id2 = try g.addNode(n2);
-    const id3 = try g.addNode(n3);
+    const id1 = try g.addNode(std.testing.allocator, n1);
+    const id2 = try g.addNode(std.testing.allocator, n2);
+    const id3 = try g.addNode(std.testing.allocator, n3);
 
     // Assert
     try std.testing.expectEqual(@as(u64, 0), @intFromEnum(id1));
@@ -277,16 +276,16 @@ test "addNode returns sequential ids" {
 
 test "addEdge creates edge between existing nodes" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/project");
-    defer g.deinit();
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
 
     const n1 = Node{ .id = .root, .name = "a", .kind = .function, .language = .zig };
     const n2 = Node{ .id = .root, .name = "b", .kind = .function, .language = .zig };
-    const id1 = try g.addNode(n1);
-    const id2 = try g.addNode(n2);
+    const id1 = try g.addNode(std.testing.allocator, n1);
+    const id2 = try g.addNode(std.testing.allocator, n2);
 
     // Act
-    const edge_id = try g.addEdge(.{
+    const edge_id = try g.addEdge(std.testing.allocator, .{
         .source_id = id1,
         .target_id = id2,
         .edge_type = .calls,
@@ -299,11 +298,11 @@ test "addEdge creates edge between existing nodes" {
 
 test "getNode returns the added node" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/project");
-    defer g.deinit();
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
 
     const n = Node{ .id = .root, .name = "foo", .kind = .function, .language = .zig };
-    const id = try g.addNode(n);
+    const id = try g.addNode(std.testing.allocator, n);
 
     // Act
     const result = g.getNode(id);
@@ -315,13 +314,13 @@ test "getNode returns the added node" {
 
 test "getChildren returns direct children" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/project");
-    defer g.deinit();
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
 
-    const parent_id = try g.addNode(.{ .id = .root, .name = "parent", .kind = .type_def, .language = .zig });
-    _ = try g.addNode(.{ .id = .root, .name = "child1", .kind = .function, .language = .zig, .parent_id = parent_id });
-    _ = try g.addNode(.{ .id = .root, .name = "child2", .kind = .function, .language = .zig, .parent_id = parent_id });
-    try g.freeze();
+    const parent_id = try g.addNode(std.testing.allocator, .{ .id = .root, .name = "parent", .kind = .type_def, .language = .zig });
+    _ = try g.addNode(std.testing.allocator, .{ .id = .root, .name = "child1", .kind = .function, .language = .zig, .parent_id = parent_id });
+    _ = try g.addNode(std.testing.allocator, .{ .id = .root, .name = "child2", .kind = .function, .language = .zig, .parent_id = parent_id });
+    try g.freeze(std.testing.allocator);
 
     // Act
     const children = g.getChildren(parent_id);
@@ -332,11 +331,11 @@ test "getChildren returns direct children" {
 
 test "getParent returns parent node" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/project");
-    defer g.deinit();
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
 
-    const parent_id = try g.addNode(.{ .id = .root, .name = "parent", .kind = .file, .language = .zig });
-    const child_id = try g.addNode(.{ .id = .root, .name = "child", .kind = .function, .language = .zig, .parent_id = parent_id });
+    const parent_id = try g.addNode(std.testing.allocator, .{ .id = .root, .name = "parent", .kind = .file, .language = .zig });
+    const child_id = try g.addNode(std.testing.allocator, .{ .id = .root, .name = "child", .kind = .function, .language = .zig, .parent_id = parent_id });
 
     // Act
     const result = g.getParent(child_id);
@@ -348,15 +347,15 @@ test "getParent returns parent node" {
 
 test "neighbors out returns outgoing edges" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/project");
-    defer g.deinit();
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
 
-    const a = try g.addNode(.{ .id = .root, .name = "a", .kind = .function, .language = .zig });
-    const b = try g.addNode(.{ .id = .root, .name = "b", .kind = .function, .language = .zig });
-    const c = try g.addNode(.{ .id = .root, .name = "c", .kind = .function, .language = .zig });
-    _ = try g.addEdge(.{ .source_id = a, .target_id = b, .edge_type = .calls });
-    _ = try g.addEdge(.{ .source_id = a, .target_id = c, .edge_type = .calls });
-    try g.freeze();
+    const a = try g.addNode(std.testing.allocator, .{ .id = .root, .name = "a", .kind = .function, .language = .zig });
+    const b = try g.addNode(std.testing.allocator, .{ .id = .root, .name = "b", .kind = .function, .language = .zig });
+    const c = try g.addNode(std.testing.allocator, .{ .id = .root, .name = "c", .kind = .function, .language = .zig });
+    _ = try g.addEdge(std.testing.allocator, .{ .source_id = a, .target_id = b, .edge_type = .calls });
+    _ = try g.addEdge(std.testing.allocator, .{ .source_id = a, .target_id = c, .edge_type = .calls });
+    try g.freeze(std.testing.allocator);
 
     // Act
     const result = try g.neighbors(std.testing.allocator, a, .out);
@@ -368,15 +367,15 @@ test "neighbors out returns outgoing edges" {
 
 test "neighbors in returns incoming edges" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/project");
-    defer g.deinit();
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
 
-    const a = try g.addNode(.{ .id = .root, .name = "a", .kind = .function, .language = .zig });
-    const b = try g.addNode(.{ .id = .root, .name = "b", .kind = .function, .language = .zig });
-    const c = try g.addNode(.{ .id = .root, .name = "c", .kind = .function, .language = .zig });
-    _ = try g.addEdge(.{ .source_id = b, .target_id = a, .edge_type = .calls });
-    _ = try g.addEdge(.{ .source_id = c, .target_id = a, .edge_type = .calls });
-    try g.freeze();
+    const a = try g.addNode(std.testing.allocator, .{ .id = .root, .name = "a", .kind = .function, .language = .zig });
+    const b = try g.addNode(std.testing.allocator, .{ .id = .root, .name = "b", .kind = .function, .language = .zig });
+    const c = try g.addNode(std.testing.allocator, .{ .id = .root, .name = "c", .kind = .function, .language = .zig });
+    _ = try g.addEdge(std.testing.allocator, .{ .source_id = b, .target_id = a, .edge_type = .calls });
+    _ = try g.addEdge(std.testing.allocator, .{ .source_id = c, .target_id = a, .edge_type = .calls });
+    try g.freeze(std.testing.allocator);
 
     // Act
     const result = try g.neighbors(std.testing.allocator, a, .in);
@@ -388,15 +387,15 @@ test "neighbors in returns incoming edges" {
 
 test "neighbors both returns all edges" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/project");
-    defer g.deinit();
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
 
-    const a = try g.addNode(.{ .id = .root, .name = "a", .kind = .function, .language = .zig });
-    const b = try g.addNode(.{ .id = .root, .name = "b", .kind = .function, .language = .zig });
-    const c = try g.addNode(.{ .id = .root, .name = "c", .kind = .function, .language = .zig });
-    _ = try g.addEdge(.{ .source_id = a, .target_id = b, .edge_type = .calls });
-    _ = try g.addEdge(.{ .source_id = c, .target_id = a, .edge_type = .calls });
-    try g.freeze();
+    const a = try g.addNode(std.testing.allocator, .{ .id = .root, .name = "a", .kind = .function, .language = .zig });
+    const b = try g.addNode(std.testing.allocator, .{ .id = .root, .name = "b", .kind = .function, .language = .zig });
+    const c = try g.addNode(std.testing.allocator, .{ .id = .root, .name = "c", .kind = .function, .language = .zig });
+    _ = try g.addEdge(std.testing.allocator, .{ .source_id = a, .target_id = b, .edge_type = .calls });
+    _ = try g.addEdge(std.testing.allocator, .{ .source_id = c, .target_id = a, .edge_type = .calls });
+    try g.freeze(std.testing.allocator);
 
     // Act
     const result = try g.neighbors(std.testing.allocator, a, .both);
@@ -410,8 +409,8 @@ test "neighbors both returns all edges" {
 
 test "empty graph has zero nodes and edges" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/project");
-    defer g.deinit();
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
 
     // Assert
     try std.testing.expectEqual(@as(usize, 0), g.nodeCount());
@@ -420,8 +419,8 @@ test "empty graph has zero nodes and edges" {
 
 test "getNode returns null for non-existent id" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/project");
-    defer g.deinit();
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
 
     // Act / Assert: .root on empty graph
     try std.testing.expectEqual(@as(?*const Node, null), g.getNode(.root));
@@ -431,9 +430,9 @@ test "getNode returns null for non-existent id" {
 
 test "getChildren returns empty for missing parent" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/project");
-    defer g.deinit();
-    try g.freeze();
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
+    try g.freeze(std.testing.allocator);
 
     // Act / Assert: .root on empty graph
     try std.testing.expectEqual(@as(usize, 0), g.getChildren(.root).len);
@@ -443,9 +442,9 @@ test "getChildren returns empty for missing parent" {
 
 test "neighbors on empty graph returns empty" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/project");
-    defer g.deinit();
-    try g.freeze();
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
+    try g.freeze(std.testing.allocator);
 
     // Act
     const result = try g.neighbors(std.testing.allocator, .root, .both);
@@ -459,8 +458,8 @@ test "neighbors on empty graph returns empty" {
 
 test "getParent on root node returns null" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/project");
-    defer g.deinit();
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
 
     // Act: root node has no parent
     const result = g.getParent(.root);
@@ -471,8 +470,8 @@ test "getParent on root node returns null" {
 
 test "node with all optional fields null" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/project");
-    defer g.deinit();
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
 
     const n = Node{
         .id = .root,
@@ -483,7 +482,7 @@ test "node with all optional fields null" {
     };
 
     // Act
-    const id = try g.addNode(n);
+    const id = try g.addNode(std.testing.allocator, n);
     const result = g.getNode(id);
 
     // Assert
@@ -498,10 +497,10 @@ test "node with all optional fields null" {
 
 test "node stores doc and signature via graph" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/project");
-    defer g.deinit();
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
 
-    const id = try g.addNode(.{
+    const id = try g.addNode(std.testing.allocator, .{
         .id = .root,
         .name = "documented",
         .kind = .function,

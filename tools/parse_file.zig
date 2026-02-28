@@ -95,8 +95,8 @@ pub fn main() !void {
     defer source_map.unmapFile(source);
 
     // Parse.
-    var graph = Graph.init(allocator, ".");
-    defer graph.deinit();
+    var graph = Graph.init(".");
+    defer graph.deinit(allocator);
 
     const min_level: logging.Level = switch (verbosity) {
         0 => .warn,
@@ -107,7 +107,7 @@ pub fn main() !void {
     var text_logger = logging.TextStderrLogger.init(min_level);
     const log = if (verbosity > 0) text_logger.logger() else logging.Logger.noop;
 
-    visitor.parse(source, &graph, null, log) catch |err| {
+    visitor.parse(allocator, source, &graph, null, log) catch |err| {
         try stdout.print("Parse error: {}\n", .{err});
         try stdout.flush();
         return;

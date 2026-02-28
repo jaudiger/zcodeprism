@@ -119,14 +119,7 @@ pub fn appendCurrentTimestamp(out: *std.ArrayList(u8), allocator: std.mem.Alloca
 
 /// Returns the canonical string name for an edge type (e.g. .calls -> "calls").
 pub fn edgeTypeName(et: EdgeType) []const u8 {
-    return switch (et) {
-        .calls => "calls",
-        .imports => "imports",
-        .uses_type => "uses_type",
-        .similar_to => "similar_to",
-        .exports => "exports",
-        .implements => "implements",
-    };
+    return @tagName(et);
 }
 
 /// Returns a numeric sort key for a renderer ID prefix, ensuring

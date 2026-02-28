@@ -154,10 +154,10 @@ fn jsonOptInt(val: std.json.Value) ?i64 {
     };
 }
 
-fn dupeAndOwn(g: *Graph, str: []const u8) ![]const u8 {
-    const duped = try g.allocator.dupe(u8, str);
-    g.addOwnedBuffer(duped) catch {
-        g.allocator.free(duped);
+fn dupeAndOwn(allocator: std.mem.Allocator, g: *Graph, str: []const u8) ![]const u8 {
+    const duped = try allocator.dupe(u8, str);
+    g.addOwnedBuffer(allocator, duped) catch {
+        allocator.free(duped);
         return error.OutOfMemory;
     };
     return duped;
@@ -172,7 +172,7 @@ fn parseContentHash(hex: []const u8) ?[12]u8 {
     return result;
 }
 
-fn parseExternal(g: *Graph, val: std.json.Value) !ExternalInfo {
+fn parseExternal(allocator: std.mem.Allocator, g: *Graph, val: std.json.Value) !ExternalInfo {
     switch (val) {
         .null => return .{ .none = {} },
         .string => |s| {
@@ -185,7 +185,7 @@ fn parseExternal(g: *Graph, val: std.json.Value) !ExternalInfo {
             if (std.mem.eql(u8, type_val.string, "dependency")) {
                 const ver_val = obj.get("version") orelse return .{ .dependency = .{ .version = null } };
                 const ver_str = jsonOptStr(ver_val);
-                const ver = if (ver_str) |v| try dupeAndOwn(g, v) else null;
+                const ver = if (ver_str) |v| try dupeAndOwn(allocator, g, v) else null;
                 return .{ .dependency = .{ .version = ver } };
             }
             return .{ .none = {} };
@@ -302,8 +302,8 @@ pub fn exportJsonl(allocator: std.mem.Allocator, g: *const Graph, writer: *std.I
 /// are silently skipped. Edges referencing out-of-bounds node ids are also
 /// skipped. The caller owns the returned Graph and must call `deinit()` on it.
 pub fn importJsonl(allocator: std.mem.Allocator, data: []const u8) !Graph {
-    var g = Graph.init(allocator, "");
-    errdefer g.deinit();
+    var g = Graph.init("");
+    errdefer g.deinit(allocator);
 
     // Pre-count lines for capacity hint (upper bound: not all lines are nodes or edges)
     var line_count: usize = 0;
@@ -333,20 +333,20 @@ pub fn importJsonl(allocator: std.mem.Allocator, data: []const u8) !Graph {
             const lang_str = jsonStr(obj.get("language") orelse continue) orelse continue;
             const vis_str = jsonStr(obj.get("visibility") orelse continue) orelse continue;
 
-            const name = try dupeAndOwn(&g, name_str);
+            const name = try dupeAndOwn(allocator, &g, name_str);
             const kind = std.meta.stringToEnum(NodeKind, kind_str) orelse continue;
             const language = std.meta.stringToEnum(types.Language, lang_str) orelse continue;
             const visibility = std.meta.stringToEnum(Visibility, vis_str) orelse continue;
 
             // Optional strings
             const file_path_str = if (obj.get("file_path")) |v| jsonOptStr(v) else null;
-            const file_path = if (file_path_str) |s| try dupeAndOwn(&g, s) else null;
+            const file_path = if (file_path_str) |s| try dupeAndOwn(allocator, &g, s) else null;
 
             const doc_str = if (obj.get("doc")) |v| jsonOptStr(v) else null;
-            const doc = if (doc_str) |s| try dupeAndOwn(&g, s) else null;
+            const doc = if (doc_str) |s| try dupeAndOwn(allocator, &g, s) else null;
 
             const sig_str = if (obj.get("signature")) |v| jsonOptStr(v) else null;
-            const signature = if (sig_str) |s| try dupeAndOwn(&g, s) else null;
+            const signature = if (sig_str) |s| try dupeAndOwn(allocator, &g, s) else null;
 
             // parent_id
             const parent_id: ?NodeId = if (obj.get("parent_id")) |v| blk: {
@@ -371,7 +371,7 @@ pub fn importJsonl(allocator: std.mem.Allocator, data: []const u8) !Graph {
             } else null;
 
             // external
-            const external = if (obj.get("external")) |v| try parseExternal(&g, v) else ExternalInfo{ .none = {} };
+            const external = if (obj.get("external")) |v| try parseExternal(allocator, &g, v) else ExternalInfo{ .none = {} };
 
             // lang_meta (parseJson dupes string data; register with graph)
             const lang_meta = if (obj.get("lang_meta")) |v| blk: {
@@ -379,7 +379,7 @@ pub fn importJsonl(allocator: std.mem.Allocator, data: []const u8) !Graph {
                 switch (meta) {
                     .zig => |zm| {
                         if (zm.calling_convention) |cc| {
-                            g.addOwnedBuffer(cc) catch {
+                            g.addOwnedBuffer(allocator, cc) catch {
                                 allocator.free(cc);
                                 return error.OutOfMemory;
                             };
@@ -393,7 +393,7 @@ pub fn importJsonl(allocator: std.mem.Allocator, data: []const u8) !Graph {
             // metrics
             const metrics = if (obj.get("metrics")) |v| parseMetrics(v) else null;
 
-            _ = try g.addNode(.{
+            _ = try g.addNode(allocator, .{
                 .id = .root, // overridden by addNode
                 .name = name,
                 .kind = kind,
@@ -435,7 +435,7 @@ pub fn importJsonl(allocator: std.mem.Allocator, data: []const u8) !Graph {
             // Skip edges that reference out-of-bounds node IDs.
             if (src_id >= g.nodes.items.len or tgt_id >= g.nodes.items.len) continue;
 
-            _ = try g.addEdge(.{
+            _ = try g.addEdge(allocator, .{
                 .source_id = @enumFromInt(src_id),
                 .target_id = @enumFromInt(tgt_id),
                 .edge_type = edge_type,
@@ -444,17 +444,17 @@ pub fn importJsonl(allocator: std.mem.Allocator, data: []const u8) !Graph {
         }
     }
 
-    try g.rebuildEdgeIndex();
-    try g.freeze();
+    try g.rebuildEdgeIndex(allocator);
+    try g.freeze(allocator);
     return g;
 }
 
 /// Build a test graph with 3 diverse nodes and 2 edges for use in tests.
 fn createTestGraph(allocator: std.mem.Allocator) !Graph {
-    var g = Graph.init(allocator, "/tmp/test-project");
+    var g = Graph.init("/tmp/test-project");
 
     // Node 0: file node
-    _ = try g.addNode(.{
+    _ = try g.addNode(allocator, .{
         .id = .root,
         .name = "main.zig",
         .kind = .file,
@@ -466,7 +466,7 @@ fn createTestGraph(allocator: std.mem.Allocator) !Graph {
     });
 
     // Node 1: function with metrics, doc, signature
-    _ = try g.addNode(.{
+    _ = try g.addNode(allocator, .{
         .id = .root,
         .name = "process",
         .kind = .function,
@@ -489,7 +489,7 @@ fn createTestGraph(allocator: std.mem.Allocator) !Graph {
     });
 
     // Node 2: type_def with external=stdlib (phantom)
-    _ = try g.addNode(.{
+    _ = try g.addNode(allocator, .{
         .id = .root,
         .name = "Allocator",
         .kind = .type_def,
@@ -498,7 +498,7 @@ fn createTestGraph(allocator: std.mem.Allocator) !Graph {
     });
 
     // Edge 0: function uses type
-    _ = try g.addEdge(.{
+    _ = try g.addEdge(allocator, .{
         .source_id = @enumFromInt(1),
         .target_id = @enumFromInt(2),
         .edge_type = .uses_type,
@@ -506,7 +506,7 @@ fn createTestGraph(allocator: std.mem.Allocator) !Graph {
     });
 
     // Edge 1: file exports function
-    _ = try g.addEdge(.{
+    _ = try g.addEdge(allocator, .{
         .source_id = @enumFromInt(0),
         .target_id = @enumFromInt(1),
         .edge_type = .exports,
@@ -521,7 +521,7 @@ fn createTestGraph(allocator: std.mem.Allocator) !Graph {
 test "jsonl round-trip preserves nodes and edges" {
     // Arrange
     var g = try createTestGraph(std.testing.allocator);
-    defer g.deinit();
+    defer g.deinit(std.testing.allocator);
 
     var aw = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer aw.deinit();
@@ -530,7 +530,7 @@ test "jsonl round-trip preserves nodes and edges" {
     try exportJsonl(std.testing.allocator, &g, &aw.writer);
     try aw.writer.flush();
     var loaded = try importJsonl(std.testing.allocator, aw.written());
-    defer loaded.deinit();
+    defer loaded.deinit(std.testing.allocator);
 
     // Assert: nodes
     try std.testing.expectEqual(g.nodeCount(), loaded.nodeCount());
@@ -565,7 +565,7 @@ test "jsonl round-trip preserves nodes and edges" {
 test "jsonl lines are valid json" {
     // Arrange
     var g = try createTestGraph(std.testing.allocator);
-    defer g.deinit();
+    defer g.deinit(std.testing.allocator);
 
     var aw = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer aw.deinit();
@@ -587,7 +587,7 @@ test "jsonl lines are valid json" {
 test "jsonl records have correct _type field" {
     // Arrange
     var g = try createTestGraph(std.testing.allocator);
-    defer g.deinit();
+    defer g.deinit(std.testing.allocator);
 
     var aw = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer aw.deinit();
@@ -617,7 +617,7 @@ test "jsonl records have correct _type field" {
 test "jsonl output is sorted" {
     // Arrange
     var g = try createTestGraph(std.testing.allocator);
-    defer g.deinit();
+    defer g.deinit(std.testing.allocator);
 
     var aw = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer aw.deinit();
@@ -676,8 +676,8 @@ test "jsonl output is sorted" {
 
 test "jsonl empty graph" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/test-project");
-    defer g.deinit();
+    var g = Graph.init("/tmp/test-project");
+    defer g.deinit(std.testing.allocator);
 
     var aw = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer aw.deinit();
@@ -696,17 +696,17 @@ test "jsonl empty graph" {
 
     // Import the empty output, expect an empty graph
     var loaded = try importJsonl(std.testing.allocator, aw.written());
-    defer loaded.deinit();
+    defer loaded.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(usize, 0), loaded.nodeCount());
     try std.testing.expectEqual(@as(usize, 0), loaded.edgeCount());
 }
 
 test "jsonl preserves null fields as explicit null" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/test-project");
-    defer g.deinit();
+    var g = Graph.init("/tmp/test-project");
+    defer g.deinit(std.testing.allocator);
 
-    _ = try g.addNode(.{
+    _ = try g.addNode(std.testing.allocator, .{
         .id = .root,
         .name = "bare",
         .kind = .function,
@@ -741,10 +741,10 @@ test "jsonl preserves null fields as explicit null" {
 
 test "jsonl preserves phantom nodes" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/test-project");
-    defer g.deinit();
+    var g = Graph.init("/tmp/test-project");
+    defer g.deinit(std.testing.allocator);
 
-    _ = try g.addNode(.{
+    _ = try g.addNode(std.testing.allocator, .{
         .id = .root,
         .name = "std",
         .kind = .module,
@@ -759,7 +759,7 @@ test "jsonl preserves phantom nodes" {
     try exportJsonl(std.testing.allocator, &g, &aw.writer);
     try aw.writer.flush();
     var loaded = try importJsonl(std.testing.allocator, aw.written());
-    defer loaded.deinit();
+    defer loaded.deinit(std.testing.allocator);
 
     // Assert
     try std.testing.expectEqual(@as(usize, 1), loaded.nodeCount());
@@ -768,10 +768,10 @@ test "jsonl preserves phantom nodes" {
 
 test "jsonl round-trip preserves union_def kind" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/test-project");
-    defer g.deinit();
+    var g = Graph.init("/tmp/test-project");
+    defer g.deinit(std.testing.allocator);
 
-    _ = try g.addNode(.{
+    _ = try g.addNode(std.testing.allocator, .{
         .id = .root,
         .name = "MyUnion",
         .kind = .union_def,
@@ -786,7 +786,7 @@ test "jsonl round-trip preserves union_def kind" {
     try exportJsonl(std.testing.allocator, &g, &aw.writer);
     try aw.writer.flush();
     var loaded = try importJsonl(std.testing.allocator, aw.written());
-    defer loaded.deinit();
+    defer loaded.deinit(std.testing.allocator);
 
     // Assert
     try std.testing.expectEqual(@as(usize, 1), loaded.nodeCount());
@@ -795,10 +795,10 @@ test "jsonl round-trip preserves union_def kind" {
 
 test "jsonl round-trip preserves is_packed metadata" {
     // Arrange
-    var g = Graph.init(std.testing.allocator, "/tmp/test-project");
-    defer g.deinit();
+    var g = Graph.init("/tmp/test-project");
+    defer g.deinit(std.testing.allocator);
 
-    _ = try g.addNode(.{
+    _ = try g.addNode(std.testing.allocator, .{
         .id = .root,
         .name = "PackedStruct",
         .kind = .type_def,
@@ -813,7 +813,7 @@ test "jsonl round-trip preserves is_packed metadata" {
     try exportJsonl(std.testing.allocator, &g, &aw.writer);
     try aw.writer.flush();
     var loaded = try importJsonl(std.testing.allocator, aw.written());
-    defer loaded.deinit();
+    defer loaded.deinit(std.testing.allocator);
 
     // Assert
     try std.testing.expectEqual(@as(usize, 1), loaded.nodeCount());
