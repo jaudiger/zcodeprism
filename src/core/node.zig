@@ -49,7 +49,10 @@ pub const Node = struct {
     line_end: ?u32 = null,
 
     /// NodeId of the lexical parent (e.g. the struct containing a method).
-    /// Null for top-level file nodes whose parent is the synthetic root.
+    /// Null for root-level directory nodes and phantom root nodes.
+    /// File nodes point to their containing directory; declaration nodes
+    /// point to their lexical parent (e.g. type_def for methods, file for
+    /// top-level declarations).
     parent_id: ?NodeId = null,
 
     /// Whether this declaration is `pub` or private.

@@ -41,6 +41,8 @@ pub const NodeKind = enum {
     import_decl,
     /// A tagged or bare union type definition.
     union_def,
+    /// A filesystem directory containing source files.
+    directory,
 
     /// Returns true for type-like containers that can hold children
     /// (methods, fields): struct, enum, union.
@@ -67,6 +69,8 @@ pub const EdgeType = enum {
     exports,
     /// Source node implements the target interface or trait.
     implements,
+    /// Directory or module contains the target file or sub-directory.
+    contains,
 };
 
 /// How an edge was discovered during indexing.
@@ -111,10 +115,10 @@ test "EdgeId is 8 bytes" {
     }
 }
 
-test "NodeKind has exactly 11 variants" {
+test "NodeKind has exactly 12 variants" {
     comptime {
         const fields = @typeInfo(NodeKind).@"enum".fields;
-        std.debug.assert(fields.len == 11);
+        std.debug.assert(fields.len == 12);
     }
 }
 
@@ -130,12 +134,13 @@ test "isTypeContainer returns true for type_def, enum_def, union_def" {
     try std.testing.expect(!NodeKind.test_def.isTypeContainer());
     try std.testing.expect(!NodeKind.error_def.isTypeContainer());
     try std.testing.expect(!NodeKind.import_decl.isTypeContainer());
+    try std.testing.expect(!NodeKind.directory.isTypeContainer());
 }
 
-test "EdgeType has exactly 6 variants" {
+test "EdgeType has exactly 7 variants" {
     comptime {
         const fields = @typeInfo(EdgeType).@"enum".fields;
-        std.debug.assert(fields.len == 6);
+        std.debug.assert(fields.len == 7);
     }
 }
 

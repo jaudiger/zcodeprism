@@ -91,7 +91,7 @@ fn collectDescendants(
     for (children_index.childrenOf(parent_idx)) |ci| {
         const n = g.nodes.items[ci];
         if (!isInternal(n)) continue;
-        if (n.kind == .file or n.kind == .field or n.kind == .import_decl) continue;
+        if (n.kind == .file or n.kind == .field or n.kind == .import_decl or n.kind == .directory) continue;
         if (ids[ci]) |id_entry| {
             try result.append(allocator, .{ .node_idx = ci, .id = id_entry });
         }
@@ -167,7 +167,7 @@ fn renderNodeShape(
             try appendEscaped(out, allocator, n.name);
             try out.appendSlice(allocator, "\")");
         },
-        .file, .field, .import_decl => {},
+        .file, .field, .import_decl, .directory => {},
     }
 }
 
@@ -248,7 +248,7 @@ pub fn buildGhostNodes(
         if (!isInternal(tgt)) continue;
         if (inScope(tgt.file_path, scope)) continue;
         // Skip if target has no renderable kind.
-        if (tgt.kind == .field or tgt.kind == .import_decl) continue;
+        if (tgt.kind == .field or tgt.kind == .import_decl or tgt.kind == .directory) continue;
 
         // Deduplicate: one ghost per target.
         if (!ghost_map.contains(tgt_idx)) {
@@ -320,6 +320,7 @@ fn nodeKindPrefix(kind: NodeKind) []const u8 {
         .file => "file",
         .field => "field",
         .import_decl => "import",
+        .directory => "dir",
     };
 }
 
@@ -460,7 +461,7 @@ fn mermaidArrow(et: EdgeType) []const u8 {
         .calls, .uses_type => "-->",
         .imports => "-.->",
         .implements => "==>",
-        .similar_to, .exports => "-->", // not rendered, but provide a fallback
+        .similar_to, .exports, .contains => "-->", // similar_to/exports/contains not rendered, but provide a fallback
     };
 }
 

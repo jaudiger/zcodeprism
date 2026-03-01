@@ -146,11 +146,12 @@ pub fn prefixOrder(prefix: []const u8) u64 {
 pub fn edgeTypeSortKey(et: EdgeType) u8 {
     return switch (et) {
         .calls => 0,
-        .exports => 1,
-        .implements => 2,
-        .imports => 3,
-        .similar_to => 4,
-        .uses_type => 5,
+        .contains => 1,
+        .exports => 2,
+        .implements => 3,
+        .imports => 4,
+        .similar_to => 5,
+        .uses_type => 6,
     };
 }
 
@@ -297,7 +298,7 @@ pub fn assignChildrenIds(
                 ids[child_idx] = .{ .prefix = "m:", .num = state.m_counter };
                 try assignChildrenIds(allocator, g, child_idx, ids, filter, children_index, state);
             },
-            .field, .import_decl, .file => {},
+            .field, .import_decl, .file, .directory => {},
         }
     }
 }

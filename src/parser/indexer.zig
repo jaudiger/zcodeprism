@@ -183,6 +183,109 @@ pub fn indexDirectory(
         }
     }
 
+    // Transfer all rel_path strings to graph ownership early. Directory
+    // node names are substrings of these paths, so they must outlive any
+    // individual file entry (skipped or errored files would otherwise
+    // free the backing memory via the cleanup defer).
+    for (0..file_entries.items.len) |i| {
+        try graph.addOwnedBuffer(allocator, file_entries.items[i].rel_path);
+        file_entries.items[i].path_consumed = true;
+    }
+
+    // Create directory nodes for the filesystem hierarchy.
+    var dir_map = std.StringHashMapUnmanaged(NodeId){};
+    defer dir_map.deinit(allocator);
+    // Always assigned before use: either by the incremental scan or by the
+    // root-creation branch. Using undefined so debug mode catches any future
+    // refactoring that breaks this invariant.
+    var root_dir_id: NodeId = undefined;
+    {
+        // Collect unique directory paths from file entries.
+        var dir_set = std.StringHashMapUnmanaged(void){};
+        defer dir_set.deinit(allocator);
+
+        for (file_entries.items) |fe| {
+            var path: []const u8 = fe.rel_path;
+            while (std.fs.path.dirname(path)) |parent_dir| {
+                const gop = try dir_set.getOrPut(allocator, parent_dir);
+                if (gop.found_existing) break;
+                path = parent_dir;
+            }
+        }
+
+        // Sort unique directory paths lexicographically. Since a parent
+        // path is always a shorter prefix of its children, lexicographic
+        // order ensures parents are created before children.
+        var sorted_dirs = std.ArrayList([]const u8){};
+        defer sorted_dirs.deinit(allocator);
+        try sorted_dirs.ensureTotalCapacity(allocator, @intCast(dir_set.count()));
+        {
+            var it = dir_set.keyIterator();
+            while (it.next()) |key| {
+                sorted_dirs.appendAssumeCapacity(key.*);
+            }
+        }
+        std.mem.sort([]const u8, sorted_dirs.items, {}, struct {
+            fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+                return std.mem.order(u8, a, b) == .lt;
+            }
+        }.lessThan);
+
+        // For incremental runs, reuse existing directory nodes.
+        var root_found = false;
+        if (options.incremental) {
+            for (graph.nodes.items, 0..) |n, i| {
+                if (n.kind != .directory) continue;
+                const nid: NodeId = @enumFromInt(i);
+                if (n.file_path) |fp| {
+                    try dir_map.put(allocator, fp, nid);
+                } else {
+                    root_dir_id = nid;
+                    root_found = true;
+                }
+            }
+        }
+
+        // Create root directory node if not reused from incremental.
+        if (!root_found) {
+            root_dir_id = try graph.addNode(allocator, .{
+                .id = .root,
+                .name = "",
+                .kind = .directory,
+                // TODO: revisit for multi-language support; currently
+                // hardcoded because only Zig is supported.
+                .language = .zig,
+                .visibility = .public,
+            });
+        }
+
+        // Pre-allocate dir_map so putAssumeCapacity below cannot fail
+        // after addNode succeeds.
+        try dir_map.ensureTotalCapacity(allocator, dir_map.count() + @as(u32, @intCast(sorted_dirs.items.len)));
+
+        // Create one node per unique subdirectory.
+        for (sorted_dirs.items) |dir_path| {
+            if (dir_map.contains(dir_path)) continue;
+            const parent_dir = std.fs.path.dirname(dir_path);
+            const parent_id = if (parent_dir) |pd|
+                dir_map.get(pd) orelse root_dir_id
+            else
+                root_dir_id;
+            const dir_id = try graph.addNode(allocator, .{
+                .id = .root,
+                .name = std.fs.path.basename(dir_path),
+                .kind = .directory,
+                // TODO: revisit for multi-language support; currently
+                // hardcoded because only Zig is supported.
+                .language = .zig,
+                .file_path = dir_path,
+                .visibility = .public,
+                .parent_id = parent_id,
+            });
+            dir_map.putAssumeCapacity(dir_path, dir_id);
+        }
+    }
+
     // Parse each file through the visitor in dependency order.
     var file_infos = std.ArrayList(FileInfo){};
     defer file_infos.deinit(allocator);
@@ -213,8 +316,6 @@ pub fn indexDirectory(
         // Ownership must be established before parse_fn, which creates those slices.
         try graph.addOwnedBuffer(allocator, fe.content);
         file_entries.items[entry_idx].content_consumed = true;
-        try graph.addOwnedBuffer(allocator, fe.rel_path);
-        file_entries.items[entry_idx].path_consumed = true;
 
         // Call visitor via language support. Creates file node + children + edges.
         log.debug("parsing file", &.{Field.string("path", fe.rel_path)});
@@ -230,6 +331,9 @@ pub fn indexDirectory(
             file_node.name = fe.basename;
             file_node.file_path = fe.rel_path;
             file_node.content_hash = fe.content_hash;
+            // Set parent_id to the containing directory node.
+            const file_dir = std.fs.path.dirname(fe.rel_path);
+            file_node.parent_id = if (file_dir) |fd| dir_map.get(fd) orelse root_dir_id else root_dir_id;
 
             if (graph.nodeCount() == before_count + 1) {
                 log.trace("file produced no nodes", &.{Field.string("path", fe.rel_path)});

@@ -1060,3 +1060,213 @@ test "direct extraction fn: bare call creates cross-file calls edge" {
     // import edge
     try std.testing.expect(helpers.hasEdge(&g, consumer_file.id, provider_file.id, .imports));
 }
+
+// ===========================================================================
+// Directory nodes
+// ===========================================================================
+
+test "directory nodes created for each directory" {
+    // Arrange
+    var g = Graph.init("/tmp/dir_imports");
+    defer g.deinit(std.testing.allocator);
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try writeDirImportsFixtures(tmp_dir.dir);
+    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(project_root);
+
+    // Act
+    _ = indexDirectory(std.testing.allocator, project_root, &g, .{}) catch |err| return err;
+
+    // Assert: directory nodes exist with correct file_path and name (basename)
+    var found_crypto = false;
+    var found_tar = false;
+    var found_compress = false;
+    var found_compress_flate = false;
+    for (g.nodes.items) |n| {
+        if (n.kind != .directory) continue;
+        if (n.file_path) |fp| {
+            if (std.mem.eql(u8, fp, "crypto")) {
+                try std.testing.expectEqualStrings("crypto", n.name);
+                found_crypto = true;
+            }
+            if (std.mem.eql(u8, fp, "tar")) {
+                try std.testing.expectEqualStrings("tar", n.name);
+                found_tar = true;
+            }
+            if (std.mem.eql(u8, fp, "compress")) {
+                try std.testing.expectEqualStrings("compress", n.name);
+                found_compress = true;
+            }
+            if (std.mem.eql(u8, fp, "compress/flate")) {
+                try std.testing.expectEqualStrings("flate", n.name);
+                found_compress_flate = true;
+            }
+        }
+    }
+    try std.testing.expect(found_crypto);
+    try std.testing.expect(found_tar);
+    try std.testing.expect(found_compress);
+    try std.testing.expect(found_compress_flate);
+
+    // 5 directory nodes total: root + crypto + tar + compress + compress/flate
+    try std.testing.expectEqual(@as(usize, 5), helpers.countNodesByKind(&g, .directory));
+}
+
+test "file parent_id points to directory" {
+    // Arrange
+    var g = Graph.init("/tmp/dir_imports");
+    defer g.deinit(std.testing.allocator);
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try writeDirImportsFixtures(tmp_dir.dir);
+    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(project_root);
+
+    // Act
+    _ = indexDirectory(std.testing.allocator, project_root, &g, .{}) catch |err| return err;
+
+    // Assert: every file node's parent_id resolves to a directory node
+    for (g.nodes.items) |n| {
+        if (n.kind != .file) continue;
+        const pid = n.parent_id orelse return error.TestExpectedEqual;
+        const parent = g.getNode(pid) orelse return error.TestExpectedEqual;
+        try std.testing.expectEqual(NodeKind.directory, parent.kind);
+    }
+}
+
+test "directory parent_id chain" {
+    // Arrange
+    var g = Graph.init("/tmp/dir_imports");
+    defer g.deinit(std.testing.allocator);
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try writeDirImportsFixtures(tmp_dir.dir);
+    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(project_root);
+
+    // Act
+    _ = indexDirectory(std.testing.allocator, project_root, &g, .{}) catch |err| return err;
+
+    // Assert: compress/flate's parent is compress, compress's parent is root
+    var flate_node: ?*const Node = null;
+    for (g.nodes.items) |*n| {
+        if (n.kind == .directory) {
+            if (n.file_path) |fp| {
+                if (std.mem.eql(u8, fp, "compress/flate")) {
+                    flate_node = n;
+                    break;
+                }
+            }
+        }
+    }
+    const flate = flate_node orelse return error.TestExpectedEqual;
+    try std.testing.expectEqualStrings("flate", flate.name);
+
+    // flate's parent is compress
+    const compress_node = g.getNode(flate.parent_id.?) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(NodeKind.directory, compress_node.kind);
+    try std.testing.expectEqualStrings("compress", compress_node.name);
+
+    // compress's parent is root directory (parent_id == null means root)
+    const root_node = g.getNode(compress_node.parent_id.?) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(NodeKind.directory, root_node.kind);
+    try std.testing.expectEqual(@as(?NodeId, null), root_node.parent_id);
+}
+
+test "root directory node exists for flat project" {
+    // Arrange
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    _ = indexProjectFixtures(&g, &tmp_dir) catch |err| return err;
+
+    // Assert: exactly 1 directory node (the root)
+    try std.testing.expectEqual(@as(usize, 1), helpers.countNodesByKind(&g, .directory));
+
+    // Assert: root directory has parent_id == null, name == "", file_path == null
+    var root_found = false;
+    for (g.nodes.items) |n| {
+        if (n.kind == .directory and n.parent_id == null) {
+            try std.testing.expectEqualStrings("", n.name);
+            try std.testing.expect(n.file_path == null);
+            root_found = true;
+            break;
+        }
+    }
+    try std.testing.expect(root_found);
+
+    // Assert: all file nodes point to the root directory
+    for (g.nodes.items) |n| {
+        if (n.kind != .file) continue;
+        const pid = n.parent_id orelse return error.TestExpectedEqual;
+        const parent = g.getNode(pid) orelse return error.TestExpectedEqual;
+        try std.testing.expectEqual(NodeKind.directory, parent.kind);
+        try std.testing.expectEqual(@as(?NodeId, null), parent.parent_id);
+    }
+}
+
+test "incremental indexing does not duplicate directory nodes" {
+    // Arrange
+    var g = Graph.init("/tmp/dir_imports");
+    defer g.deinit(std.testing.allocator);
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try writeDirImportsFixtures(tmp_dir.dir);
+    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(project_root);
+
+    // Act: index twice with incremental
+    _ = indexDirectory(std.testing.allocator, project_root, &g, .{ .incremental = true }) catch |err| return err;
+    const count_after_first = helpers.countNodesByKind(&g, .directory);
+
+    // Capture NodeIds of directory nodes after first run.
+    var first_run_ids: [8]NodeId = undefined;
+    var first_run_paths: [8]?[]const u8 = undefined;
+    var id_count: usize = 0;
+    for (g.nodes.items, 0..) |n, i| {
+        if (n.kind != .directory) continue;
+        if (id_count < first_run_ids.len) {
+            first_run_ids[id_count] = @enumFromInt(i);
+            first_run_paths[id_count] = n.file_path;
+            id_count += 1;
+        }
+    }
+
+    _ = indexDirectory(std.testing.allocator, project_root, &g, .{ .incremental = true }) catch |err| return err;
+    const count_after_second = helpers.countNodesByKind(&g, .directory);
+
+    // Assert: same number of directory nodes after both runs
+    try std.testing.expectEqual(count_after_first, count_after_second);
+
+    // Assert: same NodeIds still reference directory nodes with same file_path
+    for (first_run_ids[0..id_count], first_run_paths[0..id_count]) |nid, expected_fp| {
+        const n = g.getNode(nid) orelse return error.TestExpectedEqual;
+        try std.testing.expectEqual(NodeKind.directory, n.kind);
+        if (expected_fp) |efp| {
+            try std.testing.expectEqualStrings(efp, n.file_path orelse return error.TestExpectedEqual);
+        } else {
+            try std.testing.expect(n.file_path == null);
+        }
+    }
+}
+
+test "no zig files produces zero directory nodes" {
+    // Arrange
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.writeFile(.{ .sub_path = "readme.txt", .data = "no zig here" });
+    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(project_root);
+
+    // Act
+    _ = indexDirectory(std.testing.allocator, project_root, &g, .{}) catch |err| return err;
+
+    // Assert: zero directory nodes (early return before directory creation)
+    try std.testing.expectEqual(@as(usize, 0), helpers.countNodesByKind(&g, .directory));
+    try std.testing.expectEqual(@as(usize, 0), g.nodeCount());
+}

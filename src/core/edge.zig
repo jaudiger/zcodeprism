@@ -43,7 +43,7 @@ pub const Edge = struct {
 
 test "edge types are correctly stored" {
     // Arrange
-    const edge_types = [_]EdgeType{ .calls, .imports, .uses_type, .similar_to, .exports, .implements };
+    const edge_types = [_]EdgeType{ .calls, .imports, .uses_type, .similar_to, .exports, .implements, .contains };
 
     // Act / Assert
     for (edge_types) |et| {
