@@ -193,19 +193,49 @@ pub const ImportGranularity = enum {
     package,
 };
 
-/// Language-specific build configuration extracted from a project manifest
-/// (e.g. `build.zig.zon` for Zig). All slice data is allocator-owned;
-/// call `deinit` to release it.
+/// Language-specific build configuration extracted from project manifests
+/// (e.g. `build.zig` and `build.zig.zon` for Zig). All slice data is
+/// allocator-owned; call `deinit` to release it.
 pub const BuildConfig = struct {
-    /// Names of declared external dependencies, or null if none were found.
-    /// Each name and the outer slice are individually allocator-owned.
-    dependency_names: ?[][]u8 = null,
+    /// Module declarations extracted from the build script, or null if
+    /// no build script was found or it contained no module declarations.
+    build_modules: ?[]BuildModule = null,
+    /// External dependencies extracted from the build manifest, or null
+    /// if no dependencies were declared.
+    build_dependencies: ?[]BuildDep = null,
+
+    /// A module declaration from the build script.
+    pub const BuildModule = struct {
+        /// Module variable name from the build script.
+        name: []u8,
+        /// Root source file path relative to the project root, or null
+        /// if the build script did not specify one.
+        root_source_file: ?[]u8,
+    };
+
+    /// An external dependency declaration from the build manifest.
+    pub const BuildDep = struct {
+        /// Dependency name as declared in the build manifest.
+        name: []u8,
+        /// Version URL from the build manifest, or null if no URL was found.
+        version: ?[]u8,
+    };
 
     /// Free all allocator-owned memory held by this BuildConfig.
     pub fn deinit(self: BuildConfig, allocator: std.mem.Allocator) void {
-        if (self.dependency_names) |names| {
-            for (names) |name| allocator.free(name);
-            allocator.free(names);
+        if (self.build_modules) |modules| {
+            for (modules) |m| {
+                allocator.free(m.name);
+                if (m.root_source_file) |rsf| allocator.free(rsf);
+            }
+            allocator.free(modules);
+        }
+        if (self.build_dependencies) |deps| {
+            for (deps) |d| {
+                allocator.free(d.name);
+                if (d.version) |v| allocator.free(v);
+            }
+            allocator.free(deps);
         }
     }
 };
@@ -226,7 +256,7 @@ pub const ResolveImportPathFn = *const fn (buf: []u8, importer_path: []const u8,
 /// Callback that parses a build manifest file at the given project root
 /// and returns extracted dependency names in a `BuildConfig`.
 /// The returned config is allocator-owned; caller must call `deinit`.
-pub const ParseBuildConfigFn = *const fn (allocator: std.mem.Allocator, project_root: []const u8, logger: logging.Logger) anyerror!BuildConfig;
+pub const ParseBuildConfigFn = *const fn (allocator: std.mem.Allocator, project_root: []const u8, logger: logging.Logger) error{OutOfMemory}!BuildConfig;
 
 test "node stores ZigMeta with is_comptime true" {
     // Arrange

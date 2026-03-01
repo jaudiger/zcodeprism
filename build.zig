@@ -208,6 +208,21 @@ pub fn build(b: *std.Build) void {
     addTestStep(b, test_step, b.addTest(.{
         .root_module = indexer_test_mod,
     }), coverage, kcov_args);
+
+    // Zig build parsing integration tests (build.zig module/dependency extraction)
+    const build_parsing_test_mod = b.createModule(.{
+        .root_source_file = b.path("test/zig/test_build_parsing.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    build_parsing_test_mod.addImport("zcodeprism", lib_mod);
+    build_parsing_test_mod.addImport("test-fixtures", fixture_mod);
+    build_parsing_test_mod.addImport("test-helpers", helpers_mod);
+    build_parsing_test_mod.linkLibrary(ts_zig_dep.artifact("tree-sitter-zig"));
+
+    addTestStep(b, test_step, b.addTest(.{
+        .root_module = build_parsing_test_mod,
+    }), coverage, kcov_args);
 }
 
 fn addTestStep(

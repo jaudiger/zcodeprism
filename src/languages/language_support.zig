@@ -39,7 +39,7 @@ pub const ParseFn = *const fn (allocator: std.mem.Allocator, source: []const u8,
 /// references, and registers them as phantom nodes via `phantom_mgr`.
 /// `allocator` is passed through to graph and phantom mutation methods.
 /// `build_config`, when provided, supplies dependency paths for import resolution.
-/// Returns an error if graph access or phantom registration fails.
+/// Returns `OutOfMemory` if graph or phantom registration fails.
 pub const ResolvePhantomsFn = *const fn (
     allocator: std.mem.Allocator,
     graph: *Graph,
@@ -49,7 +49,7 @@ pub const ResolvePhantomsFn = *const fn (
     phantom_mgr: *PhantomManager,
     build_config: ?*const BuildConfig,
     logger: Logger,
-) anyerror!void;
+) error{OutOfMemory}!void;
 
 /// Descriptor for a supported programming language.
 ///

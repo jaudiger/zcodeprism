@@ -3,6 +3,7 @@ const graph_mod = @import("../../core/graph.zig");
 const phantom_mod = @import("../../core/phantom.zig");
 const source_scan = @import("../../parser/source_scan.zig");
 const parse_context = @import("parse_context.zig");
+const build_parser = @import("build_parser.zig");
 const logging = @import("../../logging.zig");
 const types = @import("../../core/types.zig");
 const lang = @import("../language.zig");
@@ -61,89 +62,91 @@ pub fn resolveImportPath(buf: []u8, importer_path: []const u8, import_path: []co
     return parse_context.resolveImportPath(buf, importer_path, import_path);
 }
 
-/// Parse `build.zig.zon` from `project_root` and extract dependency names.
+/// Parse build.zig and build.zig.zon from `project_root` and extract
+/// module declarations and dependency information.
 ///
-/// Returns an empty `BuildConfig` if the file is missing or unreadable.
-/// The caller owns the returned slice memory via `allocator`.
-pub fn parseBuildConfig(allocator: std.mem.Allocator, project_root: []const u8, log: Logger) anyerror!BuildConfig {
-    _ = log;
-    var dir = std.fs.openDirAbsolute(project_root, .{}) catch return .{};
-    defer dir.close();
-    const file = dir.openFile("build.zig.zon", .{}) catch return .{};
-    defer file.close();
-    const content = file.readToEndAlloc(allocator, 1 * 1024 * 1024) catch return .{};
-    defer allocator.free(content);
-    return extractDependencyNames(allocator, content);
-}
-
-fn extractDependencyNames(allocator: std.mem.Allocator, content: []const u8) !BuildConfig {
-    const deps_start = std.mem.indexOf(u8, content, ".dependencies") orelse return .{};
-    var pos = deps_start + ".dependencies".len;
-
-    // Find opening brace of the dependencies block.
-    while (pos < content.len and content[pos] != '{') : (pos += 1) {}
-    if (pos >= content.len) return .{};
-    pos += 1;
-
-    // Collect field names at depth 1 inside the dependencies block.
-    var names = std.ArrayList([]u8){};
-    errdefer {
-        for (names.items) |n| allocator.free(n);
-        names.deinit(allocator);
-    }
-
-    var depth: usize = 1;
-    while (pos < content.len and depth > 0) : (pos += 1) {
-        switch (content[pos]) {
-            '{' => depth += 1,
-            '}' => depth -= 1,
-            '.' => if (depth == 1) {
-                if (extractFieldName(content, pos + 1)) |name| {
-                    try names.append(allocator, try allocator.dupe(u8, name));
-                }
-            },
-            else => {},
+/// Returns an empty `BuildConfig` if the files are missing or unreadable.
+/// The caller owns the returned data via `allocator`.
+pub fn parseBuildConfig(allocator: std.mem.Allocator, project_root: []const u8, log: Logger) error{OutOfMemory}!BuildConfig {
+    const info = build_parser.parseBuildFiles(allocator, project_root, log) catch return .{};
+    defer {
+        // Free fields we do not transfer to BuildConfig.
+        if (info.targets) |targets| {
+            for (targets) |t| {
+                allocator.free(t.name);
+                if (t.root_module_var) |rmv| allocator.free(rmv);
+            }
+            allocator.free(targets);
+        }
+        if (info.dependencies) |dependencies| {
+            for (dependencies) |d| {
+                allocator.free(d.name);
+                if (d.var_name) |vn| allocator.free(vn);
+            }
+            allocator.free(dependencies);
         }
     }
 
-    if (names.items.len == 0) {
-        names.deinit(allocator);
-        return .{};
+    // Convert modules: transfer name and root_source_file ownership.
+    // Import names are not used in BuildConfig, so free them here.
+    var build_modules: ?[]BuildConfig.BuildModule = null;
+    errdefer if (build_modules) |bm| {
+        for (bm) |m| {
+            allocator.free(m.name);
+            if (m.root_source_file) |rsf| allocator.free(rsf);
+        }
+        allocator.free(bm);
+    };
+    if (info.modules) |modules| {
+        const mods = try allocator.alloc(BuildConfig.BuildModule, modules.len);
+        for (modules, 0..) |m, i| {
+            mods[i] = .{
+                .name = m.name,
+                .root_source_file = m.root_source_file,
+            };
+            // Free import_names (not transferred to BuildConfig).
+            if (m.import_names) |imports| {
+                for (imports) |imp| allocator.free(imp);
+                allocator.free(imports);
+            }
+        }
+        allocator.free(modules);
+        build_modules = mods;
     }
 
-    const owned = try names.toOwnedSlice(allocator);
-    return .{ .dependency_names = owned };
-}
-
-fn extractFieldName(content: []const u8, pos: usize) ?[]const u8 {
-    if (pos >= content.len) return null;
-    if (content[pos] == '@' and pos + 1 < content.len and content[pos + 1] == '"') {
-        // .@"name" pattern
-        const start = pos + 2;
-        const end = std.mem.indexOfScalar(u8, content[start..], '"') orelse return null;
-        return content[start .. start + end];
+    // Convert dependency URLs to BuildDep.
+    var build_deps: ?[]BuildConfig.BuildDep = null;
+    errdefer if (build_deps) |bd| {
+        for (bd) |d| {
+            allocator.free(d.name);
+            if (d.version) |v| allocator.free(v);
+        }
+        allocator.free(bd);
+    };
+    if (info.dependency_urls) |urls| {
+        const deps = try allocator.alloc(BuildConfig.BuildDep, urls.len);
+        for (urls, 0..) |du, i| {
+            deps[i] = .{
+                .name = du.name,
+                .version = du.url,
+            };
+        }
+        allocator.free(urls);
+        build_deps = deps;
     }
-    // .identifier pattern
-    if (!isIdentStart(content[pos])) return null;
-    var end = pos;
-    while (end < content.len and isIdentChar(content[end])) : (end += 1) {}
-    return content[pos..end];
-}
 
-fn isIdentStart(c: u8) bool {
-    return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or c == '_';
-}
-
-fn isIdentChar(c: u8) bool {
-    return isIdentStart(c) or (c >= '0' and c <= '9');
+    return .{
+        .build_modules = build_modules,
+        .build_dependencies = build_deps,
+    };
 }
 
 /// Create phantom nodes and edges for external references in a single file.
 ///
 /// Walks the graph slice `[file_idx..scope_end)` looking for `@import("std")`
-/// declarations, creates the corresponding phantom module node and import
-/// edge, then delegates to `source_scan.resolveStdPhantoms` for member-level
-/// phantom resolution.
+/// and dependency import declarations, creates the corresponding phantom
+/// module nodes and import edges, then delegates to
+/// `source_scan.resolveStdPhantoms` for member-level phantom resolution.
 pub fn resolvePhantoms(
     allocator: std.mem.Allocator,
     graph: *Graph,
@@ -153,26 +156,42 @@ pub fn resolvePhantoms(
     phantom: *PhantomManager,
     build_config: ?*const BuildConfig,
     log: Logger,
-) anyerror!void {
-    _ = build_config; // future: classify dependency phantoms
-
+) error{OutOfMemory}!void {
     const file_id: NodeId = @enumFromInt(file_idx);
+    const clamped_end = @min(scope_end, graph.nodes.items.len);
 
-    // Find the std import variable name in this file (usually "std").
+    // Walk import_decl nodes within this file's range.
     var std_import_name: ?[]const u8 = null;
-    for (graph.nodes.items[file_idx..scope_end]) |n| {
+    for (graph.nodes.items[file_idx..clamped_end]) |n| {
         if (n.kind != .import_decl) continue;
         if (n.parent_id == null or n.parent_id.? != file_id) continue;
         const import_path = n.signature orelse continue;
+
+        // Check for std import.
         if (std.mem.eql(u8, import_path, "std")) {
             std_import_name = n.name;
             const std_id = try phantom.getOrCreate(allocator, "std", .module, .zig, .{ .stdlib = {} });
             _ = try graph.addEdgeIfNew(allocator, .{ .source_id = file_id, .target_id = std_id, .edge_type = .imports, .source = .phantom });
-            break;
+            continue;
+        }
+
+        // Check for dependency imports. Phantom nodes for dependencies are
+        // already created by the indexer; here we only add import edges
+        // from the file to the existing phantom.
+        if (build_config) |bc| {
+            if (bc.build_dependencies) |deps| {
+                for (deps) |dep| {
+                    if (std.mem.eql(u8, import_path, dep.name)) {
+                        const dep_id = try phantom.getOrCreate(allocator, dep.name, .module, .zig, .{ .dependency = .{ .version = dep.version } });
+                        _ = try graph.addEdgeIfNew(allocator, .{ .source_id = file_id, .target_id = dep_id, .edge_type = .imports, .source = .phantom });
+                        break;
+                    }
+                }
+            }
         }
     }
 
     if (std_import_name) |sname| {
-        try source_scan.resolveStdPhantoms(allocator, graph, source, file_idx, scope_end, phantom, sname, .zig, .{ .stdlib = {} }, log);
+        try source_scan.resolveStdPhantoms(allocator, graph, source, file_idx, clamped_end, phantom, sname, .zig, .{ .stdlib = {} }, log);
     }
 }

@@ -1,0 +1,11 @@
+.{
+    .name = "myproject",
+    .version = "0.1.0",
+    .dependencies = .{
+        .@"tree-sitter" = .{
+            .url = "https://github.com/example/tree-sitter/archive/v0.24.0.tar.gz",
+            .hash = "abc123",
+        },
+    },
+    .paths = .{"."},
+}

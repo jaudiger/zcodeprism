@@ -286,6 +286,34 @@ pub fn indexDirectory(
         }
     }
 
+    // Create module nodes from build config (if any).
+    // Maps root_source_file paths to the module NodeId for later contains-edge creation.
+    var module_file_map = std.StringHashMapUnmanaged(NodeId){};
+    defer module_file_map.deinit(allocator);
+    if (build_config) |bc| {
+        if (bc.build_modules) |modules| {
+            for (modules) |m| {
+                const mod_name = try allocator.dupe(u8, m.name);
+                // Transfer ownership to graph immediately. After this
+                // call succeeds, the graph owns mod_name; no errdefer
+                // needed since graph.deinit will free it.
+                try graph.addOwnedBuffer(allocator, mod_name);
+
+                const mod_id = try graph.addNode(allocator, .{
+                    .id = .root,
+                    .name = mod_name,
+                    .kind = .module,
+                    .language = .zig,
+                    .visibility = .public,
+                    .parent_id = root_dir_id,
+                });
+                if (m.root_source_file) |rsf| {
+                    try module_file_map.put(allocator, rsf, mod_id);
+                }
+            }
+        }
+    }
+
     // Parse each file through the visitor in dependency order.
     var file_infos = std.ArrayList(FileInfo){};
     defer file_infos.deinit(allocator);
@@ -350,6 +378,23 @@ pub fn indexDirectory(
         result.files_indexed += 1;
     }
 
+    // Create contains edges from module nodes to their root source files.
+    if (module_file_map.count() > 0) {
+        for (file_infos.items) |fi| {
+            const file_node = graph.nodes.items[fi.idx];
+            const fp = file_node.file_path orelse continue;
+            if (module_file_map.get(fp)) |mod_id| {
+                const file_id: NodeId = @enumFromInt(fi.idx);
+                _ = try graph.addEdgeIfNew(allocator, .{
+                    .source_id = mod_id,
+                    .target_id = file_id,
+                    .edge_type = .contains,
+                    .source = .workspace,
+                });
+            }
+        }
+    }
+
     // Compute metrics for function nodes in each file.
     for (file_infos.items) |fi| {
         source_scan.computeMetricsForNodes(graph, fi.source, fi.idx, fi.scope_end);
@@ -406,6 +451,22 @@ pub fn indexDirectory(
     log.debug("resolving phantom nodes", &.{Field.uint("file_count", file_infos.items.len)});
     var phantom = PhantomManager.init(graph);
     defer phantom.deinit(allocator);
+
+    // Create phantom module nodes for build dependencies.
+    // Duplicate the version string into graph ownership so the phantom
+    // node keeps a valid reference after BuildConfig.deinit frees its copy.
+    if (build_config) |bc| {
+        if (bc.build_dependencies) |deps| {
+            for (deps) |dep| {
+                const owned_version: ?[]const u8 = if (dep.version) |v| blk: {
+                    const dup = try allocator.dupe(u8, v);
+                    try graph.addOwnedBuffer(allocator, dup);
+                    break :blk dup;
+                } else null;
+                _ = try phantom.getOrCreate(allocator, dep.name, .module, .zig, .{ .dependency = .{ .version = owned_version } });
+            }
+        }
+    }
 
     for (file_infos.items) |fi| {
         if (fi.lang_support.resolvePhantomsFn) |resolve_phantoms| {

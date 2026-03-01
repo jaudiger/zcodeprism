@@ -7,6 +7,19 @@ pub const zig = struct {
     pub const generic_type = @embedFile("fixtures/zig/generic_type.zig");
     pub const simple = @embedFile("fixtures/zig/simple.zig");
 
+    pub const build_no_deps = struct {
+        pub const build_zig = @embedFile("fixtures/zig/build_no_deps/build.zig");
+        pub const build_zig_zon = @embedFile("fixtures/zig/build_no_deps/build.zig.zon");
+        pub const src_main_zig = @embedFile("fixtures/zig/build_no_deps/src/main.zig");
+    };
+
+    pub const build_parsing = struct {
+        pub const build_zig = @embedFile("fixtures/zig/build_parsing/build.zig");
+        pub const build_zig_zon = @embedFile("fixtures/zig/build_parsing/build.zig.zon");
+        pub const src_lib_zig = @embedFile("fixtures/zig/build_parsing/src/lib.zig");
+        pub const src_main_zig = @embedFile("fixtures/zig/build_parsing/src/main.zig");
+    };
+
     pub const direct_extraction = struct {
         pub const fn_consumer_zig = @embedFile("fixtures/zig/direct_extraction/fn_consumer.zig");
         pub const provider_zig = @embedFile("fixtures/zig/direct_extraction/provider.zig");

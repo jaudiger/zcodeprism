@@ -34,6 +34,8 @@ pub const registry = @import("languages/registry.zig");
 
 /// Zig-specific AST analysis helpers.
 pub const zig_ast_analysis = @import("languages/zig/ast_analysis.zig");
+/// Zig build.zig / build.zig.zon parser for module and dependency extraction.
+pub const zig_build_parser = @import("languages/zig/build_parser.zig");
 /// Zig cross-file edge resolution.
 pub const zig_cross_file = @import("languages/zig/cross_file.zig");
 /// Zig intra-file edge builder (calls, uses_type, etc.).
@@ -176,6 +178,7 @@ test {
     _ = @import("languages/language_support.zig");
     _ = @import("languages/registry.zig");
     _ = @import("languages/zig/ast_analysis.zig");
+    _ = @import("languages/zig/build_parser.zig");
     _ = @import("languages/zig/indexer_hooks.zig");
     _ = @import("languages/zig/meta.zig");
     _ = @import("languages/zig/visitor.zig");
