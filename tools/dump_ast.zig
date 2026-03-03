@@ -9,6 +9,7 @@ const std = @import("std");
 const ts = @import("tree-sitter");
 const zcodeprism = @import("zcodeprism");
 
+const Registry = zcodeprism.registry.Registry;
 const ts_api = zcodeprism.tree_sitter_api;
 const source_map = zcodeprism.source_map;
 
@@ -30,13 +31,14 @@ pub fn main() !void {
         return;
     }
 
-    // Determine language from extension.
+    // Determine language from extension via Registry.
     const ext = std.fs.path.extension(file_path);
-    const language = ts_api.getLanguageByExtension(ext) orelse {
+    const lang_support = Registry.getByExtension(ext) orelse {
         try stdout.print("Unsupported file extension: '{s}'\n", .{ext});
         try stdout.flush();
         return;
     };
+    const language = lang_support.grammarFn();
 
     // Read the file.
     const source = source_map.mmapFile(file_path) catch |err| {

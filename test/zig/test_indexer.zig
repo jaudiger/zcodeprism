@@ -178,10 +178,11 @@ test "project fixture: file nodes, imports, calls, phantom nodes, metrics" {
         }
     }
 
-    // all non-phantom nodes have language=.zig
+    // all non-phantom, non-structural nodes have language=.zig
     for (g.nodes.items) |n| {
+        if (n.language == null) continue;
         switch (n.external) {
-            .none => try std.testing.expectEqual(Language.zig, n.language),
+            .none => try std.testing.expectEqual(@as(?Language, .zig), n.language),
             else => {},
         }
     }

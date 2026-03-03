@@ -1,14 +1,33 @@
 const std = @import("std");
 const lang_support = @import("language_support.zig");
-const visitor = @import("zig/visitor.zig");
+const rust_visitor = @import("rust/visitor.zig");
+const rust_hooks = @import("rust/indexer_hooks.zig");
+const zig_visitor = @import("zig/visitor.zig");
 const zig_hooks = @import("zig/indexer_hooks.zig");
+const ts_api = @import("../parser/tree_sitter_api.zig");
 
 const LanguageSupport = lang_support.LanguageSupport;
 
+const rust_support = LanguageSupport{
+    .language = .rust,
+    .extensions = &.{".rs"},
+    .parseFn = &rust_visitor.parse,
+    .lsp_config = null,
+    .excluded_dirs = &.{ "target", ".cargo" },
+    .build_files = &.{},
+    .import_granularity = .file,
+    .extractImportsFn = &rust_hooks.extractImports,
+    .resolveImportPathFn = &rust_hooks.resolveImportPath,
+    .parseBuildConfigFn = null,
+    .resolvePhantomsFn = &rust_hooks.resolvePhantoms,
+    .buildEdgesFn = &rust_visitor.buildEdges,
+    .grammarFn = &ts_api.tree_sitter_rust,
+};
+
 const zig_support = LanguageSupport{
-    .name = "zig",
+    .language = .zig,
     .extensions = &.{".zig"},
-    .parseFn = &visitor.parse,
+    .parseFn = &zig_visitor.parse,
     .lsp_config = null,
     .excluded_dirs = &.{ ".zig-cache", "zig-out" },
     .build_files = &.{ "build.zig.zon", "build.zig" },
@@ -17,9 +36,11 @@ const zig_support = LanguageSupport{
     .resolveImportPathFn = &zig_hooks.resolveImportPath,
     .parseBuildConfigFn = &zig_hooks.parseBuildConfig,
     .resolvePhantomsFn = &zig_hooks.resolvePhantoms,
+    .buildEdgesFn = &zig_visitor.buildEdges,
+    .grammarFn = &ts_api.tree_sitter_zig,
 };
 
-const all_languages = [_]*const LanguageSupport{&zig_support};
+const all_languages = [_]*const LanguageSupport{ &rust_support, &zig_support };
 
 /// Static registry that maps file extensions to language support descriptors.
 ///
@@ -28,7 +49,7 @@ const all_languages = [_]*const LanguageSupport{&zig_support};
 pub const Registry = struct {
     /// Returns the language support descriptor for the given file extension.
     ///
-    /// `ext` must include the leading dot (e.g. ".zig").
+    /// `ext` must include the leading dot.
     /// Returns null when no language is registered for the extension.
     pub fn getByExtension(ext: []const u8) ?*const LanguageSupport {
         for (&all_languages) |ls| {
@@ -47,15 +68,6 @@ pub const Registry = struct {
     }
 };
 
-test "lookup by .zig extension returns zig support" {
-    // Act
-    const result = Registry.getByExtension(".zig");
-
-    // Assert
-    try std.testing.expect(result != null);
-    try std.testing.expectEqualStrings("zig", result.?.name);
-}
-
 test "lookup by unknown extension returns null" {
     // Act
     const result = Registry.getByExtension(".xyz");
@@ -64,19 +76,20 @@ test "lookup by unknown extension returns null" {
     try std.testing.expectEqual(@as(?*const LanguageSupport, null), result);
 }
 
-test "lookup by .rs extension returns null" {
-    // Act: Rust not yet registered
+test "lookup by .rs extension returns rust support" {
+    // Act
     const result = Registry.getByExtension(".rs");
 
     // Assert
-    try std.testing.expectEqual(@as(?*const LanguageSupport, null), result);
+    try std.testing.expect(result != null);
+    try std.testing.expectEqual(lang_support.Language.rust, result.?.language);
 }
 
-test "zig language support has parseFn" {
+test "lookup by .zig extension returns zig support" {
     // Act
     const result = Registry.getByExtension(".zig");
 
-    // Assert: after visitor is registered, parseFn must not be null
+    // Assert
     try std.testing.expect(result != null);
-    try std.testing.expect(result.?.parseFn != null);
+    try std.testing.expectEqual(lang_support.Language.zig, result.?.language);
 }

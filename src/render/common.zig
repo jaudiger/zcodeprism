@@ -8,7 +8,7 @@ const Node = node_mod.Node;
 const EdgeType = types.EdgeType;
 
 /// Maps a graph node to its renderer ID, consisting of a kind prefix
-/// (e.g. "f:", "fn:", "st:") and a sequential number within that kind.
+/// and a sequential number within that kind.
 pub const IdEntry = struct {
     prefix: []const u8,
     num: u32,
@@ -96,7 +96,7 @@ pub fn appendNum(out: *std.ArrayList(u8), allocator: std.mem.Allocator, val: usi
 }
 
 /// Appends the current UTC wall-clock time as an ISO-8601 timestamp
-/// (e.g. "2026-02-14T10:30:00Z") to the output buffer.
+/// to the output buffer.
 pub fn appendCurrentTimestamp(out: *std.ArrayList(u8), allocator: std.mem.Allocator) !void {
     const epoch = std.time.timestamp();
     const es = std.time.epoch.EpochSeconds{ .secs = @intCast(@max(0, epoch)) };
@@ -117,7 +117,7 @@ pub fn appendCurrentTimestamp(out: *std.ArrayList(u8), allocator: std.mem.Alloca
     try out.appendSlice(allocator, ts);
 }
 
-/// Returns the canonical string name for an edge type (e.g. .calls -> "calls").
+/// Returns the canonical string name for an edge type.
 pub fn edgeTypeName(et: EdgeType) []const u8 {
     return @tagName(et);
 }
@@ -173,7 +173,7 @@ pub fn findFileId(g: *const Graph, n: Node, ids: []const ?IdEntry) ?u32 {
 }
 
 /// Recursively collects phantom child nodes under a parent, building
-/// dot-separated qualified paths (e.g. "mem.Allocator"). Each path
+/// dot-separated qualified paths. Each path
 /// string is heap-allocated and owned by the symbols list.
 pub fn collectPhantomSymbols(
     allocator: std.mem.Allocator,
@@ -313,7 +313,10 @@ pub const IdAssignment = struct {
     struct_indices: std.ArrayList(usize),
     union_indices: std.ArrayList(usize),
     enum_indices: std.ArrayList(usize),
+    /// Top-level functions only (for the [functions] section).
     fn_indices: std.ArrayList(usize),
+    /// All functions including methods (for header stats).
+    total_fn_count: u32,
     const_indices: std.ArrayList(usize),
     err_indices: std.ArrayList(usize),
     test_indices: std.ArrayList(usize),
@@ -356,25 +359,33 @@ pub fn buildIdAssignment(
     errdefer allocator.free(ids);
     @memset(ids, null);
 
-    // Count children per parent and collect file nodes + languages in one scan.
+    // Single scan: collect file nodes, languages, child counts, and phantom roots.
     var child_counts = std.AutoHashMapUnmanaged(usize, u32){};
     defer child_counts.deinit(allocator);
     var total_children: usize = 0;
     var languages = LanguageSet{ .has_zig = false, .has_rust = false };
     var file_nodes = std.ArrayList(usize){};
     defer file_nodes.deinit(allocator);
+    var phantom_roots = std.ArrayList(usize){};
+    defer phantom_roots.deinit(allocator);
 
     for (g.nodes.items, 0..) |n, i| {
         if (isInternal(n)) {
             const in_s = if (scope) |s| inScope(n.file_path, s) else true;
             if (in_s) {
-                switch (n.language) {
+                if (n.language) |l| switch (l) {
                     .zig => languages.has_zig = true,
                     .rust => languages.has_rust = true,
-                }
+                };
             }
             if (n.kind == .file and in_s) {
                 try file_nodes.append(allocator, i);
+            }
+        } else if (filter.include_external_nodes) {
+            // Phantom root: external node whose parent is internal or absent.
+            const is_root = if (n.parent_id) |pid| isInternal(g.nodes.items[@intFromEnum(pid)]) else true;
+            if (is_root) {
+                try phantom_roots.append(allocator, i);
             }
         }
 
@@ -474,7 +485,7 @@ pub fn buildIdAssignment(
         try assignChildrenIds(allocator, g, fi, ids, filter, &children_index, &state);
     }
 
-    // Collect phantom packages (only when external nodes are included).
+    // Build phantom packages from roots collected during the single scan.
     var phantom_packages = std.ArrayList(PhantomPackage){};
     errdefer {
         for (phantom_packages.items) |*pkg| pkg.deinit(allocator);
@@ -482,30 +493,23 @@ pub fn buildIdAssignment(
     }
     var x_counter: u32 = 0;
 
-    if (filter.include_external_nodes) {
-        for (g.nodes.items, 0..) |n, i| {
-            if (!isInternal(n)) {
-                const is_root = if (n.parent_id) |pid| isInternal(g.nodes.items[@intFromEnum(pid)]) else true;
-                if (is_root) {
-                    x_counter += 1;
-                    ids[i] = .{ .prefix = "x:", .num = x_counter };
+    for (phantom_roots.items) |i| {
+        x_counter += 1;
+        ids[i] = .{ .prefix = "x:", .num = x_counter };
 
-                    var pkg = PhantomPackage{
-                        .root_idx = i,
-                        .x_num = x_counter,
-                        .symbols = .{},
-                    };
-                    errdefer pkg.deinit(allocator);
-                    try collectPhantomSymbols(allocator, g, i, "", &pkg.symbols, &children_index);
-                    std.mem.sort(PhantomSymbol, pkg.symbols.items, {}, struct {
-                        fn lessThan(_: void, a: PhantomSymbol, b: PhantomSymbol) bool {
-                            return std.mem.order(u8, a.qualified_path, b.qualified_path) == .lt;
-                        }
-                    }.lessThan);
-                    try phantom_packages.append(allocator, pkg);
-                }
+        var pkg = PhantomPackage{
+            .root_idx = i,
+            .x_num = x_counter,
+            .symbols = .{},
+        };
+        errdefer pkg.deinit(allocator);
+        try collectPhantomSymbols(allocator, g, i, "", &pkg.symbols, &children_index);
+        std.mem.sort(PhantomSymbol, pkg.symbols.items, {}, struct {
+            fn lessThan(_: void, a: PhantomSymbol, b: PhantomSymbol) bool {
+                return std.mem.order(u8, a.qualified_path, b.qualified_path) == .lt;
             }
-        }
+        }.lessThan);
+        try phantom_packages.append(allocator, pkg);
     }
 
     // Build phantom lookup HashMap.
@@ -531,6 +535,7 @@ pub fn buildIdAssignment(
         .union_indices = state.union_indices,
         .enum_indices = state.enum_indices,
         .fn_indices = state.fn_indices,
+        .total_fn_count = state.fn_counter,
         .const_indices = state.const_indices,
         .err_indices = state.err_indices,
         .test_indices = state.test_indices,

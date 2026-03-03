@@ -44,8 +44,8 @@ pub const NodeKind = enum {
     /// A filesystem directory containing source files.
     directory,
 
-    /// Returns true for type-like containers that can hold children
-    /// (methods, fields): struct, enum, union.
+    /// Returns true for type containers that can hold children:
+    /// struct, enum, union.
     pub fn isTypeContainer(self: NodeKind) bool {
         return switch (self) {
             .type_def, .enum_def, .union_def => true,
@@ -78,7 +78,7 @@ pub const EdgeType = enum {
 pub const EdgeSource = enum(u3) {
     /// Discovered by static analysis of the tree-sitter AST.
     tree_sitter,
-    /// Discovered via LSP (e.g., go-to-definition, references).
+    /// Discovered via LSP queries.
     lsp,
     /// Inferred edge to a phantom node representing an external symbol.
     phantom,
@@ -97,10 +97,10 @@ pub const Visibility = enum {
 /// Programming languages supported by the indexer and visitor pipeline.
 /// Each variant corresponds to a language-specific visitor implementation.
 pub const Language = enum {
-    /// Zig (0.15+) -- the primary supported language.
-    zig,
-    /// Rust -- planned, not yet implemented.
+    /// Rust language support.
     rust,
+    /// Zig language support.
+    zig,
 };
 
 test "NodeId is 8 bytes" {

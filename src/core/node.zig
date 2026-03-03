@@ -25,33 +25,34 @@ pub const Node = struct {
     /// Assigned by `Graph.addNode`; callers should not set this manually.
     id: NodeId,
 
-    /// The declared name of this code element (e.g. function name, type name).
+    /// The declared name of this code element.
     /// Borrowed slice -- lifetime tied to the graph's owned buffers.
     name: []const u8,
 
     /// Semantic kind: function, type_def, field, file, etc.
     kind: NodeKind,
 
-    /// Programming language this node was parsed from.
-    language: Language,
+    /// Programming language this node was parsed from, or null for structural
+    /// nodes that are not tied to a single language.
+    language: ?Language = null,
 
     /// Absolute path to the source file containing this node.
     /// Null for phantom nodes (stdlib/dependency references) and the
     /// synthetic root node.
     file_path: ?[]const u8 = null,
 
-    /// 0-based line number of the first line of this element in the source file.
+    /// 1-based line number of the first line of this element in the source file.
     /// Null for phantom nodes and the root node.
     line_start: ?u32 = null,
 
-    /// 0-based line number of the last line of this element in the source file.
+    /// 1-based line number of the last line of this element in the source file.
     /// Null for phantom nodes and the root node.
     line_end: ?u32 = null,
 
-    /// NodeId of the lexical parent (e.g. the struct containing a method).
+    /// NodeId of the lexical parent (the struct containing a method, etc.).
     /// Null for root-level directory nodes and phantom root nodes.
     /// File nodes point to their containing directory; declaration nodes
-    /// point to their lexical parent (e.g. type_def for methods, file for
+    /// point to their lexical parent (type container for methods, file for
     /// top-level declarations).
     parent_id: ?NodeId = null,
 
@@ -64,7 +65,7 @@ pub const Node = struct {
     /// the declaration. Null when no doc comment is present.
     doc: ?[]const u8 = null,
 
-    /// Human-readable signature string (e.g. `fn foo(a: u32) void`).
+    /// Human-readable signature string for the declaration.
     /// Null when the visitor cannot extract a meaningful signature.
     signature: ?[]const u8 = null,
 
@@ -77,7 +78,7 @@ pub const Node = struct {
     /// Null until the metrics pass populates them.
     metrics: ?metrics_mod.Metrics = null,
 
-    /// Language-specific metadata (e.g. Zig comptime/inline/extern flags).
+    /// Language-specific metadata (Zig qualifier flags, Rust attribute info, etc.).
     /// Defaults to `.none` for nodes that carry no language-specific info.
     lang_meta: LangMeta = .{ .none = {} },
 

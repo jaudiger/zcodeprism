@@ -14,6 +14,8 @@ pub const adjacency = @import("core/adjacency.zig");
 pub const edge = @import("core/edge.zig");
 /// Generation-swap support for atomic graph replacement.
 pub const generation = @import("core/generation.zig");
+/// Composite graph index (scope, name, file) built once after parsing.
+pub const graph_index_mod = @import("core/graph_index.zig");
 /// The central Graph container (nodes + edges + edge index).
 pub const graph = @import("core/graph.zig");
 /// Node metrics (complexity, fan-in/out, etc.).
@@ -31,6 +33,19 @@ pub const language = @import("languages/language.zig");
 pub const language_support = @import("languages/language_support.zig");
 /// Language registry mapping file extensions to parsers.
 pub const registry = @import("languages/registry.zig");
+
+/// Rust AST analysis helpers.
+pub const rust_ast_analysis = @import("languages/rust/ast_analysis.zig");
+/// Rust intra-file edge builder (calls, uses_type, implements).
+pub const rust_edge_builder = @import("languages/rust/edge_builder.zig");
+/// Rust indexer hooks for multi-file processing.
+pub const rust_indexer_hooks = @import("languages/rust/indexer_hooks.zig");
+/// Rust language-specific metadata (unsafe, async, sub-kind, etc.).
+pub const rust_meta = @import("languages/rust/meta.zig");
+/// Rust tree-sitter parse context (KindIds, ScopeIndex, FileIndex).
+pub const rust_parse_context = @import("languages/rust/parse_context.zig");
+/// Rust tree-sitter visitor producing nodes and edges from a single file.
+pub const rust_visitor = @import("languages/rust/visitor.zig");
 
 /// Zig-specific AST analysis helpers.
 pub const zig_ast_analysis = @import("languages/zig/ast_analysis.zig");
@@ -168,8 +183,13 @@ test "tree-sitter types are accessible" {
 test {
     _ = @import("core/adjacency.zig");
     _ = @import("core/edge.zig");
+    _ = @import("core/file_index.zig");
     _ = @import("core/generation.zig");
     _ = @import("core/graph.zig");
+    _ = @import("core/graph_index.zig");
+    _ = @import("core/kind_index.zig");
+    _ = @import("core/name_index.zig");
+    _ = @import("core/scope_index.zig");
     _ = @import("core/metrics.zig");
     _ = @import("core/node.zig");
     _ = @import("core/phantom.zig");
@@ -177,6 +197,12 @@ test {
     _ = @import("languages/language.zig");
     _ = @import("languages/language_support.zig");
     _ = @import("languages/registry.zig");
+    _ = @import("languages/rust/ast_analysis.zig");
+    _ = @import("languages/rust/edge_builder.zig");
+    _ = @import("languages/rust/indexer_hooks.zig");
+    _ = @import("languages/rust/meta.zig");
+    _ = @import("languages/rust/parse_context.zig");
+    _ = @import("languages/rust/visitor.zig");
     _ = @import("languages/zig/ast_analysis.zig");
     _ = @import("languages/zig/build_parser.zig");
     _ = @import("languages/zig/indexer_hooks.zig");

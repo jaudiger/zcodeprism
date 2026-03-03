@@ -10,8 +10,8 @@ const lang = @import("../language.zig");
 
 const Graph = graph_mod.Graph;
 const PhantomManager = phantom_mod.PhantomManager;
+const GraphIndex = @import("../../core/graph_index.zig").GraphIndex;
 const NodeId = types.NodeId;
-const NodeKind = types.NodeKind;
 const Language = types.Language;
 const ImportEntry = lang.ImportEntry;
 const ImportKind = lang.ImportKind;
@@ -154,41 +154,51 @@ pub fn resolvePhantoms(
     file_idx: usize,
     scope_end: usize,
     phantom: *PhantomManager,
+    _: *const GraphIndex,
     build_config: ?*const BuildConfig,
     log: Logger,
 ) error{OutOfMemory}!void {
     const file_id: NodeId = @enumFromInt(file_idx);
     const clamped_end = @min(scope_end, graph.nodes.items.len);
 
-    // Walk import_decl nodes within this file's range.
+    // Collect: scan import_decl nodes for std and dependency imports (read-only).
+    const DepMatch = struct { name: []const u8, version: ?[]const u8 };
     var std_import_name: ?[]const u8 = null;
+    var dep_matches: [32]DepMatch = undefined;
+    var dep_count: usize = 0;
     for (graph.nodes.items[file_idx..clamped_end]) |n| {
         if (n.kind != .import_decl) continue;
         if (n.parent_id == null or n.parent_id.? != file_id) continue;
         const import_path = n.signature orelse continue;
 
-        // Check for std import.
         if (std.mem.eql(u8, import_path, "std")) {
             std_import_name = n.name;
-            const std_id = try phantom.getOrCreate(allocator, "std", .module, .zig, .{ .stdlib = {} });
-            _ = try graph.addEdgeIfNew(allocator, .{ .source_id = file_id, .target_id = std_id, .edge_type = .imports, .source = .phantom });
             continue;
         }
 
-        // Check for dependency imports. Phantom nodes for dependencies are
-        // already created by the indexer; here we only add import edges
-        // from the file to the existing phantom.
         if (build_config) |bc| {
             if (bc.build_dependencies) |deps| {
                 for (deps) |dep| {
                     if (std.mem.eql(u8, import_path, dep.name)) {
-                        const dep_id = try phantom.getOrCreate(allocator, dep.name, .module, .zig, .{ .dependency = .{ .version = dep.version } });
-                        _ = try graph.addEdgeIfNew(allocator, .{ .source_id = file_id, .target_id = dep_id, .edge_type = .imports, .source = .phantom });
+                        if (dep_count < dep_matches.len) {
+                            dep_matches[dep_count] = .{ .name = dep.name, .version = dep.version };
+                            dep_count += 1;
+                        }
                         break;
                     }
                 }
             }
         }
+    }
+
+    // Act: create phantom nodes and edges outside the scan loop.
+    if (std_import_name != null) {
+        const std_id = try phantom.getOrCreate(allocator, "std", .zig, .{ .stdlib = {} });
+        _ = try graph.addEdgeIfNew(allocator, .{ .source_id = file_id, .target_id = std_id, .edge_type = .imports, .source = .phantom });
+    }
+    for (dep_matches[0..dep_count]) |dm| {
+        const dep_id = try phantom.getOrCreate(allocator, dm.name, .zig, .{ .dependency = .{ .version = dm.version } });
+        _ = try graph.addEdgeIfNew(allocator, .{ .source_id = file_id, .target_id = dep_id, .edge_type = .imports, .source = .phantom });
     }
 
     if (std_import_name) |sname| {

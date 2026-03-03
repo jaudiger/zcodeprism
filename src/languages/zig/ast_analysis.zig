@@ -193,7 +193,7 @@ pub fn collectModuleDocComment(source: []const u8, root: ts.Node, k: *const Kind
     while (i < root.childCount()) : (i += 1) {
         const child = root.child(i) orelse continue;
         if (child.kindId() != k.comment) {
-            // Skip anonymous non-comment tokens (e.g. punctuation).
+            // Skip anonymous non-comment tokens.
             if (!child.isNamed()) continue;
             // Hit a declaration, stop.
             break;
@@ -203,7 +203,7 @@ pub fn collectModuleDocComment(source: []const u8, root: ts.Node, k: *const Kind
             if (first_start == null) first_start = child.startByte();
             last_end = child.endByte();
         } else {
-            // Non-//! comment (e.g. /// or //), stop collecting.
+            // Non-//! comment, stop collecting.
             break;
         }
     }

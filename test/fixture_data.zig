@@ -2,6 +2,39 @@
 //! Organized by language. Each language gets its own namespace struct.
 //! This module is rooted in `test/`, so @embedFile can reach `test/fixtures/`.
 
+pub const rust = struct {
+    pub const simple = @embedFile("fixtures/rust/simple.rs");
+
+    pub const edge_cases = struct {
+        pub const aliased_trait = @embedFile("fixtures/rust/edge_cases/aliased_trait.rs");
+        pub const deeply_nested = @embedFile("fixtures/rust/edge_cases/deeply_nested.rs");
+        pub const empty = @embedFile("fixtures/rust/edge_cases/empty.rs");
+        pub const many_attrs = @embedFile("fixtures/rust/edge_cases/many_attrs.rs");
+        pub const no_pub = @embedFile("fixtures/rust/edge_cases/no_pub.rs");
+        pub const only_comments = @embedFile("fixtures/rust/edge_cases/only_comments.rs");
+        pub const tuple_field_attrs = @embedFile("fixtures/rust/edge_cases/tuple_field_attrs.rs");
+    };
+
+    pub const glob_import = struct {
+        pub const lib_rs = @embedFile("fixtures/rust/glob_import/lib.rs");
+        pub const sub_rs = @embedFile("fixtures/rust/glob_import/sub.rs");
+        pub const utils_rs = @embedFile("fixtures/rust/glob_import/utils.rs");
+    };
+
+    pub const project = struct {
+        pub const lib_rs = @embedFile("fixtures/rust/project/lib.rs");
+        pub const parser_rs = @embedFile("fixtures/rust/project/parser.rs");
+        pub const parser_helpers_rs = @embedFile("fixtures/rust/project/parser/helpers.rs");
+        pub const utils_rs = @embedFile("fixtures/rust/project/utils.rs");
+    };
+
+    pub const reexport_chain = struct {
+        pub const deep_rs = @embedFile("fixtures/rust/reexport_chain/deep.rs");
+        pub const lib_rs = @embedFile("fixtures/rust/reexport_chain/lib.rs");
+        pub const mid_rs = @embedFile("fixtures/rust/reexport_chain/mid.rs");
+    };
+};
+
 pub const zig = struct {
     pub const file_struct = @embedFile("fixtures/zig/file_struct.zig");
     pub const generic_type = @embedFile("fixtures/zig/generic_type.zig");

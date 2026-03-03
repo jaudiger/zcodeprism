@@ -11,7 +11,17 @@ const EdgeSource = zcodeprism.types.EdgeSource;
 const Visibility = zcodeprism.types.Visibility;
 const LangMeta = zcodeprism.language.LangMeta;
 const Logger = zcodeprism.logging.Logger;
+const GraphIndex = zcodeprism.graph_index_mod.GraphIndex;
 const parse = zcodeprism.visitor.parse;
+const buildEdges = zcodeprism.visitor.buildEdges;
+
+/// Parse source and build edges in one step, for single-file tests.
+fn parseWithEdges(allocator: std.mem.Allocator, source: []const u8, g: *Graph) !void {
+    try parse(allocator, source, g, null, Logger.noop);
+    var gi = try GraphIndex.build(allocator, g.nodes.items);
+    defer gi.deinit(allocator);
+    try buildEdges(allocator, source, g, 0, g.nodeCount(), null, &gi, Logger.noop);
+}
 
 test "simple fixture: edge creation" {
     // Arrange
@@ -19,7 +29,7 @@ test "simple fixture: edge creation" {
     defer g.deinit(std.testing.allocator);
 
     // Act
-    try parse(std.testing.allocator, fixtures.zig.simple, &g, null, Logger.noop);
+    try parseWithEdges(std.testing.allocator, fixtures.zig.simple, &g);
 
     // Assert: at least one calls edge exists (manhattan calls abs)
     var found_calls = false;
@@ -123,7 +133,7 @@ test "file struct fixture: edge creation" {
     defer g.deinit(std.testing.allocator);
 
     // Act
-    try parse(std.testing.allocator, fixtures.zig.file_struct, &g, null, Logger.noop);
+    try parseWithEdges(std.testing.allocator, fixtures.zig.file_struct, &g);
 
     // Assert: isValid has a calls edge to validate (via self.validate())
     var isValid_id: ?NodeId = null;
@@ -164,7 +174,7 @@ test "generic type fixture: edge creation" {
     defer g.deinit(std.testing.allocator);
 
     // Act
-    try parse(std.testing.allocator, fixtures.zig.generic_type, &g, null, Logger.noop);
+    try parseWithEdges(std.testing.allocator, fixtures.zig.generic_type, &g);
 
     // Assert: isEmpty calls count (via self.count())
     var caller_id: ?NodeId = null;
@@ -241,7 +251,7 @@ test "test block edges" {
             \\fn helper() i32 { return 42; }
             \\test "uses helper" { _ = helper(); }
         ;
-        try parse(std.testing.allocator, source, &g, null, Logger.noop);
+        try parseWithEdges(std.testing.allocator, source, &g);
 
         var test_id: ?NodeId = null;
         var helper_id: ?NodeId = null;
@@ -272,7 +282,7 @@ test "test block edges" {
             \\};
             \\test "calls bar" { Foo.bar(); }
         ;
-        try parse(std.testing.allocator, source, &g, null, Logger.noop);
+        try parseWithEdges(std.testing.allocator, source, &g);
 
         var test_id: ?NodeId = null;
         var bar_id: ?NodeId = null;
@@ -303,7 +313,7 @@ test "test block edges" {
             \\    _ = x;
             \\}
         ;
-        try parse(std.testing.allocator, source, &g, null, Logger.noop);
+        try parseWithEdges(std.testing.allocator, source, &g);
 
         var test_id: ?NodeId = null;
         for (g.nodes.items, 0..) |n, idx| {
@@ -331,7 +341,7 @@ test "test block edges" {
             \\test alpha { _ = alpha(); }
             \\test beta { _ = beta(); }
         ;
-        try parse(std.testing.allocator, source, &g, null, Logger.noop);
+        try parseWithEdges(std.testing.allocator, source, &g);
 
         var test_alpha_id: ?NodeId = null;
         var test_beta_id: ?NodeId = null;
@@ -381,7 +391,7 @@ test "nested scope isolation" {
             \\    S.inner();
             \\}
         ;
-        try parse(std.testing.allocator, source, &g, null, Logger.noop);
+        try parseWithEdges(std.testing.allocator, source, &g);
 
         var test_id: ?NodeId = null;
         var helper_id: ?NodeId = null;
@@ -441,7 +451,7 @@ test "nested scope isolation" {
             \\    S.nested();
             \\}
         ;
-        try parse(std.testing.allocator, source, &g, null, Logger.noop);
+        try parseWithEdges(std.testing.allocator, source, &g);
 
         var outer_id: ?NodeId = null;
         var target_id: ?NodeId = null;
@@ -491,7 +501,7 @@ test "nested scope isolation" {
             \\    S.child();
             \\}
         ;
-        try parse(std.testing.allocator, source, &g, null, Logger.noop);
+        try parseWithEdges(std.testing.allocator, source, &g);
 
         var parent_id: ?NodeId = null;
         var child_id: ?NodeId = null;
@@ -543,7 +553,7 @@ test "nested scope isolation" {
             \\    _ = S.nested;
             \\}
         ;
-        try parse(std.testing.allocator, source, &g, null, Logger.noop);
+        try parseWithEdges(std.testing.allocator, source, &g);
 
         var outer_id: ?NodeId = null;
         var nested_id: ?NodeId = null;
@@ -589,7 +599,7 @@ test "type alias edges" {
             \\const Bar = Foo;
             \\fn useBar(b: Bar) void { _ = b; }
         ;
-        try parse(std.testing.allocator, source, &g, null, Logger.noop);
+        try parseWithEdges(std.testing.allocator, source, &g);
 
         var useBar_id: ?NodeId = null;
         var bar_id: ?NodeId = null;
@@ -619,7 +629,7 @@ test "type alias edges" {
             \\const Err = MyError;
             \\fn doStuff() Err!void {}
         ;
-        try parse(std.testing.allocator, source, &g, null, Logger.noop);
+        try parseWithEdges(std.testing.allocator, source, &g);
 
         var doStuff_id: ?NodeId = null;
         var err_id: ?NodeId = null;
@@ -649,7 +659,7 @@ test "type alias edges" {
             \\const max = 100;
             \\fn process(l: Limit) void { _ = l; }
         ;
-        try parse(std.testing.allocator, source, &g, null, Logger.noop);
+        try parseWithEdges(std.testing.allocator, source, &g);
 
         var process_id: ?NodeId = null;
         var limit_id: ?NodeId = null;
@@ -685,7 +695,7 @@ test "type alias edges" {
             \\const Alias = Other;
             \\fn both(d: Direct, a: Alias) void { _ = d; _ = a; }
         ;
-        try parse(std.testing.allocator, source, &g, null, Logger.noop);
+        try parseWithEdges(std.testing.allocator, source, &g);
 
         var both_id: ?NodeId = null;
         var direct_id: ?NodeId = null;
@@ -724,7 +734,7 @@ test "advanced uses_type edges" {
             \\    _ = c;
             \\}
         ;
-        try parse(std.testing.allocator, source, &g, null, Logger.noop);
+        try parseWithEdges(std.testing.allocator, source, &g);
 
         var makeDefault_id: ?NodeId = null;
         var config_id: ?NodeId = null;
@@ -761,7 +771,7 @@ test "advanced uses_type edges" {
             \\    _ = b;
             \\}
         ;
-        try parse(std.testing.allocator, source, &g, null, Logger.noop);
+        try parseWithEdges(std.testing.allocator, source, &g);
 
         var create_id: ?NodeId = null;
         var builder_id: ?NodeId = null;
@@ -792,7 +802,7 @@ test "advanced uses_type edges" {
             \\    return Item{ .id = item.id + 1 };
             \\}
         ;
-        try parse(std.testing.allocator, source, &g, null, Logger.noop);
+        try parseWithEdges(std.testing.allocator, source, &g);
 
         var process_id: ?NodeId = null;
         var item_id: ?NodeId = null;
@@ -824,7 +834,7 @@ test "advanced uses_type edges" {
             \\    serialize(Payload, p);
             \\}
         ;
-        try parse(std.testing.allocator, source, &g, null, Logger.noop);
+        try parseWithEdges(std.testing.allocator, source, &g);
 
         var doWork_id: ?NodeId = null;
         var payload_id: ?NodeId = null;
@@ -858,7 +868,7 @@ test "advanced uses_type edges" {
             \\    _ = Container(Element);
             \\}
         ;
-        try parse(std.testing.allocator, source, &g, null, Logger.noop);
+        try parseWithEdges(std.testing.allocator, source, &g);
 
         var build_id: ?NodeId = null;
         var element_id: ?NodeId = null;
@@ -891,7 +901,7 @@ test "advanced uses_type edges" {
             \\    helper(max);
             \\}
         ;
-        try parse(std.testing.allocator, source, &g, null, Logger.noop);
+        try parseWithEdges(std.testing.allocator, source, &g);
 
         var run_id: ?NodeId = null;
         var helper_id: ?NodeId = null;
@@ -931,7 +941,7 @@ test "local-type parameter edges" {
     defer g.deinit(std.testing.allocator);
 
     // Act
-    try parse(std.testing.allocator, fixtures.zig.edge_cases.local_type_param, &g, null, Logger.noop);
+    try parseWithEdges(std.testing.allocator, fixtures.zig.edge_cases.local_type_param, &g);
 
     // Assert: processPoint has a calls edge to manhattan
     var processPoint_id: ?NodeId = null;
@@ -1002,7 +1012,7 @@ test "duplicate method names: scope resolution" {
     defer g.deinit(std.testing.allocator);
 
     // Act
-    try parse(std.testing.allocator, fixtures.zig.edge_cases.duplicate_method_names, &g, null, Logger.noop);
+    try parseWithEdges(std.testing.allocator, fixtures.zig.edge_cases.duplicate_method_names, &g);
 
     // Assert: @This() aliases are filtered -- no Self constants exist
     var self_count: usize = 0;
@@ -1112,7 +1122,7 @@ test "external method collision: no false edges" {
     defer g.deinit(std.testing.allocator);
 
     // Act
-    try parse(std.testing.allocator, fixtures.zig.edge_cases.external_method_collision, &g, null, Logger.noop);
+    try parseWithEdges(std.testing.allocator, fixtures.zig.edge_cases.external_method_collision, &g);
 
     // Find Resource struct and its methods
     var resource_id: ?NodeId = null;
@@ -1187,7 +1197,7 @@ test "generic dual self: Self filtering and resolution" {
     defer g.deinit(std.testing.allocator);
 
     // Act
-    try parse(std.testing.allocator, fixtures.zig.edge_cases.generic_dual_self, &g, null, Logger.noop);
+    try parseWithEdges(std.testing.allocator, fixtures.zig.edge_cases.generic_dual_self, &g);
 
     // Assert: no Self constants exist
     var self_count: usize = 0;
@@ -1268,7 +1278,7 @@ test "generic type: self-reference prevention" {
     defer g.deinit(std.testing.allocator);
 
     // Act
-    try parse(std.testing.allocator, fixtures.zig.generic_type, &g, null, Logger.noop);
+    try parseWithEdges(std.testing.allocator, fixtures.zig.generic_type, &g);
 
     // Assert: no Self constants exist
     for (g.nodes.items) |n| {
@@ -1311,7 +1321,7 @@ test "union classification: union_def distinct from type_def" {
     ;
 
     // Act
-    try parse(std.testing.allocator, source, &g, null, Logger.noop);
+    try parseWithEdges(std.testing.allocator, source, &g);
 
     // Assert: struct -> type_def, union -> union_def, enum -> enum_def
     var struct_node: ?*const Node = null;
@@ -1354,7 +1364,7 @@ test "uses_type edges can target union_def nodes" {
     ;
 
     // Act
-    try parse(std.testing.allocator, source, &g, null, Logger.noop);
+    try parseWithEdges(std.testing.allocator, source, &g);
 
     // Assert
     var fn_id: ?NodeId = null;
@@ -1394,7 +1404,7 @@ test "container layout qualifiers: packed and extern detected on structs and uni
     ;
 
     // Act
-    try parse(std.testing.allocator, source, &g, null, Logger.noop);
+    try parseWithEdges(std.testing.allocator, source, &g);
 
     // Assert: collect all named nodes
     var normal: ?*const Node = null;
@@ -1435,13 +1445,13 @@ test "container layout qualifiers: packed and extern detected on structs and uni
             try std.testing.expect(zm.is_packed);
             try std.testing.expect(!zm.is_extern);
         },
-        .none => return error.ExpectedZigMeta,
+        .rust, .none => return error.ExpectedZigMeta,
     }
 
     // Packed struct with backing type: same as packed
     switch (packed_backed.?.lang_meta) {
         .zig => |zm| try std.testing.expect(zm.is_packed),
-        .none => return error.ExpectedZigMeta,
+        .rust, .none => return error.ExpectedZigMeta,
     }
 
     // Extern struct: is_extern=true, is_packed=false
@@ -1450,21 +1460,21 @@ test "container layout qualifiers: packed and extern detected on structs and uni
             try std.testing.expect(zm.is_extern);
             try std.testing.expect(!zm.is_packed);
         },
-        .none => return error.ExpectedZigMeta,
+        .rust, .none => return error.ExpectedZigMeta,
     }
 
     // Packed union: is_packed=true
     try std.testing.expectEqual(NodeKind.union_def, packed_u.?.kind);
     switch (packed_u.?.lang_meta) {
         .zig => |zm| try std.testing.expect(zm.is_packed),
-        .none => return error.ExpectedZigMeta,
+        .rust, .none => return error.ExpectedZigMeta,
     }
 
     // Extern union: is_extern=true
     try std.testing.expectEqual(NodeKind.union_def, ext_u.?.kind);
     switch (ext_u.?.lang_meta) {
         .zig => |zm| try std.testing.expect(zm.is_extern),
-        .none => return error.ExpectedZigMeta,
+        .rust, .none => return error.ExpectedZigMeta,
     }
 
     // Normal union: no zig meta
@@ -1474,7 +1484,7 @@ test "container layout qualifiers: packed and extern detected on structs and uni
     try std.testing.expectEqual(NodeKind.type_def, gen_packed.?.kind);
     switch (gen_packed.?.lang_meta) {
         .zig => |zm| try std.testing.expect(zm.is_packed),
-        .none => return error.ExpectedZigMeta,
+        .rust, .none => return error.ExpectedZigMeta,
     }
 }
 
@@ -1486,7 +1496,7 @@ test "type-returning function signature preserved" {
         defer g.deinit(std.testing.allocator);
 
         // Act
-        try parse(std.testing.allocator, fixtures.zig.generic_type, &g, null, Logger.noop);
+        try parseWithEdges(std.testing.allocator, fixtures.zig.generic_type, &g);
 
         // Assert: find Container, Result, Config nodes
         var container_node: ?*const Node = null;
@@ -1535,7 +1545,7 @@ test "type-returning function signature preserved" {
         ;
 
         // Act
-        try parse(std.testing.allocator, source, &g, null, Logger.noop);
+        try parseWithEdges(std.testing.allocator, source, &g);
 
         // Assert: find Wrapper node
         var wrapper_node: ?*const Node = null;
@@ -1553,7 +1563,7 @@ test "type-returning function signature preserved" {
         // Assert: is_inline is true in lang_meta
         switch (wrapper_node.?.lang_meta) {
             .zig => |zm| try std.testing.expect(zm.is_inline),
-            .none => return error.ExpectedZigMeta,
+            .rust, .none => return error.ExpectedZigMeta,
         }
     }
 }
@@ -1573,7 +1583,7 @@ test "conditional expressions classified as constant with comptime_conditional" 
         ;
 
         // Act
-        try parse(std.testing.allocator, source, &g, null, Logger.noop);
+        try parseWithEdges(std.testing.allocator, source, &g);
 
         // Assert: system has kind .constant (NOT .type_def)
         var system_node: ?*const Node = null;
@@ -1589,7 +1599,7 @@ test "conditional expressions classified as constant with comptime_conditional" 
         // Assert: system has lang_meta.zig.comptime_conditional == true
         switch (system_node.?.lang_meta) {
             .zig => |zm| try std.testing.expect(zm.comptime_conditional),
-            .none => return error.ExpectedZigMeta,
+            .rust, .none => return error.ExpectedZigMeta,
         }
 
         // Assert: system has visibility .public
@@ -1628,7 +1638,7 @@ test "conditional expressions classified as constant with comptime_conditional" 
         ;
 
         // Act
-        try parse(std.testing.allocator, source, &g, null, Logger.noop);
+        try parseWithEdges(std.testing.allocator, source, &g);
 
         // Assert: backend has kind .constant (NOT .type_def)
         var backend_node: ?*const Node = null;
@@ -1644,7 +1654,7 @@ test "conditional expressions classified as constant with comptime_conditional" 
         // Assert: backend has lang_meta.zig.comptime_conditional == true
         switch (backend_node.?.lang_meta) {
             .zig => |zm| try std.testing.expect(zm.comptime_conditional),
-            .none => return error.ExpectedZigMeta,
+            .rust, .none => return error.ExpectedZigMeta,
         }
 
         // Assert: no child function init has parent backend
@@ -1678,7 +1688,7 @@ test "conditional expressions classified as constant with comptime_conditional" 
         ;
 
         // Act
-        try parse(std.testing.allocator, source, &g, null, Logger.noop);
+        try parseWithEdges(std.testing.allocator, source, &g);
 
         // Assert: Config has kind .type_def (unchanged, no conditional)
         var config_node: ?*const Node = null;
@@ -1714,6 +1724,7 @@ test "conditional expressions classified as constant with comptime_conditional" 
         // Assert: Config does NOT have comptime_conditional == true
         switch (config_node.?.lang_meta) {
             .zig => |zm| try std.testing.expect(!zm.comptime_conditional),
+            .rust => return error.ExpectedZigMeta,
             .none => {}, // no zig meta is also acceptable (means no flags set)
         }
     }
@@ -1745,7 +1756,7 @@ test "error set variant names captured in signature" {
     ;
 
     // Act
-    try parse(std.testing.allocator, source, &g, null, Logger.noop);
+    try parseWithEdges(std.testing.allocator, source, &g);
 
     // Assert 1: FileError has kind .error_def
     var file_error_node: ?*const Node = null;
@@ -1847,7 +1858,7 @@ test "re-export filtering: public re-exports preserved, private aliases filtered
     ;
 
     // Act
-    try parse(std.testing.allocator, source, &g, null, Logger.noop);
+    try parseWithEdges(std.testing.allocator, source, &g);
 
     // Assert: collect all nodes by name
     var found_iovec = false;
@@ -1917,7 +1928,7 @@ test "top-level comptime blocks produce no nodes" {
     ;
 
     // Act
-    try parse(std.testing.allocator, source, &g, null, Logger.noop);
+    try parseWithEdges(std.testing.allocator, source, &g);
 
     // Assert: no comptime_block nodes exist (comptime blocks produce zero nodes)
     for (g.nodes.items) |n| {

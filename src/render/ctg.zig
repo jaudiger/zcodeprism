@@ -51,7 +51,7 @@ pub fn renderCtg(
 
     const ids = assignment.ids;
     const file_count = assignment.file_indices.items.len;
-    const fn_count = assignment.fn_indices.items.len;
+    const fn_count = assignment.total_fn_count;
     const struct_count = assignment.struct_indices.items.len;
     const union_count = assignment.union_indices.items.len;
     const enum_count = assignment.enum_indices.items.len;
@@ -353,31 +353,31 @@ fn createCtgTestGraph(allocator: std.mem.Allocator) !Graph {
         .parent_id = phantom_std,
     });
 
-    _ = try g.addEdge(allocator, .{
+    _ = try g.addEdgeIfNew(allocator, .{
         .source_id = main_file,
         .target_id = lib_file,
         .edge_type = .imports,
     });
 
-    _ = try g.addEdge(allocator, .{
+    _ = try g.addEdgeIfNew(allocator, .{
         .source_id = fn_main,
         .target_id = fn_helper,
         .edge_type = .calls,
     });
 
-    _ = try g.addEdge(allocator, .{
+    _ = try g.addEdgeIfNew(allocator, .{
         .source_id = fn_main,
         .target_id = method_next,
         .edge_type = .calls,
     });
 
-    _ = try g.addEdge(allocator, .{
+    _ = try g.addEdgeIfNew(allocator, .{
         .source_id = fn_main,
         .target_id = tokenizer_struct,
         .edge_type = .uses_type,
     });
 
-    _ = try g.addEdge(allocator, .{
+    _ = try g.addEdgeIfNew(allocator, .{
         .source_id = fn_helper,
         .target_id = phantom_allocator,
         .edge_type = .uses_type,

@@ -1,7 +1,7 @@
 //! Standalone tool to render a code graph in CTG or Mermaid format.
 //! Usage: zig build render-graph -- <directory> [--format ctg|mermaid] [--name <project-name>] [--exclude path1,path2] [--test-nodes] [--external-nodes] [--help]
 //!
-//! Indexes all .zig files in the given directory, renders the full
+//! Indexes all supported source files in the given directory, renders the full
 //! code graph in the chosen format, and writes to stdout.
 
 const std = @import("std");

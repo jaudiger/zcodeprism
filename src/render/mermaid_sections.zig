@@ -95,7 +95,7 @@ fn collectDescendants(
         if (ids[ci]) |id_entry| {
             try result.append(allocator, .{ .node_idx = ci, .id = id_entry });
         }
-        // Recurse into children (e.g. struct methods).
+        // Recurse into children.
         try collectDescendants(g, ids, children_index, ci, result, allocator);
     }
 }
@@ -232,28 +232,49 @@ pub fn buildGhostNodes(
     ghost_map: *std.AutoHashMapUnmanaged(usize, u32),
 ) !void {
     var ghost_counter: u32 = 0;
-    for (g.edges.items) |e| {
-        const src_idx = @intFromEnum(e.source_id);
-        const tgt_idx = @intFromEnum(e.target_id);
-        if (src_idx >= g.nodes.items.len or tgt_idx >= g.nodes.items.len) continue;
 
-        const src = g.nodes.items[src_idx];
-        const tgt = g.nodes.items[tgt_idx];
+    // Shared logic: check one target and add a ghost entry if it qualifies.
+    const checkTarget = struct {
+        fn check(
+            g_inner: *const Graph,
+            ids_inner: []const ?IdEntry,
+            scope_inner: []const u8,
+            tgt_idx: usize,
+            counter: *u32,
+            map: *std.AutoHashMapUnmanaged(usize, u32),
+            alloc: std.mem.Allocator,
+        ) !void {
+            if (tgt_idx >= g_inner.nodes.items.len) return;
+            const tgt = g_inner.nodes.items[tgt_idx];
+            if (!isInternal(tgt)) return;
+            if (inScope(tgt.file_path, scope_inner)) return;
+            if (tgt.kind == .field or tgt.kind == .import_decl or tgt.kind == .directory) return;
+            _ = ids_inner;
+            if (!map.contains(tgt_idx)) {
+                counter.* += 1;
+                try map.put(alloc, tgt_idx, counter.*);
+            }
+        }
+    }.check;
 
-        // Source must be in scope.
-        if (!inScope(src.file_path, scope)) continue;
-        // Source must have an ID.
-        if (ids[src_idx] == null) continue;
-        // Target must be internal (not phantom) and out of scope.
-        if (!isInternal(tgt)) continue;
-        if (inScope(tgt.file_path, scope)) continue;
-        // Skip if target has no renderable kind.
-        if (tgt.kind == .field or tgt.kind == .import_decl or tgt.kind == .directory) continue;
-
-        // Deduplicate: one ghost per target.
-        if (!ghost_map.contains(tgt_idx)) {
-            ghost_counter += 1;
-            try ghost_map.put(allocator, tgt_idx, ghost_counter);
+    // Use adjacency when available: only iterate in-scope sources with IDs.
+    if (g.adjacency != null) {
+        for (ids, 0..) |maybe_id, src_idx| {
+            if (maybe_id == null) continue;
+            if (!inScope(g.nodes.items[src_idx].file_path, scope)) continue;
+            for (g.outEdges(@enumFromInt(src_idx))) |eid| {
+                const e = g.edges.items[@intFromEnum(eid)];
+                try checkTarget(g, ids, scope, @intFromEnum(e.target_id), &ghost_counter, ghost_map, allocator);
+            }
+        }
+    } else {
+        for (g.edges.items) |e| {
+            const src_idx = @intFromEnum(e.source_id);
+            const tgt_idx = @intFromEnum(e.target_id);
+            if (src_idx >= g.nodes.items.len) continue;
+            if (!inScope(g.nodes.items[src_idx].file_path, scope)) continue;
+            if (ids[src_idx] == null) continue;
+            try checkTarget(g, ids, scope, tgt_idx, &ghost_counter, ghost_map, allocator);
         }
     }
 }
@@ -357,58 +378,95 @@ pub fn renderEdges(
     var entries = std.ArrayList(MermaidEdge){};
     defer entries.deinit(allocator);
 
-    for (g.edges.items) |e| {
-        // Skip similar_to and exports per spec.
-        if (e.edge_type == .similar_to or e.edge_type == .exports) continue;
+    // Shared logic for qualifying one edge by its target.
+    const appendMermaidEdge = struct {
+        fn append(
+            list: *std.ArrayList(MermaidEdge),
+            alloc: std.mem.Allocator,
+            g_inner: *const Graph,
+            ids_inner: []const ?IdEntry,
+            pl: *const std.AutoHashMapUnmanaged(usize, PhantomNodeInfo),
+            flt: common.FilterOptions,
+            gm: *const std.AutoHashMapUnmanaged(usize, u32),
+            edge_type: EdgeType,
+            src_idx: usize,
+            tgt_idx: usize,
+            src_order: u64,
+        ) !void {
+            if (edge_type == .similar_to or edge_type == .exports) return;
+            if (tgt_idx >= g_inner.nodes.items.len) return;
 
-        const src_idx = @intFromEnum(e.source_id);
-        const tgt_idx = @intFromEnum(e.target_id);
-        if (src_idx >= g.nodes.items.len or tgt_idx >= g.nodes.items.len) continue;
+            const tgt_is_phantom = !isInternal(g_inner.nodes.items[tgt_idx]);
+            const tgt_is_ghost = gm.contains(tgt_idx);
+            const tgt_has_id = ids_inner[tgt_idx] != null;
 
-        // Source must have an ID.
-        const src_id = ids[src_idx] orelse continue;
+            if (!tgt_has_id and !tgt_is_phantom and !tgt_is_ghost) return;
+            if (!flt.include_external_nodes and tgt_is_phantom) return;
 
-        // Scope filtering: source must be in scope.
-        if (scope) |s| {
-            if (!inScope(g.nodes.items[src_idx].file_path, s)) continue;
-        }
-
-        const tgt_is_phantom = !isInternal(g.nodes.items[tgt_idx]);
-        const tgt_is_ghost = ghost_map.contains(tgt_idx);
-        const tgt_has_id = ids[tgt_idx] != null;
-
-        // Target must be resolvable: has an ID, is phantom, or is a ghost.
-        if (!tgt_has_id and !tgt_is_phantom and !tgt_is_ghost) continue;
-
-        if (!filter.include_external_nodes) {
-            const src_is_phantom = !isInternal(g.nodes.items[src_idx]);
-            if (src_is_phantom or tgt_is_phantom) continue;
-        }
-
-        const src_order = prefixOrder(src_id.prefix) * @as(u64, 1 << 32) + src_id.num;
-        var tgt_order: u64 = 0;
-        if (tgt_is_ghost) {
-            if (ghost_map.get(tgt_idx)) |gnum| {
-                // Ghost nodes sort after everything else.
-                tgt_order = 10 * @as(u64, 1 << 32) + gnum;
+            var tgt_order: u64 = 0;
+            if (tgt_is_ghost) {
+                if (gm.get(tgt_idx)) |gnum| {
+                    tgt_order = 10 * @as(u64, 1 << 32) + gnum;
+                }
+            } else if (ids_inner[tgt_idx]) |tgt_id| {
+                tgt_order = prefixOrder(tgt_id.prefix) * @as(u64, 1 << 32) + tgt_id.num;
+            } else if (tgt_is_phantom) {
+                if (pl.get(tgt_idx)) |pi| {
+                    tgt_order = prefixOrder("x:") * @as(u64, 1 << 32) + pi.pkg_x_num;
+                }
             }
-        } else if (ids[tgt_idx]) |tgt_id| {
-            tgt_order = prefixOrder(tgt_id.prefix) * @as(u64, 1 << 32) + tgt_id.num;
-        } else if (tgt_is_phantom) {
-            if (phantom_lookup.get(tgt_idx)) |pi| {
-                tgt_order = prefixOrder("x:") * @as(u64, 1 << 32) + pi.pkg_x_num;
+
+            try list.append(alloc, .{
+                .edge_type = edge_type,
+                .source_order = src_order,
+                .target_order = tgt_order,
+                .source_idx = src_idx,
+                .target_idx = tgt_idx,
+                .target_is_ghost = tgt_is_ghost,
+                .target_is_phantom = tgt_is_phantom,
+            });
+        }
+    }.append;
+
+    // Use adjacency when available: only iterate sources with IDs.
+    if (g.adjacency != null) {
+        for (ids, 0..) |maybe_src_id, src_idx| {
+            const src_id = maybe_src_id orelse continue;
+
+            if (!filter.include_external_nodes) {
+                if (!isInternal(g.nodes.items[src_idx])) continue;
+            }
+
+            if (scope) |s| {
+                if (!inScope(g.nodes.items[src_idx].file_path, s)) continue;
+            }
+
+            const src_order = prefixOrder(src_id.prefix) * @as(u64, 1 << 32) + src_id.num;
+            for (g.outEdges(@enumFromInt(src_idx))) |eid| {
+                const e = g.edges.items[@intFromEnum(eid)];
+                try appendMermaidEdge(&entries, allocator, g, ids, phantom_lookup, filter, ghost_map, e.edge_type, src_idx, @intFromEnum(e.target_id), src_order);
             }
         }
+    } else {
+        for (g.edges.items) |e| {
+            if (e.edge_type == .similar_to or e.edge_type == .exports) continue;
+            const src_idx = @intFromEnum(e.source_id);
+            const tgt_idx = @intFromEnum(e.target_id);
+            if (src_idx >= g.nodes.items.len or tgt_idx >= g.nodes.items.len) continue;
 
-        try entries.append(allocator, .{
-            .edge_type = e.edge_type,
-            .source_order = src_order,
-            .target_order = tgt_order,
-            .source_idx = src_idx,
-            .target_idx = tgt_idx,
-            .target_is_ghost = tgt_is_ghost,
-            .target_is_phantom = tgt_is_phantom,
-        });
+            const src_id = ids[src_idx] orelse continue;
+
+            if (scope) |s| {
+                if (!inScope(g.nodes.items[src_idx].file_path, s)) continue;
+            }
+
+            if (!filter.include_external_nodes) {
+                if (!isInternal(g.nodes.items[src_idx])) continue;
+            }
+
+            const src_order = prefixOrder(src_id.prefix) * @as(u64, 1 << 32) + src_id.num;
+            try appendMermaidEdge(&entries, allocator, g, ids, phantom_lookup, filter, ghost_map, e.edge_type, src_idx, tgt_idx, src_order);
+        }
     }
 
     // Sort: type (alpha), then source, then target.

@@ -8,7 +8,7 @@ pub const Level = enum(u8) {
     warn = 3,
     err = 4,
 
-    /// Return the human-readable label for this level (e.g. "TRACE", "ERROR").
+    /// Return the human-readable label for this level.
     pub fn asText(self: Level) []const u8 {
         return switch (self) {
             .trace => "TRACE",
@@ -57,7 +57,7 @@ pub const Field = struct {
 /// Vtable-based logger interface.
 ///
 /// Zero-cost when using the `noop` instance (all methods short-circuit).
-/// Concrete implementations (e.g. `TextStderrLogger`) provide a VTable and
+/// Concrete implementations provide a VTable and
 /// are accessed through the `ptr` field. Pass loggers by value; they are
 /// small (pointer-sized) and cheap to copy.
 pub const Logger = struct {

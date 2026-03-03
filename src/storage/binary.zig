@@ -225,8 +225,8 @@ pub fn save(allocator: std.mem.Allocator, g: *const Graph, path: []const u8) !vo
         std.mem.writeInt(u64, buf[base..][0..8], @intFromEnum(n.id), .little);
         // kind (u8)
         buf[base + 8] = @intFromEnum(n.kind);
-        // language (u8)
-        buf[base + 9] = @intFromEnum(n.language);
+        // language (u8, 0xFF = null)
+        buf[base + 9] = if (n.language) |l| @intFromEnum(l) else 0xFF;
         // visibility (u8)
         buf[base + 10] = @intFromEnum(n.visibility);
         // external_kind (u8)
@@ -430,7 +430,7 @@ pub fn load(allocator: std.mem.Allocator, path: []const u8) !Graph {
             .id = @enumFromInt(std.mem.readInt(u64, buf[base..][0..8], .little)),
             .name = name,
             .kind = std.meta.intToEnum(NodeKind, buf[base + 8]) catch return error.InvalidFormat,
-            .language = std.meta.intToEnum(types.Language, buf[base + 9]) catch return error.InvalidFormat,
+            .language = if (buf[base + 9] == 0xFF) null else std.meta.intToEnum(types.Language, buf[base + 9]) catch return error.InvalidFormat,
             .file_path = file_path,
             .line_start = if (has_line_start) std.mem.readInt(u32, buf[base + 24 ..][0..4], .little) else null,
             .line_end = if (has_line_end) std.mem.readInt(u32, buf[base + 28 ..][0..4], .little) else null,
@@ -478,9 +478,9 @@ pub fn append(allocator: std.mem.Allocator, g: *const Graph, path: []const u8) !
         _ = try existing.addNode(allocator, n);
     }
 
-    // Merge new edges
+    // Merge new edges (dedup against existing graph)
     for (g.edges.items) |e| {
-        _ = try existing.addEdge(allocator, e);
+        _ = try existing.addEdgeIfNew(allocator, e);
     }
 
     // Full save (compaction)
@@ -545,7 +545,7 @@ fn createTestGraph(allocator: std.mem.Allocator) !Graph {
     });
 
     // Edge 0: function uses type
-    _ = try g.addEdge(allocator, .{
+    _ = try g.addEdgeIfNew(allocator, .{
         .source_id = @enumFromInt(1),
         .target_id = @enumFromInt(2),
         .edge_type = .uses_type,
@@ -553,7 +553,7 @@ fn createTestGraph(allocator: std.mem.Allocator) !Graph {
     });
 
     // Edge 1: file exports function
-    _ = try g.addEdge(allocator, .{
+    _ = try g.addEdgeIfNew(allocator, .{
         .source_id = @enumFromInt(0),
         .target_id = @enumFromInt(1),
         .edge_type = .exports,

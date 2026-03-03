@@ -1,7 +1,7 @@
 //! Standalone tool to test multi-file directory indexation.
 //! Usage: zig build parse-directory -- <directory> [--exclude path1,path2] [--help]
 //!
-//! Indexes all .zig files in the given directory, builds the full
+//! Indexes all supported source files in the given directory, builds the full
 //! code graph (cross-file edges, phantom nodes, metrics), and dumps
 //! everything to stdout.
 
@@ -31,7 +31,7 @@ fn countVerbosity(arg: []const u8) u8 {
 
 fn printHelp(stdout: *std.Io.Writer) !void {
     try stdout.print(
-        \\parse-directory - Index all .zig files in a directory and dump the code graph.
+        \\parse-directory - Index all supported source files in a directory and dump the code graph.
         \\
         \\USAGE:
         \\    zig build parse-directory -- <directory> [OPTIONS]
@@ -45,8 +45,9 @@ fn printHelp(stdout: *std.Io.Writer) !void {
         \\    --verbose                Same as -v
         \\    -h, --help               Show this help message
         \\
-        \\Indexes all .zig files in the given directory, builds the full code graph
-        \\(cross-file edges, phantom nodes, metrics), and dumps everything to stdout.
+        \\Indexes all supported source files in the given directory, builds the full
+        \\code graph (cross-file edges, phantom nodes, metrics), and dumps everything
+        \\to stdout.
         \\
     , .{});
     try stdout.flush();
@@ -207,7 +208,7 @@ pub fn main() !void {
             try stdout.print("  [has doc]", .{});
         }
         if (n.signature) |sig| {
-            try stdout.print("  sig=\"{s}\"", .{sig[0..@min(sig.len, 60)]});
+            try stdout.print("  sig=\"{s}\"", .{sig});
         }
         try n.lang_meta.writeDebug(stdout);
         try stdout.print("\n", .{});

@@ -1,15 +1,8 @@
 const std = @import("std");
-const graph_mod = @import("../../core/graph.zig");
-const logging = @import("../../logging.zig");
 const types = @import("../../core/types.zig");
 const ts = @import("tree-sitter");
 
-const Field = logging.Field;
-const Logger = logging.Logger;
-
-const Graph = graph_mod.Graph;
 const NodeId = types.NodeId;
-const EdgeType = types.EdgeType;
 
 /// Pre-resolved tree-sitter node kind IDs. Built once per parse() call from
 /// `Language.idForNodeKind()`. Replaces all `std.mem.eql(u8, child.kind(), "...")`
@@ -112,138 +105,8 @@ pub const KindIds = struct {
     }
 };
 
-const EdgeKey = struct {
-    source_id: NodeId,
-    target_id: NodeId,
-    edge_type: EdgeType,
-};
-
-/// Hash-based dedup set for edges. Replaces the linear scan in addEdgeIfNew
-/// with a hash lookup. Accumulates seen (source, target, type) triples during
-/// a single parse() call.
-pub const EdgeSet = struct {
-    map: std.AutoHashMapUnmanaged(EdgeKey, void) = .{},
-
-    /// Insert edge into the dedup set. If new, also adds it to the graph.
-    pub fn insertAndAdd(self: *EdgeSet, allocator: std.mem.Allocator, g: *Graph, source_id: NodeId, target_id: NodeId, edge_type: EdgeType, log: Logger) !void {
-        if (source_id == target_id) return;
-        const key = EdgeKey{ .source_id = source_id, .target_id = target_id, .edge_type = edge_type };
-        const gop = try self.map.getOrPut(allocator, key);
-        if (gop.found_existing) {
-            log.trace("duplicate edge skipped", &.{
-                Field.uint("source", @intFromEnum(source_id)),
-                Field.uint("target", @intFromEnum(target_id)),
-            });
-            return;
-        }
-        _ = try g.addEdge(.{
-            .source_id = source_id,
-            .target_id = target_id,
-            .edge_type = edge_type,
-            .source = .tree_sitter,
-        });
-    }
-
-    /// Free the internal hash map storage.
-    pub fn deinit(self: *EdgeSet, allocator: std.mem.Allocator) void {
-        self.map.deinit(allocator);
-    }
-};
-
-const Node = @import("../../core/node.zig").Node;
-
-/// Pre-built index mapping parent node IDs to their direct children.
-/// Replaces full scans of `g.nodes.items` that filter by `parent_id`
-/// with a hash lookup and small slice iteration.
-pub const ScopeIndex = struct {
-    map: std.AutoHashMapUnmanaged(u64, Range) = .{},
-    storage: []u64 = &.{},
-
-    const Range = struct { start: u32, len: u32 };
-
-    /// Return the child node indices for a given parent.
-    pub fn childrenOf(self: *const ScopeIndex, parent_id: NodeId) []const u64 {
-        const key = @intFromEnum(parent_id);
-        const range = self.map.get(key) orelse return &.{};
-        return self.storage[range.start .. range.start + range.len];
-    }
-
-    /// Build the scope index from a node array.
-    /// `offset` is the index of the first node to include (typically 0 for all nodes,
-    /// or the scope_start for file-scoped indices).
-    pub fn build(allocator: std.mem.Allocator, nodes: []const Node, offset: usize) !ScopeIndex {
-        // Measure
-        var child_counts = std.AutoHashMapUnmanaged(u64, u32){};
-        defer child_counts.deinit(allocator);
-        var total_children: usize = 0;
-        for (nodes[offset..]) |n| {
-            if (n.parent_id) |pid| {
-                const key = @intFromEnum(pid);
-                const gop = try child_counts.getOrPut(allocator, key);
-                if (!gop.found_existing) gop.value_ptr.* = 0;
-                gop.value_ptr.* += 1;
-                total_children += 1;
-            }
-        }
-        if (total_children == 0) return .{};
-
-        // Allocate
-        const storage = try allocator.alloc(u64, total_children);
-        errdefer allocator.free(storage);
-
-        // Compute offsets: each parent gets a contiguous slice.
-        var offsets = std.AutoHashMapUnmanaged(u64, u32){};
-        defer offsets.deinit(allocator);
-        {
-            var running: u32 = 0;
-            var it = child_counts.iterator();
-            while (it.next()) |entry| {
-                try offsets.put(allocator, entry.key_ptr.*, running);
-                running += entry.value_ptr.*;
-            }
-        }
-
-        // Fill
-        var write_pos = std.AutoHashMapUnmanaged(u64, u32){};
-        defer write_pos.deinit(allocator);
-        {
-            var it = offsets.iterator();
-            while (it.next()) |entry| {
-                try write_pos.put(allocator, entry.key_ptr.*, entry.value_ptr.*);
-            }
-        }
-        for (nodes[offset..], offset..) |n, i| {
-            if (n.parent_id) |pid| {
-                const key = @intFromEnum(pid);
-                if (write_pos.getPtr(key)) |pos| {
-                    storage[pos.*] = i;
-                    pos.* += 1;
-                }
-            }
-        }
-
-        // Build the final map with Range values.
-        var map = std.AutoHashMapUnmanaged(u64, Range){};
-        errdefer map.deinit(allocator);
-        {
-            var it = offsets.iterator();
-            while (it.next()) |entry| {
-                const parent_key = entry.key_ptr.*;
-                const start = entry.value_ptr.*;
-                const count = child_counts.get(parent_key).?;
-                try map.put(allocator, parent_key, .{ .start = start, .len = count });
-            }
-        }
-
-        return .{ .map = map, .storage = storage };
-    }
-
-    /// Free the map and storage array.
-    pub fn deinit(self: *ScopeIndex, allocator: std.mem.Allocator) void {
-        self.map.deinit(allocator);
-        if (self.storage.len > 0) allocator.free(self.storage);
-    }
-};
+pub const ScopeIndex = @import("../../core/scope_index.zig").ScopeIndex;
+pub const FileIndex = @import("../../core/file_index.zig").FileIndex;
 
 /// Resolve an import path relative to the importing file's directory.
 /// Joins the directory part of `importer_path` with `import_path`,
@@ -311,114 +174,69 @@ pub fn resolveImportPath(buf: []u8, importer_path: []const u8, import_path: []co
     return buf[0..pos];
 }
 
-/// Maps file node paths (rel_path) to their NodeId. Built once per parse,
-/// replaces full scans in `findImportTargetFile`. Keys are `file_path`
-/// when available, falling back to `name` (basename) for nodes without
-/// a file_path (e.g., in single-file parse mode).
-pub const FileIndex = struct {
-    map: std.StringHashMapUnmanaged(NodeId) = .{},
-
-    /// Build the file index from a node array.
-    pub fn build(allocator: std.mem.Allocator, nodes: []const Node) !FileIndex {
-        var fi = FileIndex{};
-        for (nodes, 0..) |n, i| {
-            if (n.kind == .file) {
-                // Prefer file_path (rel_path) for directory-aware resolution.
-                const key = n.file_path orelse n.name;
-                try fi.map.put(allocator, key, @enumFromInt(i));
-            }
+/// Resolve an import path to a file NodeId using directory-relative resolution.
+/// Falls back to direct lookup when importer_path is null or resolution fails.
+pub fn resolveFileImport(file_index: *const FileIndex, importer_path: ?[]const u8, import_path: []const u8) ?NodeId {
+    if (importer_path) |ip| {
+        var buf: [std.fs.max_path_bytes]u8 = undefined;
+        if (resolveImportPath(&buf, ip, import_path)) |resolved| {
+            if (file_index.findByName(resolved)) |id| return id;
         }
-        return fi;
     }
-
-    /// Resolve an import path relative to the importing file's directory.
-    /// Falls back to direct lookup when importer_path is null or resolution fails.
-    pub fn resolve(self: *const FileIndex, importer_path: ?[]const u8, import_path: []const u8) ?NodeId {
-        // Try directory-relative resolution first.
-        if (importer_path) |ip| {
-            var buf: [512]u8 = undefined;
-            if (resolveImportPath(&buf, ip, import_path)) |resolved| {
-                if (self.map.get(resolved)) |id| return id;
-            }
-        }
-        // Fallback: direct lookup (works for single-file mode or same-directory).
-        return self.map.get(import_path);
-    }
-
-    /// Direct lookup by name or path. Used for backward compatibility
-    /// (e.g., return-type resolution where the import path comes from
-    /// node signatures, not relative paths).
-    pub fn findByName(self: *const FileIndex, name: []const u8) ?NodeId {
-        return self.map.get(name);
-    }
-
-    /// Free the internal hash map storage.
-    pub fn deinit(self: *FileIndex, allocator: std.mem.Allocator) void {
-        self.map.deinit(allocator);
-    }
-};
-
-/// Return true if `c` is an ASCII letter, digit, or underscore (valid in Zig identifiers).
-pub fn isIdentChar(c: u8) bool {
-    return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9') or c == '_';
-}
-
-/// Return true if `c` is an ASCII whitespace character (space, tab, newline, or carriage return).
-pub fn isWhitespace(c: u8) bool {
-    return c == ' ' or c == '\t' or c == '\n' or c == '\r';
+    return file_index.findByName(import_path);
 }
 
 test "resolveImportPath: same-directory import" {
-    var buf: [512]u8 = undefined;
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
     const result = resolveImportPath(&buf, "crypto/aegis.zig", "helpers.zig");
     try std.testing.expect(result != null);
     try std.testing.expectEqualStrings("crypto/helpers.zig", result.?);
 }
 
 test "resolveImportPath: dot-slash prefix" {
-    var buf: [512]u8 = undefined;
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
     const result = resolveImportPath(&buf, "json/dynamic.zig", "./static.zig");
     try std.testing.expect(result != null);
     try std.testing.expectEqualStrings("json/static.zig", result.?);
 }
 
 test "resolveImportPath: root-level import" {
-    var buf: [512]u8 = undefined;
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
     const result = resolveImportPath(&buf, "main.zig", "utils.zig");
     try std.testing.expect(result != null);
     try std.testing.expectEqualStrings("utils.zig", result.?);
 }
 
 test "resolveImportPath: parent directory" {
-    var buf: [512]u8 = undefined;
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
     const result = resolveImportPath(&buf, "crypto/sub/inner.zig", "../helpers.zig");
     try std.testing.expect(result != null);
     try std.testing.expectEqualStrings("crypto/helpers.zig", result.?);
 }
 
 test "resolveImportPath: subdirectory import" {
-    var buf: [512]u8 = undefined;
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
     const result = resolveImportPath(&buf, "main.zig", "sub/mod.zig");
     try std.testing.expect(result != null);
     try std.testing.expectEqualStrings("sub/mod.zig", result.?);
 }
 
 test "resolveImportPath: double dot-dot" {
-    var buf: [512]u8 = undefined;
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
     const result = resolveImportPath(&buf, "a/b/c/file.zig", "../../root.zig");
     try std.testing.expect(result != null);
     try std.testing.expectEqualStrings("a/root.zig", result.?);
 }
 
 test "resolveImportPath: dot-slash at root" {
-    var buf: [512]u8 = undefined;
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
     const result = resolveImportPath(&buf, "main.zig", "./utils.zig");
     try std.testing.expect(result != null);
     try std.testing.expectEqualStrings("utils.zig", result.?);
 }
 
 test "resolveImportPath: escape above project root returns null" {
-    var buf: [512]u8 = undefined;
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
     const result = resolveImportPath(&buf, "file.zig", "../outside.zig");
     try std.testing.expectEqual(@as(?[]const u8, null), result);
 }

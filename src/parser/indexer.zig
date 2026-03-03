@@ -4,6 +4,7 @@ const logging = @import("../logging.zig");
 const node_mod = @import("../core/node.zig");
 const edge_mod = @import("../core/edge.zig");
 const types = @import("../core/types.zig");
+const graph_index_mod = @import("../core/graph_index.zig");
 const lang = @import("../languages/language.zig");
 const lang_support = @import("../languages/language_support.zig");
 const registry_mod = @import("../languages/registry.zig");
@@ -26,6 +27,8 @@ const Language = types.Language;
 const ExternalInfo = lang.ExternalInfo;
 const Registry = registry_mod.Registry;
 const PhantomManager = phantom_mod.PhantomManager;
+const GraphIndex = graph_index_mod.GraphIndex;
+const KindIndex = @import("../core/kind_index.zig").KindIndex;
 const Metrics = metrics_mod.Metrics;
 
 /// Configuration for `indexDirectory`.
@@ -174,12 +177,17 @@ pub fn indexDirectory(
     // Topological sort: imported files are parsed before their importers.
     try topoSortFiles(allocator, file_entries.items);
 
-    // Load build config (if the language supports it).
+    // Load build config from the first registered language that provides one.
     var build_config: ?lang.BuildConfig = null;
+    var build_config_lang: Language = undefined;
     defer if (build_config) |*bc| bc.deinit(allocator);
-    if (file_entries.items.len > 0) {
-        if (file_entries.items[0].lang_support.parseBuildConfigFn) |parse_config_fn| {
+    for (registry_mod.Registry.allLanguages()) |ls| {
+        if (ls.parseBuildConfigFn) |parse_config_fn| {
             build_config = parse_config_fn(allocator, project_root, log) catch null;
+            if (build_config != null) {
+                build_config_lang = ls.language;
+                break;
+            }
         }
     }
 
@@ -234,8 +242,10 @@ pub fn indexDirectory(
         // For incremental runs, reuse existing directory nodes.
         var root_found = false;
         if (options.incremental) {
-            for (graph.nodes.items, 0..) |n, i| {
-                if (n.kind != .directory) continue;
+            var kind_idx = try KindIndex.build(allocator, graph.nodes.items);
+            defer kind_idx.deinit(allocator);
+            for (kind_idx.findByKind(.directory)) |i| {
+                const n = graph.nodes.items[i];
                 const nid: NodeId = @enumFromInt(i);
                 if (n.file_path) |fp| {
                     try dir_map.put(allocator, fp, nid);
@@ -252,9 +262,6 @@ pub fn indexDirectory(
                 .id = .root,
                 .name = "",
                 .kind = .directory,
-                // TODO: revisit for multi-language support; currently
-                // hardcoded because only Zig is supported.
-                .language = .zig,
                 .visibility = .public,
             });
         }
@@ -275,9 +282,6 @@ pub fn indexDirectory(
                 .id = .root,
                 .name = std.fs.path.basename(dir_path),
                 .kind = .directory,
-                // TODO: revisit for multi-language support; currently
-                // hardcoded because only Zig is supported.
-                .language = .zig,
                 .file_path = dir_path,
                 .visibility = .public,
                 .parent_id = parent_id,
@@ -303,7 +307,6 @@ pub fn indexDirectory(
                     .id = .root,
                     .name = mod_name,
                     .kind = .module,
-                    .language = .zig,
                     .visibility = .public,
                     .parent_id = root_dir_id,
                 });
@@ -333,10 +336,7 @@ pub fn indexDirectory(
             }
         }
 
-        const parse_fn = fe.lang_support.parseFn orelse {
-            result.files_errored += 1;
-            continue;
-        };
+        const parse_fn = fe.lang_support.parseFn;
 
         const before_count = graph.nodeCount();
 
@@ -345,7 +345,7 @@ pub fn indexDirectory(
         try graph.addOwnedBuffer(allocator, fe.content);
         file_entries.items[entry_idx].content_consumed = true;
 
-        // Call visitor via language support. Creates file node + children + edges.
+        // Call visitor via language support. Creates file node + declaration children.
         log.debug("parsing file", &.{Field.string("path", fe.rel_path)});
         parse_fn(allocator, fe.content, graph, fe.rel_path, log) catch {
             log.warn("file parse error", &.{Field.string("path", fe.rel_path)});
@@ -376,6 +376,25 @@ pub fn indexDirectory(
         }
 
         result.files_indexed += 1;
+    }
+
+    // Build graph indexes once for the complete graph.
+    var graph_index = try GraphIndex.build(allocator, graph.nodes.items);
+    defer graph_index.deinit(allocator);
+
+    // Build edges with the complete graph available.
+    log.debug("building edges", &.{Field.uint("file_count", file_infos.items.len)});
+    for (file_infos.items) |fi| {
+        if (fi.lang_support.buildEdgesFn) |build_edges| {
+            const file_node = graph.nodes.items[fi.idx];
+            build_edges(allocator, fi.source, graph, fi.idx, fi.scope_end, file_node.file_path, &graph_index, log) catch |err| {
+                log.warn("edge building failed", &.{
+                    Field.string("path", file_node.file_path orelse "?"),
+                    Field.string("error", @errorName(err)),
+                });
+                continue;
+            };
+        }
     }
 
     // Create contains edges from module nodes to their root source files.
@@ -429,7 +448,7 @@ pub fn indexDirectory(
             const target_idx = blk: {
                 if (importer_path) |ip| {
                     if (fi.lang_support.resolveImportPathFn) |resolve_fn| {
-                        var buf: [512]u8 = undefined;
+                        var buf: [std.fs.max_path_bytes]u8 = undefined;
                         var ci: usize = 0;
                         while (ci < 8) : (ci += 1) {
                             const resolved = resolve_fn(&buf, ip, import_path, ci) orelse break;
@@ -463,15 +482,18 @@ pub fn indexDirectory(
                     try graph.addOwnedBuffer(allocator, dup);
                     break :blk dup;
                 } else null;
-                _ = try phantom.getOrCreate(allocator, dep.name, .module, .zig, .{ .dependency = .{ .version = owned_version } });
+                _ = try phantom.getOrCreate(allocator, dep.name, build_config_lang, .{ .dependency = .{ .version = owned_version } });
             }
         }
     }
 
+    // Pre-index import edges by source file so phantom resolution avoids scanning all edges.
+    try graph_index.buildImportTargets(allocator, graph.edges.items);
+
     for (file_infos.items) |fi| {
         if (fi.lang_support.resolvePhantomsFn) |resolve_phantoms| {
             const bc_ptr: ?*const lang.BuildConfig = if (build_config) |*bc| bc else null;
-            try resolve_phantoms(allocator, graph, fi.source, fi.idx, fi.scope_end, &phantom, bc_ptr, log);
+            try resolve_phantoms(allocator, graph, fi.source, fi.idx, fi.scope_end, &phantom, &graph_index, bc_ptr, log);
         }
     }
 
@@ -558,7 +580,7 @@ fn topoSortFiles(allocator: std.mem.Allocator, entries: []FileEntry) !void {
             // Resolve import path relative to the importing file's directory.
             const dep_idx = blk: {
                 if (fe.lang_support.resolveImportPathFn) |resolve_fn| {
-                    var buf: [512]u8 = undefined;
+                    var buf: [std.fs.max_path_bytes]u8 = undefined;
                     var ci: usize = 0;
                     while (ci < 8) : (ci += 1) {
                         const resolved = resolve_fn(&buf, fe.rel_path, ie.path, ci) orelse break;

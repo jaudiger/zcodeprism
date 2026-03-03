@@ -71,7 +71,13 @@ fn writeOptNodeId(writer: *std.Io.Writer, val: ?NodeId) !void {
 fn writeNodeLine(writer: *std.Io.Writer, n: Node) !void {
     try writer.print("{{\"_type\":\"node\",\"id\":{d},\"name\":", .{@intFromEnum(n.id)});
     try writeStr(writer, n.name);
-    try writer.print(",\"kind\":\"{t}\",\"language\":\"{t}\",\"file_path\":", .{ n.kind, n.language });
+    try writer.print(",\"kind\":\"{t}\",\"language\":", .{n.kind});
+    if (n.language) |l| {
+        try writer.print("\"{t}\"", .{l});
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.writeAll(",\"file_path\":");
     try writeOptStr(writer, n.file_path);
     try writer.writeAll(",\"line_start\":");
     try writeOptInt(writer, n.line_start);
@@ -330,12 +336,12 @@ pub fn importJsonl(allocator: std.mem.Allocator, data: []const u8) !Graph {
             // Parse node fields
             const name_str = jsonStr(obj.get("name") orelse continue) orelse continue;
             const kind_str = jsonStr(obj.get("kind") orelse continue) orelse continue;
-            const lang_str = jsonStr(obj.get("language") orelse continue) orelse continue;
+            const lang_val = obj.get("language") orelse continue;
             const vis_str = jsonStr(obj.get("visibility") orelse continue) orelse continue;
 
             const name = try dupeAndOwn(allocator, &g, name_str);
             const kind = std.meta.stringToEnum(NodeKind, kind_str) orelse continue;
-            const language = std.meta.stringToEnum(types.Language, lang_str) orelse continue;
+            const language: ?types.Language = if (lang_val == .null) null else if (jsonStr(lang_val)) |ls| std.meta.stringToEnum(types.Language, ls) else continue;
             const visibility = std.meta.stringToEnum(Visibility, vis_str) orelse continue;
 
             // Optional strings
@@ -377,6 +383,29 @@ pub fn importJsonl(allocator: std.mem.Allocator, data: []const u8) !Graph {
             const lang_meta = if (obj.get("lang_meta")) |v| blk: {
                 const meta = try LangMeta.parseJson(allocator, v);
                 switch (meta) {
+                    .rust => |rm| {
+                        if (rm.abi) |abi| {
+                            g.addOwnedBuffer(allocator, abi) catch {
+                                allocator.free(abi);
+                                if (rm.derives) |d| allocator.free(d);
+                                if (rm.attributes) |at| allocator.free(at);
+                                return error.OutOfMemory;
+                            };
+                        }
+                        if (rm.derives) |derives| {
+                            g.addOwnedBuffer(allocator, derives) catch {
+                                allocator.free(derives);
+                                if (rm.attributes) |at| allocator.free(at);
+                                return error.OutOfMemory;
+                            };
+                        }
+                        if (rm.attributes) |attrs| {
+                            g.addOwnedBuffer(allocator, attrs) catch {
+                                allocator.free(attrs);
+                                return error.OutOfMemory;
+                            };
+                        }
+                    },
                     .zig => |zm| {
                         if (zm.calling_convention) |cc| {
                             g.addOwnedBuffer(allocator, cc) catch {
@@ -435,7 +464,7 @@ pub fn importJsonl(allocator: std.mem.Allocator, data: []const u8) !Graph {
             // Skip edges that reference out-of-bounds node IDs.
             if (src_id >= g.nodes.items.len or tgt_id >= g.nodes.items.len) continue;
 
-            _ = try g.addEdge(allocator, .{
+            try g.edges.append(allocator, .{
                 .source_id = @enumFromInt(src_id),
                 .target_id = @enumFromInt(tgt_id),
                 .edge_type = edge_type,
@@ -498,7 +527,7 @@ fn createTestGraph(allocator: std.mem.Allocator) !Graph {
     });
 
     // Edge 0: function uses type
-    _ = try g.addEdge(allocator, .{
+    _ = try g.addEdgeIfNew(allocator, .{
         .source_id = @enumFromInt(1),
         .target_id = @enumFromInt(2),
         .edge_type = .uses_type,
@@ -506,7 +535,7 @@ fn createTestGraph(allocator: std.mem.Allocator) !Graph {
     });
 
     // Edge 1: file exports function
-    _ = try g.addEdge(allocator, .{
+    _ = try g.addEdgeIfNew(allocator, .{
         .source_id = @enumFromInt(0),
         .target_id = @enumFromInt(1),
         .edge_type = .exports,

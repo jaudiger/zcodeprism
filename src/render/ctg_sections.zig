@@ -395,6 +395,54 @@ pub fn renderExternalsSection(
     }
 }
 
+const EdgeEntry = struct {
+    edge_type: EdgeType,
+    source_str_order: u64,
+    target_str_order: u64,
+    source_idx: usize,
+    target_idx: usize,
+};
+
+/// Check one edge's target and append to the entries list if it qualifies.
+fn appendEdgeEntry(
+    entries: *std.ArrayList(EdgeEntry),
+    allocator: std.mem.Allocator,
+    g: *const Graph,
+    ids: []const ?IdEntry,
+    phantom_lookup: *const std.AutoHashMapUnmanaged(usize, common.PhantomNodeInfo),
+    filter: common.FilterOptions,
+    edge_type: EdgeType,
+    src_idx: usize,
+    tgt_idx: usize,
+    src_id: IdEntry,
+    src_order: u64,
+) !void {
+    const tgt_has_id = ids[tgt_idx] != null;
+    const tgt_is_phantom = !isInternal(g.nodes.items[tgt_idx]);
+
+    if (!tgt_has_id and !tgt_is_phantom) return;
+
+    if (!filter.include_external_nodes and tgt_is_phantom) return;
+
+    var tgt_order: u64 = 0;
+    if (ids[tgt_idx]) |tgt_id| {
+        tgt_order = prefixOrder(tgt_id.prefix) * @as(u64, 1 << 32) + tgt_id.num;
+    } else if (tgt_is_phantom) {
+        if (phantom_lookup.get(tgt_idx)) |pi| {
+            tgt_order = prefixOrder("x:") * @as(u64, 1 << 32) + pi.pkg_x_num;
+        }
+    }
+
+    try entries.append(allocator, .{
+        .edge_type = edge_type,
+        .source_str_order = src_order,
+        .target_str_order = tgt_order,
+        .source_idx = src_idx,
+        .target_idx = tgt_idx,
+    });
+    _ = src_id;
+}
+
 /// Render the [edges] CTG section listing all graph edges grouped by source and type.
 ///
 /// Edges are sorted by type (alphabetical), then by source ID, then by target
@@ -412,54 +460,53 @@ pub fn renderEdgesSection(
     filter: common.FilterOptions,
     num_buf: *[20]u8,
 ) !void {
-    const EdgeEntry = struct {
-        edge_type: EdgeType,
-        source_str_order: u64,
-        target_str_order: u64,
-        source_idx: usize,
-        target_idx: usize,
-    };
-
     var entries = std.ArrayList(EdgeEntry){};
     defer entries.deinit(allocator);
 
-    for (g.edges.items) |e| {
-        const src_idx = @intFromEnum(e.source_id);
-        const tgt_idx = @intFromEnum(e.target_id);
-        if (src_idx >= g.nodes.items.len or tgt_idx >= g.nodes.items.len) continue;
+    // When adjacency is available, iterate only nodes with IDs and
+    // fetch their outgoing edges. This skips edges from out-of-scope
+    // sources entirely. Falls back to a flat edge scan otherwise.
+    if (g.adjacency != null) {
+        for (ids, 0..) |maybe_src_id, src_idx| {
+            const src_id = maybe_src_id orelse continue;
 
-        const src_id = ids[src_idx] orelse continue;
-        const tgt_has_id = ids[tgt_idx] != null;
-        const tgt_is_phantom = !isInternal(g.nodes.items[tgt_idx]);
+            if (!filter.include_external_nodes) {
+                if (!isInternal(g.nodes.items[src_idx])) continue;
+            }
 
-        if (!tgt_has_id and !tgt_is_phantom) continue;
+            if (scope) |s| {
+                if (!inScope(g.nodes.items[src_idx].file_path, s)) continue;
+            }
 
-        if (!filter.include_external_nodes) {
-            const src_is_phantom = !isInternal(g.nodes.items[src_idx]);
-            if (src_is_phantom or tgt_is_phantom) continue;
-        }
+            const src_order = prefixOrder(src_id.prefix) * @as(u64, 1 << 32) + src_id.num;
 
-        if (scope) |s| {
-            if (!inScope(g.nodes.items[src_idx].file_path, s)) continue;
-        }
+            for (g.outEdges(@enumFromInt(src_idx))) |eid| {
+                const e = g.edges.items[@intFromEnum(eid)];
+                const tgt_idx = @intFromEnum(e.target_id);
+                if (tgt_idx >= g.nodes.items.len) continue;
 
-        const src_order = prefixOrder(src_id.prefix) * @as(u64, 1 << 32) + src_id.num;
-        var tgt_order: u64 = 0;
-        if (ids[tgt_idx]) |tgt_id| {
-            tgt_order = prefixOrder(tgt_id.prefix) * @as(u64, 1 << 32) + tgt_id.num;
-        } else if (tgt_is_phantom) {
-            if (phantom_lookup.get(tgt_idx)) |pi| {
-                tgt_order = prefixOrder("x:") * @as(u64, 1 << 32) + pi.pkg_x_num;
+                try appendEdgeEntry(&entries, allocator, g, ids, phantom_lookup, filter, e.edge_type, src_idx, tgt_idx, src_id, src_order);
             }
         }
+    } else {
+        for (g.edges.items) |e| {
+            const src_idx = @intFromEnum(e.source_id);
+            const tgt_idx = @intFromEnum(e.target_id);
+            if (src_idx >= g.nodes.items.len or tgt_idx >= g.nodes.items.len) continue;
 
-        try entries.append(allocator, .{
-            .edge_type = e.edge_type,
-            .source_str_order = src_order,
-            .target_str_order = tgt_order,
-            .source_idx = src_idx,
-            .target_idx = tgt_idx,
-        });
+            const src_id = ids[src_idx] orelse continue;
+
+            if (!filter.include_external_nodes) {
+                if (!isInternal(g.nodes.items[src_idx])) continue;
+            }
+
+            if (scope) |s| {
+                if (!inScope(g.nodes.items[src_idx].file_path, s)) continue;
+            }
+
+            const src_order = prefixOrder(src_id.prefix) * @as(u64, 1 << 32) + src_id.num;
+            try appendEdgeEntry(&entries, allocator, g, ids, phantom_lookup, filter, e.edge_type, src_idx, tgt_idx, src_id, src_order);
+        }
     }
 
     std.mem.sort(EdgeEntry, entries.items, {}, struct {

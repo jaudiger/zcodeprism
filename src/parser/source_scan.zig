@@ -1,16 +1,18 @@
 const std = @import("std");
 const graph_mod = @import("../core/graph.zig");
+const kind_index_mod = @import("../core/kind_index.zig");
 const logging = @import("../logging.zig");
 const types = @import("../core/types.zig");
 const phantom_mod = @import("../core/phantom.zig");
 const metrics_mod = @import("../core/metrics.zig");
 const lang = @import("../languages/language.zig");
 
+const KindIndex = kind_index_mod.KindIndex;
+
 const Field = logging.Field;
 const Logger = logging.Logger;
 const Graph = graph_mod.Graph;
 const NodeId = types.NodeId;
-const NodeKind = types.NodeKind;
 const Language = types.Language;
 const ExternalInfo = lang.ExternalInfo;
 
@@ -27,6 +29,11 @@ pub fn isIdentChar(c: u8) bool {
     return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9') or c == '_';
 }
 
+/// Return true if `c` is ASCII whitespace (space, tab, newline, carriage return).
+pub fn isWhitespace(c: u8) bool {
+    return c == ' ' or c == '\t' or c == '\n' or c == '\r';
+}
+
 /// Return true if `text` starts with `keyword` at a word boundary.
 /// A match requires that the character immediately after the keyword (if any)
 /// is not an identifier character, preventing partial matches inside longer words.
@@ -35,6 +42,68 @@ pub fn matchKeyword(text: []const u8, keyword: []const u8) bool {
     if (!std.mem.startsWith(u8, text, keyword)) return false;
     if (text.len > keyword.len and isIdentChar(text[keyword.len])) return false;
     return true;
+}
+
+/// Result of extracting a path from a use declaration signature.
+pub const PathSpan = struct {
+    path: []const u8,
+    end: usize,
+};
+
+/// Walk an identifier path (ident + :: sequences) starting at `start`.
+pub fn scanIdentPath(text: []const u8, start: usize) usize {
+    var pos = start;
+    while (pos < text.len) {
+        if (isIdentChar(text[pos])) {
+            pos += 1;
+        } else if (pos + 1 < text.len and text[pos] == ':' and text[pos + 1] == ':') {
+            pos += 2;
+        } else {
+            break;
+        }
+    }
+    return pos;
+}
+
+/// Extract the path portion from a use declaration signature.
+pub fn extractUsePath(sig: []const u8) ?PathSpan {
+    const use_idx = std.mem.indexOf(u8, sig, "use ") orelse return null;
+    var start = use_idx + 4;
+    while (start < sig.len and sig[start] == ' ') start += 1;
+    const end = scanIdentPath(sig, start);
+    if (end == start) return null;
+    return .{ .path = sig[start..end], .end = end };
+}
+
+/// Extract an "as Alias" suffix starting at `offset` in `text`.
+pub fn extractAlias(text: []const u8, offset: usize) ?[]const u8 {
+    var pos = offset;
+    while (pos < text.len and text[pos] == ' ') pos += 1;
+    if (pos + 3 <= text.len and std.mem.eql(u8, text[pos..][0..3], "as ")) {
+        pos += 3;
+        while (pos < text.len and text[pos] == ' ') pos += 1;
+        const alias_start = pos;
+        while (pos < text.len and isIdentChar(text[pos])) pos += 1;
+        if (pos > alias_start) return text[alias_start..pos];
+    }
+    return null;
+}
+
+/// Find the position of the closing brace that matches the opening brace at `open_pos`,
+/// handling nested brace pairs. Returns null if no match is found.
+pub fn findMatchingBrace(text: []const u8, open_pos: usize) ?usize {
+    if (open_pos >= text.len or text[open_pos] != '{') return null;
+    var depth: usize = 0;
+    var pos = open_pos;
+    while (pos < text.len) : (pos += 1) {
+        if (text[pos] == '{') {
+            depth += 1;
+        } else if (text[pos] == '}') {
+            depth -= 1;
+            if (depth == 0) return pos;
+        }
+    }
+    return null;
 }
 
 /// Extract the byte slice spanning lines `line_start` through `line_end` (1-based, inclusive).
@@ -139,15 +208,26 @@ pub fn countLinesUpTo(source: []const u8, byte_pos: usize) u32 {
 }
 
 /// Find the function node that contains the given source `line` within the
-/// subtree rooted at `file_id`. Returns the NodeId of the first function whose
-/// line range includes `line`, or null if no enclosing function is found.
-pub fn findContainingFunction(graph: *const Graph, file_id: NodeId, line: u32) ?NodeId {
-    for (graph.nodes.items, 0..) |n, i| {
-        if (n.kind != .function) continue;
-        if (!isDescendantOf(graph, @enumFromInt(i), file_id)) continue;
-        const ls = n.line_start orelse continue;
-        const le = n.line_end orelse continue;
-        if (line >= ls and line <= le) return @enumFromInt(i);
+/// subtree rooted at `file_id`. When a KindIndex is available, iterates only
+/// function nodes instead of the full graph. Returns the NodeId of the first
+/// function whose line range includes `line`, or null if none is found.
+pub fn findContainingFunction(graph: *const Graph, file_id: NodeId, line: u32, kind_index: ?*const KindIndex) ?NodeId {
+    if (kind_index) |ki| {
+        for (ki.findByKind(.function)) |i| {
+            const n = graph.nodes.items[i];
+            if (!isDescendantOf(graph, @enumFromInt(i), file_id)) continue;
+            const ls = n.line_start orelse continue;
+            const le = n.line_end orelse continue;
+            if (line >= ls and line <= le) return @enumFromInt(i);
+        }
+    } else {
+        for (graph.nodes.items, 0..) |n, i| {
+            if (n.kind != .function) continue;
+            if (!isDescendantOf(graph, @enumFromInt(i), file_id)) continue;
+            const ls = n.line_start orelse continue;
+            const le = n.line_end orelse continue;
+            if (line >= ls and line <= le) return @enumFromInt(i);
+        }
     }
     return null;
 }
@@ -167,7 +247,7 @@ fn isInsideLineComment(source: []const u8, pos: usize) bool {
 }
 
 /// Scan `source` for references to the standard library (prefixed by `std_name`)
-/// and create phantom nodes for each unique chain (e.g. std.mem.Allocator).
+/// and create phantom nodes for each unique qualified chain.
 /// For PascalCase leaf segments (type references), a `uses_type` edge is added
 /// from the enclosing function to the phantom node.
 ///
@@ -246,18 +326,18 @@ pub fn resolveStdPhantoms(
             // Skip if just "std" with no further segments.
             if (chain.len <= std_name.len + 1) continue;
 
-            // Determine the kind of the leaf segment.
+            // Determine whether the leaf is a type reference (PascalCase).
             const last_dot = std.mem.lastIndexOfScalar(u8, chain, '.') orelse continue;
             const leaf = chain[last_dot + 1 ..];
             if (leaf.len == 0) continue;
 
-            const kind: NodeKind = if (leaf[0] >= 'A' and leaf[0] <= 'Z') .type_def else .module;
+            const is_type = leaf[0] >= 'A' and leaf[0] <= 'Z';
 
-            const phantom_id = try phantom.getOrCreate(allocator, chain, kind, language, external);
+            const phantom_id = try phantom.getOrCreate(allocator, chain, language, external);
 
             // For type references (PascalCase leaf), create uses_type edge from
             // the containing function using the running line counter.
-            if (kind == .type_def) {
+            if (is_type) {
                 // Advance running line counter from last_counted_pos to chain_start.
                 for (source[last_counted_pos..chain_start]) |c| {
                     if (c == '\n') current_line += 1;

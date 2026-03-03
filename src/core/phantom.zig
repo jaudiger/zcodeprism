@@ -15,15 +15,14 @@ const ExternalInfo = lang.ExternalInfo;
 /// referenced but not defined in the project.
 ///
 /// Multiple references to the same qualified name share a single node.
-/// Intermediate segments in a dotted path (e.g. "std.mem" in "std.mem.Allocator")
-/// are created automatically as `.module` phantom nodes.
+/// The kind of each segment is derived from its role and name: intermediate
+/// segments are always `.module`, and leaf segments use the naming convention
+/// (PascalCase = `.type_def`, otherwise `.module`).
 pub const PhantomManager = struct {
     graph: *Graph,
     lookup: std.StringHashMapUnmanaged(NodeId),
 
     /// Creates a new PhantomManager backed by the given graph.
-    ///
-    /// `graph` -- the graph into which phantom nodes are inserted.
     pub fn init(graph: *Graph) PhantomManager {
         return .{
             .graph = graph,
@@ -34,14 +33,14 @@ pub const PhantomManager = struct {
     /// Returns the phantom NodeId for `qualified_name`, creating it (and any
     /// missing intermediate segments) on first encounter.
     ///
-    /// Dotted names are split on '.'; intermediate segments become `.module`
-    /// nodes while the leaf receives the caller-supplied `kind`.
-    /// For example, "std.mem.Allocator" produces the chain:
-    ///   std (.module) -> std.mem (.module) -> std.mem.Allocator (`kind`).
+    /// Dotted names are split on '.'. Each segment's kind is determined by
+    /// the PhantomManager: intermediate segments are `.module`, and the leaf
+    /// segment is `.type_def` if its first character is uppercase (PascalCase),
+    /// `.module` otherwise. Intermediate segments become `.module` nodes;
+    ///   the leaf becomes `.type_def` if PascalCase, `.module` otherwise.
     ///
     /// `language` and `external` are forwarded to every newly created node.
-    /// Returns `error.OutOfMemory` if the graph or lookup allocation fails.
-    pub fn getOrCreate(self: *PhantomManager, allocator: std.mem.Allocator, qualified_name: []const u8, kind: NodeKind, language: Language, external: ExternalInfo) !NodeId {
+    pub fn getOrCreate(self: *PhantomManager, allocator: std.mem.Allocator, qualified_name: []const u8, language: Language, external: ExternalInfo) !NodeId {
         // Fast path: already created.
         if (self.lookup.get(qualified_name)) |id| return id;
 
@@ -51,7 +50,6 @@ pub const PhantomManager = struct {
         var prefix_len: usize = 0;
 
         while (it.next()) |segment| {
-            // Advance prefix_len to include separator if not the first segment.
             if (prefix_len > 0) prefix_len += 1; // account for '.'
             prefix_len += segment.len;
 
@@ -62,8 +60,7 @@ pub const PhantomManager = struct {
                 continue;
             }
 
-            // Determine kind: .module for intermediate segments, caller-specified for leaf.
-            const node_kind: NodeKind = if (prefix_len == qualified_name.len) kind else .module;
+            const node_kind = inferKind(segment, prefix_len == qualified_name.len);
 
             // Dupe segment name for the node, owned by graph.
             const duped_name = blk: {
@@ -105,5 +102,14 @@ pub const PhantomManager = struct {
             allocator.free(@constCast(entry.key_ptr.*));
         }
         self.lookup.deinit(allocator);
+    }
+
+    /// Intermediate segments are always modules. Leaf segments use naming
+    /// convention: PascalCase (first char uppercase) means type_def,
+    /// everything else means module.
+    fn inferKind(segment: []const u8, is_leaf: bool) NodeKind {
+        if (!is_leaf) return .module;
+        if (segment.len > 0 and segment[0] >= 'A' and segment[0] <= 'Z') return .type_def;
+        return .module;
     }
 };

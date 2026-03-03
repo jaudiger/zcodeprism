@@ -1,6 +1,7 @@
 const std = @import("std");
 const ts = @import("tree-sitter");
 const ts_api = @import("../../parser/tree_sitter_api.zig");
+const source_scan = @import("../../parser/source_scan.zig");
 const logging = @import("../../logging.zig");
 
 const Logger = logging.Logger;
@@ -96,7 +97,7 @@ pub fn parseBuildSource(allocator: std.mem.Allocator, source: []const u8, log: L
     _ = log;
     if (source.len == 0) return emptyBuildInfo();
 
-    const tree = ts_api.parseSource(ts_api.zigLanguage(), source) orelse {
+    const tree = ts_api.parseSource(ts_api.tree_sitter_zig(), source) orelse {
         return emptyBuildInfo();
     };
     defer tree.destroy();
@@ -379,8 +380,8 @@ fn findValueExpression(var_decl: ts.Node) ?ts.Node {
 }
 
 fn extractCallFunctionName(source: []const u8, call: ts.Node) ?[]const u8 {
-    // call_expression has a function child. For method calls like b.createModule,
-    // we want just the last component.
+    // call_expression has a function child. For method calls on the builder,
+    // we want just the last component of the field_expression.
     const func = call.namedChild(0) orelse return null;
     const text = ts_api.nodeText(source, func);
 
@@ -445,7 +446,7 @@ fn findStructFieldIdentValue(source: []const u8, node: ts.Node, field_name: []co
     const idx = std.mem.indexOf(u8, full_text, needle) orelse return null;
     // Word boundary: character after the field name must not be an ident char.
     const end_pos = idx + needle.len;
-    if (end_pos < full_text.len and isIdentChar(full_text[end_pos])) return null;
+    if (end_pos < full_text.len and source_scan.isIdentChar(full_text[end_pos])) return null;
 
     const after = full_text[end_pos..];
     // Skip whitespace and '='
@@ -454,7 +455,7 @@ fn findStructFieldIdentValue(source: []const u8, node: ts.Node, field_name: []co
     if (pos >= after.len) return null;
     // Read identifier
     const start = pos;
-    while (pos < after.len and isIdentChar(after[pos])) : (pos += 1) {}
+    while (pos < after.len and source_scan.isIdentChar(after[pos])) : (pos += 1) {}
     if (pos == start) return null;
     return after[start..pos];
 }
@@ -470,7 +471,7 @@ fn findFieldInText(text: []const u8, field_name: []const u8) ?[]const u8 {
     const idx = std.mem.indexOf(u8, text, needle) orelse return null;
     // Word boundary: next character must not continue an identifier.
     const end_pos = idx + needle.len;
-    if (end_pos < text.len and isIdentChar(text[end_pos])) return null;
+    if (end_pos < text.len and source_scan.isIdentChar(text[end_pos])) return null;
 
     return extractQuotedString(text[end_pos..]);
 }
@@ -491,7 +492,7 @@ fn extractQuotedString(text: []const u8) ?[]const u8 {
 }
 
 fn extractFirstStringArg(source: []const u8, call: ts.Node) ?[]const u8 {
-    // The first argument in a call like b.dependency("name", ...).
+    // Extract the string literal from the first call argument.
     const text = ts_api.nodeText(source, call);
     // Find opening paren of the call arguments.
     const paren = std.mem.indexOfScalar(u8, text, '(') orelse return null;
@@ -539,14 +540,10 @@ fn collectAddImportCalls(allocator: std.mem.Allocator, source: []const u8, node:
 
 fn lastIdentifier(text: []const u8) []const u8 {
     var end = text.len;
-    while (end > 0 and !isIdentChar(text[end - 1])) : (end -= 1) {}
+    while (end > 0 and !source_scan.isIdentChar(text[end - 1])) : (end -= 1) {}
     var start = end;
-    while (start > 0 and isIdentChar(text[start - 1])) : (start -= 1) {}
+    while (start > 0 and source_scan.isIdentChar(text[start - 1])) : (start -= 1) {}
     return text[start..end];
-}
-
-fn isIdentChar(c: u8) bool {
-    return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9') or c == '_';
 }
 
 fn isIdentStart(c: u8) bool {
@@ -557,7 +554,7 @@ fn isIdentStart(c: u8) bool {
 /// not an identifier character, preventing `.name` from matching `.namespace`.
 fn matchesFieldName(text: []const u8, name: []const u8) bool {
     if (!std.mem.startsWith(u8, text, name)) return false;
-    if (text.len > name.len and isIdentChar(text[name.len])) return false;
+    if (text.len > name.len and source_scan.isIdentChar(text[name.len])) return false;
     return true;
 }
 
@@ -578,7 +575,7 @@ fn extractFieldName(content: []const u8, pos: usize) ?[]const u8 {
     }
     if (!isIdentStart(content[pos])) return null;
     var end = pos;
-    while (end < content.len and isIdentChar(content[end])) : (end += 1) {}
+    while (end < content.len and source_scan.isIdentChar(content[end])) : (end += 1) {}
     return content[pos..end];
 }
 

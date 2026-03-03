@@ -20,7 +20,7 @@ pub const EdgeKey = struct {
 };
 
 /// A directed edge in the code graph, connecting two nodes with a typed
-/// semantic relationship (e.g. calls, imports, uses_type).
+/// semantic relationship.
 ///
 /// Each edge also records how it was discovered via the `source` field,
 /// but the discovery source is not part of the deduplication key.

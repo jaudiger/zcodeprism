@@ -26,7 +26,7 @@ pub const Direction = enum {
 };
 
 /// The core code graph: a mutable collection of semantic nodes and edges.
-/// Build phase: populate with addNode/addEdge/addEdgeIfNew.
+/// Build phase: populate with addNode/addEdgeIfNew.
 /// Query phase: call freeze() once, then use getNode, getChildren,
 /// outEdges, inEdges, neighbors.
 pub const Graph = struct {
@@ -87,27 +87,23 @@ pub const Graph = struct {
         try self.owned_buffers.append(allocator, buf);
     }
 
-    /// Append a node to the graph and return its sequentially assigned NodeId.
-    /// The node's `id` field is overwritten with the assigned value.
-    /// Returns `error.OutOfMemory` if the backing array cannot grow.
+    /// Append a node and return its assigned NodeId. Overwrites the node's
+    /// `id` field. Multi-line signatures are collapsed to a single line.
     pub fn addNode(self: *Graph, allocator: std.mem.Allocator, node: Node) !NodeId {
         const id: NodeId = @enumFromInt(self.nodes.items.len);
         var stored = node;
         stored.id = id;
+        if (stored.signature) |sig| {
+            if (std.mem.indexOfAny(u8, sig, "\n\r") != null) {
+                const normalized = try collapseWhitespace(allocator, sig);
+                self.owned_buffers.append(allocator, normalized) catch |err| {
+                    allocator.free(normalized);
+                    return err;
+                };
+                stored.signature = normalized;
+            }
+        }
         try self.nodes.append(allocator, stored);
-        return id;
-    }
-
-    /// Append an edge unconditionally and return its assigned EdgeId.
-    /// Also inserts the edge's (source, target, type) key into the
-    /// dedup index. Does not check for duplicates -- use addEdgeIfNew()
-    /// when deduplication is needed.
-    /// Returns `error.OutOfMemory` if the backing array or hash map cannot grow.
-    pub fn addEdge(self: *Graph, allocator: std.mem.Allocator, edge: Edge) !EdgeId {
-        const id: EdgeId = @enumFromInt(self.edges.items.len);
-        try self.edges.append(allocator, edge);
-        errdefer _ = self.edges.pop();
-        try self.edge_index.put(allocator, edge.key(), {});
         return id;
     }
 
@@ -126,8 +122,8 @@ pub const Graph = struct {
     }
 
     /// Rebuild the edge dedup index from the current edges list.
-    /// Call this after bulk-loading edges (e.g. from storage deserialization)
-    /// that bypassed addEdge/addEdgeIfNew. Clears the existing index and
+    /// Call this after bulk-loading edges (from storage deserialization or
+    /// similar paths) that bypassed addEdgeIfNew. Clears the existing index and
     /// repopulates it in one pass. Returns `error.OutOfMemory` on failure.
     pub fn rebuildEdgeIndex(self: *Graph, allocator: std.mem.Allocator) !void {
         self.edge_index.clearRetainingCapacity();
@@ -138,7 +134,7 @@ pub const Graph = struct {
     }
 
     /// Build the pre-computed CSR adjacency index from current nodes and edges.
-    /// Must be called after the mutation phase (addNode/addEdge) is complete
+    /// Must be called after the mutation phase (addNode/addEdgeIfNew) is complete
     /// and before any query that depends on adjacency (getChildren, outEdges,
     /// inEdges, neighbors). Safe to call multiple times; each call frees the
     /// previous index and rebuilds from scratch.
@@ -241,6 +237,29 @@ pub const Graph = struct {
         return result;
     }
 
+    /// Walk the parent chain from node_id to find the containing file node.
+    pub fn findContainingFile(self: *const Graph, node_id: NodeId) ?NodeId {
+        var current = node_id;
+        var hops: usize = 0;
+        while (hops < 100) : (hops += 1) {
+            const node = self.getNode(current) orelse return null;
+            if (node.kind == .file) return current;
+            current = node.parent_id orelse return null;
+        }
+        return null;
+    }
+
+    /// Find a type container child among the given child indices matching name.
+    /// The children slice is typically from ScopeIndex.childrenOf().
+    pub fn findTypeAmongChildren(self: *const Graph, children: []const u64, type_name: []const u8) ?NodeId {
+        for (children) |child_idx| {
+            const n = self.nodes.items[child_idx];
+            if (!n.kind.isTypeContainer()) continue;
+            if (std.mem.eql(u8, n.name, type_name)) return @enumFromInt(child_idx);
+        }
+        return null;
+    }
+
     /// Return the total number of nodes in the graph.
     pub fn nodeCount(self: *const Graph) usize {
         return self.nodes.items.len;
@@ -251,6 +270,50 @@ pub const Graph = struct {
         return self.edges.items.len;
     }
 };
+
+/// Collapse runs of whitespace (spaces, tabs, newlines) into single spaces,
+/// trimming any trailing space. The caller owns the returned buffer.
+fn collapseWhitespace(allocator: std.mem.Allocator, input: []const u8) ![]const u8 {
+    // Measure
+    var len: usize = 0;
+    var in_ws = false;
+    for (input) |c| {
+        if (c == ' ' or c == '\t' or c == '\n' or c == '\r') {
+            if (!in_ws) {
+                len += 1;
+                in_ws = true;
+            }
+        } else {
+            len += 1;
+            in_ws = false;
+        }
+    }
+    if (len > 0 and in_ws) len -= 1;
+
+    // Allocate
+    const buf = try allocator.alloc(u8, len);
+
+    // Fill
+    var pos: usize = 0;
+    in_ws = false;
+    for (input) |c| {
+        if (c == ' ' or c == '\t' or c == '\n' or c == '\r') {
+            if (!in_ws) {
+                buf[pos] = ' ';
+                pos += 1;
+                in_ws = true;
+            }
+        } else {
+            buf[pos] = c;
+            pos += 1;
+            in_ws = false;
+        }
+    }
+    if (pos > 0 and buf[pos - 1] == ' ') pos -= 1;
+    std.debug.assert(pos == len);
+
+    return buf[0..len];
+}
 
 // Nominal tests (fail: NotImplemented stubs)
 
@@ -274,7 +337,7 @@ test "addNode returns sequential ids" {
     try std.testing.expectEqual(@as(u64, 2), @intFromEnum(id3));
 }
 
-test "addEdge creates edge between existing nodes" {
+test "addEdgeIfNew creates edge between existing nodes" {
     // Arrange
     var g = Graph.init("/tmp/project");
     defer g.deinit(std.testing.allocator);
@@ -285,14 +348,14 @@ test "addEdge creates edge between existing nodes" {
     const id2 = try g.addNode(std.testing.allocator, n2);
 
     // Act
-    const edge_id = try g.addEdge(std.testing.allocator, .{
+    const inserted = try g.addEdgeIfNew(std.testing.allocator, .{
         .source_id = id1,
         .target_id = id2,
         .edge_type = .calls,
     });
 
     // Assert
-    try std.testing.expectEqual(@as(u64, 0), @intFromEnum(edge_id));
+    try std.testing.expect(inserted);
     try std.testing.expectEqual(@as(usize, 1), g.edgeCount());
 }
 
@@ -353,8 +416,8 @@ test "neighbors out returns outgoing edges" {
     const a = try g.addNode(std.testing.allocator, .{ .id = .root, .name = "a", .kind = .function, .language = .zig });
     const b = try g.addNode(std.testing.allocator, .{ .id = .root, .name = "b", .kind = .function, .language = .zig });
     const c = try g.addNode(std.testing.allocator, .{ .id = .root, .name = "c", .kind = .function, .language = .zig });
-    _ = try g.addEdge(std.testing.allocator, .{ .source_id = a, .target_id = b, .edge_type = .calls });
-    _ = try g.addEdge(std.testing.allocator, .{ .source_id = a, .target_id = c, .edge_type = .calls });
+    _ = try g.addEdgeIfNew(std.testing.allocator, .{ .source_id = a, .target_id = b, .edge_type = .calls });
+    _ = try g.addEdgeIfNew(std.testing.allocator, .{ .source_id = a, .target_id = c, .edge_type = .calls });
     try g.freeze(std.testing.allocator);
 
     // Act
@@ -373,8 +436,8 @@ test "neighbors in returns incoming edges" {
     const a = try g.addNode(std.testing.allocator, .{ .id = .root, .name = "a", .kind = .function, .language = .zig });
     const b = try g.addNode(std.testing.allocator, .{ .id = .root, .name = "b", .kind = .function, .language = .zig });
     const c = try g.addNode(std.testing.allocator, .{ .id = .root, .name = "c", .kind = .function, .language = .zig });
-    _ = try g.addEdge(std.testing.allocator, .{ .source_id = b, .target_id = a, .edge_type = .calls });
-    _ = try g.addEdge(std.testing.allocator, .{ .source_id = c, .target_id = a, .edge_type = .calls });
+    _ = try g.addEdgeIfNew(std.testing.allocator, .{ .source_id = b, .target_id = a, .edge_type = .calls });
+    _ = try g.addEdgeIfNew(std.testing.allocator, .{ .source_id = c, .target_id = a, .edge_type = .calls });
     try g.freeze(std.testing.allocator);
 
     // Act
@@ -393,8 +456,8 @@ test "neighbors both returns all edges" {
     const a = try g.addNode(std.testing.allocator, .{ .id = .root, .name = "a", .kind = .function, .language = .zig });
     const b = try g.addNode(std.testing.allocator, .{ .id = .root, .name = "b", .kind = .function, .language = .zig });
     const c = try g.addNode(std.testing.allocator, .{ .id = .root, .name = "c", .kind = .function, .language = .zig });
-    _ = try g.addEdge(std.testing.allocator, .{ .source_id = a, .target_id = b, .edge_type = .calls });
-    _ = try g.addEdge(std.testing.allocator, .{ .source_id = c, .target_id = a, .edge_type = .calls });
+    _ = try g.addEdgeIfNew(std.testing.allocator, .{ .source_id = a, .target_id = b, .edge_type = .calls });
+    _ = try g.addEdgeIfNew(std.testing.allocator, .{ .source_id = c, .target_id = a, .edge_type = .calls });
     try g.freeze(std.testing.allocator);
 
     // Act
@@ -518,4 +581,72 @@ test "node stores doc and signature via graph" {
     try std.testing.expectEqualStrings("/// My doc", result.?.doc.?);
     try std.testing.expect(result.?.signature != null);
     try std.testing.expectEqualStrings("pub fn documented() void", result.?.signature.?);
+}
+
+test "addNode normalizes multi-line signature to single line" {
+    // Arrange
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
+
+    const id = try g.addNode(std.testing.allocator, .{
+        .id = .root,
+        .name = "parse",
+        .kind = .function,
+        .language = .rust,
+        .signature = "pub fn parse(\n    &self,\n    instructions: impl Into<String>,\n) -> Result<Vec<LexerToken>, LexerError>",
+    });
+
+    // Act
+    const result = g.getNode(id);
+
+    // Assert
+    try std.testing.expect(result != null);
+    try std.testing.expectEqualStrings(
+        "pub fn parse( &self, instructions: impl Into<String>, ) -> Result<Vec<LexerToken>, LexerError>",
+        result.?.signature.?,
+    );
+}
+
+test "addNode preserves single-line signature unchanged" {
+    // Arrange
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
+
+    const sig = "pub fn foo(a: u32, b: u32) void";
+    const id = try g.addNode(std.testing.allocator, .{
+        .id = .root,
+        .name = "foo",
+        .kind = .function,
+        .language = .zig,
+        .signature = sig,
+    });
+
+    // Act
+    const result = g.getNode(id);
+
+    // Assert: same pointer, no allocation
+    try std.testing.expectEqual(sig.ptr, result.?.signature.?.ptr);
+}
+
+test "addNode normalizes signature with mixed whitespace" {
+    // Arrange
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
+
+    const id = try g.addNode(std.testing.allocator, .{
+        .id = .root,
+        .name = "new",
+        .kind = .function,
+        .language = .rust,
+        .signature = "pub const fn new(\r\n\ttoken_mode: LexerTokenMode,\r\n\tboundness_mode: ParserBoundnessMode,\r\n) -> Self",
+    });
+
+    // Act
+    const result = g.getNode(id);
+
+    // Assert
+    try std.testing.expectEqualStrings(
+        "pub const fn new( token_mode: LexerTokenMode, boundness_mode: ParserBoundnessMode, ) -> Self",
+        result.?.signature.?,
+    );
 }

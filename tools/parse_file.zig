@@ -1,8 +1,8 @@
-//! Quick standalone tool to test the single-file Zig visitor.
-//! Usage: zig build parse-file -- <path-to-zig-file> [--help]
+//! Quick standalone tool to test the single-file visitor for any supported language.
+//! Usage: zig build parse-file -- <path-to-source-file> [--help]
 //!
-//! Reads a .zig file, parses it with the visitor, and dumps all
-//! nodes and edges to stdout.
+//! Reads a source file, dispatches to the appropriate language visitor
+//! via the Registry, and dumps all nodes and edges to stdout.
 
 const std = @import("std");
 const zcodeprism = @import("zcodeprism");
@@ -12,7 +12,7 @@ const Node = zcodeprism.Node;
 const NodeKind = zcodeprism.NodeKind;
 const EdgeType = zcodeprism.EdgeType;
 const Visibility = zcodeprism.Visibility;
-const visitor = zcodeprism.visitor;
+const Registry = zcodeprism.registry.Registry;
 const source_map = zcodeprism.source_map;
 
 const logging = zcodeprism.logging;
@@ -30,21 +30,21 @@ fn countVerbosity(arg: []const u8) u8 {
 
 fn printHelp(stdout: *std.Io.Writer) !void {
     try stdout.print(
-        \\parse-file - Parse a Zig source file and dump the semantic graph.
+        \\parse-file - Parse a source file and dump the semantic graph.
         \\
         \\USAGE:
-        \\    zig build parse-file -- <path-to-zig-file>
+        \\    zig build parse-file -- <path-to-source-file>
         \\
         \\ARGUMENTS:
-        \\    <path-to-zig-file>    Path to the .zig file to parse
+        \\    <path-to-source-file>    Path to a supported source file
         \\
         \\OPTIONS:
-        \\    -v                    Increase verbosity (-v info, -vv debug, -vvv trace)
-        \\    --verbose             Same as -v
-        \\    -h, --help            Show this help message
+        \\    -v                       Increase verbosity (-v info, -vv debug, -vvv trace)
+        \\    --verbose                Same as -v
+        \\    -h, --help               Show this help message
         \\
-        \\Parses a source file through the visitor and dumps all nodes
-        \\(with kind, visibility, parent chain, doc, lang_meta) and all
+        \\Parses a source file through the language-specific visitor and dumps all
+        \\nodes (with kind, visibility, parent chain, doc, lang_meta) and all
         \\edges (with source/target names and edge type).
         \\
     , .{});
@@ -86,6 +86,15 @@ pub fn main() !void {
         return;
     };
 
+    // Look up language by file extension.
+    const ext = std.fs.path.extension(path);
+    const lang_support = Registry.getByExtension(ext) orelse {
+        try stdout.print("Unsupported file extension: '{s}'\n", .{ext});
+        try stdout.flush();
+        return;
+    };
+    const parseFn = lang_support.parseFn;
+
     // Read the file.
     const source = source_map.mmapFile(path) catch |err| {
         try stdout.print("Error opening file '{s}': {}\n", .{ path, err });
@@ -107,11 +116,27 @@ pub fn main() !void {
     var text_logger = logging.TextStderrLogger.init(min_level);
     const log = if (verbosity > 0) text_logger.logger() else logging.Logger.noop;
 
-    visitor.parse(allocator, source, &graph, null, log) catch |err| {
+    parseFn(allocator, source, &graph, null, log) catch |err| {
         try stdout.print("Parse error: {}\n", .{err});
         try stdout.flush();
         return;
     };
+
+    // Build edges (separated from parsing so the indexer can defer edge
+    // building to a post-parse pass with the complete graph).
+    if (lang_support.buildEdgesFn) |build_edges| {
+        var graph_index = zcodeprism.graph_index_mod.GraphIndex.build(allocator, graph.nodes.items) catch |err| {
+            try stdout.print("Graph index error: {}\n", .{err});
+            try stdout.flush();
+            return;
+        };
+        defer graph_index.deinit(allocator);
+        build_edges(allocator, source, &graph, 0, graph.nodeCount(), null, &graph_index, log) catch |err| {
+            try stdout.print("Edge building error: {}\n", .{err});
+            try stdout.flush();
+            return;
+        };
+    }
 
     // Dump results.
     try stdout.print("=== File: {s} ===\n", .{path});
@@ -167,7 +192,7 @@ pub fn main() !void {
             try stdout.print("  [has doc]", .{});
         }
         if (n.signature) |sig| {
-            try stdout.print("  sig=\"{s}\"", .{sig[0..@min(sig.len, 60)]});
+            try stdout.print("  sig=\"{s}\"", .{sig});
         }
         // Lang meta flags
         try n.lang_meta.writeDebug(stdout);

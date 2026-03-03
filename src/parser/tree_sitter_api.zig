@@ -1,24 +1,11 @@
 //! Tree-sitter API wrapper for language visitors.
 //! Provides shared parsing utilities used by all language-specific visitors.
 
-const std = @import("std");
 const ts = @import("tree-sitter");
 
-// Zig grammar provided by tree-sitter-zig C library linked in build.zig.
-extern fn tree_sitter_zig() callconv(.c) *const ts.Language;
-
-/// Returns the tree-sitter Language for Zig.
-pub fn zigLanguage() *const ts.Language {
-    return tree_sitter_zig();
-}
-
-/// Look up the tree-sitter Language for a file extension.
-/// Returns null if the extension is not supported.
-pub fn getLanguageByExtension(ext: []const u8) ?*const ts.Language {
-    if (std.mem.eql(u8, ext, ".zig")) return zigLanguage();
-    // TODO: if (std.mem.eql(u8, ext, ".rs")) return rustLanguage();
-    return null;
-}
+// Grammar C libraries linked in build.zig.
+pub extern fn tree_sitter_rust() callconv(.c) *const ts.Language;
+pub extern fn tree_sitter_zig() callconv(.c) *const ts.Language;
 
 /// Parse source code using the given language, returning an AST tree.
 /// The caller must call `tree.destroy()` when done.

@@ -1,12 +1,19 @@
 const std = @import("std");
+const ts = @import("tree-sitter");
 const graph_mod = @import("../core/graph.zig");
 const phantom_mod = @import("../core/phantom.zig");
+const graph_index_mod = @import("../core/graph_index.zig");
 const lang = @import("language.zig");
 const logging = @import("../logging.zig");
+const types = @import("../core/types.zig");
 
 const Graph = graph_mod.Graph;
 const PhantomManager = phantom_mod.PhantomManager;
 const Logger = logging.Logger;
+
+pub const GraphIndex = graph_index_mod.GraphIndex;
+pub const ScopeIndex = graph_index_mod.ScopeIndex;
+pub const NameIndex = graph_index_mod.NameIndex;
 
 // Re-export data types from language.zig for convenience.
 
@@ -25,6 +32,9 @@ pub const ResolveImportPathFn = lang.ResolveImportPathFn;
 /// Parses a build-system file into a BuildConfig.
 pub const ParseBuildConfigFn = lang.ParseBuildConfigFn;
 
+/// Language enum for tagging nodes.
+pub const Language = types.Language;
+
 /// Function pointer type for language-specific source parsers.
 ///
 /// Parses `source` and populates `graph` with the resulting nodes and edges.
@@ -38,6 +48,7 @@ pub const ParseFn = *const fn (allocator: std.mem.Allocator, source: []const u8,
 /// Scans nodes in the range `[file_idx, scope_end)` of `graph`, identifies unresolved
 /// references, and registers them as phantom nodes via `phantom_mgr`.
 /// `allocator` is passed through to graph and phantom mutation methods.
+/// `graph_index` provides pre-built scope, name, and file indexes over the full graph.
 /// `build_config`, when provided, supplies dependency paths for import resolution.
 /// Returns `OutOfMemory` if graph or phantom registration fails.
 pub const ResolvePhantomsFn = *const fn (
@@ -47,9 +58,25 @@ pub const ResolvePhantomsFn = *const fn (
     file_idx: usize,
     scope_end: usize,
     phantom_mgr: *PhantomManager,
+    graph_index: *const GraphIndex,
     build_config: ?*const BuildConfig,
     logger: Logger,
 ) error{OutOfMemory}!void;
+
+/// Builds cross-file edges for a single file's node range.
+/// Called by the indexer after all files have been parsed, so the graph
+/// contains every file's nodes and the GraphIndex is complete.
+/// Re-parses source with tree-sitter to walk the AST for edge patterns.
+pub const BuildEdgesFn = *const fn (
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    graph: *Graph,
+    file_idx: usize,
+    scope_end: usize,
+    file_path: ?[]const u8,
+    graph_index: *const GraphIndex,
+    logger: Logger,
+) anyerror!void;
 
 /// Descriptor for a supported programming language.
 ///
@@ -58,17 +85,17 @@ pub const ResolvePhantomsFn = *const fn (
 /// provides one static instance of this struct.
 /// All function pointer fields use concrete types for compile-time type safety.
 pub const LanguageSupport = struct {
-    /// Human-readable language name (e.g. "zig").
-    name: []const u8,
-    /// File extensions that identify this language (e.g. &.{".zig"}).
+    /// Language identifier used for tagging graph nodes.
+    language: Language,
+    /// File extensions that identify this language, including the leading dot.
     extensions: []const []const u8,
-    /// Parses source code into graph nodes and edges. Null when no parser is available yet.
-    parseFn: ?ParseFn = null,
+    /// Parses source code into graph nodes and edges.
+    parseFn: ParseFn,
     /// LSP server configuration for graph enrichment. Null when LSP is not supported.
     lsp_config: ?LspConfig = null,
-    /// Directory names to skip during recursive file discovery (e.g. ".zig-cache").
+    /// Directory names to skip during recursive file discovery.
     excluded_dirs: []const []const u8 = &.{},
-    /// Build-system file names used to detect project roots (e.g. "build.zig.zon").
+    /// Build-system file names used to detect project roots.
     build_files: []const []const u8 = &.{},
     /// Granularity of import resolution for this language.
     import_granularity: ImportGranularity = .file,
@@ -80,11 +107,18 @@ pub const LanguageSupport = struct {
     parseBuildConfigFn: ?ParseBuildConfigFn = null,
     /// Resolves phantom references within a file's node range. Null when not implemented.
     resolvePhantomsFn: ?ResolvePhantomsFn = null,
+    /// Builds cross-file edges for a single file's node range. Called by the
+    /// indexer after all files have been parsed, so the graph contains every
+    /// file's nodes and the FileIndex/ScopeIndex are complete. Re-parses
+    /// source with tree-sitter to walk the AST for edge patterns.
+    buildEdgesFn: ?BuildEdgesFn = null,
+    /// Returns the tree-sitter grammar for this language.
+    grammarFn: *const fn () callconv(.c) *const ts.Language,
 };
 
 /// Configuration for launching an LSP server to enrich the code graph.
 pub const LspConfig = struct {
-    /// Display name of the LSP server (e.g. "zls").
+    /// Display name of the LSP server.
     server_name: []const u8,
     /// Shell command to start the LSP server process.
     server_command: []const u8,

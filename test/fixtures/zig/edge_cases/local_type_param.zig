@@ -1,5 +1,5 @@
 /// Fixture for testing local-type parameter method calls.
-/// When a function takes a parameter of a locally-defined type (e.g., fn process(p: Point)),
+/// When a function takes a parameter of a locally-defined type,
 /// calls via that parameter (p.method()) should create calls edges.
 const std = @import("std");
 

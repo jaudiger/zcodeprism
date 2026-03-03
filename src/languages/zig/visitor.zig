@@ -13,8 +13,7 @@ const pc = @import("parse_context.zig");
 const fixtures = @import("test-fixtures");
 
 const KindIds = pc.KindIds;
-const ScopeIndex = pc.ScopeIndex;
-const FileIndex = pc.FileIndex;
+const GraphIndex = @import("../../core/graph_index.zig").GraphIndex;
 
 const Field = logging.Field;
 const Logger = logging.Logger;
@@ -45,7 +44,7 @@ pub fn parse(allocator: std.mem.Allocator, source: []const u8, g: *Graph, file_p
     log.debug("parsing source", &.{Field.uint("bytes", source.len)});
 
     const line_count = ts_api.countLines(source);
-    const ts_lang = ts_api.zigLanguage();
+    const ts_lang = ts_api.tree_sitter_zig();
     const k = KindIds.init(ts_lang);
 
     // Parse source with tree-sitter first so we can collect module doc comments.
@@ -84,7 +83,6 @@ pub fn parse(allocator: std.mem.Allocator, source: []const u8, g: *Graph, file_p
         .file_path = file_path,
     });
 
-    // -- Phase 1: Node creation --
     // Walk top-level declarations and recursively create graph nodes.
     var i: u32 = 0;
     while (i < root.childCount()) : (i += 1) {
@@ -92,29 +90,32 @@ pub fn parse(allocator: std.mem.Allocator, source: []const u8, g: *Graph, file_p
         if (!child.isNamed()) continue;
         try processDeclaration(allocator, g, source, child, file_id, &k, log);
     }
+}
 
-    // -- Phase 2: Import map construction --
-    // Build edge resolution context (scope range + import map) and lookup indices
-    // needed by the edge walker to resolve cross-file references.
+/// Build edges for a Zig file. Called by the indexer after all files have
+/// been parsed, so the GraphIndex reflects the complete graph.
+pub fn buildEdges(allocator: std.mem.Allocator, source: []const u8, g: *Graph, file_idx: usize, scope_end: usize, file_path: ?[]const u8, graph_index: *const GraphIndex, logger: Logger) anyerror!void {
+    const log = logger.withScope("zig-edges");
+
+    const ts_lang = ts_api.tree_sitter_zig();
+    const k = KindIds.init(ts_lang);
+
+    const tree = ts_api.parseSource(ts_lang, source) orelse return;
+    defer tree.destroy();
+    const root = tree.rootNode();
+
+    const file_id: NodeId = @enumFromInt(file_idx);
+
     var ctx = cf.EdgeContext{
         .scope_start = @intFromEnum(file_id),
-        .scope_end = g.nodeCount(),
+        .scope_end = scope_end,
     };
+    defer ctx.deinit(allocator);
 
-    // Build lookup indices for scope-based and file-based resolution.
-    var file_index = try FileIndex.build(allocator, g.nodes.items);
-    defer file_index.deinit(allocator);
+    try cf.buildImportMap(allocator, g, source, root, &ctx, &graph_index.files, file_path, &k, log);
 
-    var scope_index = try ScopeIndex.build(allocator, g.nodes.items, 0);
-    defer scope_index.deinit(allocator);
-
-    cf.buildImportMap(g, source, root, &ctx, &file_index, file_path, &k, log);
-
-    // -- Phase 3: Edge creation --
-    // Walk the AST a second time to discover call and uses_type relationships,
-    // resolving targets via the scope index, file index, and import map.
     log.debug("building edges", &.{});
-    try eb.walkForEdges(allocator, g, source, root, &ctx, &k, &scope_index, &file_index, log);
+    try eb.walkForEdges(allocator, g, source, root, &ctx, &k, graph_index, log);
 }
 
 /// Dispatch a single top-level or nested declaration to the appropriate
@@ -138,7 +139,7 @@ fn processDeclaration(allocator: std.mem.Allocator, g: *Graph, source: []const u
 
 /// Process a const/var declaration and add a graph node for it.
 /// Classifies the value to determine the node kind (struct, enum, union,
-/// error set, import, or plain constant). Filters noise constants such as
+/// error set, import, or plain constant). Filters noise constants:
 /// @This() aliases and private same-name re-exports. Detects Zig-specific
 /// qualifiers (mutable, comptime, packed, extern) and stores them as LangMeta.
 /// Recurses into container bodies for nested declarations.
@@ -156,14 +157,14 @@ fn processVariableDecl(allocator: std.mem.Allocator, g: *Graph, source: []const 
 
     // Filter noise constants that produce no useful graph information.
     if (kind == .constant) {
-        // Skip @This() aliases (e.g., `const Self = @This()`).
+        // Skip @This() aliases.
         if (ast.isThisBuiltin(source, ts_node, k)) {
             log.trace("skipping @This() alias", &.{Field.string("name", name)});
             return;
         }
 
         // Skip same-name re-exports from imports, but only when private.
-        // Public re-exports (e.g., `pub const iovec = std.posix.iovec`) are intentional API.
+        // Public re-exports are intentional API.
         if (ast.getFieldExprRootAndLeaf(source, ts_node, k)) |info| {
             if (std.mem.eql(u8, info.leaf, name) and visibility == .private) {
                 if (isImportSibling(g, parent_id, info.root)) {
@@ -413,7 +414,7 @@ fn discoverInnerTypes(allocator: std.mem.Allocator, g: *Graph, source: []const u
             continue;
         }
 
-        // Recurse into nested block-like nodes to find deeper type definitions.
+        // Recurse into nested block nodes to find deeper type definitions.
         if (kid == k.block or
             kid == k.if_statement or
             kid == k.if_expression or
@@ -428,7 +429,7 @@ fn discoverInnerTypes(allocator: std.mem.Allocator, g: *Graph, source: []const u
 }
 
 /// Process a container field (struct field or enum variant) and add a .field node.
-/// Fields are always private. Skips unnamed fields (e.g. padding fields).
+/// Fields are always private. Skips unnamed fields.
 fn processContainerField(allocator: std.mem.Allocator, g: *Graph, source: []const u8, ts_node: ts.Node, parent_id: NodeId, k: *const KindIds, log: Logger) anyerror!void {
     const name = ast.getIdentifierName(source, ts_node, k) orelse {
         log.trace("skipping field: no identifier", &.{});
@@ -452,8 +453,10 @@ fn processContainerField(allocator: std.mem.Allocator, g: *Graph, source: []cons
 /// Check if a given name refers to an import_decl node that is a sibling
 /// (same parent) of the current node. Used to detect same-name re-exports
 /// like `const Graph = graph_mod.Graph` where "graph_mod" is an import sibling.
+/// Scopes the search to the parent's subtree since nodes are appended in order.
 fn isImportSibling(g: *const Graph, parent_id: NodeId, name: []const u8) bool {
-    for (g.nodes.items) |n| {
+    const start = @intFromEnum(parent_id);
+    for (g.nodes.items[start..]) |n| {
         if (n.kind == .import_decl and
             n.parent_id != null and n.parent_id.? == parent_id and
             std.mem.eql(u8, n.name, name))
@@ -574,7 +577,7 @@ test "simple fixture: nodes, visibility, parents, doc comments" {
                     try std.testing.expect(zm.is_comptime);
                     found_comptime = true;
                 },
-                .none => return error.ExpectedZigMeta,
+                .rust, .none => return error.ExpectedZigMeta,
             }
             break;
         }
@@ -1239,7 +1242,7 @@ test "extern functions fixture: qualifiers, calling convention, and signatures" 
             try std.testing.expect(!zm.is_inline);
             try std.testing.expectEqualStrings("c", zm.calling_convention.?);
         },
-        .none => return error.ExpectedZigMeta,
+        .rust, .none => return error.ExpectedZigMeta,
     }
     try std.testing.expect(c_write_node.?.signature != null);
 
@@ -1249,7 +1252,7 @@ test "extern functions fixture: qualifiers, calling convention, and signatures" 
             try std.testing.expect(zm.is_extern);
             try std.testing.expectEqual(@as(?[]const u8, null), zm.calling_convention);
         },
-        .none => return error.ExpectedZigMeta,
+        .rust, .none => return error.ExpectedZigMeta,
     }
     try std.testing.expect(bare_extern_node.?.signature != null);
 
@@ -1257,7 +1260,7 @@ test "extern functions fixture: qualifiers, calling convention, and signatures" 
     try std.testing.expectEqual(Visibility.private, private_extern_node.?.visibility);
     switch (private_extern_node.?.lang_meta) {
         .zig => |zm| try std.testing.expect(zm.is_extern),
-        .none => return error.ExpectedZigMeta,
+        .rust, .none => return error.ExpectedZigMeta,
     }
 
     // Assert: fast_add has is_inline=true, not extern, no calling convention
@@ -1267,14 +1270,14 @@ test "extern functions fixture: qualifiers, calling convention, and signatures" 
             try std.testing.expect(!zm.is_extern);
             try std.testing.expectEqual(@as(?[]const u8, null), zm.calling_convention);
         },
-        .none => return error.ExpectedZigMeta,
+        .rust, .none => return error.ExpectedZigMeta,
     }
 
     // Assert: internal_helper is inline and private
     try std.testing.expectEqual(Visibility.private, internal_helper_node.?.visibility);
     switch (internal_helper_node.?.lang_meta) {
         .zig => |zm| try std.testing.expect(zm.is_inline),
-        .none => return error.ExpectedZigMeta,
+        .rust, .none => return error.ExpectedZigMeta,
     }
 
     // Assert: regular functions have no zig meta
