@@ -11,9 +11,11 @@ const cf = @import("cross_file.zig");
 const eb = @import("edge_builder.zig");
 const pc = @import("parse_context.zig");
 const rust_meta = @import("meta.zig");
+const phantom_mod = @import("../../core/phantom.zig");
 
 const KindIds = pc.KindIds;
 const GraphIndex = @import("../../core/graph_index.zig").GraphIndex;
+const PhantomManager = phantom_mod.PhantomManager;
 
 const Field = logging.Field;
 const Logger = logging.Logger;
@@ -93,9 +95,8 @@ pub fn parse(allocator: std.mem.Allocator, source: []const u8, g: *Graph, file_p
     }
 }
 
-/// Build edges for a Rust file. Called by the indexer after all files have
-/// been parsed, so the GraphIndex reflects the complete graph.
-pub fn buildEdges(allocator: std.mem.Allocator, source: []const u8, g: *Graph, file_idx: usize, scope_end: usize, file_path: ?[]const u8, graph_index: *const GraphIndex, logger: Logger) anyerror!void {
+/// Re-parse source and emit cross-file edges for the Rust file at file_idx.
+pub fn buildEdges(allocator: std.mem.Allocator, source: []const u8, g: *Graph, file_idx: usize, scope_end: usize, file_path: ?[]const u8, graph_index: *const GraphIndex, phantom_mgr: *const PhantomManager, logger: Logger) anyerror!void {
     const log = logger.withScope("rust-edges");
 
     const ts_lang = ts_api.tree_sitter_rust();
@@ -114,7 +115,7 @@ pub fn buildEdges(allocator: std.mem.Allocator, source: []const u8, g: *Graph, f
     try cf.buildImportMap(allocator, g, source, root, &ctx, graph_index, file_path, &k, log);
 
     log.debug("building edges", &.{});
-    try eb.walkForEdges(allocator, g, source, root, &k, &ctx, graph_index, log);
+    try eb.walkForEdges(allocator, g, source, root, &k, &ctx, graph_index, phantom_mgr, log);
 }
 
 /// Extract outer attributes and register the allocated buffer with the

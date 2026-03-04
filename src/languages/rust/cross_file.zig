@@ -5,9 +5,12 @@ const types = @import("../../core/types.zig");
 const ts = @import("tree-sitter");
 const ts_api = @import("../../parser/tree_sitter_api.zig");
 const source_scan = @import("../../parser/source_scan.zig");
+const source_utils = @import("source_utils.zig");
 const pc = @import("parse_context.zig");
 const ih = @import("indexer_hooks.zig");
 const impl_resolve = @import("impl_resolve.zig");
+const shared_types = @import("../shared/types.zig");
+const shared_resolve = @import("../shared/resolve.zig");
 
 const Field = logging.Field;
 const Logger = logging.Logger;
@@ -21,19 +24,15 @@ const graph_index_mod = @import("../../core/graph_index.zig");
 const GraphIndex = graph_index_mod.GraphIndex;
 const ScopeIndex = graph_index_mod.ScopeIndex;
 
-/// A symbol origin: identifies a node within a target file by file id and access chain.
-/// An empty chain refers to the module itself; a non-empty chain contains the
-/// identifier segments extracted from use declarations.
-pub const SymbolOrigin = struct {
-    file_id: NodeId,
-    chain: []const []const u8,
-};
-
-/// Maximum depth for scoped_identifier chains.
-pub const max_chain_depth = 16;
-
-/// Maximum AST depth for scanForCalls.
-pub const max_ast_scan_depth: u32 = 256;
+pub const SymbolOrigin = shared_types.SymbolOrigin;
+pub const max_chain_depth = shared_types.max_chain_depth;
+pub const max_ast_scan_depth = shared_types.max_ast_scan_depth;
+pub const ImportEntry = shared_types.ImportEntry;
+pub const EdgeContext = shared_types.EdgeContext;
+pub const VarBinding = shared_types.VarBinding;
+pub const VarTracker = shared_types.VarTracker;
+pub const ResolvedEdge = shared_types.ResolvedEdge;
+pub const resolveQualifiedCall = shared_resolve.resolveQualifiedCall;
 
 /// Maximum depth for transitive re-export resolution.
 const max_reexport_depth: usize = 8;
@@ -44,82 +43,6 @@ const ReExportResult = struct {
     file_id: NodeId,
     chain: [max_chain_depth][]const u8 = undefined,
     chain_len: usize = 0,
-};
-
-/// A single mod/use binding: the local name, resolved target file, and
-/// any extraction chain from use declarations.
-pub const ImportEntry = struct {
-    name: []const u8,
-    target: NodeId,
-    chain: [max_chain_depth][]const u8 = undefined,
-    chain_len: usize = 0,
-};
-
-/// Context for cross-file edge creation during a single file parse.
-/// Holds the file's node scope range and a dynamically-sized table of mod/use
-/// bindings mapped to their resolved target file NodeIds and extraction chains.
-pub const EdgeContext = struct {
-    scope_start: usize,
-    scope_end: usize,
-    imports: std.ArrayListUnmanaged(ImportEntry) = .empty,
-    glob_targets: std.ArrayListUnmanaged(NodeId) = .empty,
-
-    pub fn deinit(self: *EdgeContext, allocator: std.mem.Allocator) void {
-        self.imports.deinit(allocator);
-        self.glob_targets.deinit(allocator);
-    }
-
-    /// Look up the target file NodeId for an import binding by name.
-    pub fn findImportTarget(self: *const EdgeContext, name: []const u8) ?NodeId {
-        for (self.imports.items) |entry| {
-            if (std.mem.eql(u8, entry.name, name)) return entry.target;
-        }
-        return null;
-    }
-
-    /// Look up the full SymbolOrigin (file id + extraction chain) for an import binding.
-    pub fn findImportOrigin(self: *const EdgeContext, name: []const u8) ?SymbolOrigin {
-        for (self.imports.items) |*entry| {
-            if (std.mem.eql(u8, entry.name, name)) {
-                return .{
-                    .file_id = entry.target,
-                    .chain = entry.chain[0..entry.chain_len],
-                };
-            }
-        }
-        return null;
-    }
-};
-
-/// A single variable-to-file binding.
-pub const VarBinding = struct {
-    name: []const u8,
-    target: NodeId,
-};
-
-/// Tracks variable-to-file bindings within a function scope.
-/// Maps local variable names to the target file NodeId they were assigned from
-/// via module-qualified expressions, so that later method calls can be resolved
-/// to the correct cross-file target.
-pub const VarTracker = struct {
-    bindings: std.ArrayListUnmanaged(VarBinding) = .empty,
-
-    pub fn deinit(self: *VarTracker, allocator: std.mem.Allocator) void {
-        self.bindings.deinit(allocator);
-    }
-
-    /// Record a variable-to-file binding.
-    pub fn addBinding(self: *VarTracker, allocator: std.mem.Allocator, name: []const u8, target_file: NodeId) !void {
-        try self.bindings.append(allocator, .{ .name = name, .target = target_file });
-    }
-
-    /// Return the target file NodeId associated with a variable name.
-    pub fn findTarget(self: *const VarTracker, name: []const u8) ?NodeId {
-        for (self.bindings.items) |b| {
-            if (std.mem.eql(u8, b.name, name)) return b.target;
-        }
-        return null;
-    }
 };
 
 /// Populate the import map in ctx by scanning mod declarations from graph nodes
@@ -538,13 +461,13 @@ fn resolveReExport(
         if (n.visibility != .public) continue;
         const sig = n.signature orelse continue;
 
-        const span = source_scan.extractUsePath(sig) orelse continue;
+        const span = source_utils.extractUsePath(sig) orelse continue;
         const reexport_path = span.path;
         const pe = span.end;
 
         // Brace-delimited group re-export: use balanced matching for nested groups.
         if (pe < sig.len and sig[pe] == '{') {
-            const brace_end = source_scan.findMatchingBrace(sig, pe) orelse continue;
+            const brace_end = source_utils.findMatchingBrace(sig, pe) orelse continue;
             if (impl_resolve.findTraitInGroup(sig[pe + 1 .. brace_end], symbol_name)) {
                 const submod = if (std.mem.endsWith(u8, reexport_path, "::"))
                     reexport_path[0 .. reexport_path.len - 2]
@@ -575,7 +498,7 @@ fn resolveReExport(
         }
         if (reex_count < 2) continue;
 
-        const alias = source_scan.extractAlias(sig, pe);
+        const alias = source_utils.extractAlias(sig, pe);
         const exported_name = alias orelse reex_segs[reex_count - 1];
 
         if (!std.mem.eql(u8, exported_name, symbol_name)) continue;
@@ -597,102 +520,6 @@ fn resolveReExport(
     }
 
     return null;
-}
-
-/// A resolved edge target from qualified chain resolution.
-pub const ResolvedEdge = struct {
-    target_id: NodeId,
-    edge_type: types.EdgeType,
-};
-
-/// Resolve a module-qualified identifier chain against a target file.
-/// Walks the chain segment by segment, narrowing scope to direct children of each
-/// resolved node. Emits uses_type for type containers and calls for terminal
-/// function references when is_call is true. Handles Self aliases and
-/// mid-chain function calls by following return types.
-///
-/// Returns the number of resolved edges written to `out`.
-pub fn resolveQualifiedCall(
-    g: *const Graph,
-    target_file_id: NodeId,
-    chain: []const []const u8,
-    is_call: bool,
-    graph_index: *const GraphIndex,
-    log: Logger,
-    out: []ResolvedEdge,
-) usize {
-    const scope_index = &graph_index.scope;
-    var current_scope_id = target_file_id;
-    var count: usize = 0;
-
-    for (chain, 0..) |segment, seg_idx| {
-        const is_last = (seg_idx == chain.len - 1);
-
-        // Search direct children of the current scope using the scope index.
-        var matched_id: ?NodeId = null;
-        for (scope_index.childrenOf(current_scope_id)) |child_idx| {
-            const n = g.nodes.items[child_idx];
-            if (!std.mem.eql(u8, n.name, segment)) continue;
-            matched_id = @enumFromInt(child_idx);
-            break;
-        }
-
-        // If no direct child matched, search all descendants via scope_index.
-        // Only resolve when exactly one matches (ambiguity rejection).
-        if (matched_id == null) {
-            matched_id = scope_index.findUniqueDescendant(g.nodes.items, current_scope_id, segment);
-        }
-
-        // Self refers to the current type or impl target; stay at scope.
-        if (matched_id == null and std.mem.eql(u8, segment, "Self")) {
-            const scope_node = g.getNode(current_scope_id) orelse return count;
-            if (scope_node.kind.isTypeContainer() or scope_node.kind == .file) {
-                continue;
-            }
-            return count;
-        }
-
-        const resolved_id = matched_id orelse {
-            log.trace("qualified call: segment not found", &.{Field.string("segment", segment)});
-            return count;
-        };
-
-        const resolved_node = g.getNode(resolved_id) orelse return count;
-
-        if (is_last and is_call and resolved_node.kind == .function) {
-            if (count < out.len) {
-                out[count] = .{ .target_id = resolved_id, .edge_type = .calls };
-                count += 1;
-            }
-        } else if (!is_last and resolved_node.kind == .function) {
-            if (is_call and count < out.len) {
-                out[count] = .{ .target_id = resolved_id, .edge_type = .calls };
-                count += 1;
-            }
-            if (resolveReturnTypeScope(g, resolved_id, graph_index)) |return_type_id| {
-                current_scope_id = return_type_id;
-                continue;
-            }
-            log.trace("qualified call: return type unresolvable", &.{});
-            return count;
-        } else {
-            const is_type = resolved_node.kind.isTypeContainer();
-            const is_type_alias = resolved_node.kind == .constant and
-                resolved_node.name.len > 0 and resolved_node.name[0] >= 'A' and resolved_node.name[0] <= 'Z';
-            if ((is_type or is_type_alias) and count < out.len) {
-                out[count] = .{ .target_id = resolved_id, .edge_type = .uses_type };
-                count += 1;
-            }
-        }
-
-        // Narrow scope for next segment.
-        if (resolved_node.kind.isTypeContainer()) {
-            current_scope_id = resolved_id;
-        } else {
-            current_scope_id = resolved_node.parent_id orelse return count;
-        }
-    }
-    return count;
 }
 
 /// Check whether a let_declaration's initializer is rooted in a module-qualified expression.

@@ -2,6 +2,7 @@ const std = @import("std");
 const graph_mod = @import("../../core/graph.zig");
 const phantom_mod = @import("../../core/phantom.zig");
 const source_scan = @import("../../parser/source_scan.zig");
+const source_utils = @import("source_utils.zig");
 const types = @import("../../core/types.zig");
 const eb = @import("edge_builder.zig");
 
@@ -167,14 +168,14 @@ fn resolveTraitViaUseDecls(graph: *const Graph, trait_name: []const u8, file_idx
         if (n.parent_id == null or n.parent_id.? != file_id) continue;
         const sig = n.signature orelse continue;
 
-        const span = source_scan.extractUsePath(sig) orelse continue;
+        const span = source_utils.extractUsePath(sig) orelse continue;
         const path = span.path;
         const path_last_sep = std.mem.lastIndexOf(u8, path, "::");
         const path_last_seg = if (path_last_sep) |s| path[s + 2 ..] else path;
 
         // Handle brace-delimited group: use foo::{A, B as C}.
         if (span.end < sig.len and sig[span.end] == '{') {
-            const brace_end = source_scan.findMatchingBrace(sig, span.end) orelse continue;
+            const brace_end = source_utils.findMatchingBrace(sig, span.end) orelse continue;
             const group = sig[span.end + 1 .. brace_end];
             if (findTraitInGroup(group, bare_name)) {
                 // Build the full qualified path: prefix + bare_name.
@@ -195,7 +196,7 @@ fn resolveTraitViaUseDecls(graph: *const Graph, trait_name: []const u8, file_idx
             continue;
         }
 
-        const alias = source_scan.extractAlias(sig, span.end);
+        const alias = source_utils.extractAlias(sig, span.end);
 
         if (alias) |a| {
             if (path_last_sep != null and std.mem.eql(u8, a, bare_name)) {
@@ -271,7 +272,7 @@ pub fn findTraitInGroup(group: []const u8, trait_name: []const u8) bool {
         if (pos >= group.len) break;
 
         if (group[pos] == '{') {
-            if (source_scan.findMatchingBrace(group, pos)) |close| {
+            if (source_utils.findMatchingBrace(group, pos)) |close| {
                 pos = close + 1;
             } else break;
             continue;
@@ -289,7 +290,7 @@ pub fn findTraitInGroup(group: []const u8, trait_name: []const u8) bool {
         if (pos + 1 < group.len and group[pos] == ':' and group[pos + 1] == ':') {
             pos += 2;
             if (pos < group.len and group[pos] == '{') {
-                if (source_scan.findMatchingBrace(group, pos)) |close| {
+                if (source_utils.findMatchingBrace(group, pos)) |close| {
                     pos = close + 1;
                 } else break;
             }

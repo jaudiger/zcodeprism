@@ -20,7 +20,9 @@ fn parseWithEdges(allocator: std.mem.Allocator, source: []const u8, g: *Graph) !
     try parse(allocator, source, g, null, Logger.noop);
     var gi = try GraphIndex.build(allocator, g.nodes.items);
     defer gi.deinit(allocator);
-    try buildEdges(allocator, source, g, 0, g.nodeCount(), null, &gi, Logger.noop);
+    var phantom_mgr = zcodeprism.phantom.PhantomManager.init(g);
+    defer phantom_mgr.deinit(allocator);
+    try buildEdges(allocator, source, g, 0, g.nodeCount(), null, &gi, &phantom_mgr, Logger.noop);
 }
 
 test "simple fixture: edge creation" {

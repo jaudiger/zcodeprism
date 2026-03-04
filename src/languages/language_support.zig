@@ -63,10 +63,9 @@ pub const ResolvePhantomsFn = *const fn (
     logger: Logger,
 ) error{OutOfMemory}!void;
 
-/// Builds cross-file edges for a single file's node range.
-/// Called by the indexer after all files have been parsed, so the graph
-/// contains every file's nodes and the GraphIndex is complete.
-/// Re-parses source with tree-sitter to walk the AST for edge patterns.
+/// Re-parses source with tree-sitter to emit cross-file edges for a single
+/// file's node range. `phantom_mgr` is the shared phantom registry for
+/// external symbol lookups.
 pub const BuildEdgesFn = *const fn (
     allocator: std.mem.Allocator,
     source: []const u8,
@@ -75,6 +74,7 @@ pub const BuildEdgesFn = *const fn (
     scope_end: usize,
     file_path: ?[]const u8,
     graph_index: *const GraphIndex,
+    phantom_mgr: *const PhantomManager,
     logger: Logger,
 ) anyerror!void;
 

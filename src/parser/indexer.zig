@@ -382,44 +382,6 @@ pub fn indexDirectory(
     var graph_index = try GraphIndex.build(allocator, graph.nodes.items);
     defer graph_index.deinit(allocator);
 
-    // Build edges with the complete graph available.
-    log.debug("building edges", &.{Field.uint("file_count", file_infos.items.len)});
-    for (file_infos.items) |fi| {
-        if (fi.lang_support.buildEdgesFn) |build_edges| {
-            const file_node = graph.nodes.items[fi.idx];
-            build_edges(allocator, fi.source, graph, fi.idx, fi.scope_end, file_node.file_path, &graph_index, log) catch |err| {
-                log.warn("edge building failed", &.{
-                    Field.string("path", file_node.file_path orelse "?"),
-                    Field.string("error", @errorName(err)),
-                });
-                continue;
-            };
-        }
-    }
-
-    // Create contains edges from module nodes to their root source files.
-    if (module_file_map.count() > 0) {
-        for (file_infos.items) |fi| {
-            const file_node = graph.nodes.items[fi.idx];
-            const fp = file_node.file_path orelse continue;
-            if (module_file_map.get(fp)) |mod_id| {
-                const file_id: NodeId = @enumFromInt(fi.idx);
-                _ = try graph.addEdgeIfNew(allocator, .{
-                    .source_id = mod_id,
-                    .target_id = file_id,
-                    .edge_type = .contains,
-                    .source = .workspace,
-                });
-            }
-        }
-    }
-
-    // Compute metrics for function nodes in each file.
-    for (file_infos.items) |fi| {
-        source_scan.computeMetricsForNodes(graph, fi.source, fi.idx, fi.scope_end);
-    }
-
-    // Resolve inter-file imports and external (phantom) references.
     // Build rel_path-to-FileInfo-index map for cross-file lookup.
     log.debug("resolving cross-file edges", &.{Field.uint("file_count", file_infos.items.len)});
     var relpath_map = std.StringHashMapUnmanaged(usize){};
@@ -437,14 +399,12 @@ pub fn indexDirectory(
         const file_node = graph.nodes.items[fi.idx];
         const importer_path = file_node.file_path;
 
-        // Only scan import_decl nodes within this file's node range.
         for (graph.nodes.items[fi.idx..fi.scope_end]) |n| {
             if (n.kind != .import_decl) continue;
             if (n.parent_id == null or n.parent_id.? != file_id) continue;
 
             const import_path = n.signature orelse continue;
 
-            // Resolve import path relative to the importing file's directory.
             const target_idx = blk: {
                 if (importer_path) |ip| {
                     if (fi.lang_support.resolveImportPathFn) |resolve_fn| {
@@ -456,7 +416,6 @@ pub fn indexDirectory(
                         }
                     }
                 }
-                // Fallback: direct lookup.
                 break :blk relpath_map.get(import_path);
             };
 
@@ -487,7 +446,7 @@ pub fn indexDirectory(
         }
     }
 
-    // Pre-index import edges by source file so phantom resolution avoids scanning all edges.
+    // Index import edges by source file for resolveImplementsEdges.
     try graph_index.buildImportTargets(allocator, graph.edges.items);
 
     for (file_infos.items) |fi| {
@@ -495,6 +454,43 @@ pub fn indexDirectory(
             const bc_ptr: ?*const lang.BuildConfig = if (build_config) |*bc| bc else null;
             try resolve_phantoms(allocator, graph, fi.source, fi.idx, fi.scope_end, &phantom, &graph_index, bc_ptr, log);
         }
+    }
+
+    // Build cross-file edges.
+    log.debug("building edges", &.{Field.uint("file_count", file_infos.items.len)});
+    for (file_infos.items) |fi| {
+        if (fi.lang_support.buildEdgesFn) |build_edges| {
+            const file_node = graph.nodes.items[fi.idx];
+            build_edges(allocator, fi.source, graph, fi.idx, fi.scope_end, file_node.file_path, &graph_index, &phantom, log) catch |err| {
+                log.warn("edge building failed", &.{
+                    Field.string("path", file_node.file_path orelse "?"),
+                    Field.string("error", @errorName(err)),
+                });
+                continue;
+            };
+        }
+    }
+
+    // Create contains edges from module nodes to their root source files.
+    if (module_file_map.count() > 0) {
+        for (file_infos.items) |fi| {
+            const file_node = graph.nodes.items[fi.idx];
+            const fp = file_node.file_path orelse continue;
+            if (module_file_map.get(fp)) |mod_id| {
+                const file_id: NodeId = @enumFromInt(fi.idx);
+                _ = try graph.addEdgeIfNew(allocator, .{
+                    .source_id = mod_id,
+                    .target_id = file_id,
+                    .edge_type = .contains,
+                    .source = .workspace,
+                });
+            }
+        }
+    }
+
+    // Compute metrics for function nodes in each file.
+    for (file_infos.items) |fi| {
+        source_scan.computeMetricsForNodes(graph, fi.source, fi.idx, fi.scope_end);
     }
 
     log.info("indexing complete", &.{

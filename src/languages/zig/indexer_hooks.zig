@@ -143,10 +143,9 @@ pub fn parseBuildConfig(allocator: std.mem.Allocator, project_root: []const u8, 
 
 /// Create phantom nodes and edges for external references in a single file.
 ///
-/// Walks the graph slice `[file_idx..scope_end)` looking for `@import("std")`
-/// and dependency import declarations, creates the corresponding phantom
-/// module nodes and import edges, then delegates to
-/// `source_scan.resolveStdPhantoms` for member-level phantom resolution.
+/// Scans import_decl nodes for all non-.zig external imports, creates phantom
+/// module nodes, and adds import edges from both the file node and the
+/// import_decl node. Calls resolveStdPhantoms for member-level resolution.
 pub fn resolvePhantoms(
     allocator: std.mem.Allocator,
     graph: *Graph,
@@ -161,47 +160,56 @@ pub fn resolvePhantoms(
     const file_id: NodeId = @enumFromInt(file_idx);
     const clamped_end = @min(scope_end, graph.nodes.items.len);
 
-    // Collect: scan import_decl nodes for std and dependency imports (read-only).
-    const DepMatch = struct { name: []const u8, version: ?[]const u8 };
-    var std_import_name: ?[]const u8 = null;
-    var dep_matches: [32]DepMatch = undefined;
-    var dep_count: usize = 0;
-    for (graph.nodes.items[file_idx..clamped_end]) |n| {
+    // Collect: scan import_decl nodes for all external imports (read-only).
+    const ImportCollect = struct {
+        import_name: []const u8,
+        import_decl_id: NodeId,
+        import_path: []const u8,
+        external: ExternalInfo,
+    };
+    var collected: [32]ImportCollect = undefined;
+    var collect_count: usize = 0;
+
+    for (graph.nodes.items[file_idx..clamped_end], file_idx..) |n, node_idx| {
         if (n.kind != .import_decl) continue;
         if (n.parent_id == null or n.parent_id.? != file_id) continue;
         const import_path = n.signature orelse continue;
 
-        if (std.mem.eql(u8, import_path, "std")) {
-            std_import_name = n.name;
-            continue;
-        }
+        // Project file imports are handled via the file index, not phantoms.
+        if (std.mem.endsWith(u8, import_path, ".zig")) continue;
 
-        if (build_config) |bc| {
-            if (bc.build_dependencies) |deps| {
-                for (deps) |dep| {
-                    if (std.mem.eql(u8, import_path, dep.name)) {
-                        if (dep_count < dep_matches.len) {
-                            dep_matches[dep_count] = .{ .name = dep.name, .version = dep.version };
-                            dep_count += 1;
+        const external: ExternalInfo = if (std.mem.eql(u8, import_path, "std") or
+            std.mem.eql(u8, import_path, "builtin"))
+            .{ .stdlib = {} }
+        else blk: {
+            if (build_config) |bc| {
+                if (bc.build_dependencies) |deps| {
+                    for (deps) |dep| {
+                        if (std.mem.eql(u8, import_path, dep.name)) {
+                            break :blk .{ .dependency = .{ .version = dep.version } };
                         }
-                        break;
                     }
                 }
             }
+            break :blk .{ .dependency = .{ .version = null } };
+        };
+
+        if (collect_count < collected.len) {
+            collected[collect_count] = .{
+                .import_name = n.name,
+                .import_decl_id = @enumFromInt(node_idx),
+                .import_path = import_path,
+                .external = external,
+            };
+            collect_count += 1;
         }
     }
 
     // Act: create phantom nodes and edges outside the scan loop.
-    if (std_import_name != null) {
-        const std_id = try phantom.getOrCreate(allocator, "std", .zig, .{ .stdlib = {} });
-        _ = try graph.addEdgeIfNew(allocator, .{ .source_id = file_id, .target_id = std_id, .edge_type = .imports, .source = .phantom });
-    }
-    for (dep_matches[0..dep_count]) |dm| {
-        const dep_id = try phantom.getOrCreate(allocator, dm.name, .zig, .{ .dependency = .{ .version = dm.version } });
-        _ = try graph.addEdgeIfNew(allocator, .{ .source_id = file_id, .target_id = dep_id, .edge_type = .imports, .source = .phantom });
-    }
-
-    if (std_import_name) |sname| {
-        try source_scan.resolveStdPhantoms(allocator, graph, source, file_idx, clamped_end, phantom, sname, .zig, .{ .stdlib = {} }, log);
+    for (collected[0..collect_count]) |entry| {
+        const phantom_id = try phantom.getOrCreate(allocator, entry.import_path, .zig, entry.external);
+        _ = try graph.addEdgeIfNew(allocator, .{ .source_id = file_id, .target_id = phantom_id, .edge_type = .imports, .source = .phantom });
+        _ = try graph.addEdgeIfNew(allocator, .{ .source_id = entry.import_decl_id, .target_id = phantom_id, .edge_type = .imports, .source = .phantom });
+        try source_scan.resolveStdPhantoms(allocator, graph, source, file_idx, clamped_end, phantom, entry.import_name, .zig, entry.external, log);
     }
 }

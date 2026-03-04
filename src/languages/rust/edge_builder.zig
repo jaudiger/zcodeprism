@@ -10,6 +10,10 @@ const source_scan = @import("../../parser/source_scan.zig");
 const pc = @import("parse_context.zig");
 const logging = @import("../../logging.zig");
 const rust_meta = @import("meta.zig");
+const phantom_mod = @import("../../core/phantom.zig");
+const shared_types = @import("../shared/types.zig");
+const shared_resolve = @import("../shared/resolve.zig");
+const shared_lookup = @import("../shared/lookup.zig");
 
 const Field = logging.Field;
 const KindIds = pc.KindIds;
@@ -23,35 +27,9 @@ const Logger = logging.Logger;
 const RustSubKind = rust_meta.RustSubKind;
 const EdgeContext = cf.EdgeContext;
 const VarTracker = cf.VarTracker;
-
-/// A local variable bound to a type name inferred from its initializer.
-const TypeBinding = struct {
-    var_name: []const u8,
-    type_name: []const u8,
-};
-
-/// Tracks local variable bindings from let declarations to their types.
-/// Populated during prescan, queried during call resolution.
-const LocalTypeTracker = struct {
-    bindings: std.ArrayListUnmanaged(TypeBinding) = .empty,
-
-    fn deinit(self: *LocalTypeTracker, allocator: std.mem.Allocator) void {
-        self.bindings.deinit(allocator);
-    }
-
-    /// Record that local variable `name` was initialized from type `type_name`.
-    fn addBinding(self: *LocalTypeTracker, allocator: std.mem.Allocator, name: []const u8, type_name: []const u8) !void {
-        try self.bindings.append(allocator, .{ .var_name = name, .type_name = type_name });
-    }
-
-    /// Return the type name bound to `name`, or null if not tracked.
-    fn findTypeName(self: *const LocalTypeTracker, name: []const u8) ?[]const u8 {
-        for (self.bindings.items) |b| {
-            if (std.mem.eql(u8, b.var_name, name)) return b.type_name;
-        }
-        return null;
-    }
-};
+const PhantomManager = phantom_mod.PhantomManager;
+const TypeBinding = shared_types.TypeBinding;
+const LocalTypeTracker = shared_types.LocalTypeTracker;
 
 /// A parameter bound to its import-qualified type origin.
 const ParamBinding = struct {
@@ -119,37 +97,15 @@ const ScanContext = struct {
     edge_ctx: *const EdgeContext,
     k: *const KindIds,
     graph_index: *const GraphIndex,
+    phantom_mgr: *const PhantomManager,
     local_tracker: *const LocalTypeTracker,
     var_tracker: *const VarTracker,
     param_tracker: *const ParamTypeTracker,
     log: Logger,
 };
 
-/// Resolve a qualified chain and add the resulting edges to the graph.
-fn addResolvedEdges(
-    allocator: std.mem.Allocator,
-    sctx: *const ScanContext,
-    target_file_id: NodeId,
-    chain: []const []const u8,
-    is_call: bool,
-) !void {
-    var edge_buf: [cf.max_chain_depth]cf.ResolvedEdge = undefined;
-    const edge_count = cf.resolveQualifiedCall(
-        sctx.graph,
-        target_file_id,
-        chain,
-        is_call,
-        sctx.graph_index,
-        sctx.log,
-        &edge_buf,
-    );
-    for (edge_buf[0..edge_count]) |edge| {
-        _ = try sctx.graph.addEdgeIfNew(allocator, .{
-            .source_id = sctx.caller_id,
-            .target_id = edge.target_id,
-            .edge_type = edge.edge_type,
-        });
-    }
+fn addResolvedEdges(allocator: std.mem.Allocator, sctx: *const ScanContext, target_file_id: NodeId, chain: []const []const u8, is_call: bool) !void {
+    try shared_resolve.addResolvedEdges(allocator, sctx.graph, sctx.caller_id, target_file_id, chain, is_call, sctx.graph_index, sctx.log, cf.resolveReturnTypeScope);
 }
 
 /// Walk the AST to discover edges (calls, uses_type, implements).
@@ -163,6 +119,7 @@ pub fn walkForEdges(
     k: *const KindIds,
     edge_ctx: *const EdgeContext,
     graph_index: *const GraphIndex,
+    phantom_mgr: *const PhantomManager,
     log: Logger,
 ) !void {
     var i: u32 = 0;
@@ -171,13 +128,13 @@ pub fn walkForEdges(
         const kid = child.kindId();
 
         if (kid == k.function_item) {
-            try processFunction(allocator, graph, source, child, k, edge_ctx, graph_index, log);
+            try processFunction(allocator, graph, source, child, k, edge_ctx, graph_index, phantom_mgr, log);
         } else if (kid == k.impl_item) {
-            try processImpl(allocator, graph, source, child, k, edge_ctx, graph_index, log);
+            try processImpl(allocator, graph, source, child, k, edge_ctx, graph_index, phantom_mgr, log);
         } else if (kid == k.mod_item) {
-            try processInlineMod(allocator, graph, source, child, k, edge_ctx, graph_index, log);
+            try processInlineMod(allocator, graph, source, child, k, edge_ctx, graph_index, phantom_mgr, log);
         } else if (kid == k.struct_item or kid == k.enum_item or kid == k.union_item) {
-            try processStructOrEnum(allocator, graph, source, child, k, edge_ctx, graph_index, log);
+            try processStructOrEnum(allocator, graph, source, child, k, edge_ctx, graph_index, phantom_mgr, log);
         }
     }
 }
@@ -191,6 +148,7 @@ fn processFunction(
     k: *const KindIds,
     edge_ctx: *const EdgeContext,
     graph_index: *const GraphIndex,
+    phantom_mgr: *const PhantomManager,
     log: Logger,
 ) !void {
     const fn_name = findFunctionName(source, fn_node, k) orelse return;
@@ -219,6 +177,7 @@ fn processFunction(
         .edge_ctx = edge_ctx,
         .k = k,
         .graph_index = graph_index,
+        .phantom_mgr = phantom_mgr,
         .local_tracker = &local_tracker,
         .var_tracker = &var_tracker,
         .param_tracker = &param_tracker,
@@ -246,6 +205,7 @@ fn processImpl(
     k: *const KindIds,
     edge_ctx: *const EdgeContext,
     graph_index: *const GraphIndex,
+    phantom_mgr: *const PhantomManager,
     log: Logger,
 ) !void {
     const scope_start = edge_ctx.scope_start;
@@ -282,7 +242,7 @@ fn processImpl(
             while (j < child.childCount()) : (j += 1) {
                 const decl = child.child(j) orelse continue;
                 if (decl.kindId() == k.function_item) {
-                    try processFunction(allocator, graph, source, decl, k, edge_ctx, graph_index, log);
+                    try processFunction(allocator, graph, source, decl, k, edge_ctx, graph_index, phantom_mgr, log);
                 }
             }
         }
@@ -298,6 +258,7 @@ fn processInlineMod(
     k: *const KindIds,
     edge_ctx: *const EdgeContext,
     graph_index: *const GraphIndex,
+    phantom_mgr: *const PhantomManager,
     log: Logger,
 ) !void {
     var i: u32 = 0;
@@ -309,13 +270,13 @@ fn processInlineMod(
                 const decl = child.child(j) orelse continue;
                 const kid = decl.kindId();
                 if (kid == k.function_item) {
-                    try processFunction(allocator, graph, source, decl, k, edge_ctx, graph_index, log);
+                    try processFunction(allocator, graph, source, decl, k, edge_ctx, graph_index, phantom_mgr, log);
                 } else if (kid == k.impl_item) {
-                    try processImpl(allocator, graph, source, decl, k, edge_ctx, graph_index, log);
+                    try processImpl(allocator, graph, source, decl, k, edge_ctx, graph_index, phantom_mgr, log);
                 } else if (kid == k.mod_item) {
-                    try processInlineMod(allocator, graph, source, decl, k, edge_ctx, graph_index, log);
+                    try processInlineMod(allocator, graph, source, decl, k, edge_ctx, graph_index, phantom_mgr, log);
                 } else if (kid == k.struct_item or kid == k.enum_item or kid == k.union_item) {
-                    try processStructOrEnum(allocator, graph, source, decl, k, edge_ctx, graph_index, log);
+                    try processStructOrEnum(allocator, graph, source, decl, k, edge_ctx, graph_index, phantom_mgr, log);
                 }
             }
         }
@@ -331,6 +292,7 @@ fn processStructOrEnum(
     k: *const KindIds,
     edge_ctx: *const EdgeContext,
     graph_index: *const GraphIndex,
+    phantom_mgr: *const PhantomManager,
     log: Logger,
 ) !void {
     const name = findTypeName(source, item_node, k) orelse return;
@@ -345,7 +307,7 @@ fn processStructOrEnum(
             kid == k.ordered_field_declaration_list or
             kid == k.enum_variant_list)
         {
-            try scanFieldTypesRecursive(allocator, graph, source, child, owner_id, k, edge_ctx, graph_index, log);
+            try scanFieldTypesRecursive(allocator, graph, source, child, owner_id, k, edge_ctx, graph_index, phantom_mgr, log);
         }
     }
 }
@@ -373,6 +335,7 @@ fn scanFieldTypesRecursive(
     k: *const KindIds,
     edge_ctx: *const EdgeContext,
     graph_index: *const GraphIndex,
+    phantom_mgr: *const PhantomManager,
     log: Logger,
 ) !void {
     var i: u32 = 0;
@@ -384,7 +347,7 @@ fn scanFieldTypesRecursive(
             const type_name = ts_api.nodeText(source, child);
             if (!isPrimitiveOrSelf(type_name)) {
                 const target_id = findTypeByNameScoped(graph, type_name, edge_ctx.scope_start, edge_ctx.scope_end, null, &graph_index.scope) orelse
-                    findTypeCrossFile(graph, type_name, edge_ctx, &graph_index.scope);
+                    findTypeCrossFile(graph, type_name, edge_ctx, &graph_index.scope, phantom_mgr);
                 if (target_id) |tid| {
                     _ = try graph.addEdgeIfNew(allocator, .{ .source_id = owner_id, .target_id = tid, .edge_type = .uses_type });
                 }
@@ -392,7 +355,7 @@ fn scanFieldTypesRecursive(
         } else if (kid == k.scoped_type_identifier) {
             try resolveScopedFieldType(allocator, graph, source, child, owner_id, k, edge_ctx, graph_index, log);
         } else if (kid != k.attribute_item) {
-            try scanFieldTypesRecursive(allocator, graph, source, child, owner_id, k, edge_ctx, graph_index, log);
+            try scanFieldTypesRecursive(allocator, graph, source, child, owner_id, k, edge_ctx, graph_index, phantom_mgr, log);
         }
     }
 }
@@ -446,6 +409,7 @@ fn resolveScopedFieldType(
         graph_index,
         log,
         &edge_buf,
+        cf.resolveReturnTypeScope,
     );
     for (edge_buf[0..edge_count]) |edge| {
         _ = try graph.addEdgeIfNew(allocator, .{
@@ -593,23 +557,8 @@ fn resolveFieldCall(allocator: std.mem.Allocator, sctx: *const ScanContext, fiel
     }
 }
 
-/// Merge an origin's type chain with the call-site chain and resolve.
 fn resolveOriginCall(allocator: std.mem.Allocator, sctx: *const ScanContext, origin: cf.SymbolOrigin, call_chain: []const []const u8, is_call: bool) !void {
-    var merged: [cf.max_chain_depth][]const u8 = undefined;
-    var len: usize = 0;
-    for (origin.chain) |seg| {
-        if (len >= cf.max_chain_depth) break;
-        merged[len] = seg;
-        len += 1;
-    }
-    for (call_chain) |seg| {
-        if (len >= cf.max_chain_depth) break;
-        merged[len] = seg;
-        len += 1;
-    }
-    if (len > 0) {
-        try addResolvedEdges(allocator, sctx, origin.file_id, merged[0..len], is_call);
-    }
+    try shared_resolve.resolveOriginCall(allocator, sctx.graph, sctx.caller_id, origin, call_chain, is_call, sctx.graph_index, sctx.log, cf.resolveReturnTypeScope);
 }
 
 /// Handle a call_expression whose function reference is a generic_function
@@ -654,7 +603,7 @@ fn scanFunctionTypesForUsesType(allocator: std.mem.Allocator, sctx: *const ScanC
             const type_name = ts_api.nodeText(sctx.source, child);
             if (!isPrimitiveOrSelf(type_name)) {
                 const target_id = findTypeByNameScoped(sctx.graph, type_name, scope_start, scope_end, sctx.caller_parent_id, &sctx.graph_index.scope) orelse
-                    findTypeCrossFile(sctx.graph, type_name, sctx.edge_ctx, &sctx.graph_index.scope);
+                    findTypeCrossFile(sctx.graph, type_name, sctx.edge_ctx, &sctx.graph_index.scope, sctx.phantom_mgr);
                 if (target_id) |tid| {
                     _ = try sctx.graph.addEdgeIfNew(allocator, .{ .source_id = sctx.caller_id, .target_id = tid, .edge_type = .uses_type });
                 }
@@ -682,7 +631,7 @@ fn scanForTypeIdentifiers(allocator: std.mem.Allocator, sctx: *const ScanContext
             const type_name = ts_api.nodeText(sctx.source, child);
             if (!isPrimitiveOrSelf(type_name)) {
                 const target_id = findTypeByNameScoped(sctx.graph, type_name, scope_start, scope_end, sctx.caller_parent_id, &sctx.graph_index.scope) orelse
-                    findTypeCrossFile(sctx.graph, type_name, sctx.edge_ctx, &sctx.graph_index.scope);
+                    findTypeCrossFile(sctx.graph, type_name, sctx.edge_ctx, &sctx.graph_index.scope, sctx.phantom_mgr);
                 if (target_id) |tid| {
                     _ = try sctx.graph.addEdgeIfNew(allocator, .{ .source_id = sctx.caller_id, .target_id = tid, .edge_type = .uses_type });
                 }
@@ -721,7 +670,7 @@ fn scanForTypeIdentifiersInBody(allocator: std.mem.Allocator, sctx: *const ScanC
         const type_name = ts_api.nodeText(sctx.source, ts_node);
         if (!isPrimitiveOrSelf(type_name)) {
             const target_id = findTypeByNameScoped(sctx.graph, type_name, scope_start, scope_end, sctx.caller_parent_id, &sctx.graph_index.scope) orelse
-                findTypeCrossFile(sctx.graph, type_name, sctx.edge_ctx, &sctx.graph_index.scope);
+                findTypeCrossFile(sctx.graph, type_name, sctx.edge_ctx, &sctx.graph_index.scope, sctx.phantom_mgr);
             if (target_id) |tid| {
                 _ = try sctx.graph.addEdgeIfNew(allocator, .{ .source_id = sctx.caller_id, .target_id = tid, .edge_type = .uses_type });
             }
@@ -734,7 +683,7 @@ fn scanForTypeIdentifiersInBody(allocator: std.mem.Allocator, sctx: *const ScanC
     if (kid == sctx.k.identifier) {
         const name = ts_api.nodeText(sctx.source, ts_node);
         if (name.len > 0 and std.ascii.isUpper(name[0]) and !isPrimitiveOrSelf(name)) {
-            if (findTypeCrossFile(sctx.graph, name, sctx.edge_ctx, &sctx.graph_index.scope)) |tid| {
+            if (findTypeCrossFile(sctx.graph, name, sctx.edge_ctx, &sctx.graph_index.scope, sctx.phantom_mgr)) |tid| {
                 _ = try sctx.graph.addEdgeIfNew(allocator, .{ .source_id = sctx.caller_id, .target_id = tid, .edge_type = .uses_type });
             }
         }
@@ -750,50 +699,8 @@ fn scanForTypeIdentifiersInBody(allocator: std.mem.Allocator, sctx: *const ScanC
     }
 }
 
-/// Search imported files for a type definition with the given name.
-/// Deduplicates target file ids to avoid false ambiguity when multiple
-/// import entries point to the same file. Returns the target NodeId only
-/// if exactly one distinct type matches across all imported files.
-fn findTypeCrossFile(graph: *const Graph, name: []const u8, edge_ctx: *const EdgeContext, scope_index: *const ScopeIndex) ?NodeId {
-    const ctx = edge_ctx;
-    if (name.len == 0 or !std.ascii.isUpper(name[0])) return null;
-
-    // Collect unique target file ids. The local buffer is generously sized;
-    // if imports exceed it, the remainder is simply not searched.
-    var unique_targets: [512]NodeId = undefined;
-    var unique_count: usize = 0;
-    for (ctx.imports.items) |entry| {
-        var already = false;
-        for (unique_targets[0..unique_count]) |existing| {
-            if (existing == entry.target) {
-                already = true;
-                break;
-            }
-        }
-        if (!already and unique_count < unique_targets.len) {
-            unique_targets[unique_count] = entry.target;
-            unique_count += 1;
-        }
-    }
-
-    var match: ?NodeId = null;
-    var match_count: usize = 0;
-    for (unique_targets[0..unique_count]) |target_file_id| {
-        for (scope_index.childrenOf(target_file_id)) |child_idx| {
-            const n = graph.nodes.items[child_idx];
-            if (!n.kind.isTypeContainer()) continue;
-            if (!std.mem.eql(u8, n.name, name)) continue;
-            // Skip impl blocks and type aliases; they share the type name
-            // but aren't the defining declaration.
-            if (n.lang_meta == .rust and
-                (n.lang_meta.rust.sub_kind == .impl_block or
-                    n.lang_meta.rust.sub_kind == .type_alias)) continue;
-            match = @enumFromInt(child_idx);
-            match_count += 1;
-        }
-    }
-    if (match_count == 1) return match;
-    return null;
+fn findTypeCrossFile(graph: *const Graph, name: []const u8, edge_ctx: *const EdgeContext, scope_index: *const ScopeIndex, phantom_mgr: *const PhantomManager) ?NodeId {
+    return shared_lookup.findTypeCrossFile(graph, name, edge_ctx, scope_index, phantom_mgr);
 }
 
 // --- Receiver classification ---
@@ -1235,73 +1142,16 @@ fn findNodeByNameAndLine(graph: *const Graph, name: []const u8, line: u32, scope
     return null;
 }
 
-/// Find a function node by name with scope-aware resolution.
-/// Walks up the parent_id chain from caller_parent_id, preferring the
-/// narrowest scope. Falls back to flat file-scope search, returning
-/// null if ambiguous (more than one match).
 fn findFunctionByNameScoped(graph: *const Graph, name: []const u8, scope_start: usize, scope_end: usize, caller_parent_id: ?NodeId, scope_index: *const ScopeIndex) ?NodeId {
-    if (caller_parent_id) |cpid| {
-        var current_scope: ?NodeId = cpid;
-        var hops: usize = 0;
-        while (current_scope != null and hops < 100) : (hops += 1) {
-            const scope_id = current_scope.?;
-            for (scope_index.childrenOf(scope_id)) |child_idx| {
-                const n = graph.nodes.items[child_idx];
-                if ((n.kind == .function or n.kind == .test_def) and std.mem.eql(u8, n.name, name)) {
-                    return @enumFromInt(child_idx);
-                }
-            }
-            const scope_node = graph.getNode(scope_id) orelse break;
-            current_scope = scope_node.parent_id;
-        }
-    }
-    // Fallback: flat file-scope search, return only if unambiguous.
-    const items = graph.nodes.items;
-    const end = @min(scope_end, items.len);
-    var sole_match: ?NodeId = null;
-    var match_count: usize = 0;
-    for (items[scope_start..end], scope_start..) |n, idx| {
-        if ((n.kind == .function or n.kind == .test_def) and std.mem.eql(u8, n.name, name)) {
-            sole_match = @enumFromInt(idx);
-            match_count += 1;
-            if (match_count > 1) return null;
-        }
-    }
-    return sole_match;
+    return shared_lookup.findFunctionByNameScoped(graph, name, scope_start, scope_end, caller_parent_id, scope_index, &.{.test_def});
 }
 
-/// Find a type node (type_def, enum_def, union_def) by name with
-/// scope-aware resolution. Walks up the parent_id chain, preferring
-/// the narrowest scope. Falls back to flat search with ambiguity rejection.
 fn findTypeByNameScoped(graph: *const Graph, name: []const u8, scope_start: usize, scope_end: usize, caller_parent_id: ?NodeId, scope_index: *const ScopeIndex) ?NodeId {
-    if (caller_parent_id) |cpid| {
-        var current_scope: ?NodeId = cpid;
-        var hops: usize = 0;
-        while (current_scope != null and hops < 100) : (hops += 1) {
-            const scope_id = current_scope.?;
-            for (scope_index.childrenOf(scope_id)) |child_idx| {
-                const n = graph.nodes.items[child_idx];
-                if (isTypeNode(n) and std.mem.eql(u8, n.name, name)) {
-                    return @enumFromInt(child_idx);
-                }
-            }
-            const scope_node = graph.getNode(scope_id) orelse break;
-            current_scope = scope_node.parent_id;
-        }
-    }
-    // Fallback: flat file-scope search, return only if unambiguous.
-    const items = graph.nodes.items;
-    const end = @min(scope_end, items.len);
-    var sole_match: ?NodeId = null;
-    var match_count: usize = 0;
-    for (items[scope_start..end], scope_start..) |n, idx| {
-        if (isTypeNode(n) and std.mem.eql(u8, n.name, name)) {
-            sole_match = @enumFromInt(idx);
-            match_count += 1;
-            if (match_count > 1) return null;
-        }
-    }
-    return sole_match;
+    return shared_lookup.findTypeByNameScoped(graph, name, scope_start, scope_end, caller_parent_id, scope_index, isTypeNodeWithName);
+}
+
+fn isTypeNodeWithName(n: Node, name: []const u8) bool {
+    return isTypeNode(n) and std.mem.eql(u8, n.name, name);
 }
 
 /// Find an actual type definition (struct, enum, union) by name,

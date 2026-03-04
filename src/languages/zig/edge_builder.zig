@@ -9,6 +9,10 @@ const ast = @import("ast_analysis.zig");
 const cf = @import("cross_file.zig");
 const source_scan = @import("../../parser/source_scan.zig");
 const pc = @import("parse_context.zig");
+const phantom_mod = @import("../../core/phantom.zig");
+const shared_types = @import("../shared/types.zig");
+const shared_resolve = @import("../shared/resolve.zig");
+const shared_lookup = @import("../shared/lookup.zig");
 
 const Field = logging.Field;
 const Logger = logging.Logger;
@@ -18,47 +22,15 @@ const NodeId = types.NodeId;
 const NodeKind = types.NodeKind;
 const EdgeType = types.EdgeType;
 const EdgeSource = types.EdgeSource;
+const PhantomManager = phantom_mod.PhantomManager;
 
 const EdgeContext = cf.EdgeContext;
 const VarTracker = cf.VarTracker;
 const KindIds = pc.KindIds;
 const GraphIndex = @import("../../core/graph_index.zig").GraphIndex;
 const ScopeIndex = @import("../../core/scope_index.zig").ScopeIndex;
-
-/// Maps local variable names to their inferred struct type names within a
-/// single function body.
-///
-/// Populated during the prescan phase from struct literal initializers
-/// (`const p = Point{ .x = 3 }`) and static method calls (`const b = Builder.init(5)`).
-/// Consumed during call scanning to resolve method calls like `p.manhattan()`
-/// back to the correct struct's method.
-///
-/// A local variable bound to a type name inferred from its initializer.
-const TypeBinding = struct {
-    var_name: []const u8,
-    type_name: []const u8,
-};
-
-const LocalTypeTracker = struct {
-    bindings: std.ArrayListUnmanaged(TypeBinding) = .empty,
-
-    fn deinit(self: *LocalTypeTracker, allocator: std.mem.Allocator) void {
-        self.bindings.deinit(allocator);
-    }
-
-    /// Record that local variable `name` was initialized from type `type_name`.
-    fn addBinding(self: *LocalTypeTracker, allocator: std.mem.Allocator, name: []const u8, type_name: []const u8) !void {
-        try self.bindings.append(allocator, .{ .var_name = name, .type_name = type_name });
-    }
-
-    /// Return the type name bound to `name`, or null if not tracked.
-    fn findTypeName(self: *const LocalTypeTracker, name: []const u8) ?[]const u8 {
-        for (self.bindings.items) |b| {
-            if (std.mem.eql(u8, b.var_name, name)) return b.type_name;
-        }
-        return null;
-    }
-};
+const TypeBinding = shared_types.TypeBinding;
+const LocalTypeTracker = shared_types.LocalTypeTracker;
 
 /// A parameter bound to its import-qualified type origin.
 const ParamBinding = struct {
@@ -123,6 +95,7 @@ const ScanContext = struct {
     local_tracker: *const LocalTypeTracker,
     param_tracker: *const ParamTypeTracker,
     graph_index: *const GraphIndex,
+    phantom_mgr: *const PhantomManager,
     log: Logger,
 };
 
@@ -140,7 +113,7 @@ const ScanContext = struct {
 /// `source` is the full file content (borrowed, not owned).
 /// `ctx` provides import/scope boundaries for the current file.
 /// Returns `error.OutOfMemory` if graph edge insertion fails.
-pub fn walkForEdges(allocator: std.mem.Allocator, g: *Graph, source: []const u8, ts_node: ts.Node, ctx: *const EdgeContext, k: *const KindIds, graph_index: *const GraphIndex, log: Logger) !void {
+pub fn walkForEdges(allocator: std.mem.Allocator, g: *Graph, source: []const u8, ts_node: ts.Node, ctx: *const EdgeContext, k: *const KindIds, graph_index: *const GraphIndex, phantom_mgr: *const PhantomManager, log: Logger) !void {
     const kid = ts_node.kindId();
 
     if (kid == k.function_declaration) {
@@ -175,6 +148,7 @@ pub fn walkForEdges(allocator: std.mem.Allocator, g: *Graph, source: []const u8,
                     .local_tracker = &local_type_tracker,
                     .param_tracker = &param_type_tracker,
                     .graph_index = graph_index,
+                    .phantom_mgr = phantom_mgr,
                     .log = log,
                 };
 
@@ -220,6 +194,7 @@ pub fn walkForEdges(allocator: std.mem.Allocator, g: *Graph, source: []const u8,
                 .local_tracker = &local_type_tracker,
                 .param_tracker = &param_type_tracker,
                 .graph_index = graph_index,
+                .phantom_mgr = phantom_mgr,
                 .log = log,
             };
 
@@ -239,64 +214,16 @@ pub fn walkForEdges(allocator: std.mem.Allocator, g: *Graph, source: []const u8,
     var i: u32 = 0;
     while (i < ts_node.namedChildCount()) : (i += 1) {
         const child = ts_node.namedChild(i) orelse continue;
-        try walkForEdges(allocator, g, source, child, ctx, k, graph_index, log);
+        try walkForEdges(allocator, g, source, child, ctx, k, graph_index, phantom_mgr, log);
     }
 }
 
-/// Resolve a call or reference through a SymbolOrigin by prepending the
-/// origin's member chain to the call-site chain, resolving to targets,
-/// then creating edges.
-///
-/// `is_call` controls whether terminal functions produce `calls` (true)
-/// or `uses_type` (false).
-fn resolveOriginCall(
-    allocator: std.mem.Allocator,
-    sctx: *const ScanContext,
-    origin: cf.SymbolOrigin,
-    call_chain: []const []const u8,
-    is_call: bool,
-) !void {
-    var resolve_chain: [cf.max_chain_depth][]const u8 = undefined;
-    var len: usize = 0;
-    for (origin.chain) |seg| {
-        if (len >= cf.max_chain_depth) break;
-        resolve_chain[len] = seg;
-        len += 1;
-    }
-    for (call_chain) |seg| {
-        if (len >= cf.max_chain_depth) break;
-        resolve_chain[len] = seg;
-        len += 1;
-    }
-    if (len == 0) return;
-    try addResolvedEdges(allocator, sctx, origin.file_id, resolve_chain[0..len], is_call);
+fn resolveOriginCall(allocator: std.mem.Allocator, sctx: *const ScanContext, origin: cf.SymbolOrigin, call_chain: []const []const u8, is_call: bool) !void {
+    try shared_resolve.resolveOriginCall(allocator, sctx.g, sctx.caller_id, origin, call_chain, is_call, sctx.graph_index, sctx.log, cf.resolveReturnTypeScope);
 }
 
-/// Resolve a qualified chain and add the resulting edges to the graph.
-fn addResolvedEdges(
-    allocator: std.mem.Allocator,
-    sctx: *const ScanContext,
-    target_file_id: NodeId,
-    chain: []const []const u8,
-    is_call: bool,
-) !void {
-    var edge_buf: [cf.max_chain_depth]cf.ResolvedEdge = undefined;
-    const edge_count = cf.resolveQualifiedCall(
-        sctx.g,
-        target_file_id,
-        chain,
-        is_call,
-        sctx.graph_index,
-        sctx.log,
-        &edge_buf,
-    );
-    for (edge_buf[0..edge_count]) |edge| {
-        _ = try sctx.g.addEdgeIfNew(allocator, .{
-            .source_id = sctx.caller_id,
-            .target_id = edge.target_id,
-            .edge_type = edge.edge_type,
-        });
-    }
+fn addResolvedEdges(allocator: std.mem.Allocator, sctx: *const ScanContext, target_file_id: NodeId, chain: []const []const u8, is_call: bool) !void {
+    try shared_resolve.addResolvedEdges(allocator, sctx.g, sctx.caller_id, target_file_id, chain, is_call, sctx.graph_index, sctx.log, cf.resolveReturnTypeScope);
 }
 
 /// Recursively scan an AST subtree for call_expression nodes and create
@@ -815,7 +742,7 @@ fn scanForTypeIdentifiersScoped(allocator: std.mem.Allocator, sctx: *const ScanC
     if (kid == sctx.k.identifier or kid == sctx.k.property_identifier) {
         const name = ts_api.nodeText(sctx.source, ts_node);
         const target_id = findTypeByNameScoped(sctx.g, name, sctx.edge_ctx.scope_start, sctx.edge_ctx.scope_end, sctx.caller_parent_id, &sctx.graph_index.scope) orelse
-            findTypeCrossFile(sctx.g, name, sctx.edge_ctx, &sctx.graph_index.scope) orelse {
+            findTypeCrossFile(sctx.g, name, sctx.edge_ctx, &sctx.graph_index.scope, sctx.phantom_mgr) orelse {
             // No match locally or cross-file; skip.
             return;
         };
@@ -838,54 +765,12 @@ fn scanForTypeIdentifiersScoped(allocator: std.mem.Allocator, sctx: *const ScanC
     }
 }
 
-/// Search imported files for a type_def or enum_def with the given PascalCase name.
-/// Returns the target NodeId only if exactly one match is found (unambiguous).
-fn findTypeCrossFile(g: *const Graph, name: []const u8, ctx: *const EdgeContext, scope_index: *const ScopeIndex) ?NodeId {
-    if (name.len == 0 or name[0] < 'A' or name[0] > 'Z') return null;
-    var match: ?NodeId = null;
-    var match_count: usize = 0;
-    for (ctx.imports.items) |entry| {
-        for (scope_index.childrenOf(entry.target)) |child_idx| {
-            const n = g.nodes.items[child_idx];
-            if (!n.kind.isTypeContainer()) continue;
-            if (!std.mem.eql(u8, n.name, name)) continue;
-            match = @enumFromInt(child_idx);
-            match_count += 1;
-        }
-    }
-    if (match_count == 1) return match;
-    return null;
+fn findTypeCrossFile(g: *const Graph, name: []const u8, ctx: *const EdgeContext, scope_index: *const ScopeIndex, phantom_mgr: *const PhantomManager) ?NodeId {
+    return shared_lookup.findTypeCrossFile(g, name, ctx, scope_index, phantom_mgr);
 }
 
-/// Find a type/constant node by name, with scope-aware resolution.
-/// Walks up the parent_id chain from caller_parent_id, preferring
-/// types in the narrowest scope first.
 fn findTypeByNameScoped(g: *const Graph, name: []const u8, scope_start: usize, scope_end: usize, caller_parent_id: ?NodeId, scope_index: *const ScopeIndex) ?NodeId {
-    if (caller_parent_id) |cpid| {
-        var current_scope: ?NodeId = cpid;
-        var hops: usize = 0;
-        while (current_scope != null and hops < 100) : (hops += 1) {
-            const scope_id = current_scope.?;
-            for (scope_index.childrenOf(scope_id)) |child_idx| {
-                const n = g.nodes.items[child_idx];
-                if (isTypeReference(n, name)) return @enumFromInt(child_idx);
-            }
-            const scope_node = g.getNode(scope_id) orelse break;
-            current_scope = scope_node.parent_id;
-        }
-    }
-    // Fallback: flat file-scope search, return only if unambiguous.
-    const scoped_nodes = g.nodes.items[scope_start..scope_end];
-    var sole_match: ?NodeId = null;
-    var match_count: usize = 0;
-    for (scoped_nodes, scope_start..) |n, idx| {
-        if (isTypeReference(n, name)) {
-            sole_match = @enumFromInt(idx);
-            match_count += 1;
-            if (match_count > 1) return null;
-        }
-    }
-    return sole_match;
+    return shared_lookup.findTypeByNameScoped(g, name, scope_start, scope_end, caller_parent_id, scope_index, isTypeReference);
 }
 
 /// Check whether a graph node represents a type reference with the given name.
@@ -899,65 +784,12 @@ pub fn isTypeReference(n: @import("../../core/node.zig").Node, name: []const u8)
     return false;
 }
 
-/// Find a function node by name with scope-aware resolution.
-/// Walks up the parent_id chain from caller_parent_id, preferring the
-/// narrowest scope. Falls back to flat file-scope search, returning
-/// null if ambiguous (more than one match).
 fn findFunctionByNameScoped(g: *const Graph, name: []const u8, scope_start: usize, scope_end: usize, caller_parent_id: ?NodeId, scope_index: *const ScopeIndex) ?NodeId {
-    if (caller_parent_id) |cpid| {
-        // Walk up the parent chain, searching at each scope level.
-        var current_scope: ?NodeId = cpid;
-        var hops: usize = 0;
-        while (current_scope != null and hops < 100) : (hops += 1) {
-            const scope_id = current_scope.?;
-            for (scope_index.childrenOf(scope_id)) |child_idx| {
-                const n = g.nodes.items[child_idx];
-                if (n.kind == .function and std.mem.eql(u8, n.name, name)) {
-                    return @enumFromInt(child_idx);
-                }
-            }
-            // Move up to the parent's parent.
-            const scope_node = g.getNode(scope_id) orelse break;
-            current_scope = scope_node.parent_id;
-        }
-    }
-    // Fallback: flat file-scope search, return only if unambiguous.
-    const scoped_nodes = g.nodes.items[scope_start..scope_end];
-    var sole_match: ?NodeId = null;
-    var match_count: usize = 0;
-    for (scoped_nodes, scope_start..) |n, i| {
-        if (n.kind == .function and std.mem.eql(u8, n.name, name)) {
-            sole_match = @enumFromInt(i);
-            match_count += 1;
-            if (match_count > 1) return null;
-        }
-    }
-    return sole_match;
+    return shared_lookup.findFunctionByNameScoped(g, name, scope_start, scope_end, caller_parent_id, scope_index, &.{});
 }
 
-/// Find a function node by name and line number. Used by walkForEdges to
-/// identify the correct graph node when multiple functions share the same
-/// name.
 fn findFunctionByNameAndLine(g: *const Graph, name: []const u8, line: u32, scope_start: usize, scope_end: usize) ?NodeId {
-    const scoped_nodes = g.nodes.items[scope_start..scope_end];
-    for (scoped_nodes, scope_start..) |n, i| {
-        if (n.kind == .function and std.mem.eql(u8, n.name, name) and
-            n.line_start != null and n.line_start.? == line)
-        {
-            return @enumFromInt(i);
-        }
-    }
-    // Fallback: for generic type-returning functions that are stored as
-    // type_def nodes, match by name and line.
-    for (scoped_nodes, scope_start..) |n, i| {
-        if (n.kind.isTypeContainer() and
-            std.mem.eql(u8, n.name, name) and
-            n.line_start != null and n.line_start.? == line)
-        {
-            return @enumFromInt(i);
-        }
-    }
-    return null;
+    return shared_lookup.findFunctionByNameAndLine(g, name, line, scope_start, scope_end);
 }
 
 /// Find a test_def node by name within the given scope range.

@@ -131,7 +131,9 @@ pub fn main() !void {
             return;
         };
         defer graph_index.deinit(allocator);
-        build_edges(allocator, source, &graph, 0, graph.nodeCount(), null, &graph_index, log) catch |err| {
+        var phantom_mgr = zcodeprism.phantom.PhantomManager.init(&graph);
+        defer phantom_mgr.deinit(allocator);
+        build_edges(allocator, source, &graph, 0, graph.nodeCount(), null, &graph_index, &phantom_mgr, log) catch |err| {
             try stdout.print("Edge building error: {}\n", .{err});
             try stdout.flush();
             return;

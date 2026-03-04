@@ -11,6 +11,7 @@ const cf = @import("cross_file.zig");
 const eb = @import("edge_builder.zig");
 const pc = @import("parse_context.zig");
 const fixtures = @import("test-fixtures");
+const phantom_mod = @import("../../core/phantom.zig");
 
 const KindIds = pc.KindIds;
 const GraphIndex = @import("../../core/graph_index.zig").GraphIndex;
@@ -92,9 +93,8 @@ pub fn parse(allocator: std.mem.Allocator, source: []const u8, g: *Graph, file_p
     }
 }
 
-/// Build edges for a Zig file. Called by the indexer after all files have
-/// been parsed, so the GraphIndex reflects the complete graph.
-pub fn buildEdges(allocator: std.mem.Allocator, source: []const u8, g: *Graph, file_idx: usize, scope_end: usize, file_path: ?[]const u8, graph_index: *const GraphIndex, logger: Logger) anyerror!void {
+/// Re-parse source and emit cross-file edges for the Zig file at file_idx.
+pub fn buildEdges(allocator: std.mem.Allocator, source: []const u8, g: *Graph, file_idx: usize, scope_end: usize, file_path: ?[]const u8, graph_index: *const GraphIndex, phantom_mgr: *const phantom_mod.PhantomManager, logger: Logger) anyerror!void {
     const log = logger.withScope("zig-edges");
 
     const ts_lang = ts_api.tree_sitter_zig();
@@ -115,7 +115,7 @@ pub fn buildEdges(allocator: std.mem.Allocator, source: []const u8, g: *Graph, f
     try cf.buildImportMap(allocator, g, source, root, &ctx, &graph_index.files, file_path, &k, log);
 
     log.debug("building edges", &.{});
-    try eb.walkForEdges(allocator, g, source, root, &ctx, &k, graph_index, log);
+    try eb.walkForEdges(allocator, g, source, root, &ctx, &k, graph_index, phantom_mgr, log);
 }
 
 /// Dispatch a single top-level or nested declaration to the appropriate

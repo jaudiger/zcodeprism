@@ -3,6 +3,7 @@ const graph_mod = @import("../../core/graph.zig");
 const phantom_mod = @import("../../core/phantom.zig");
 const graph_index_mod = @import("../../core/graph_index.zig");
 const source_scan = @import("../../parser/source_scan.zig");
+const source_utils = @import("source_utils.zig");
 const impl_resolve = @import("impl_resolve.zig");
 const logging = @import("../../logging.zig");
 const types = @import("../../core/types.zig");
@@ -171,8 +172,16 @@ pub fn resolveImportPath(buf: []u8, importer_path: []const u8, import_path: []co
     }
 }
 
-/// Create phantom nodes and edges for external references in a single Rust file.
-/// Scans for `use std::...` patterns and creates phantom nodes for the stdlib.
+/// Returns true for path prefixes that are Rust keywords, not external crates.
+fn isInternalPathKeyword(crate: []const u8) bool {
+    return std.mem.eql(u8, crate, "self") or
+        std.mem.eql(u8, crate, "crate") or
+        std.mem.eql(u8, crate, "super");
+}
+
+/// Create phantom nodes and edges for all `use` declarations in a single Rust file.
+/// Stdlib paths map to the `.stdlib` external variant; all other crates map
+/// to `.dependency`.
 pub fn resolvePhantoms(
     allocator: std.mem.Allocator,
     graph: *Graph,
@@ -185,87 +194,70 @@ pub fn resolvePhantoms(
     log: Logger,
 ) error{OutOfMemory}!void {
     _ = build_config;
+    _ = source;
 
     const file_id: NodeId = @enumFromInt(file_idx);
     const clamped_end = @min(scope_end, graph.nodes.items.len);
 
-    // Collect: scan import_decl nodes for std usage (read-only).
-    var found_std = false;
-    for (graph.nodes.items[file_idx..clamped_end]) |n| {
-        if (n.kind != .import_decl) continue;
-        if (n.parent_id == null or n.parent_id.? != file_id) continue;
-        const sig = n.signature orelse continue;
-        if (std.mem.indexOf(u8, sig, "std::") != null) {
-            found_std = true;
-            break;
-        }
-    }
+    // Track root crate phantoms created this call to avoid duplicate file edges.
+    const max_crates = 32;
+    var seen_crates: [max_crates]struct { name: []const u8, id: NodeId } = undefined;
+    var crate_count: usize = 0;
 
-    // Act: create phantom nodes outside the scan loop.
-    if (found_std) {
-        const std_id = try phantom.getOrCreate(allocator, "std", .rust, .{ .stdlib = {} });
-        _ = try graph.addEdgeIfNew(allocator, .{ .source_id = file_id, .target_id = std_id, .edge_type = .imports, .source = .phantom });
-        try resolveStdUsePhantoms(allocator, graph, source, file_idx, clamped_end, phantom, "std", log);
-        try resolveScopedFieldPhantoms(allocator, graph, file_idx, clamped_end, phantom, log);
-    }
-
-    // Resolve implements edges for trait impl blocks.
-    // During single-file parsing, implements edges are only created when
-    // both the trait and type are defined in the same file. This phase
-    // handles cross-file traits and external traits (std, deps) by
-    // searching the full graph and creating phantom nodes as needed.
-    try impl_resolve.resolveImplementsEdges(allocator, graph, file_idx, clamped_end, phantom, graph_index);
-}
-
-/// Create phantom nodes for std use declarations by iterating the file's
-/// import_decl graph nodes and parsing their signatures. Handles simple paths,
-/// brace groups, and nested groups via balanced brace matching.
-fn resolveStdUsePhantoms(
-    allocator: std.mem.Allocator,
-    graph: *Graph,
-    source: []const u8,
-    file_idx: usize,
-    file_end_idx: usize,
-    phantom: *PhantomManager,
-    prefix: []const u8,
-    log: Logger,
-) error{OutOfMemory}!void {
-    _ = source;
-
-    const file_id: NodeId = @enumFromInt(file_idx);
-    const clamped_end = @min(file_end_idx, graph.nodes.items.len);
-
-    for (graph.nodes.items[file_idx..clamped_end]) |n| {
+    for (graph.nodes.items[file_idx..clamped_end], file_idx..) |n, node_idx| {
         if (n.kind != .import_decl) continue;
         if (n.parent_id == null or n.parent_id.? != file_id) continue;
         const sig = n.signature orelse continue;
 
-        const span = source_scan.extractUsePath(sig) orelse continue;
+        const span = source_utils.extractUsePath(sig) orelse continue;
         const path = span.path;
 
-        // Skip paths that don't start with the target prefix.
-        if (path.len < prefix.len + 2) continue;
-        if (!std.mem.startsWith(u8, path, prefix)) continue;
-        if (path[prefix.len] != ':' or path[prefix.len + 1] != ':') continue;
+        const sep_pos = std.mem.indexOf(u8, path, "::") orelse continue;
+        const crate = path[0..sep_pos];
+        if (isInternalPathKeyword(crate)) continue;
 
-        // Handle brace group: use std::collections::{HashMap, BTreeMap}.
+        const external: ExternalInfo = if (std.mem.eql(u8, crate, "std"))
+            .{ .stdlib = {} }
+        else
+            .{ .dependency = .{ .version = null } };
+
+        // Ensure the root crate phantom exists and has a file-level edge.
+        const import_decl_id: NodeId = @enumFromInt(node_idx);
+        {
+            var found = false;
+            for (seen_crates[0..crate_count]) |entry| {
+                if (std.mem.eql(u8, entry.name, crate)) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                const crate_id = try phantom.getOrCreate(allocator, crate, .rust, external);
+                _ = try graph.addEdgeIfNew(allocator, .{ .source_id = file_id, .target_id = crate_id, .edge_type = .imports, .source = .phantom });
+                if (crate_count < max_crates) {
+                    seen_crates[crate_count] = .{ .name = crate, .id = crate_id };
+                    crate_count += 1;
+                }
+            }
+        }
+
+        // Handle brace group or simple path.
         if (span.end < sig.len and sig[span.end] == '{') {
-            const brace_end = source_scan.findMatchingBrace(sig, span.end) orelse continue;
+            const brace_end = source_utils.findMatchingBrace(sig, span.end) orelse continue;
             const group = sig[span.end + 1 .. brace_end];
-
-            // The prefix path (up to ::) is the common prefix for all members.
             const common = if (std.mem.endsWith(u8, path, "::"))
                 path[0 .. path.len - 2]
             else
                 path;
-
-            try expandGroupPhantoms(allocator, graph, file_id, phantom, common, group, prefix, log);
-            continue;
+            try expandGroupPhantoms(allocator, graph, file_id, import_decl_id, phantom, common, group, crate, external, log);
+        } else {
+            try createExternalPhantom(allocator, graph, file_id, import_decl_id, phantom, path, crate, external, log);
         }
-
-        // Simple path: use std::collections::HashMap.
-        try createStdPhantom(allocator, graph, file_id, phantom, path, prefix, log);
     }
+
+    try resolveScopedFieldPhantoms(allocator, graph, file_idx, clamped_end, phantom, log);
+
+    try impl_resolve.resolveImplementsEdges(allocator, graph, file_idx, clamped_end, phantom, graph_index);
 }
 
 /// Expand a brace group and create phantom nodes for each member. Handles
@@ -274,10 +266,12 @@ fn expandGroupPhantoms(
     allocator: std.mem.Allocator,
     graph: *Graph,
     file_id: NodeId,
+    import_decl_id: NodeId,
     phantom: *PhantomManager,
     common_prefix: []const u8,
     group: []const u8,
-    std_prefix: []const u8,
+    crate: []const u8,
+    external: ExternalInfo,
     log: Logger,
 ) error{OutOfMemory}!void {
     var pos: usize = 0;
@@ -286,7 +280,7 @@ fn expandGroupPhantoms(
         if (pos >= group.len) break;
 
         if (group[pos] == '{') {
-            if (source_scan.findMatchingBrace(group, pos)) |close| {
+            if (source_utils.findMatchingBrace(group, pos)) |close| {
                 pos = close + 1;
             } else break;
             continue;
@@ -305,8 +299,7 @@ fn expandGroupPhantoms(
         if (pos + 1 < group.len and group[pos] == ':' and group[pos + 1] == ':') {
             pos += 2;
             if (pos < group.len and group[pos] == '{') {
-                if (source_scan.findMatchingBrace(group, pos)) |close| {
-                    // Build nested prefix and recurse.
+                if (source_utils.findMatchingBrace(group, pos)) |close| {
                     var nested_buf: [256]u8 = undefined;
                     const needed = common_prefix.len + 2 + ident.len;
                     if (needed <= nested_buf.len) {
@@ -314,7 +307,7 @@ fn expandGroupPhantoms(
                         nested_buf[common_prefix.len] = ':';
                         nested_buf[common_prefix.len + 1] = ':';
                         @memcpy(nested_buf[common_prefix.len + 2 ..][0..ident.len], ident);
-                        try expandGroupPhantoms(allocator, graph, file_id, phantom, nested_buf[0..needed], group[pos + 1 .. close], std_prefix, log);
+                        try expandGroupPhantoms(allocator, graph, file_id, import_decl_id, phantom, nested_buf[0..needed], group[pos + 1 .. close], crate, external, log);
                     }
                     pos = close + 1;
                 } else break;
@@ -339,27 +332,30 @@ fn expandGroupPhantoms(
             full_buf[common_prefix.len] = ':';
             full_buf[common_prefix.len + 1] = ':';
             @memcpy(full_buf[common_prefix.len + 2 ..][0..ident.len], ident);
-            try createStdPhantom(allocator, graph, file_id, phantom, full_buf[0..needed], std_prefix, log);
+            try createExternalPhantom(allocator, graph, file_id, import_decl_id, phantom, full_buf[0..needed], crate, external, log);
         }
     }
 }
 
-/// Create a single std phantom node from a full Rust :: path. Converts the path
-/// to dot-separated form and picks the edge type based on the leaf segment's case.
-fn createStdPhantom(
+/// Create a phantom node for a single Rust `::` path. Converts the path to
+/// dot-separated form, infers the edge type from the leaf segment's case,
+/// and attaches edges from both the file node and the import_decl node.
+fn createExternalPhantom(
     allocator: std.mem.Allocator,
     graph: *Graph,
     file_id: NodeId,
+    import_decl_id: NodeId,
     phantom: *PhantomManager,
     path: []const u8,
-    std_prefix: []const u8,
+    crate: []const u8,
+    external: ExternalInfo,
     log: Logger,
 ) error{OutOfMemory}!void {
     _ = log;
 
     var qname_buf: [256]u8 = undefined;
     const qname = impl_resolve.rustPathToDot(path, &qname_buf) orelse return;
-    if (qname.len <= std_prefix.len) return;
+    if (qname.len <= crate.len) return;
 
     const last_dot = std.mem.lastIndexOfScalar(u8, qname, '.') orelse return;
     const leaf = qname[last_dot + 1 ..];
@@ -367,9 +363,15 @@ fn createStdPhantom(
     const is_type = leaf[0] >= 'A' and leaf[0] <= 'Z';
     const edge_type: EdgeType = if (is_type) .uses_type else .imports;
 
-    const leaf_id = try phantom.getOrCreate(allocator, qname, .rust, .{ .stdlib = {} });
+    const leaf_id = try phantom.getOrCreate(allocator, qname, .rust, external);
     _ = try graph.addEdgeIfNew(allocator, .{
         .source_id = file_id,
+        .target_id = leaf_id,
+        .edge_type = edge_type,
+        .source = .phantom,
+    });
+    _ = try graph.addEdgeIfNew(allocator, .{
+        .source_id = import_decl_id,
         .target_id = leaf_id,
         .edge_type = edge_type,
         .source = .phantom,
@@ -378,6 +380,7 @@ fn createStdPhantom(
 
 /// Scan struct/enum field signatures for module-qualified type references
 /// and create phantom child nodes with uses_type edges from the owning type.
+/// Handles any crate prefix, not just std.
 fn resolveScopedFieldPhantoms(
     allocator: std.mem.Allocator,
     graph: *Graph,
@@ -391,9 +394,9 @@ fn resolveScopedFieldPhantoms(
     const file_id: NodeId = @enumFromInt(file_idx);
     const clamped_end = @min(file_end_idx, graph.nodes.items.len);
 
-    // Collect module-prefix imports: for `use std::io`, map "io" to "std::io".
+    // Collect module-prefix imports: for `use crate::module`, map "module" -> "crate::module".
     const max_prefixes = 64;
-    const PrefixEntry = struct { name: []const u8, path: []const u8 };
+    const PrefixEntry = struct { name: []const u8, path: []const u8, external: ExternalInfo };
     var prefix_buf: [max_prefixes]PrefixEntry = undefined;
     var prefix_count: usize = 0;
 
@@ -402,9 +405,12 @@ fn resolveScopedFieldPhantoms(
         if (n.parent_id == null or n.parent_id.? != file_id) continue;
         const sig = n.signature orelse continue;
 
-        const span = source_scan.extractUsePath(sig) orelse continue;
+        const span = source_utils.extractUsePath(sig) orelse continue;
         const path = span.path;
-        if (!std.mem.startsWith(u8, path, "std::")) continue;
+
+        const sep_pos = std.mem.indexOf(u8, path, "::") orelse continue;
+        const crate = path[0..sep_pos];
+        if (isInternalPathKeyword(crate)) continue;
 
         const last_sep = std.mem.lastIndexOf(u8, path, "::") orelse continue;
         const terminal = path[last_sep + 2 ..];
@@ -412,8 +418,13 @@ fn resolveScopedFieldPhantoms(
         // Only module imports (lowercase first char).
         if (terminal[0] >= 'A' and terminal[0] <= 'Z') continue;
 
+        const external: ExternalInfo = if (std.mem.eql(u8, crate, "std"))
+            .{ .stdlib = {} }
+        else
+            .{ .dependency = .{ .version = null } };
+
         if (prefix_count < max_prefixes) {
-            prefix_buf[prefix_count] = .{ .name = terminal, .path = path };
+            prefix_buf[prefix_count] = .{ .name = terminal, .path = path, .external = external };
             prefix_count += 1;
         }
     }
@@ -440,7 +451,6 @@ fn resolveScopedFieldPhantoms(
         for (prefix_buf[0..prefix_count]) |entry| {
             if (!std.mem.eql(u8, field_prefix, entry.name)) continue;
 
-            // Build full std path and convert to dot-separated form.
             var full_buf: [256]u8 = undefined;
             const needed = entry.path.len + 2 + type_name.len;
             if (needed > full_buf.len) continue;
@@ -452,7 +462,7 @@ fn resolveScopedFieldPhantoms(
             var qname_buf: [256]u8 = undefined;
             const qname = impl_resolve.rustPathToDot(full_buf[0..needed], &qname_buf) orelse continue;
 
-            const leaf_id = try phantom.getOrCreate(allocator, qname, .rust, .{ .stdlib = {} });
+            const leaf_id = try phantom.getOrCreate(allocator, qname, .rust, entry.external);
 
             // Walk up from the field to find the owning struct/enum.
             var owner_id = n.parent_id orelse continue;

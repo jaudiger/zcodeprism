@@ -92,6 +92,24 @@ pub const PhantomManager = struct {
         return self.lookup.get(qualified_name).?;
     }
 
+    /// Find a phantom node by its leaf segment (the name after the last '.').
+    /// Returns null if no match exists or if multiple phantoms share the same leaf.
+    pub fn findByShortName(self: *const PhantomManager, name: []const u8) ?NodeId {
+        var match: ?NodeId = null;
+        var count: usize = 0;
+        var it = self.lookup.iterator();
+        while (it.next()) |entry| {
+            const key = entry.key_ptr.*;
+            const leaf = if (std.mem.lastIndexOfScalar(u8, key, '.')) |pos| key[pos + 1 ..] else key;
+            if (std.mem.eql(u8, leaf, name)) {
+                match = entry.value_ptr.*;
+                count += 1;
+                if (count > 1) return null;
+            }
+        }
+        return match;
+    }
+
     /// Frees all lookup-key memory owned by this manager.
     ///
     /// Does not free the phantom nodes themselves; those are owned by the graph.
