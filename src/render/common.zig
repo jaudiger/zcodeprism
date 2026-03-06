@@ -63,14 +63,34 @@ pub const ChildrenIndex = struct {
 };
 
 /// Controls which optional node categories appear in rendered output.
-/// Both fields default to false, producing architecture-focused output
-/// that excludes test noise and external dependency clutter.
+/// All fields default to their off/unlimited values, producing
+/// architecture-focused output that excludes test noise and external
+/// dependency clutter.
 pub const FilterOptions = struct {
     /// When true, test_def nodes receive IDs, section entries, and edges.
     include_test_nodes: bool = false,
     /// When true, external (phantom) nodes receive IDs, section entries,
     /// and edges.
     include_external_nodes: bool = false,
+    /// Maximum nesting depth relative to file nodes. Null means unlimited.
+    depth: ?u32 = null,
+};
+
+/// Bundles the graph, ID table, and scratch buffer shared by all section
+/// rendering functions in both CTG and Mermaid renderers.
+pub const SectionCtx = struct {
+    g: *const Graph,
+    ids: []const ?IdEntry,
+    num_buf: *[20]u8,
+};
+
+/// Groups the per-edge data passed to edge-append functions, separating
+/// per-edge values from the shared context.
+pub const EdgeCandidate = struct {
+    edge_type: EdgeType,
+    src_idx: usize,
+    tgt_idx: usize,
+    src_order: u64,
 };
 
 /// Returns true if the node is internal (not a phantom/external node).
@@ -133,9 +153,9 @@ pub fn prefixOrder(prefix: []const u8) u64 {
         'f' << 8 | ':' => 3, // "f:"
         'f' << 8 | 'n' => 4, // "fn:"
         'm' << 8 | ':' => 5, // "m:"
-        's' << 8 | 't' => 6, // "st:"
-        'u' << 8 | 'n' => 7, // "un:"
-        't' << 8 | ':' => 8, // "t:"
+        't' << 8 | ':' => 6, // "t:"
+        't' << 8 | 'y' => 7, // "ty:"
+        'u' << 8 | 'n' => 8, // "un:"
         'x' << 8 | ':' => 9, // "x:"
         else => 10,
     };
@@ -208,7 +228,7 @@ pub fn collectPhantomSymbols(
 /// Mutable counters and index lists accumulated during the recursive
 /// ID assignment walk over all file children.
 pub const IdWalkState = struct {
-    st_counter: u32 = 0,
+    ty_counter: u32 = 0,
     un_counter: u32 = 0,
     en_counter: u32 = 0,
     fn_counter: u32 = 0,
@@ -216,7 +236,7 @@ pub const IdWalkState = struct {
     err_counter: u32 = 0,
     t_counter: u32 = 0,
     m_counter: u32 = 0,
-    struct_indices: std.ArrayList(usize) = .{},
+    type_indices: std.ArrayList(usize) = .{},
     union_indices: std.ArrayList(usize) = .{},
     enum_indices: std.ArrayList(usize) = .{},
     fn_indices: std.ArrayList(usize) = .{},
@@ -226,7 +246,7 @@ pub const IdWalkState = struct {
 
     /// Frees all per-kind index lists.
     pub fn deinit(self: *IdWalkState, allocator: std.mem.Allocator) void {
-        self.struct_indices.deinit(allocator);
+        self.type_indices.deinit(allocator);
         self.union_indices.deinit(allocator);
         self.enum_indices.deinit(allocator);
         self.fn_indices.deinit(allocator);
@@ -236,9 +256,9 @@ pub const IdWalkState = struct {
     }
 };
 
-/// Recursively assigns renderer IDs to children of a parent node,
-/// appending each child's index to the appropriate per-kind list in
-/// state. Recurses into type_def, union_def, and module children.
+/// Recursively assigns renderer IDs to children of parent_idx. Rust impl
+/// blocks are excluded from struct_indices (methods promoted to fn_indices);
+/// associated types and type aliases inside impl blocks are skipped entirely.
 pub fn assignChildrenIds(
     allocator: std.mem.Allocator,
     g: *const Graph,
@@ -247,21 +267,60 @@ pub fn assignChildrenIds(
     filter: FilterOptions,
     children_index: *const ChildrenIndex,
     state: *IdWalkState,
+    depth_remaining: ?u32,
 ) !void {
+    if (depth_remaining) |dr| if (dr == 0) return;
+    const next_depth: ?u32 = if (depth_remaining) |dr| dr - 1 else null;
+
+    const parent_is_impl = switch (g.nodes.items[parent_idx].kind) {
+        .type_def => switch (g.nodes.items[parent_idx].lang_meta) {
+            .rust => |pm| pm.sub_kind == .impl_block,
+            else => false,
+        },
+        else => false,
+    };
+
     for (children_index.childrenOf(parent_idx)) |child_idx| {
         const n = g.nodes.items[child_idx];
         switch (n.kind) {
-            .type_def => {
-                state.st_counter += 1;
-                ids[child_idx] = .{ .prefix = "st:", .num = state.st_counter };
-                try state.struct_indices.append(allocator, child_idx);
-                try assignChildrenIds(allocator, g, child_idx, ids, filter, children_index, state);
+            .type_def => switch (n.lang_meta) {
+                .rust => |rm| switch (rm.sub_kind) {
+                    .impl_block => {
+                        // Method container, not a type definition. No struct entry;
+                        // recurse so methods inside receive fn: IDs.
+                        try assignChildrenIds(allocator, g, child_idx, ids, filter, children_index, state, next_depth);
+                    },
+                    .associated_type => {
+                        // Trait member (like a field). No section entry, no recursion.
+                    },
+                    .type_alias => {
+                        // Inside an impl block this satisfies an associated type contract,
+                        // not a standalone definition. Outside impl blocks it belongs in [types].
+                        if (!parent_is_impl) {
+                            state.ty_counter += 1;
+                            ids[child_idx] = .{ .prefix = "ty:", .num = state.ty_counter };
+                            try state.type_indices.append(allocator, child_idx);
+                        }
+                    },
+                    else => {
+                        state.ty_counter += 1;
+                        ids[child_idx] = .{ .prefix = "ty:", .num = state.ty_counter };
+                        try state.type_indices.append(allocator, child_idx);
+                        try assignChildrenIds(allocator, g, child_idx, ids, filter, children_index, state, next_depth);
+                    },
+                },
+                else => {
+                    state.ty_counter += 1;
+                    ids[child_idx] = .{ .prefix = "ty:", .num = state.ty_counter };
+                    try state.type_indices.append(allocator, child_idx);
+                    try assignChildrenIds(allocator, g, child_idx, ids, filter, children_index, state, next_depth);
+                },
             },
             .union_def => {
                 state.un_counter += 1;
                 ids[child_idx] = .{ .prefix = "un:", .num = state.un_counter };
                 try state.union_indices.append(allocator, child_idx);
-                try assignChildrenIds(allocator, g, child_idx, ids, filter, children_index, state);
+                try assignChildrenIds(allocator, g, child_idx, ids, filter, children_index, state, next_depth);
             },
             .enum_def => {
                 state.en_counter += 1;
@@ -272,7 +331,16 @@ pub fn assignChildrenIds(
                 state.fn_counter += 1;
                 ids[child_idx] = .{ .prefix = "fn:", .num = state.fn_counter };
                 const parent_node = g.nodes.items[parent_idx];
-                if (parent_node.kind == .file or parent_node.kind == .module) {
+                const add_to_fn_indices = switch (parent_node.kind) {
+                    .file, .module => true,
+                    // Impl block methods count as top-level functions in the output.
+                    .type_def => switch (parent_node.lang_meta) {
+                        .rust => |rm| rm.sub_kind == .impl_block,
+                        else => false,
+                    },
+                    else => false,
+                };
+                if (add_to_fn_indices) {
                     try state.fn_indices.append(allocator, child_idx);
                 }
             },
@@ -296,7 +364,7 @@ pub fn assignChildrenIds(
             .module => {
                 state.m_counter += 1;
                 ids[child_idx] = .{ .prefix = "m:", .num = state.m_counter };
-                try assignChildrenIds(allocator, g, child_idx, ids, filter, children_index, state);
+                try assignChildrenIds(allocator, g, child_idx, ids, filter, children_index, state, next_depth);
             },
             .field, .import_decl, .file, .directory => {},
         }
@@ -310,13 +378,11 @@ pub fn assignChildrenIds(
 pub const IdAssignment = struct {
     ids: []?IdEntry,
     file_indices: std.ArrayList(usize),
-    struct_indices: std.ArrayList(usize),
+    type_indices: std.ArrayList(usize),
     union_indices: std.ArrayList(usize),
     enum_indices: std.ArrayList(usize),
-    /// Top-level functions only (for the [functions] section).
+    /// Top-level functions only (for the [functions] section and header stats).
     fn_indices: std.ArrayList(usize),
-    /// All functions including methods (for header stats).
-    total_fn_count: u32,
     const_indices: std.ArrayList(usize),
     err_indices: std.ArrayList(usize),
     test_indices: std.ArrayList(usize),
@@ -330,7 +396,7 @@ pub const IdAssignment = struct {
     pub fn deinit(self: *IdAssignment, allocator: std.mem.Allocator) void {
         allocator.free(self.ids);
         self.file_indices.deinit(allocator);
-        self.struct_indices.deinit(allocator);
+        self.type_indices.deinit(allocator);
         self.union_indices.deinit(allocator);
         self.enum_indices.deinit(allocator);
         self.fn_indices.deinit(allocator);
@@ -344,30 +410,37 @@ pub const IdAssignment = struct {
     }
 };
 
-/// Builds the full ID assignment table by walking all in-scope file
-/// nodes in alphabetical path order. Assigns sequential IDs per kind,
-/// collects phantom packages when external nodes are included, and
-/// returns an IdAssignment that the caller must deinit.
-pub fn buildIdAssignment(
+/// Intermediate results from the single-scan pass over all graph nodes.
+const ScanResults = struct {
+    file_nodes: std.ArrayList(usize),
+    phantom_roots: std.ArrayList(usize),
+    languages: LanguageSet,
+    child_counts: std.AutoHashMapUnmanaged(usize, u32),
+    total_children: usize,
+
+    fn deinit(self: *ScanResults, allocator: std.mem.Allocator) void {
+        self.file_nodes.deinit(allocator);
+        self.phantom_roots.deinit(allocator);
+        self.child_counts.deinit(allocator);
+    }
+};
+
+/// Single pass over all nodes: collect file nodes, languages, child
+/// counts, and phantom roots. Separates the scan from the index build.
+fn collectScanResults(
     allocator: std.mem.Allocator,
     g: *const Graph,
     scope: ?[]const u8,
     filter: FilterOptions,
-) !IdAssignment {
-    const node_count = g.nodes.items.len;
-    const ids = try allocator.alloc(?IdEntry, node_count);
-    errdefer allocator.free(ids);
-    @memset(ids, null);
-
-    // Single scan: collect file nodes, languages, child counts, and phantom roots.
+) !ScanResults {
     var child_counts = std.AutoHashMapUnmanaged(usize, u32){};
-    defer child_counts.deinit(allocator);
+    errdefer child_counts.deinit(allocator);
     var total_children: usize = 0;
     var languages = LanguageSet{ .has_zig = false, .has_rust = false };
     var file_nodes = std.ArrayList(usize){};
-    defer file_nodes.deinit(allocator);
+    errdefer file_nodes.deinit(allocator);
     var phantom_roots = std.ArrayList(usize){};
-    defer phantom_roots.deinit(allocator);
+    errdefer phantom_roots.deinit(allocator);
 
     for (g.nodes.items, 0..) |n, i| {
         if (isInternal(n)) {
@@ -382,7 +455,6 @@ pub fn buildIdAssignment(
                 try file_nodes.append(allocator, i);
             }
         } else if (filter.include_external_nodes) {
-            // Phantom root: external node whose parent is internal or absent.
             const is_root = if (n.parent_id) |pid| isInternal(g.nodes.items[@intFromEnum(pid)]) else true;
             if (is_root) {
                 try phantom_roots.append(allocator, i);
@@ -401,7 +473,23 @@ pub fn buildIdAssignment(
         }
     }
 
-    // Allocate flat storage for the children index.
+    return .{
+        .file_nodes = file_nodes,
+        .phantom_roots = phantom_roots,
+        .languages = languages,
+        .child_counts = child_counts,
+        .total_children = total_children,
+    };
+}
+
+/// Builds the flat children index from child_counts gathered during the scan.
+fn buildChildrenIndex(
+    allocator: std.mem.Allocator,
+    g: *const Graph,
+    scope: ?[]const u8,
+    child_counts: *std.AutoHashMapUnmanaged(usize, u32),
+    total_children: usize,
+) !ChildrenIndex {
     const storage = try allocator.alloc(usize, total_children);
     var children_index = ChildrenIndex{ .map = .{}, .storage = storage };
     errdefer children_index.deinit(allocator);
@@ -440,8 +528,7 @@ pub fn buildIdAssignment(
         }
     }
 
-    // Sort each parent's children by line_start for deterministic ordering,
-    // then record the slice in the map.
+    // Sort each parent's children by line_start, then record the slice in the map.
     {
         var it = offsets.iterator();
         while (it.next()) |entry| {
@@ -462,30 +549,17 @@ pub fn buildIdAssignment(
         }
     }
 
-    // Sort file nodes by path.
-    std.mem.sort(usize, file_nodes.items, g, struct {
-        fn lessThan(graph: *const Graph, a: usize, b: usize) bool {
-            const pa = graph.nodes.items[a].file_path orelse "";
-            const pb = graph.nodes.items[b].file_path orelse "";
-            return std.mem.order(u8, pa, pb) == .lt;
-        }
-    }.lessThan);
+    return children_index;
+}
 
-    // Assign file IDs and walk children.
-    var file_indices = std.ArrayList(usize){};
-    errdefer file_indices.deinit(allocator);
-    var state = IdWalkState{};
-    errdefer state.deinit(allocator);
-    var f_counter: u32 = 0;
-
-    for (file_nodes.items) |fi| {
-        f_counter += 1;
-        ids[fi] = .{ .prefix = "f:", .num = f_counter };
-        try file_indices.append(allocator, fi);
-        try assignChildrenIds(allocator, g, fi, ids, filter, &children_index, &state);
-    }
-
-    // Build phantom packages from roots collected during the single scan.
+/// Build phantom packages from collected roots and populate the lookup map.
+fn buildPhantomPackages(
+    allocator: std.mem.Allocator,
+    g: *const Graph,
+    phantom_roots: []const usize,
+    ids: []?IdEntry,
+    children_index: *const ChildrenIndex,
+) !struct { packages: std.ArrayList(PhantomPackage), lookup: std.AutoHashMapUnmanaged(usize, PhantomNodeInfo) } {
     var phantom_packages = std.ArrayList(PhantomPackage){};
     errdefer {
         for (phantom_packages.items) |*pkg| pkg.deinit(allocator);
@@ -493,7 +567,7 @@ pub fn buildIdAssignment(
     }
     var x_counter: u32 = 0;
 
-    for (phantom_roots.items) |i| {
+    for (phantom_roots) |i| {
         x_counter += 1;
         ids[i] = .{ .prefix = "x:", .num = x_counter };
 
@@ -503,7 +577,7 @@ pub fn buildIdAssignment(
             .symbols = .{},
         };
         errdefer pkg.deinit(allocator);
-        try collectPhantomSymbols(allocator, g, i, "", &pkg.symbols, &children_index);
+        try collectPhantomSymbols(allocator, g, i, "", &pkg.symbols, children_index);
         std.mem.sort(PhantomSymbol, pkg.symbols.items, {}, struct {
             fn lessThan(_: void, a: PhantomSymbol, b: PhantomSymbol) bool {
                 return std.mem.order(u8, a.qualified_path, b.qualified_path) == .lt;
@@ -528,21 +602,74 @@ pub fn buildIdAssignment(
         }
     }
 
+    return .{ .packages = phantom_packages, .lookup = phantom_lookup };
+}
+
+/// Builds the full ID assignment table by walking all in-scope file
+/// nodes in alphabetical path order. Assigns sequential IDs per kind,
+/// collects phantom packages when external nodes are included, and
+/// returns an IdAssignment that the caller must deinit.
+pub fn buildIdAssignment(
+    allocator: std.mem.Allocator,
+    g: *const Graph,
+    scope: ?[]const u8,
+    filter: FilterOptions,
+) !IdAssignment {
+    const node_count = g.nodes.items.len;
+    const ids = try allocator.alloc(?IdEntry, node_count);
+    errdefer allocator.free(ids);
+    @memset(ids, null);
+
+    var scan = try collectScanResults(allocator, g, scope, filter);
+    defer scan.deinit(allocator);
+
+    var children_index = try buildChildrenIndex(allocator, g, scope, &scan.child_counts, scan.total_children);
+    errdefer children_index.deinit(allocator);
+
+    // Sort file nodes by path.
+    std.mem.sort(usize, scan.file_nodes.items, g, struct {
+        fn lessThan(graph: *const Graph, a: usize, b: usize) bool {
+            const pa = graph.nodes.items[a].file_path orelse "";
+            const pb = graph.nodes.items[b].file_path orelse "";
+            return std.mem.order(u8, pa, pb) == .lt;
+        }
+    }.lessThan);
+
+    // Assign file IDs and walk children.
+    var file_indices = std.ArrayList(usize){};
+    errdefer file_indices.deinit(allocator);
+    var state = IdWalkState{};
+    errdefer state.deinit(allocator);
+    var f_counter: u32 = 0;
+
+    for (scan.file_nodes.items) |fi| {
+        f_counter += 1;
+        ids[fi] = .{ .prefix = "f:", .num = f_counter };
+        try file_indices.append(allocator, fi);
+        try assignChildrenIds(allocator, g, fi, ids, filter, &children_index, &state, filter.depth);
+    }
+
+    var phantom = try buildPhantomPackages(allocator, g, scan.phantom_roots.items, ids, &children_index);
+    errdefer {
+        for (phantom.packages.items) |*pkg| pkg.deinit(allocator);
+        phantom.packages.deinit(allocator);
+        phantom.lookup.deinit(allocator);
+    }
+
     return .{
         .ids = ids,
         .file_indices = file_indices,
-        .struct_indices = state.struct_indices,
+        .type_indices = state.type_indices,
         .union_indices = state.union_indices,
         .enum_indices = state.enum_indices,
         .fn_indices = state.fn_indices,
-        .total_fn_count = state.fn_counter,
         .const_indices = state.const_indices,
         .err_indices = state.err_indices,
         .test_indices = state.test_indices,
-        .phantom_packages = phantom_packages,
+        .phantom_packages = phantom.packages,
         .children_index = children_index,
-        .phantom_lookup = phantom_lookup,
-        .languages = languages,
+        .phantom_lookup = phantom.lookup,
+        .languages = scan.languages,
     };
 }
 

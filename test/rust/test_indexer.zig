@@ -91,6 +91,17 @@ test "creates phantom nodes for std" {
         }
     }
     try std.testing.expect(found_stdlib);
+
+    // Assert: no phantom nodes for in-project modules (parser, utils, Token, etc.)
+    for (g.nodes.items) |n| {
+        if (n.external == .none) continue;
+        const in_project = std.mem.eql(u8, n.name, "parser") or
+            std.mem.eql(u8, n.name, "utils") or
+            std.mem.eql(u8, n.name, "Token") or
+            std.mem.eql(u8, n.name, "trim_whitespace") or
+            std.mem.eql(u8, n.name, "repeat");
+        try std.testing.expect(!in_project);
+    }
 }
 
 test "phantom nodes have no file_path" {
@@ -547,6 +558,26 @@ test "super:: resolves to parent module across topological ordering" {
     try std.testing.expect(helpers.hasEdge(&g, parse_trimmed, parse_fn, .calls));
 }
 
+test "qualified cross-file call resolves through impl block" {
+    // Arrange
+    var g = Graph.init("/tmp/rust-project");
+    defer g.deinit(std.testing.allocator);
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Act
+    _ = try indexProjectFixtures(&g, &tmp_dir);
+
+    // Assert: make_token in lib.rs calls Token::new in parser.rs
+    const lib_file = helpers.findNode(&g, "lib.rs", .file) orelse return error.TestExpectedEqual;
+    const parser_file = helpers.findNode(&g, "parser.rs", .file) orelse return error.TestExpectedEqual;
+    const make_token = helpers.findNodeInFile(&g, "make_token", .function, lib_file.id) orelse
+        return error.TestExpectedEqual;
+    const token_new = helpers.findNodeInFile(&g, "new", .function, parser_file.id) orelse
+        return error.TestExpectedEqual;
+    try std.testing.expect(helpers.hasEdge(&g, make_token, token_new, .calls));
+}
+
 // --- Transitive re-export tests ---
 
 test "transitive re-export resolves through chain" {
@@ -592,6 +623,41 @@ test "transitive re-export resolves through chain" {
         }
     }
     try std.testing.expect(has_cross_file_edge);
+}
+
+test "pub use emits exports edge to resolved type" {
+    // Arrange
+    var g = Graph.init("/tmp/rust-exports");
+    defer g.deinit(std.testing.allocator);
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.writeFile(.{ .sub_path = "lib.rs", .data = fixtures.rust.reexport_chain.lib_rs });
+    try tmp_dir.dir.writeFile(.{ .sub_path = "mid.rs", .data = fixtures.rust.reexport_chain.mid_rs });
+    try tmp_dir.dir.makePath("mid");
+    try tmp_dir.dir.writeFile(.{ .sub_path = "mid/deep.rs", .data = fixtures.rust.reexport_chain.deep_rs });
+    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(project_root);
+
+    // Act
+    _ = try indexDirectory(std.testing.allocator, project_root, &g, .{});
+
+    // Assert: Widget and Gadget are type nodes in deep.rs
+    const deep_file = helpers.findNode(&g, "deep.rs", .file) orelse return error.TestExpectedEqual;
+    const widget = helpers.findNodeInFile(&g, "Widget", .type_def, deep_file.id) orelse
+        return error.TestExpectedEqual;
+    const gadget = helpers.findNodeInFile(&g, "Gadget", .type_def, deep_file.id) orelse
+        return error.TestExpectedEqual;
+
+    // Assert: lib.rs has exports edges to Widget and Gadget (pub use mid::{Widget, Gadget})
+    const lib_file = helpers.findNode(&g, "lib.rs", .file) orelse return error.TestExpectedEqual;
+    try std.testing.expect(helpers.hasEdge(&g, lib_file.id, widget, .exports));
+    try std.testing.expect(helpers.hasEdge(&g, lib_file.id, gadget, .exports));
+
+    // Assert: mid.rs has exports edges to Widget and Gadget (pub use deep::{Widget, Gadget})
+    const mid_file = helpers.findNode(&g, "mid.rs", .file) orelse return error.TestExpectedEqual;
+    try std.testing.expect(helpers.hasEdge(&g, mid_file.id, widget, .exports));
+    try std.testing.expect(helpers.hasEdge(&g, mid_file.id, gadget, .exports));
 }
 
 // --- Glob import tests ---

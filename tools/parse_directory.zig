@@ -7,6 +7,7 @@
 
 const std = @import("std");
 const zcodeprism = @import("zcodeprism");
+const tool_utils = @import("tool-utils");
 
 const Graph = zcodeprism.Graph;
 const NodeId = zcodeprism.types.NodeId;
@@ -17,17 +18,6 @@ const indexer = zcodeprism.indexer;
 const logging = zcodeprism.logging;
 
 const NO_FILE: usize = std.math.maxInt(usize);
-
-fn countVerbosity(arg: []const u8) u8 {
-    if (std.mem.eql(u8, arg, "--verbose")) return 1;
-    if (arg.len >= 2 and arg[0] == '-' and arg[1] != '-') {
-        for (arg[1..]) |c| {
-            if (c != 'v') return 0;
-        }
-        return @intCast(arg.len - 1);
-    }
-    return 0;
-}
 
 fn printHelp(stdout: *std.Io.Writer) !void {
     try stdout.print(
@@ -64,7 +54,7 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    var stdout_buffer: [8192]u8 = undefined;
+    var stdout_buffer: [tool_utils.stdout_buffer_size]u8 = undefined;
     var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
     const stdout = &stdout_writer.interface;
 
@@ -85,7 +75,7 @@ pub fn main() !void {
     const dir_path = std.fs.cwd().realpathAlloc(allocator, dir_arg) catch |err| {
         try stdout.print("Error resolving path '{s}': {}\n", .{ dir_arg, err });
         try stdout.flush();
-        return;
+        std.process.exit(1);
     };
     defer allocator.free(dir_path);
 
@@ -105,20 +95,14 @@ pub fn main() !void {
                 }
             }
         } else {
-            const v = countVerbosity(arg);
+            const v = tool_utils.countVerbosity(arg);
             if (v > 0) {
                 verbosity +|= v;
             }
         }
     }
 
-    const min_level: logging.Level = switch (verbosity) {
-        0 => .warn,
-        1 => .info,
-        2 => .debug,
-        else => .trace,
-    };
-    var text_logger = logging.TextStderrLogger.init(min_level);
+    var text_logger = logging.TextStderrLogger.init(tool_utils.verbosityToLevel(verbosity));
     const log = if (verbosity > 0) text_logger.logger() else logging.Logger.noop;
 
     const options = indexer.IndexOptions{
@@ -133,7 +117,7 @@ pub fn main() !void {
     const result = indexer.indexDirectory(allocator, dir_path, &graph, options) catch |err| {
         try stdout.print("Index error: {}\n", .{err});
         try stdout.flush();
-        return;
+        std.process.exit(1);
     };
 
     // Summary.

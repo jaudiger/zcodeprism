@@ -451,6 +451,7 @@ pub const ImplInfo = struct {
     has_for: bool = false,
 };
 
+/// Extract the impl target type and optional trait from an impl_item node.
 pub fn getImplInfo(source: []const u8, node: ts.Node, k: *const KindIds) ?ImplInfo {
     var first_type: ?[]const u8 = null;
     var second_type: ?[]const u8 = null;

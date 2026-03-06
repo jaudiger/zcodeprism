@@ -18,6 +18,21 @@ const max_chain_depth = shared_types.max_chain_depth;
 /// Each language provides its own implementation (Zig: after `)`, Rust: after `->`).
 pub const ResolveReturnTypeFn = *const fn (*const Graph, NodeId, *const GraphIndex) ?NodeId;
 
+/// Function type for finding a named member within a type scope. Languages
+/// where methods live outside the type node (impl blocks, extension blocks)
+/// provide a callback; languages where methods are direct children pass null.
+pub const FindInTypeScopeFn = *const fn (*const Graph, NodeId, []const u8, *const GraphIndex) ?NodeId;
+
+/// Bundles the language-specific strategy and shared lookup state that all
+/// resolve functions need. Created once per file in the edge builder and
+/// passed by const pointer to each resolution call.
+pub const ResolveContext = struct {
+    graph_index: *const GraphIndex,
+    log: Logger,
+    resolve_return_type: ResolveReturnTypeFn,
+    find_in_type_scope: ?FindInTypeScopeFn,
+};
+
 /// Resolve an import-qualified identifier chain against a target file.
 /// Walks the chain segment by segment, narrowing scope to direct children of each
 /// resolved node. Emits uses_type for type containers and calls for terminal
@@ -30,12 +45,10 @@ pub fn resolveQualifiedCall(
     target_file_id: NodeId,
     chain: []const []const u8,
     is_call: bool,
-    graph_index: *const GraphIndex,
-    log: Logger,
+    rctx: *const ResolveContext,
     out: []ResolvedEdge,
-    resolve_return_type: ResolveReturnTypeFn,
 ) usize {
-    const scope_index = &graph_index.scope;
+    const scope_index = &rctx.graph_index.scope;
     var current_scope_id = target_file_id;
     var count: usize = 0;
 
@@ -54,6 +67,13 @@ pub fn resolveQualifiedCall(
             matched_id = scope_index.findUniqueDescendant(g.nodes.items, current_scope_id, segment);
         }
 
+        // Fallback: ask the language to search impl blocks or equivalent.
+        if (matched_id == null) {
+            if (rctx.find_in_type_scope) |find_fn| {
+                matched_id = find_fn(g, current_scope_id, segment, rctx.graph_index);
+            }
+        }
+
         if (matched_id == null and std.mem.eql(u8, segment, "Self")) {
             const scope_node = g.getNode(current_scope_id) orelse return count;
             if (scope_node.kind.isTypeContainer() or scope_node.kind == .file) {
@@ -63,7 +83,7 @@ pub fn resolveQualifiedCall(
         }
 
         const resolved_id = matched_id orelse {
-            log.trace("qualified call: segment not found", &.{Field.string("segment", segment)});
+            rctx.log.trace("qualified call: segment not found", &.{Field.string("segment", segment)});
             return count;
         };
 
@@ -79,11 +99,11 @@ pub fn resolveQualifiedCall(
                 out[count] = .{ .target_id = resolved_id, .edge_type = .calls };
                 count += 1;
             }
-            if (resolve_return_type(g, resolved_id, graph_index)) |return_type_id| {
+            if (rctx.resolve_return_type(g, resolved_id, rctx.graph_index)) |return_type_id| {
                 current_scope_id = return_type_id;
                 continue;
             }
-            log.trace("qualified call: return type unresolvable", &.{});
+            rctx.log.trace("qualified call: return type unresolvable", &.{});
             return count;
         } else {
             const is_type = resolved_node.kind.isTypeContainer();
@@ -113,9 +133,7 @@ pub fn addResolvedEdges(
     target_file_id: NodeId,
     chain: []const []const u8,
     is_call: bool,
-    graph_index: *const GraphIndex,
-    log: Logger,
-    resolve_return_type: ResolveReturnTypeFn,
+    rctx: *const ResolveContext,
 ) !void {
     var edge_buf: [max_chain_depth]ResolvedEdge = undefined;
     const edge_count = resolveQualifiedCall(
@@ -123,10 +141,8 @@ pub fn addResolvedEdges(
         target_file_id,
         chain,
         is_call,
-        graph_index,
-        log,
+        rctx,
         &edge_buf,
-        resolve_return_type,
     );
     for (edge_buf[0..edge_count]) |edge| {
         _ = try graph.addEdgeIfNew(allocator, .{
@@ -145,9 +161,7 @@ pub fn resolveOriginCall(
     origin: SymbolOrigin,
     call_chain: []const []const u8,
     is_call: bool,
-    graph_index: *const GraphIndex,
-    log: Logger,
-    resolve_return_type: ResolveReturnTypeFn,
+    rctx: *const ResolveContext,
 ) !void {
     var merged: [max_chain_depth][]const u8 = undefined;
     var len: usize = 0;
@@ -162,5 +176,5 @@ pub fn resolveOriginCall(
         len += 1;
     }
     if (len == 0) return;
-    try addResolvedEdges(allocator, graph, caller_id, origin.file_id, merged[0..len], is_call, graph_index, log, resolve_return_type);
+    try addResolvedEdges(allocator, graph, caller_id, origin.file_id, merged[0..len], is_call, rctx);
 }

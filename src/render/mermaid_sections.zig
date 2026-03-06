@@ -12,6 +12,8 @@ const EdgeType = types.EdgeType;
 
 const IdEntry = common.IdEntry;
 const PhantomPackage = common.PhantomPackage;
+const SectionCtx = common.SectionCtx;
+const EdgeCandidate = common.EdgeCandidate;
 
 const isInternal = common.isInternal;
 const inScope = common.inScope;
@@ -31,19 +33,17 @@ const PhantomNodeInfo = common.PhantomNodeInfo;
 pub fn renderFileSubgraphs(
     out: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
-    g: *const Graph,
+    ctx: *const SectionCtx,
     file_indices: []const usize,
-    ids: []const ?IdEntry,
-    num_buf: *[20]u8,
     children_index: *const ChildrenIndex,
 ) !void {
     for (file_indices) |fi| {
-        const file_node = g.nodes.items[fi];
-        const file_id = ids[fi].?;
+        const file_node = ctx.g.nodes.items[fi];
+        const file_id = ctx.ids[fi].?;
 
         // subgraph f_N["path"]
         try out.appendSlice(allocator, "    subgraph ");
-        try appendMermaidId(out, allocator, file_id.prefix, file_id.num, num_buf);
+        try appendMermaidId(out, allocator, file_id.prefix, file_id.num, ctx.num_buf);
         try out.appendSlice(allocator, "[\"");
         try out.appendSlice(allocator, file_node.file_path orelse file_node.name);
         try out.appendSlice(allocator, "\"]\n");
@@ -51,7 +51,7 @@ pub fn renderFileSubgraphs(
         // Collect all descendants of this file that have IDs.
         var file_members = std.ArrayList(MermaidNode){};
         defer file_members.deinit(allocator);
-        try collectDescendants(g, ids, children_index, fi, &file_members, allocator);
+        try collectDescendants(ctx.g, ctx.ids, children_index, fi, &file_members, allocator);
 
         // Sort by ID: prefix order then num.
         std.mem.sort(MermaidNode, file_members.items, {}, struct {
@@ -64,9 +64,9 @@ pub fn renderFileSubgraphs(
         }.lessThan);
 
         for (file_members.items) |member| {
-            const n = g.nodes.items[member.node_idx];
+            const n = ctx.g.nodes.items[member.node_idx];
             try out.appendSlice(allocator, "        ");
-            try renderNodeShape(out, allocator, g, n, member.id, num_buf);
+            try renderNodeShape(out, allocator, ctx.g, n, member.id, ctx.num_buf);
             try out.append(allocator, '\n');
         }
 
@@ -126,8 +126,18 @@ fn renderNodeShape(
             try out.appendSlice(allocator, "\"]");
         },
         .type_def => {
-            // st_N[["struct: name"]]
-            try out.appendSlice(allocator, "[[\"struct: ");
+            // ty_N[["struct: name"]] by default; Rust traits and type aliases get precise labels.
+            const label: []const u8 = switch (n.lang_meta) {
+                .rust => |rm| switch (rm.sub_kind) {
+                    .trait_ => "trait",
+                    .type_alias => "type",
+                    else => "struct",
+                },
+                else => "struct",
+            };
+            try out.appendSlice(allocator, "[[\"");
+            try out.appendSlice(allocator, label);
+            try out.appendSlice(allocator, ": ");
             try appendEscaped(out, allocator, n.name);
             try out.appendSlice(allocator, "\"]]");
         },
@@ -345,6 +355,162 @@ fn nodeKindPrefix(kind: NodeKind) []const u8 {
     };
 }
 
+const MermaidEdge = struct {
+    edge_type: EdgeType,
+    source_order: u64,
+    target_order: u64,
+    source_idx: usize,
+    target_idx: usize,
+    target_is_ghost: bool,
+    target_is_phantom: bool,
+};
+
+/// Qualify one edge candidate and append it to the Mermaid edge list.
+fn appendMermaidEdge(
+    list: *std.ArrayList(MermaidEdge),
+    allocator: std.mem.Allocator,
+    ctx: *const SectionCtx,
+    phantom_lookup: *const std.AutoHashMapUnmanaged(usize, PhantomNodeInfo),
+    filter: common.FilterOptions,
+    ghost_map: *const std.AutoHashMapUnmanaged(usize, u32),
+    candidate: EdgeCandidate,
+) !void {
+    if (candidate.edge_type == .similar_to or candidate.edge_type == .exports) return;
+    if (candidate.tgt_idx >= ctx.g.nodes.items.len) return;
+
+    const tgt_is_phantom = !isInternal(ctx.g.nodes.items[candidate.tgt_idx]);
+    const tgt_is_ghost = ghost_map.contains(candidate.tgt_idx);
+    const tgt_has_id = ctx.ids[candidate.tgt_idx] != null;
+
+    if (!tgt_has_id and !tgt_is_phantom and !tgt_is_ghost) return;
+    if (!filter.include_external_nodes and tgt_is_phantom) return;
+
+    var tgt_order: u64 = 0;
+    if (tgt_is_ghost) {
+        if (ghost_map.get(candidate.tgt_idx)) |gnum| {
+            tgt_order = 10 * @as(u64, 1 << 32) + gnum;
+        }
+    } else if (ctx.ids[candidate.tgt_idx]) |tgt_id| {
+        tgt_order = prefixOrder(tgt_id.prefix) * @as(u64, 1 << 32) + tgt_id.num;
+    } else if (tgt_is_phantom) {
+        if (phantom_lookup.get(candidate.tgt_idx)) |pi| {
+            tgt_order = prefixOrder("x:") * @as(u64, 1 << 32) + pi.pkg_x_num;
+        }
+    }
+
+    try list.append(allocator, .{
+        .edge_type = candidate.edge_type,
+        .source_order = candidate.src_order,
+        .target_order = tgt_order,
+        .source_idx = candidate.src_idx,
+        .target_idx = candidate.tgt_idx,
+        .target_is_ghost = tgt_is_ghost,
+        .target_is_phantom = tgt_is_phantom,
+    });
+}
+
+/// Collect and sort all qualifying Mermaid edges from the graph.
+fn collectMermaidEdges(
+    allocator: std.mem.Allocator,
+    ctx: *const SectionCtx,
+    phantom_lookup: *const std.AutoHashMapUnmanaged(usize, PhantomNodeInfo),
+    scope: ?[]const u8,
+    filter: common.FilterOptions,
+    ghost_map: *const std.AutoHashMapUnmanaged(usize, u32),
+) !std.ArrayList(MermaidEdge) {
+    var entries = std.ArrayList(MermaidEdge){};
+    errdefer entries.deinit(allocator);
+
+    if (ctx.g.adjacency != null) {
+        for (ctx.ids, 0..) |maybe_src_id, src_idx| {
+            const src_id = maybe_src_id orelse continue;
+
+            if (!filter.include_external_nodes) {
+                if (!isInternal(ctx.g.nodes.items[src_idx])) continue;
+            }
+
+            if (scope) |s| {
+                if (!inScope(ctx.g.nodes.items[src_idx].file_path, s)) continue;
+            }
+
+            const src_order = prefixOrder(src_id.prefix) * @as(u64, 1 << 32) + src_id.num;
+            for (ctx.g.outEdges(@enumFromInt(src_idx))) |eid| {
+                const e = ctx.g.edges.items[@intFromEnum(eid)];
+                try appendMermaidEdge(&entries, allocator, ctx, phantom_lookup, filter, ghost_map, .{
+                    .edge_type = e.edge_type,
+                    .src_idx = src_idx,
+                    .tgt_idx = @intFromEnum(e.target_id),
+                    .src_order = src_order,
+                });
+            }
+        }
+    } else {
+        for (ctx.g.edges.items) |e| {
+            if (e.edge_type == .similar_to or e.edge_type == .exports) continue;
+            const src_idx = @intFromEnum(e.source_id);
+            const tgt_idx = @intFromEnum(e.target_id);
+            if (src_idx >= ctx.g.nodes.items.len or tgt_idx >= ctx.g.nodes.items.len) continue;
+
+            const src_id = ctx.ids[src_idx] orelse continue;
+
+            if (scope) |s| {
+                if (!inScope(ctx.g.nodes.items[src_idx].file_path, s)) continue;
+            }
+
+            if (!filter.include_external_nodes) {
+                if (!isInternal(ctx.g.nodes.items[src_idx])) continue;
+            }
+
+            const src_order = prefixOrder(src_id.prefix) * @as(u64, 1 << 32) + src_id.num;
+            try appendMermaidEdge(&entries, allocator, ctx, phantom_lookup, filter, ghost_map, .{
+                .edge_type = e.edge_type,
+                .src_idx = src_idx,
+                .tgt_idx = tgt_idx,
+                .src_order = src_order,
+            });
+        }
+    }
+
+    std.mem.sort(MermaidEdge, entries.items, {}, struct {
+        fn lessThan(_: void, a: MermaidEdge, b: MermaidEdge) bool {
+            const a_key = edgeTypeSortKey(a.edge_type);
+            const b_key = edgeTypeSortKey(b.edge_type);
+            if (a_key != b_key) return a_key < b_key;
+            if (a.source_order != b.source_order) return a.source_order < b.source_order;
+            return a.target_order < b.target_order;
+        }
+    }.lessThan);
+
+    return entries;
+}
+
+/// Append the Mermaid target ID for an edge entry.
+fn renderMermaidTargetId(
+    out: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    entry: MermaidEdge,
+    ids: []const ?IdEntry,
+    ghost_map: *const std.AutoHashMapUnmanaged(usize, u32),
+    phantom_lookup: *const std.AutoHashMapUnmanaged(usize, PhantomNodeInfo),
+    num_buf: *[20]u8,
+) !void {
+    if (entry.target_is_ghost) {
+        if (ghost_map.get(entry.target_idx)) |gnum| {
+            try out.appendSlice(allocator, "g_");
+            try appendNum(out, allocator, gnum, num_buf);
+        }
+    } else if (ids[entry.target_idx]) |tgt_id| {
+        try appendMermaidId(out, allocator, tgt_id.prefix, tgt_id.num, num_buf);
+    } else if (entry.target_is_phantom) {
+        if (phantom_lookup.get(entry.target_idx)) |pi| {
+            try out.appendSlice(allocator, "x_");
+            try appendNum(out, allocator, pi.pkg_x_num, num_buf);
+            try out.append(allocator, '_');
+            try appendDotToUnderscore(out, allocator, pi.symbol_path);
+        }
+    }
+}
+
 /// Render all qualifying graph edges as Mermaid arrow statements.
 ///
 /// Each edge is rendered as `    source_id arrow target_id` where the arrow
@@ -357,158 +523,27 @@ fn nodeKindPrefix(kind: NodeKind) []const u8 {
 pub fn renderEdges(
     out: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
-    g: *const Graph,
-    ids: []const ?IdEntry,
+    ctx: *const SectionCtx,
     phantom_lookup: *const std.AutoHashMapUnmanaged(usize, PhantomNodeInfo),
     scope: ?[]const u8,
     filter: common.FilterOptions,
     ghost_map: *const std.AutoHashMapUnmanaged(usize, u32),
-    num_buf: *[20]u8,
 ) !void {
-    const MermaidEdge = struct {
-        edge_type: EdgeType,
-        source_order: u64,
-        target_order: u64,
-        source_idx: usize,
-        target_idx: usize,
-        target_is_ghost: bool,
-        target_is_phantom: bool,
-    };
-
-    var entries = std.ArrayList(MermaidEdge){};
+    var entries = try collectMermaidEdges(allocator, ctx, phantom_lookup, scope, filter, ghost_map);
     defer entries.deinit(allocator);
-
-    // Shared logic for qualifying one edge by its target.
-    const appendMermaidEdge = struct {
-        fn append(
-            list: *std.ArrayList(MermaidEdge),
-            alloc: std.mem.Allocator,
-            g_inner: *const Graph,
-            ids_inner: []const ?IdEntry,
-            pl: *const std.AutoHashMapUnmanaged(usize, PhantomNodeInfo),
-            flt: common.FilterOptions,
-            gm: *const std.AutoHashMapUnmanaged(usize, u32),
-            edge_type: EdgeType,
-            src_idx: usize,
-            tgt_idx: usize,
-            src_order: u64,
-        ) !void {
-            if (edge_type == .similar_to or edge_type == .exports) return;
-            if (tgt_idx >= g_inner.nodes.items.len) return;
-
-            const tgt_is_phantom = !isInternal(g_inner.nodes.items[tgt_idx]);
-            const tgt_is_ghost = gm.contains(tgt_idx);
-            const tgt_has_id = ids_inner[tgt_idx] != null;
-
-            if (!tgt_has_id and !tgt_is_phantom and !tgt_is_ghost) return;
-            if (!flt.include_external_nodes and tgt_is_phantom) return;
-
-            var tgt_order: u64 = 0;
-            if (tgt_is_ghost) {
-                if (gm.get(tgt_idx)) |gnum| {
-                    tgt_order = 10 * @as(u64, 1 << 32) + gnum;
-                }
-            } else if (ids_inner[tgt_idx]) |tgt_id| {
-                tgt_order = prefixOrder(tgt_id.prefix) * @as(u64, 1 << 32) + tgt_id.num;
-            } else if (tgt_is_phantom) {
-                if (pl.get(tgt_idx)) |pi| {
-                    tgt_order = prefixOrder("x:") * @as(u64, 1 << 32) + pi.pkg_x_num;
-                }
-            }
-
-            try list.append(alloc, .{
-                .edge_type = edge_type,
-                .source_order = src_order,
-                .target_order = tgt_order,
-                .source_idx = src_idx,
-                .target_idx = tgt_idx,
-                .target_is_ghost = tgt_is_ghost,
-                .target_is_phantom = tgt_is_phantom,
-            });
-        }
-    }.append;
-
-    // Use adjacency when available: only iterate sources with IDs.
-    if (g.adjacency != null) {
-        for (ids, 0..) |maybe_src_id, src_idx| {
-            const src_id = maybe_src_id orelse continue;
-
-            if (!filter.include_external_nodes) {
-                if (!isInternal(g.nodes.items[src_idx])) continue;
-            }
-
-            if (scope) |s| {
-                if (!inScope(g.nodes.items[src_idx].file_path, s)) continue;
-            }
-
-            const src_order = prefixOrder(src_id.prefix) * @as(u64, 1 << 32) + src_id.num;
-            for (g.outEdges(@enumFromInt(src_idx))) |eid| {
-                const e = g.edges.items[@intFromEnum(eid)];
-                try appendMermaidEdge(&entries, allocator, g, ids, phantom_lookup, filter, ghost_map, e.edge_type, src_idx, @intFromEnum(e.target_id), src_order);
-            }
-        }
-    } else {
-        for (g.edges.items) |e| {
-            if (e.edge_type == .similar_to or e.edge_type == .exports) continue;
-            const src_idx = @intFromEnum(e.source_id);
-            const tgt_idx = @intFromEnum(e.target_id);
-            if (src_idx >= g.nodes.items.len or tgt_idx >= g.nodes.items.len) continue;
-
-            const src_id = ids[src_idx] orelse continue;
-
-            if (scope) |s| {
-                if (!inScope(g.nodes.items[src_idx].file_path, s)) continue;
-            }
-
-            if (!filter.include_external_nodes) {
-                if (!isInternal(g.nodes.items[src_idx])) continue;
-            }
-
-            const src_order = prefixOrder(src_id.prefix) * @as(u64, 1 << 32) + src_id.num;
-            try appendMermaidEdge(&entries, allocator, g, ids, phantom_lookup, filter, ghost_map, e.edge_type, src_idx, tgt_idx, src_order);
-        }
-    }
-
-    // Sort: type (alpha), then source, then target.
-    std.mem.sort(MermaidEdge, entries.items, {}, struct {
-        fn lessThan(_: void, a: MermaidEdge, b: MermaidEdge) bool {
-            const a_key = edgeTypeSortKey(a.edge_type);
-            const b_key = edgeTypeSortKey(b.edge_type);
-            if (a_key != b_key) return a_key < b_key;
-            if (a.source_order != b.source_order) return a.source_order < b.source_order;
-            return a.target_order < b.target_order;
-        }
-    }.lessThan);
 
     for (entries.items) |entry| {
         try out.appendSlice(allocator, "    ");
 
-        // Source ID.
-        const src_id = ids[entry.source_idx].?;
-        try appendMermaidId(out, allocator, src_id.prefix, src_id.num, num_buf);
+        const src_id = ctx.ids[entry.source_idx].?;
+        try appendMermaidId(out, allocator, src_id.prefix, src_id.num, ctx.num_buf);
 
-        // Arrow style.
         const arrow = mermaidArrow(entry.edge_type);
         try out.append(allocator, ' ');
         try out.appendSlice(allocator, arrow);
         try out.append(allocator, ' ');
 
-        // Target ID.
-        if (entry.target_is_ghost) {
-            if (ghost_map.get(entry.target_idx)) |gnum| {
-                try out.appendSlice(allocator, "g_");
-                try appendNum(out, allocator, gnum, num_buf);
-            }
-        } else if (ids[entry.target_idx]) |tgt_id| {
-            try appendMermaidId(out, allocator, tgt_id.prefix, tgt_id.num, num_buf);
-        } else if (entry.target_is_phantom) {
-            if (phantom_lookup.get(entry.target_idx)) |pi| {
-                try out.appendSlice(allocator, "x_");
-                try appendNum(out, allocator, pi.pkg_x_num, num_buf);
-                try out.append(allocator, '_');
-                try appendDotToUnderscore(out, allocator, pi.symbol_path);
-            }
-        }
+        try renderMermaidTargetId(out, allocator, entry, ctx.ids, ghost_map, phantom_lookup, ctx.num_buf);
 
         try out.append(allocator, '\n');
     }
@@ -523,38 +558,29 @@ fn mermaidArrow(et: EdgeType) []const u8 {
     };
 }
 
-/// Render Mermaid `class` statements that assign CSS style classes to all rendered nodes.
-///
-/// Groups internal nodes, phantom symbols, and ghost nodes by their style
-/// class (fn_style, st_style, en_style, etc.) and emits one
-/// `class id1,id2,... style_name` line per non-empty group. Within each
-/// group, nodes are sorted by their prefix order and ID number for
-/// deterministic output.
-pub fn renderClassAssignments(
-    out: *std.ArrayList(u8),
+const StyleClass = enum { const_style, en_style, err_style, fn_style, ghost_style, phantom_style, test_style, ty_style, un_style };
+
+const ClassEntry = struct {
+    style: StyleClass,
+    sort_order: u64,
+    node_idx: usize,
+    is_phantom_symbol: bool,
+    phantom_pkg_num: u32,
+    phantom_path: []const u8,
+    is_ghost: bool,
+    ghost_num: u32,
+};
+
+/// Collect all class entries from internal nodes, phantom symbols, and ghost nodes.
+fn collectClassEntries(
     allocator: std.mem.Allocator,
     g: *const Graph,
     ids: []const ?IdEntry,
     phantom_packages: []const PhantomPackage,
     ghost_map: *const std.AutoHashMapUnmanaged(usize, u32),
-    num_buf: *[20]u8,
-) !void {
-    // Collect node IDs per style class.
-    const StyleClass = enum { const_style, en_style, err_style, fn_style, ghost_style, phantom_style, st_style, test_style, un_style };
-
-    const ClassEntry = struct {
-        style: StyleClass,
-        sort_order: u64,
-        node_idx: usize,
-        is_phantom_symbol: bool,
-        phantom_pkg_num: u32,
-        phantom_path: []const u8,
-        is_ghost: bool,
-        ghost_num: u32,
-    };
-
+) !std.ArrayList(ClassEntry) {
     var entries = std.ArrayList(ClassEntry){};
-    defer entries.deinit(allocator);
+    errdefer entries.deinit(allocator);
 
     // Internal nodes with IDs.
     for (g.nodes.items, 0..) |n, i| {
@@ -563,13 +589,13 @@ pub fn renderClassAssignments(
 
         const style: StyleClass = switch (n.kind) {
             .function => .fn_style,
-            .type_def => .st_style,
+            .type_def => .ty_style,
             .union_def => .un_style,
             .enum_def => .en_style,
             .constant => .const_style,
             .test_def => .test_style,
             .error_def => .err_style,
-            .module => .fn_style, // modules get fn_style as fallback
+            .module => .fn_style,
             else => continue,
         };
 
@@ -618,7 +644,6 @@ pub fn renderClassAssignments(
         });
     }
 
-    // Sort by style name, then by sort_order within each style.
     std.mem.sort(ClassEntry, entries.items, {}, struct {
         fn lessThan(_: void, a: ClassEntry, b: ClassEntry) bool {
             const a_ord = @intFromEnum(a.style);
@@ -628,56 +653,75 @@ pub fn renderClassAssignments(
         }
     }.lessThan);
 
-    // Render one "class id1,id2 style_name" line per style.
+    return entries;
+}
+
+/// Format one class entry's Mermaid node ID into the id_strings buffer.
+fn appendClassNodeId(
+    id_strings: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    entry: ClassEntry,
+    ids: []const ?IdEntry,
+    num_buf: *[20]u8,
+) !void {
+    if (entry.is_ghost) {
+        try id_strings.appendSlice(allocator, "g_");
+        const s = std.fmt.bufPrint(num_buf, "{d}", .{entry.ghost_num}) catch unreachable;
+        try id_strings.appendSlice(allocator, s);
+    } else if (entry.is_phantom_symbol) {
+        try id_strings.appendSlice(allocator, "x_");
+        const s = std.fmt.bufPrint(num_buf, "{d}", .{entry.phantom_pkg_num}) catch unreachable;
+        try id_strings.appendSlice(allocator, s);
+        try id_strings.append(allocator, '_');
+        for (entry.phantom_path) |c| {
+            try id_strings.append(allocator, if (c == '.') '_' else c);
+        }
+    } else if (ids[entry.node_idx]) |id| {
+        if (id.prefix.len > 0 and id.prefix[id.prefix.len - 1] == ':') {
+            try id_strings.appendSlice(allocator, id.prefix[0 .. id.prefix.len - 1]);
+        } else {
+            try id_strings.appendSlice(allocator, id.prefix);
+        }
+        try id_strings.append(allocator, '_');
+        const s = std.fmt.bufPrint(num_buf, "{d}", .{id.num}) catch unreachable;
+        try id_strings.appendSlice(allocator, s);
+    }
+}
+
+/// Render Mermaid `class` statements that assign CSS style classes to all rendered nodes.
+///
+/// Groups internal nodes, phantom symbols, and ghost nodes by their style
+/// class (fn_style, st_style, en_style, etc.) and emits one
+/// `class id1,id2,... style_name` line per non-empty group. Within each
+/// group, nodes are sorted by their prefix order and ID number for
+/// deterministic output.
+pub fn renderClassAssignments(
+    out: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    ctx: *const SectionCtx,
+    phantom_packages: []const PhantomPackage,
+    ghost_map: *const std.AutoHashMapUnmanaged(usize, u32),
+) !void {
+    var entries = try collectClassEntries(allocator, ctx.g, ctx.ids, phantom_packages, ghost_map);
+    defer entries.deinit(allocator);
+
     const style_names = [_][]const u8{
-        "const_style", "en_style",      "err_style", "fn_style",
-        "ghost_style", "phantom_style", "st_style",  "test_style",
+        "const_style", "en_style",      "err_style",  "fn_style",
+        "ghost_style", "phantom_style", "test_style", "ty_style",
         "un_style",
     };
 
     for (style_names, 0..) |style_name, style_idx| {
         const target_style: StyleClass = @enumFromInt(style_idx);
 
-        // Collect IDs for this style.
         var id_strings = std.ArrayList(u8){};
         defer id_strings.deinit(allocator);
         var count: usize = 0;
 
         for (entries.items) |entry| {
             if (entry.style != target_style) continue;
-
-            if (count > 0) {
-                try id_strings.append(allocator, ',');
-            }
-
-            if (entry.is_ghost) {
-                try id_strings.appendSlice(allocator, "g_");
-                const s = std.fmt.bufPrint(num_buf, "{d}", .{entry.ghost_num}) catch unreachable;
-                try id_strings.appendSlice(allocator, s);
-            } else if (entry.is_phantom_symbol) {
-                try id_strings.appendSlice(allocator, "x_");
-                const s = std.fmt.bufPrint(num_buf, "{d}", .{entry.phantom_pkg_num}) catch unreachable;
-                try id_strings.appendSlice(allocator, s);
-                try id_strings.append(allocator, '_');
-                for (entry.phantom_path) |c| {
-                    if (c == '.') {
-                        try id_strings.append(allocator, '_');
-                    } else {
-                        try id_strings.append(allocator, c);
-                    }
-                }
-            } else if (ids[entry.node_idx]) |id| {
-                // Regular internal node.
-                if (id.prefix.len > 0 and id.prefix[id.prefix.len - 1] == ':') {
-                    try id_strings.appendSlice(allocator, id.prefix[0 .. id.prefix.len - 1]);
-                } else {
-                    try id_strings.appendSlice(allocator, id.prefix);
-                }
-                try id_strings.append(allocator, '_');
-                const s = std.fmt.bufPrint(num_buf, "{d}", .{id.num}) catch unreachable;
-                try id_strings.appendSlice(allocator, s);
-            }
-
+            if (count > 0) try id_strings.append(allocator, ',');
+            try appendClassNodeId(&id_strings, allocator, entry, ctx.ids, ctx.num_buf);
             count += 1;
         }
 

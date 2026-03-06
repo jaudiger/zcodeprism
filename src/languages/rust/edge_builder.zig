@@ -105,7 +105,13 @@ const ScanContext = struct {
 };
 
 fn addResolvedEdges(allocator: std.mem.Allocator, sctx: *const ScanContext, target_file_id: NodeId, chain: []const []const u8, is_call: bool) !void {
-    try shared_resolve.addResolvedEdges(allocator, sctx.graph, sctx.caller_id, target_file_id, chain, is_call, sctx.graph_index, sctx.log, cf.resolveReturnTypeScope);
+    const rctx = shared_resolve.ResolveContext{
+        .graph_index = sctx.graph_index,
+        .log = sctx.log,
+        .resolve_return_type = cf.resolveReturnTypeScope,
+        .find_in_type_scope = findMethodInImplBlocks,
+    };
+    try shared_resolve.addResolvedEdges(allocator, sctx.graph, sctx.caller_id, target_file_id, chain, is_call, &rctx);
 }
 
 /// Walk the AST to discover edges (calls, uses_type, implements).
@@ -400,16 +406,20 @@ fn resolveScopedFieldType(
     }
     if (len == 0) return;
 
+    const rctx = shared_resolve.ResolveContext{
+        .graph_index = graph_index,
+        .log = log,
+        .resolve_return_type = cf.resolveReturnTypeScope,
+        .find_in_type_scope = findMethodInImplBlocks,
+    };
     var edge_buf: [cf.max_chain_depth]cf.ResolvedEdge = undefined;
     const edge_count = cf.resolveQualifiedCall(
         graph,
         origin.file_id,
         resolve_chain[0..len],
         false,
-        graph_index,
-        log,
+        &rctx,
         &edge_buf,
-        cf.resolveReturnTypeScope,
     );
     for (edge_buf[0..edge_count]) |edge| {
         _ = try graph.addEdgeIfNew(allocator, .{
@@ -558,7 +568,13 @@ fn resolveFieldCall(allocator: std.mem.Allocator, sctx: *const ScanContext, fiel
 }
 
 fn resolveOriginCall(allocator: std.mem.Allocator, sctx: *const ScanContext, origin: cf.SymbolOrigin, call_chain: []const []const u8, is_call: bool) !void {
-    try shared_resolve.resolveOriginCall(allocator, sctx.graph, sctx.caller_id, origin, call_chain, is_call, sctx.graph_index, sctx.log, cf.resolveReturnTypeScope);
+    const rctx = shared_resolve.ResolveContext{
+        .graph_index = sctx.graph_index,
+        .log = sctx.log,
+        .resolve_return_type = cf.resolveReturnTypeScope,
+        .find_in_type_scope = findMethodInImplBlocks,
+    };
+    try shared_resolve.resolveOriginCall(allocator, sctx.graph, sctx.caller_id, origin, call_chain, is_call, &rctx);
 }
 
 /// Handle a call_expression whose function reference is a generic_function
@@ -877,6 +893,35 @@ fn prescanForParamTypeBindings(
         }
         break;
     }
+}
+
+/// Callback for resolveQualifiedCall: search impl blocks for a named member
+/// when the standard scope-child lookup fails on a type container. Finds the
+/// containing file and scans its children for impl blocks matching the type name.
+fn findMethodInImplBlocks(g: *const Graph, type_id: NodeId, name: []const u8, graph_index: *const GraphIndex) ?NodeId {
+    const scope_index = &graph_index.scope;
+    const type_node = g.getNode(type_id) orelse return null;
+    if (!type_node.kind.isTypeContainer()) return null;
+    const type_name = type_node.name;
+    if (type_name.len == 0) return null;
+
+    const file_id = g.findContainingFile(type_id) orelse return null;
+    for (scope_index.childrenOf(file_id)) |sibling_idx| {
+        const sib = g.nodes.items[sibling_idx];
+        if (sib.kind != .type_def) continue;
+        if (sib.lang_meta != .rust) continue;
+        if (sib.lang_meta.rust.sub_kind != .impl_block) continue;
+        if (!std.mem.eql(u8, sib.name, type_name)) continue;
+
+        const impl_id: NodeId = @enumFromInt(sibling_idx);
+        for (scope_index.childrenOf(impl_id)) |child_idx| {
+            const child = g.nodes.items[child_idx];
+            if (std.mem.eql(u8, child.name, name)) {
+                return @enumFromInt(child_idx);
+            }
+        }
+    }
+    return null;
 }
 
 /// Find a method by name within a type's direct children or any

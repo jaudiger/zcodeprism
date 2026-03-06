@@ -95,6 +95,57 @@ const StringTableBuilder = struct {
     }
 };
 
+fn writeHeader(buf: []u8, h: BinaryHeader) void {
+    @memcpy(buf[0..8], &h.magic);
+    std.mem.writeInt(u32, buf[8..12], h.version, .little);
+    std.mem.writeInt(u32, buf[12..16], h.flags, .little);
+    std.mem.writeInt(u64, buf[16..24], h.node_count, .little);
+    std.mem.writeInt(u64, buf[24..32], h.edge_count, .little);
+    std.mem.writeInt(u64, buf[32..40], h.node_table_offset, .little);
+    std.mem.writeInt(u64, buf[40..48], h.edge_table_offset, .little);
+    std.mem.writeInt(u64, buf[48..56], h.metrics_table_offset, .little);
+    std.mem.writeInt(u64, buf[56..64], h.string_table_offset, .little);
+    std.mem.writeInt(u64, buf[64..72], h.string_table_size, .little);
+}
+
+fn readHeader(buf: []const u8) !BinaryHeader {
+    if (!std.mem.eql(u8, buf[0..8], &MAGIC)) return error.InvalidMagic;
+    const version = std.mem.readInt(u32, buf[8..12], .little);
+    if (version != VERSION) return error.UnsupportedVersion;
+
+    return .{
+        .version = version,
+        .flags = std.mem.readInt(u32, buf[12..16], .little),
+        .node_count = std.mem.readInt(u64, buf[16..24], .little),
+        .edge_count = std.mem.readInt(u64, buf[24..32], .little),
+        .node_table_offset = std.mem.readInt(u64, buf[32..40], .little),
+        .edge_table_offset = std.mem.readInt(u64, buf[40..48], .little),
+        .metrics_table_offset = std.mem.readInt(u64, buf[48..56], .little),
+        .string_table_offset = std.mem.readInt(u64, buf[56..64], .little),
+        .string_table_size = std.mem.readInt(u64, buf[64..72], .little),
+    };
+}
+
+fn validateTableBounds(h: BinaryHeader, file_size: usize) !void {
+    const nc: usize = @intCast(h.node_count);
+    const ec: usize = @intCast(h.edge_count);
+    const nto: usize = @intCast(h.node_table_offset);
+    const eto: usize = @intCast(h.edge_table_offset);
+    const mto: usize = @intCast(h.metrics_table_offset);
+    const sto: usize = @intCast(h.string_table_offset);
+    const st_size: usize = @intCast(h.string_table_size);
+
+    const node_table_end = std.math.add(usize, nto, std.math.mul(usize, nc, NODE_RECORD_SIZE) catch return error.InvalidFormat) catch return error.InvalidFormat;
+    const edge_table_end = std.math.add(usize, eto, std.math.mul(usize, ec, EDGE_RECORD_SIZE) catch return error.InvalidFormat) catch return error.InvalidFormat;
+    const metrics_table_end = std.math.add(usize, mto, std.math.mul(usize, nc, METRICS_RECORD_SIZE) catch return error.InvalidFormat) catch return error.InvalidFormat;
+    const string_table_end = std.math.add(usize, sto, st_size) catch return error.InvalidFormat;
+
+    if (node_table_end > file_size or
+        edge_table_end > file_size or
+        metrics_table_end > file_size or
+        string_table_end > file_size) return error.InvalidFormat;
+}
+
 fn alignTo8(offset: usize) usize {
     return (offset + 7) & ~@as(usize, 7);
 }
@@ -206,16 +257,15 @@ pub fn save(allocator: std.mem.Allocator, g: *const Graph, path: []const u8) !vo
     // Fill
 
     // Header
-    @memcpy(buf[0..8], &MAGIC);
-    std.mem.writeInt(u32, buf[8..12], VERSION, .little);
-    std.mem.writeInt(u32, buf[12..16], 0, .little); // flags
-    std.mem.writeInt(u64, buf[16..24], @intCast(nc), .little);
-    std.mem.writeInt(u64, buf[24..32], @intCast(ec), .little);
-    std.mem.writeInt(u64, buf[32..40], @intCast(node_table_offset), .little);
-    std.mem.writeInt(u64, buf[40..48], @intCast(edge_table_offset), .little);
-    std.mem.writeInt(u64, buf[48..56], @intCast(metrics_table_offset), .little);
-    std.mem.writeInt(u64, buf[56..64], @intCast(string_table_offset), .little);
-    std.mem.writeInt(u64, buf[64..72], @intCast(string_table_size), .little);
+    writeHeader(buf, .{
+        .node_count = @intCast(nc),
+        .edge_count = @intCast(ec),
+        .node_table_offset = @intCast(node_table_offset),
+        .edge_table_offset = @intCast(edge_table_offset),
+        .metrics_table_offset = @intCast(metrics_table_offset),
+        .string_table_offset = @intCast(string_table_offset),
+        .string_table_size = @intCast(string_table_size),
+    });
 
     // Node records
     for (g.nodes.items, 0..) |n, i| {
@@ -285,17 +335,7 @@ pub fn save(allocator: std.mem.Allocator, g: *const Graph, path: []const u8) !vo
     for (g.nodes.items, 0..) |n, i| {
         if (n.metrics) |m| {
             const base = metrics_table_offset + i * METRICS_RECORD_SIZE;
-            std.mem.writeInt(u16, buf[base..][0..2], m.complexity, .little);
-            std.mem.writeInt(u32, buf[base + 2 ..][0..4], m.lines, .little);
-            std.mem.writeInt(u16, buf[base + 6 ..][0..2], m.fan_in, .little);
-            std.mem.writeInt(u16, buf[base + 8 ..][0..2], m.fan_out, .little);
-            std.mem.writeInt(u16, buf[base + 10 ..][0..2], m.branches, .little);
-            std.mem.writeInt(u16, buf[base + 12 ..][0..2], m.loops, .little);
-            std.mem.writeInt(u16, buf[base + 14 ..][0..2], m.error_paths, .little);
-            buf[base + 16] = m.nesting_depth_max;
-            // padding at 17 already zero
-            std.mem.writeInt(u32, buf[base + 18 ..][0..4], m.structural_hash, .little);
-            // padding [22..24] already zero
+            m.encodeBinary(buf[base..][0..Metrics.BINARY_SIZE]);
         }
     }
 
@@ -330,31 +370,17 @@ pub fn load(allocator: std.mem.Allocator, path: []const u8) !Graph {
     const bytes_read = try file.readAll(buf);
     if (bytes_read < HEADER_SIZE) return error.InvalidFormat;
 
-    // Validate header
-    if (!std.mem.eql(u8, buf[0..8], &MAGIC)) return error.InvalidMagic;
-    const version = std.mem.readInt(u32, buf[8..12], .little);
-    if (version != VERSION) return error.UnsupportedVersion;
+    // Validate and parse header
+    const h = try readHeader(buf);
+    try validateTableBounds(h, bytes_read);
 
-    // Parse header fields
-    const nc: usize = @intCast(std.mem.readInt(u64, buf[16..24], .little));
-    const ec: usize = @intCast(std.mem.readInt(u64, buf[24..32], .little));
-    const nto: usize = @intCast(std.mem.readInt(u64, buf[32..40], .little));
-    const eto: usize = @intCast(std.mem.readInt(u64, buf[40..48], .little));
-    const mto: usize = @intCast(std.mem.readInt(u64, buf[48..56], .little));
-    const sto: usize = @intCast(std.mem.readInt(u64, buf[56..64], .little));
-    const st_size: usize = @intCast(std.mem.readInt(u64, buf[64..72], .little));
-
-    // Validate that all table regions fit within the file buffer.
-    // Use overflow-safe arithmetic since counts are read from untrusted data.
-    const node_table_end = std.math.add(usize, nto, std.math.mul(usize, nc, NODE_RECORD_SIZE) catch return error.InvalidFormat) catch return error.InvalidFormat;
-    const edge_table_end = std.math.add(usize, eto, std.math.mul(usize, ec, EDGE_RECORD_SIZE) catch return error.InvalidFormat) catch return error.InvalidFormat;
-    const metrics_table_end = std.math.add(usize, mto, std.math.mul(usize, nc, METRICS_RECORD_SIZE) catch return error.InvalidFormat) catch return error.InvalidFormat;
-    const string_table_end = std.math.add(usize, sto, st_size) catch return error.InvalidFormat;
-
-    if (node_table_end > bytes_read or
-        edge_table_end > bytes_read or
-        metrics_table_end > bytes_read or
-        string_table_end > bytes_read) return error.InvalidFormat;
+    const nc: usize = @intCast(h.node_count);
+    const ec: usize = @intCast(h.edge_count);
+    const nto: usize = @intCast(h.node_table_offset);
+    const eto: usize = @intCast(h.edge_table_offset);
+    const mto: usize = @intCast(h.metrics_table_offset);
+    const sto: usize = @intCast(h.string_table_offset);
+    const st_size: usize = @intCast(h.string_table_size);
 
     var g = Graph.init("");
     errdefer g.deinit(allocator);
@@ -413,17 +439,7 @@ pub fn load(allocator: std.mem.Allocator, path: []const u8) !Graph {
         // Metrics
         const metrics: ?Metrics = if (has_metrics) blk: {
             const mbase = mto + i * METRICS_RECORD_SIZE;
-            break :blk .{
-                .complexity = std.mem.readInt(u16, buf[mbase..][0..2], .little),
-                .lines = std.mem.readInt(u32, buf[mbase + 2 ..][0..4], .little),
-                .fan_in = std.mem.readInt(u16, buf[mbase + 6 ..][0..2], .little),
-                .fan_out = std.mem.readInt(u16, buf[mbase + 8 ..][0..2], .little),
-                .branches = std.mem.readInt(u16, buf[mbase + 10 ..][0..2], .little),
-                .loops = std.mem.readInt(u16, buf[mbase + 12 ..][0..2], .little),
-                .error_paths = std.mem.readInt(u16, buf[mbase + 14 ..][0..2], .little),
-                .nesting_depth_max = buf[mbase + 16],
-                .structural_hash = std.mem.readInt(u32, buf[mbase + 18 ..][0..4], .little),
-            };
+            break :blk Metrics.decodeBinary(buf[mbase..][0..Metrics.BINARY_SIZE]);
         } else null;
 
         g.nodes.appendAssumeCapacity(.{

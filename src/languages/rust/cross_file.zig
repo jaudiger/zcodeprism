@@ -91,12 +91,16 @@ pub fn buildImportMap(
         if (child.kindId() != k.use_declaration) continue;
 
         // The use_declaration's payload is its second named child (after optional visibility).
+        var is_public = false;
         var ci: u32 = 0;
         while (ci < child.namedChildCount()) : (ci += 1) {
             const payload = child.namedChild(ci) orelse continue;
             const kid = payload.kindId();
-            if (kid == k.visibility_modifier) continue;
-            try resolveUseNode(allocator, g, source, payload, &.{}, ctx, graph_index, importer_path, k, log);
+            if (kid == k.visibility_modifier) {
+                is_public = true;
+                continue;
+            }
+            try resolveUseNode(allocator, g, source, payload, &.{}, is_public, ctx, graph_index, importer_path, k, log);
             break;
         }
     }
@@ -111,14 +115,14 @@ pub fn buildImportMap(
     // so skipping names already in the map gives explicit imports priority over
     // glob-sourced ones (matching Rust shadowing semantics).
     const scope_index = &graph_index.scope;
-    for (ctx.glob_targets.items) |glob_file_id| {
-        for (scope_index.childrenOf(glob_file_id)) |child_idx| {
+    for (ctx.glob_targets.items) |glob| {
+        for (scope_index.childrenOf(glob.target)) |child_idx| {
             const n = g.nodes.items[child_idx];
             if (n.visibility != .public) continue;
             if (n.kind == .import_decl) continue;
             if (n.name.len == 0) continue;
             if (ctx.findImportTarget(n.name) != null) continue;
-            var entry = ImportEntry{ .name = n.name, .target = glob_file_id };
+            var entry = ImportEntry{ .name = n.name, .target = glob.target, .is_reexport = glob.is_public };
             entry.chain[0] = n.name;
             entry.chain_len = 1;
             try ctx.imports.append(allocator, entry);
@@ -140,6 +144,7 @@ fn resolveUseNode(
     source: []const u8,
     node: ts.Node,
     prefix: []const []const u8,
+    is_public: bool,
     ctx: *EdgeContext,
     graph_index: *const GraphIndex,
     importer_path: ?[]const u8,
@@ -153,7 +158,7 @@ fn resolveUseNode(
         var seg_count = copyPrefix(prefix, &segments);
         collectScopedSegments(source, node, &segments, &seg_count, k);
         if (seg_count == 0) return;
-        try resolveAndAddEntry(allocator, g, ctx, graph_index, importer_path, segments[0..seg_count], segments[seg_count - 1], log);
+        try resolveAndAddEntry(allocator, g, ctx, graph_index, importer_path, segments[0..seg_count], segments[seg_count - 1], is_public, log);
     } else if (kid == k.scoped_use_list) {
         var new_prefix: [max_chain_depth][]const u8 = undefined;
         var pcount = copyPrefix(prefix, &new_prefix);
@@ -166,7 +171,7 @@ fn resolveUseNode(
                 var mi: u32 = 0;
                 while (mi < child.namedChildCount()) : (mi += 1) {
                     const member = child.namedChild(mi) orelse continue;
-                    try resolveUseNode(allocator, g, source, member, new_prefix[0..pcount], ctx, graph_index, importer_path, k, log);
+                    try resolveUseNode(allocator, g, source, member, new_prefix[0..pcount], is_public, ctx, graph_index, importer_path, k, log);
                 }
             } else {
                 collectScopedSegments(source, child, &new_prefix, &pcount, k);
@@ -182,7 +187,7 @@ fn resolveUseNode(
         if (seg_count == 0) return;
         const alias: ?[]const u8 = if (node.namedChild(1)) |alias_node| ts_api.nodeText(source, alias_node) else null;
         const binding = alias orelse segments[seg_count - 1];
-        try resolveAndAddEntry(allocator, g, ctx, graph_index, importer_path, segments[0..seg_count], binding, log);
+        try resolveAndAddEntry(allocator, g, ctx, graph_index, importer_path, segments[0..seg_count], binding, is_public, log);
     } else if (kid == k.use_wildcard) {
         // The use_wildcard node contains the path prefix in its named children.
         // Combine with the recursion prefix to get the full module path.
@@ -229,7 +234,7 @@ fn resolveUseNode(
             log.trace("import map: glob inner scope not found", &.{});
             return;
         };
-        try ctx.glob_targets.append(allocator, target);
+        try ctx.glob_targets.append(allocator, .{ .target = target, .is_public = is_public });
     }
 }
 
@@ -270,6 +275,7 @@ fn resolveAndAddEntry(
     importer_path: ?[]const u8,
     segments: []const []const u8,
     binding_name: []const u8,
+    is_public: bool,
     log: Logger,
 ) !void {
     const file_index = &graph_index.files;
@@ -294,7 +300,7 @@ fn resolveAndAddEntry(
             return;
         };
 
-        var entry = ImportEntry{ .name = binding_name, .target = parent_id };
+        var entry = ImportEntry{ .name = binding_name, .target = parent_id, .is_reexport = is_public };
         const chain_len = @min(work.len, max_chain_depth);
         for (work[0..chain_len], 0..) |seg, ci| {
             entry.chain[ci] = seg;
@@ -324,7 +330,7 @@ fn resolveAndAddEntry(
     const reexport = resolveReExport(g, target_file_id, symbol_name, graph_index, log, 0);
 
     if (reexport) |re| {
-        var entry = ImportEntry{ .name = binding_name, .target = re.file_id };
+        var entry = ImportEntry{ .name = binding_name, .target = re.file_id, .is_reexport = is_public };
         const copy_len = @min(re.chain_len, max_chain_depth);
         for (re.chain[0..copy_len], 0..) |seg, ci| {
             entry.chain[ci] = seg;
@@ -335,7 +341,7 @@ fn resolveAndAddEntry(
             Field.string("binding", binding_name),
         });
     } else {
-        var entry = ImportEntry{ .name = binding_name, .target = target_file_id };
+        var entry = ImportEntry{ .name = binding_name, .target = target_file_id, .is_reexport = is_public };
         const chain_start = work[1..];
         const chain_len = @min(chain_start.len, max_chain_depth);
         for (chain_start[0..chain_len], 0..) |seg, ci| {
@@ -426,6 +432,34 @@ fn resolveModuleByConvention(file_index: *const FileIndex, module_name: []const 
         if (file_index.findByName(buf[0..needed])) |id| return id;
     }
     return null;
+}
+
+/// Emit exports edges for pub use declarations that resolved to in-project nodes.
+/// Iterates tagged import entries so that all use-path forms are handled uniformly,
+/// including brace groups, aliases, and nested groups.
+pub fn buildExportEdges(
+    allocator: std.mem.Allocator,
+    g: *Graph,
+    ctx: *const EdgeContext,
+    graph_index: *const GraphIndex,
+    log: Logger,
+) !void {
+    const file_id: NodeId = @enumFromInt(ctx.scope_start);
+    const scope_index = &graph_index.scope;
+
+    for (ctx.imports.items) |*entry| {
+        if (!entry.is_reexport) continue;
+        if (entry.chain_len == 0) continue;
+        const target = walkScopePath(g, scope_index, entry.target, entry.chain[0..entry.chain_len]) orelse continue;
+        const target_node = g.getNode(target) orelse continue;
+        if (target_node.kind == .file or target_node.kind == .directory or target_node.kind == .module) continue;
+        _ = try g.addEdgeIfNew(allocator, .{
+            .source_id = file_id,
+            .target_id = target,
+            .edge_type = .exports,
+        });
+        log.trace("export edge emitted", &.{Field.string("binding", entry.name)});
+    }
 }
 
 /// Check if a module file re-exports a symbol via pub use. Scans the file's

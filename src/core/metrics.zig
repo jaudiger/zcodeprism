@@ -12,7 +12,79 @@ pub const Metrics = struct {
     error_paths: u16 = 0,
     nesting_depth_max: u8 = 0,
     structural_hash: u32 = 0,
+
+    /// Binary record size: matches METRICS_RECORD_SIZE in binary.zig.
+    pub const BINARY_SIZE: usize = 24;
+
+    /// Write this metrics value as a JSON object to `writer`.
+    pub fn writeJson(self: Metrics, writer: *std.Io.Writer) !void {
+        try writer.print("{{\"complexity\":{d},\"lines\":{d},\"fan_in\":{d},\"fan_out\":{d},\"branches\":{d},\"loops\":{d},\"error_paths\":{d},\"nesting_depth_max\":{d},\"structural_hash\":{d}}}", .{
+            self.complexity,      self.lines, self.fan_in,      self.fan_out,
+            self.branches,        self.loops, self.error_paths, self.nesting_depth_max,
+            self.structural_hash,
+        });
+    }
+
+    /// Parse a Metrics from a JSON Value. Returns null for non-object or null values.
+    pub fn parseJson(val: std.json.Value) ?Metrics {
+        switch (val) {
+            .null => return null,
+            .object => |obj| {
+                return .{
+                    .complexity = jsonField(u16, obj, "complexity"),
+                    .lines = jsonField(u32, obj, "lines"),
+                    .fan_in = jsonField(u16, obj, "fan_in"),
+                    .fan_out = jsonField(u16, obj, "fan_out"),
+                    .branches = jsonField(u16, obj, "branches"),
+                    .loops = jsonField(u16, obj, "loops"),
+                    .error_paths = jsonField(u16, obj, "error_paths"),
+                    .nesting_depth_max = jsonField(u8, obj, "nesting_depth_max"),
+                    .structural_hash = jsonField(u32, obj, "structural_hash"),
+                };
+            },
+            else => return null,
+        }
+    }
+
+    /// Encode into a fixed-size 24-byte binary record (little-endian).
+    pub fn encodeBinary(self: Metrics, buf: *[BINARY_SIZE]u8) void {
+        std.mem.writeInt(u16, buf[0..2], self.complexity, .little);
+        std.mem.writeInt(u32, buf[2..6], self.lines, .little);
+        std.mem.writeInt(u16, buf[6..8], self.fan_in, .little);
+        std.mem.writeInt(u16, buf[8..10], self.fan_out, .little);
+        std.mem.writeInt(u16, buf[10..12], self.branches, .little);
+        std.mem.writeInt(u16, buf[12..14], self.loops, .little);
+        std.mem.writeInt(u16, buf[14..16], self.error_paths, .little);
+        buf[16] = self.nesting_depth_max;
+        buf[17] = 0; // padding
+        std.mem.writeInt(u32, buf[18..22], self.structural_hash, .little);
+        buf[22] = 0; // padding
+        buf[23] = 0;
+    }
+
+    /// Decode from a fixed-size 24-byte binary record (little-endian).
+    pub fn decodeBinary(buf: *const [BINARY_SIZE]u8) Metrics {
+        return .{
+            .complexity = std.mem.readInt(u16, buf[0..2], .little),
+            .lines = std.mem.readInt(u32, buf[2..6], .little),
+            .fan_in = std.mem.readInt(u16, buf[6..8], .little),
+            .fan_out = std.mem.readInt(u16, buf[8..10], .little),
+            .branches = std.mem.readInt(u16, buf[10..12], .little),
+            .loops = std.mem.readInt(u16, buf[12..14], .little),
+            .error_paths = std.mem.readInt(u16, buf[14..16], .little),
+            .nesting_depth_max = buf[16],
+            .structural_hash = std.mem.readInt(u32, buf[18..22], .little),
+        };
+    }
 };
+
+fn jsonField(comptime T: type, obj: std.json.ObjectMap, key: []const u8) T {
+    const val = obj.get(key) orelse return 0;
+    return switch (val) {
+        .integer => |i| @intCast(i),
+        else => 0,
+    };
+}
 
 test "metrics default values are all zero" {
     // Arrange

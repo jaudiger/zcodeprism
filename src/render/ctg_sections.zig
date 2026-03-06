@@ -9,6 +9,8 @@ const EdgeType = types.EdgeType;
 
 const IdEntry = common.IdEntry;
 const PhantomPackage = common.PhantomPackage;
+const SectionCtx = common.SectionCtx;
+const EdgeCandidate = common.EdgeCandidate;
 
 const isInternal = common.isInternal;
 const inScope = common.inScope;
@@ -27,63 +29,59 @@ const PhantomNodeInfo = common.PhantomNodeInfo;
 pub fn renderFilesSection(
     out: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
-    g: *const Graph,
+    ctx: *const SectionCtx,
     file_indices: []const usize,
-    ids: []const ?IdEntry,
-    num_buf: *[20]u8,
 ) !void {
     if (file_indices.len == 0) return;
     try out.appendSlice(allocator, "[files]\n");
     for (file_indices) |fi| {
-        const n = g.nodes.items[fi];
-        const id = ids[fi].?;
+        const n = ctx.g.nodes.items[fi];
+        const id = ctx.ids[fi].?;
         try out.appendSlice(allocator, id.prefix);
-        try appendNum(out, allocator, id.num, num_buf);
+        try appendNum(out, allocator, id.num, ctx.num_buf);
         try out.append(allocator, ' ');
         try out.appendSlice(allocator, n.file_path orelse n.name);
         try out.append(allocator, ' ');
-        try appendNum(out, allocator, n.line_end orelse 0, num_buf);
+        try appendNum(out, allocator, n.line_end orelse 0, ctx.num_buf);
         try out.appendSlice(allocator, "L\n");
     }
 }
 
-/// Render the [structs] CTG section listing each struct with its ID, name, location, and visibility.
+/// Render the [types] CTG section listing each type_def with its ID, name, location, and visibility.
 ///
-/// For each struct, also renders child fields (dot-prefixed) and methods on
+/// For each type, also renders child fields (dot-prefixed) and methods on
 /// indented continuation lines via renderContainerChildren. Skips output
-/// entirely when struct_indices is empty.
-pub fn renderStructsSection(
+/// entirely when type_indices is empty.
+pub fn renderTypesSection(
     out: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
-    g: *const Graph,
-    struct_indices: []const usize,
-    ids: []const ?IdEntry,
-    num_buf: *[20]u8,
+    ctx: *const SectionCtx,
+    type_indices: []const usize,
     children_index: *const ChildrenIndex,
 ) !void {
-    if (struct_indices.len == 0) return;
-    try out.appendSlice(allocator, "[structs]\n");
-    for (struct_indices) |si| {
-        const n = g.nodes.items[si];
-        const id = ids[si].?;
-        const file_id = findFileId(g, n, ids);
+    if (type_indices.len == 0) return;
+    try out.appendSlice(allocator, "[types]\n");
+    for (type_indices) |si| {
+        const n = ctx.g.nodes.items[si];
+        const id = ctx.ids[si].?;
+        const file_id = findFileId(ctx.g, n, ctx.ids);
 
         try out.appendSlice(allocator, id.prefix);
-        try appendNum(out, allocator, id.num, num_buf);
+        try appendNum(out, allocator, id.num, ctx.num_buf);
         try out.append(allocator, ' ');
         try out.appendSlice(allocator, n.name);
         if (file_id) |fid| {
             try out.appendSlice(allocator, " f:");
-            try appendNum(out, allocator, fid, num_buf);
+            try appendNum(out, allocator, fid, ctx.num_buf);
             try out.append(allocator, ':');
-            try appendNum(out, allocator, n.line_start orelse 0, num_buf);
+            try appendNum(out, allocator, n.line_start orelse 0, ctx.num_buf);
         }
         if (n.visibility == .public) {
             try out.appendSlice(allocator, " pub");
         }
         try out.append(allocator, '\n');
 
-        try renderContainerChildren(out, allocator, g, si, children_index);
+        try renderContainerChildren(out, allocator, ctx.g, si, children_index);
     }
 }
 
@@ -95,35 +93,33 @@ pub fn renderStructsSection(
 pub fn renderUnionsSection(
     out: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
-    g: *const Graph,
+    ctx: *const SectionCtx,
     union_indices: []const usize,
-    ids: []const ?IdEntry,
-    num_buf: *[20]u8,
     children_index: *const ChildrenIndex,
 ) !void {
     if (union_indices.len == 0) return;
     try out.appendSlice(allocator, "[unions]\n");
     for (union_indices) |ui| {
-        const n = g.nodes.items[ui];
-        const id = ids[ui].?;
-        const file_id = findFileId(g, n, ids);
+        const n = ctx.g.nodes.items[ui];
+        const id = ctx.ids[ui].?;
+        const file_id = findFileId(ctx.g, n, ctx.ids);
 
         try out.appendSlice(allocator, id.prefix);
-        try appendNum(out, allocator, id.num, num_buf);
+        try appendNum(out, allocator, id.num, ctx.num_buf);
         try out.append(allocator, ' ');
         try out.appendSlice(allocator, n.name);
         if (file_id) |fid| {
             try out.appendSlice(allocator, " f:");
-            try appendNum(out, allocator, fid, num_buf);
+            try appendNum(out, allocator, fid, ctx.num_buf);
             try out.append(allocator, ':');
-            try appendNum(out, allocator, n.line_start orelse 0, num_buf);
+            try appendNum(out, allocator, n.line_start orelse 0, ctx.num_buf);
         }
         if (n.visibility == .public) {
             try out.appendSlice(allocator, " pub");
         }
         try out.append(allocator, '\n');
 
-        try renderContainerChildren(out, allocator, g, ui, children_index);
+        try renderContainerChildren(out, allocator, ctx.g, ui, children_index);
     }
 }
 
@@ -178,27 +174,25 @@ fn renderContainerChildren(
 pub fn renderEnumsSection(
     out: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
-    g: *const Graph,
+    ctx: *const SectionCtx,
     enum_indices: []const usize,
-    ids: []const ?IdEntry,
-    num_buf: *[20]u8,
 ) !void {
     if (enum_indices.len == 0) return;
     try out.appendSlice(allocator, "[enums]\n");
     for (enum_indices) |ei| {
-        const n = g.nodes.items[ei];
-        const id = ids[ei].?;
-        const file_id = findFileId(g, n, ids);
+        const n = ctx.g.nodes.items[ei];
+        const id = ctx.ids[ei].?;
+        const file_id = findFileId(ctx.g, n, ctx.ids);
 
         try out.appendSlice(allocator, id.prefix);
-        try appendNum(out, allocator, id.num, num_buf);
+        try appendNum(out, allocator, id.num, ctx.num_buf);
         try out.append(allocator, ' ');
         try out.appendSlice(allocator, n.name);
         if (file_id) |fid| {
             try out.appendSlice(allocator, " f:");
-            try appendNum(out, allocator, fid, num_buf);
+            try appendNum(out, allocator, fid, ctx.num_buf);
             try out.append(allocator, ':');
-            try appendNum(out, allocator, n.line_start orelse 0, num_buf);
+            try appendNum(out, allocator, n.line_start orelse 0, ctx.num_buf);
         }
         if (n.visibility == .public) {
             try out.appendSlice(allocator, " pub");
@@ -215,29 +209,27 @@ pub fn renderEnumsSection(
 pub fn renderFunctionsSection(
     out: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
-    g: *const Graph,
+    ctx: *const SectionCtx,
     fn_indices: []const usize,
-    ids: []const ?IdEntry,
-    num_buf: *[20]u8,
 ) !void {
     if (fn_indices.len == 0) return;
     try out.appendSlice(allocator, "[functions]\n");
     for (fn_indices) |fi| {
-        const n = g.nodes.items[fi];
-        const id = ids[fi].?;
-        const file_id = findFileId(g, n, ids);
+        const n = ctx.g.nodes.items[fi];
+        const id = ctx.ids[fi].?;
+        const file_id = findFileId(ctx.g, n, ctx.ids);
 
         try out.appendSlice(allocator, id.prefix);
-        try appendNum(out, allocator, id.num, num_buf);
+        try appendNum(out, allocator, id.num, ctx.num_buf);
         try out.append(allocator, ' ');
         try out.appendSlice(allocator, n.name);
         try out.appendSlice(allocator, "()");
 
         if (file_id) |fid| {
             try out.appendSlice(allocator, " f:");
-            try appendNum(out, allocator, fid, num_buf);
+            try appendNum(out, allocator, fid, ctx.num_buf);
             try out.append(allocator, ':');
-            try appendNum(out, allocator, n.line_start orelse 0, num_buf);
+            try appendNum(out, allocator, n.line_start orelse 0, ctx.num_buf);
         }
         if (n.visibility == .public) {
             try out.appendSlice(allocator, " pub");
@@ -252,28 +244,26 @@ pub fn renderFunctionsSection(
 pub fn renderConstantsSection(
     out: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
-    g: *const Graph,
+    ctx: *const SectionCtx,
     const_indices: []const usize,
-    ids: []const ?IdEntry,
-    num_buf: *[20]u8,
 ) !void {
     if (const_indices.len == 0) return;
     try out.appendSlice(allocator, "[constants]\n");
     for (const_indices) |ci| {
-        const n = g.nodes.items[ci];
-        const id = ids[ci].?;
-        const file_id = findFileId(g, n, ids);
+        const n = ctx.g.nodes.items[ci];
+        const id = ctx.ids[ci].?;
+        const file_id = findFileId(ctx.g, n, ctx.ids);
 
         try out.appendSlice(allocator, id.prefix);
-        try appendNum(out, allocator, id.num, num_buf);
+        try appendNum(out, allocator, id.num, ctx.num_buf);
         try out.append(allocator, ' ');
         try out.appendSlice(allocator, n.name);
 
         if (file_id) |fid| {
             try out.appendSlice(allocator, " f:");
-            try appendNum(out, allocator, fid, num_buf);
+            try appendNum(out, allocator, fid, ctx.num_buf);
             try out.append(allocator, ':');
-            try appendNum(out, allocator, n.line_start orelse 0, num_buf);
+            try appendNum(out, allocator, n.line_start orelse 0, ctx.num_buf);
         }
         if (n.visibility == .public) {
             try out.appendSlice(allocator, " pub");
@@ -289,27 +279,25 @@ pub fn renderConstantsSection(
 pub fn renderErrorsSection(
     out: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
-    g: *const Graph,
+    ctx: *const SectionCtx,
     err_indices: []const usize,
-    ids: []const ?IdEntry,
-    num_buf: *[20]u8,
 ) !void {
     if (err_indices.len == 0) return;
     try out.appendSlice(allocator, "[errors]\n");
     for (err_indices) |ei| {
-        const n = g.nodes.items[ei];
-        const id = ids[ei].?;
-        const file_id = findFileId(g, n, ids);
+        const n = ctx.g.nodes.items[ei];
+        const id = ctx.ids[ei].?;
+        const file_id = findFileId(ctx.g, n, ctx.ids);
 
         try out.appendSlice(allocator, id.prefix);
-        try appendNum(out, allocator, id.num, num_buf);
+        try appendNum(out, allocator, id.num, ctx.num_buf);
         try out.append(allocator, ' ');
         try out.appendSlice(allocator, n.name);
         if (file_id) |fid| {
             try out.appendSlice(allocator, " f:");
-            try appendNum(out, allocator, fid, num_buf);
+            try appendNum(out, allocator, fid, ctx.num_buf);
             try out.append(allocator, ':');
-            try appendNum(out, allocator, n.line_start orelse 0, num_buf);
+            try appendNum(out, allocator, n.line_start orelse 0, ctx.num_buf);
         }
         try out.append(allocator, '\n');
     }
@@ -322,35 +310,33 @@ pub fn renderErrorsSection(
 pub fn renderTestsSection(
     out: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
-    g: *const Graph,
+    ctx: *const SectionCtx,
     test_indices: []const usize,
-    ids: []const ?IdEntry,
-    num_buf: *[20]u8,
 ) !void {
     if (test_indices.len == 0) return;
     try out.appendSlice(allocator, "[tests]\n");
     for (test_indices) |ti| {
-        const n = g.nodes.items[ti];
-        const id = ids[ti].?;
-        const file_id = findFileId(g, n, ids);
+        const n = ctx.g.nodes.items[ti];
+        const id = ctx.ids[ti].?;
+        const file_id = findFileId(ctx.g, n, ctx.ids);
 
         try out.appendSlice(allocator, id.prefix);
-        try appendNum(out, allocator, id.num, num_buf);
+        try appendNum(out, allocator, id.num, ctx.num_buf);
         try out.appendSlice(allocator, " \"");
         try out.appendSlice(allocator, n.name);
         try out.append(allocator, '"');
         if (file_id) |fid| {
             try out.appendSlice(allocator, " f:");
-            try appendNum(out, allocator, fid, num_buf);
+            try appendNum(out, allocator, fid, ctx.num_buf);
             try out.append(allocator, ':');
-            try appendNum(out, allocator, n.line_start orelse 0, num_buf);
+            try appendNum(out, allocator, n.line_start orelse 0, ctx.num_buf);
         }
         const lines = if (n.line_end != null and n.line_start != null)
             n.line_end.? - n.line_start.? + 1
         else
             0;
         try out.append(allocator, ' ');
-        try appendNum(out, allocator, lines, num_buf);
+        try appendNum(out, allocator, lines, ctx.num_buf);
         try out.appendSlice(allocator, "L\n");
     }
 }
@@ -407,105 +393,98 @@ const EdgeEntry = struct {
 fn appendEdgeEntry(
     entries: *std.ArrayList(EdgeEntry),
     allocator: std.mem.Allocator,
-    g: *const Graph,
-    ids: []const ?IdEntry,
+    ctx: *const SectionCtx,
     phantom_lookup: *const std.AutoHashMapUnmanaged(usize, common.PhantomNodeInfo),
     filter: common.FilterOptions,
-    edge_type: EdgeType,
-    src_idx: usize,
-    tgt_idx: usize,
-    src_id: IdEntry,
-    src_order: u64,
+    candidate: EdgeCandidate,
 ) !void {
-    const tgt_has_id = ids[tgt_idx] != null;
-    const tgt_is_phantom = !isInternal(g.nodes.items[tgt_idx]);
+    const tgt_has_id = ctx.ids[candidate.tgt_idx] != null;
+    const tgt_is_phantom = !isInternal(ctx.g.nodes.items[candidate.tgt_idx]);
 
     if (!tgt_has_id and !tgt_is_phantom) return;
 
     if (!filter.include_external_nodes and tgt_is_phantom) return;
 
     var tgt_order: u64 = 0;
-    if (ids[tgt_idx]) |tgt_id| {
+    if (ctx.ids[candidate.tgt_idx]) |tgt_id| {
         tgt_order = prefixOrder(tgt_id.prefix) * @as(u64, 1 << 32) + tgt_id.num;
     } else if (tgt_is_phantom) {
-        if (phantom_lookup.get(tgt_idx)) |pi| {
+        if (phantom_lookup.get(candidate.tgt_idx)) |pi| {
             tgt_order = prefixOrder("x:") * @as(u64, 1 << 32) + pi.pkg_x_num;
         }
     }
 
     try entries.append(allocator, .{
-        .edge_type = edge_type,
-        .source_str_order = src_order,
+        .edge_type = candidate.edge_type,
+        .source_str_order = candidate.src_order,
         .target_str_order = tgt_order,
-        .source_idx = src_idx,
-        .target_idx = tgt_idx,
+        .source_idx = candidate.src_idx,
+        .target_idx = candidate.tgt_idx,
     });
-    _ = src_id;
 }
 
-/// Render the [edges] CTG section listing all graph edges grouped by source and type.
-///
-/// Edges are sorted by type (alphabetical), then by source ID, then by target
-/// ID. Consecutive edges sharing the same source and type are merged onto a
-/// single line with multiple space-separated targets. Phantom targets are
-/// rendered as x:N:path. Respects scope filtering and the include_external_nodes
-/// filter option. Skips output entirely when no qualifying edges exist.
-pub fn renderEdgesSection(
-    out: *std.ArrayList(u8),
+/// Collect and sort all qualifying CTG edges from the graph. Uses
+/// adjacency when available, falls back to flat scan otherwise.
+fn collectCtgEdges(
     allocator: std.mem.Allocator,
-    g: *const Graph,
-    ids: []const ?IdEntry,
+    ctx: *const SectionCtx,
     phantom_lookup: *const std.AutoHashMapUnmanaged(usize, PhantomNodeInfo),
     scope: ?[]const u8,
     filter: common.FilterOptions,
-    num_buf: *[20]u8,
-) !void {
+) !std.ArrayList(EdgeEntry) {
     var entries = std.ArrayList(EdgeEntry){};
-    defer entries.deinit(allocator);
+    errdefer entries.deinit(allocator);
 
-    // When adjacency is available, iterate only nodes with IDs and
-    // fetch their outgoing edges. This skips edges from out-of-scope
-    // sources entirely. Falls back to a flat edge scan otherwise.
-    if (g.adjacency != null) {
-        for (ids, 0..) |maybe_src_id, src_idx| {
+    if (ctx.g.adjacency != null) {
+        for (ctx.ids, 0..) |maybe_src_id, src_idx| {
             const src_id = maybe_src_id orelse continue;
 
             if (!filter.include_external_nodes) {
-                if (!isInternal(g.nodes.items[src_idx])) continue;
+                if (!isInternal(ctx.g.nodes.items[src_idx])) continue;
             }
 
             if (scope) |s| {
-                if (!inScope(g.nodes.items[src_idx].file_path, s)) continue;
+                if (!inScope(ctx.g.nodes.items[src_idx].file_path, s)) continue;
             }
 
             const src_order = prefixOrder(src_id.prefix) * @as(u64, 1 << 32) + src_id.num;
 
-            for (g.outEdges(@enumFromInt(src_idx))) |eid| {
-                const e = g.edges.items[@intFromEnum(eid)];
+            for (ctx.g.outEdges(@enumFromInt(src_idx))) |eid| {
+                const e = ctx.g.edges.items[@intFromEnum(eid)];
                 const tgt_idx = @intFromEnum(e.target_id);
-                if (tgt_idx >= g.nodes.items.len) continue;
+                if (tgt_idx >= ctx.g.nodes.items.len) continue;
 
-                try appendEdgeEntry(&entries, allocator, g, ids, phantom_lookup, filter, e.edge_type, src_idx, tgt_idx, src_id, src_order);
+                try appendEdgeEntry(&entries, allocator, ctx, phantom_lookup, filter, .{
+                    .edge_type = e.edge_type,
+                    .src_idx = src_idx,
+                    .tgt_idx = tgt_idx,
+                    .src_order = src_order,
+                });
             }
         }
     } else {
-        for (g.edges.items) |e| {
+        for (ctx.g.edges.items) |e| {
             const src_idx = @intFromEnum(e.source_id);
             const tgt_idx = @intFromEnum(e.target_id);
-            if (src_idx >= g.nodes.items.len or tgt_idx >= g.nodes.items.len) continue;
+            if (src_idx >= ctx.g.nodes.items.len or tgt_idx >= ctx.g.nodes.items.len) continue;
 
-            const src_id = ids[src_idx] orelse continue;
+            const src_id = ctx.ids[src_idx] orelse continue;
 
             if (!filter.include_external_nodes) {
-                if (!isInternal(g.nodes.items[src_idx])) continue;
+                if (!isInternal(ctx.g.nodes.items[src_idx])) continue;
             }
 
             if (scope) |s| {
-                if (!inScope(g.nodes.items[src_idx].file_path, s)) continue;
+                if (!inScope(ctx.g.nodes.items[src_idx].file_path, s)) continue;
             }
 
             const src_order = prefixOrder(src_id.prefix) * @as(u64, 1 << 32) + src_id.num;
-            try appendEdgeEntry(&entries, allocator, g, ids, phantom_lookup, filter, e.edge_type, src_idx, tgt_idx, src_id, src_order);
+            try appendEdgeEntry(&entries, allocator, ctx, phantom_lookup, filter, .{
+                .edge_type = e.edge_type,
+                .src_idx = src_idx,
+                .tgt_idx = tgt_idx,
+                .src_order = src_order,
+            });
         }
     }
 
@@ -519,6 +498,27 @@ pub fn renderEdgesSection(
         }
     }.lessThan);
 
+    return entries;
+}
+
+/// Render the [edges] CTG section listing all graph edges grouped by source and type.
+///
+/// Edges are sorted by type (alphabetical), then by source ID, then by target
+/// ID. Consecutive edges sharing the same source and type are merged onto a
+/// single line with multiple space-separated targets. Phantom targets are
+/// rendered as x:N:path. Respects scope filtering and the include_external_nodes
+/// filter option. Skips output entirely when no qualifying edges exist.
+pub fn renderEdgesSection(
+    out: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    ctx: *const SectionCtx,
+    phantom_lookup: *const std.AutoHashMapUnmanaged(usize, PhantomNodeInfo),
+    scope: ?[]const u8,
+    filter: common.FilterOptions,
+) !void {
+    var entries = try collectCtgEdges(allocator, ctx, phantom_lookup, scope, filter);
+    defer entries.deinit(allocator);
+
     if (entries.items.len == 0) return;
     try out.appendSlice(allocator, "[edges]\n");
 
@@ -528,9 +528,9 @@ pub fn renderEdgesSection(
         const group_source_idx = entries.items[i].source_idx;
 
         // Write source ID and edge type
-        const src_id = ids[group_source_idx].?;
+        const src_id = ctx.ids[group_source_idx].?;
         try out.appendSlice(allocator, src_id.prefix);
-        try appendNum(out, allocator, src_id.num, num_buf);
+        try appendNum(out, allocator, src_id.num, ctx.num_buf);
         try out.append(allocator, ' ');
         try out.appendSlice(allocator, edgeTypeName(group_edge_type));
 
@@ -542,13 +542,13 @@ pub fn renderEdgesSection(
             const entry = entries.items[i];
             try out.append(allocator, ' ');
 
-            if (ids[entry.target_idx]) |tgt_id| {
+            if (ctx.ids[entry.target_idx]) |tgt_id| {
                 try out.appendSlice(allocator, tgt_id.prefix);
-                try appendNum(out, allocator, tgt_id.num, num_buf);
+                try appendNum(out, allocator, tgt_id.num, ctx.num_buf);
             } else {
                 if (phantom_lookup.get(entry.target_idx)) |pi| {
                     try out.appendSlice(allocator, "x:");
-                    try appendNum(out, allocator, pi.pkg_x_num, num_buf);
+                    try appendNum(out, allocator, pi.pkg_x_num, ctx.num_buf);
                     try out.append(allocator, ':');
                     try out.appendSlice(allocator, pi.symbol_path);
                 } else {

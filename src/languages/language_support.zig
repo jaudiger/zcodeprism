@@ -40,8 +40,8 @@ pub const Language = types.Language;
 /// Parses `source` and populates `graph` with the resulting nodes and edges.
 /// `allocator` is passed through to graph mutation methods.
 /// `file_path`, when provided, is stored on each created node for location tracking.
-/// Returns an error if the underlying tree-sitter parse or graph mutation fails.
-pub const ParseFn = *const fn (allocator: std.mem.Allocator, source: []const u8, graph: *Graph, file_path: ?[]const u8, logger: Logger) anyerror!void;
+/// Returns `error.OutOfMemory` if graph mutation fails.
+pub const ParseFn = *const fn (allocator: std.mem.Allocator, source: []const u8, graph: *Graph, file_path: ?[]const u8, logger: Logger) error{OutOfMemory}!void;
 
 /// Function pointer type for resolving phantom (external) references in a single file.
 ///
@@ -76,7 +76,7 @@ pub const BuildEdgesFn = *const fn (
     graph_index: *const GraphIndex,
     phantom_mgr: *const PhantomManager,
     logger: Logger,
-) anyerror!void;
+) error{OutOfMemory}!void;
 
 /// Descriptor for a supported programming language.
 ///

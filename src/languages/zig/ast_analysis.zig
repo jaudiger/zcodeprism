@@ -1,5 +1,6 @@
 const std = @import("std");
 const types = @import("../../core/types.zig");
+const shared_types = @import("../shared/types.zig");
 const ts = @import("tree-sitter");
 const ts_api = @import("../../parser/tree_sitter_api.zig");
 const pc = @import("parse_context.zig");
@@ -35,44 +36,46 @@ pub const ReturnedTypeBody = struct {
     pub const ReturnedKind = enum { struct_like, union_like, enum_like };
 };
 
-/// Search a function body for `return struct { ... }`, `return union { ... }`, or `return enum { ... }`.
-/// Returns the struct/union/enum body node if found.
+/// Search a function body for a returned struct, union, or enum declaration.
+/// Recursively descends into the return expression subtree, so wrapped
+/// returns through control flow nodes are handled.
+/// Returns the first matching type body found via depth-first search.
 pub fn findReturnedTypeBody(fn_node: ts.Node, k: *const KindIds) ?ReturnedTypeBody {
-    // Path: function_declaration -> block -> expression_statement -> return_expression -> struct/union/enum_declaration
     var i: u32 = 0;
     while (i < fn_node.childCount()) : (i += 1) {
         const child = fn_node.child(i) orelse continue;
         if (child.kindId() != k.block) continue;
 
-        // Search block children for expression_statement containing a return.
         var j: u32 = 0;
         while (j < child.childCount()) : (j += 1) {
             const stmt = child.child(j) orelse continue;
             if (stmt.kindId() != k.expression_statement) continue;
 
-            // Look for return_expression inside the expression_statement.
             var ki: u32 = 0;
             while (ki < stmt.childCount()) : (ki += 1) {
                 const ret = stmt.child(ki) orelse continue;
                 if (ret.kindId() != k.return_expression) continue;
 
-                // The returned value is a named child of return_expression (after "return").
-                var l: u32 = 0;
-                while (l < ret.namedChildCount()) : (l += 1) {
-                    const val = ret.namedChild(l) orelse continue;
-                    const val_kid = val.kindId();
-                    if (val_kid == k.struct_declaration) {
-                        return .{ .body = val, .kind = .struct_like };
-                    }
-                    if (val_kid == k.union_declaration) {
-                        return .{ .body = val, .kind = .union_like };
-                    }
-                    if (val_kid == k.enum_declaration) {
-                        return .{ .body = val, .kind = .enum_like };
-                    }
-                }
+                // Recurse into the return value subtree to find the type body.
+                if (findTypeInSubtree(ret, k, 0)) |result| return result;
             }
         }
+    }
+    return null;
+}
+
+/// Walk a subtree depth-first looking for struct/union/enum declarations.
+/// Bounded to 8 levels to avoid runaway recursion on pathological ASTs.
+fn findTypeInSubtree(node: ts.Node, k: *const KindIds, depth: u32) ?ReturnedTypeBody {
+    if (depth > shared_types.max_shallow_search_depth) return null;
+    var i: u32 = 0;
+    while (i < node.namedChildCount()) : (i += 1) {
+        const child = node.namedChild(i) orelse continue;
+        const kid = child.kindId();
+        if (kid == k.struct_declaration) return .{ .body = child, .kind = .struct_like };
+        if (kid == k.union_declaration) return .{ .body = child, .kind = .union_like };
+        if (kid == k.enum_declaration) return .{ .body = child, .kind = .enum_like };
+        if (findTypeInSubtree(child, k, depth + 1)) |result| return result;
     }
     return null;
 }

@@ -34,6 +34,12 @@ pub fn Container(comptime T: type) type {
             return self.count() == 0;
         }
 
+        /// Reset to a fresh empty container via Self.init().
+        pub fn reset(self: *Self) Self {
+            _ = self;
+            return Self.init();
+        }
+
         fn validate(self: Self) bool {
             _ = self;
             return true;
@@ -54,6 +60,16 @@ pub fn Result(comptime T: type, comptime E: type) type {
             return self == .ok;
         }
     };
+}
+
+/// A generic enum whose variants depend on a comptime flag.
+pub fn StatusEnum(comptime has_pending: bool) type {
+    return if (has_pending) enum { ok, pending, fail } else enum { ok, fail };
+}
+
+/// A generic union wrapping a value or an empty sentinel.
+pub fn ValueUnion(comptime T: type) type {
+    return union { value: T, empty: void };
 }
 
 /// A simple non-generic configuration struct for comparison.

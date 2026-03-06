@@ -29,7 +29,7 @@ pub const rust = struct {
     };
 
     pub const reexport_chain = struct {
-        pub const deep_rs = @embedFile("fixtures/rust/reexport_chain/deep.rs");
+        pub const deep_rs = @embedFile("fixtures/rust/reexport_chain/mid/deep.rs");
         pub const lib_rs = @embedFile("fixtures/rust/reexport_chain/lib.rs");
         pub const mid_rs = @embedFile("fixtures/rust/reexport_chain/mid.rs");
     };

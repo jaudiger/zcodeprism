@@ -52,6 +52,7 @@ pub const GraphIndex = struct {
         self.imports = try ImportIndex.build(allocator, edges);
     }
 
+    /// Release all five sub-indexes.
     pub fn deinit(self: *GraphIndex, allocator: std.mem.Allocator) void {
         self.imports.deinit(allocator);
         self.scope.deinit(allocator);

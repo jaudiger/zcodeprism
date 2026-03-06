@@ -9,3 +9,7 @@ impl Widget {
         }
     }
 }
+
+pub struct Gadget {
+    pub id: u32,
+}

@@ -12,6 +12,7 @@ const lang = @import("../language.zig");
 const Graph = graph_mod.Graph;
 const PhantomManager = phantom_mod.PhantomManager;
 const GraphIndex = graph_index_mod.GraphIndex;
+const FileIndex = graph_index_mod.FileIndex;
 const NodeId = types.NodeId;
 const EdgeType = types.EdgeType;
 const Language = types.Language;
@@ -172,11 +173,32 @@ pub fn resolveImportPath(buf: []u8, importer_path: []const u8, import_path: []co
     }
 }
 
-/// Returns true for path prefixes that are Rust keywords, not external crates.
-fn isInternalPathKeyword(crate: []const u8) bool {
-    return std.mem.eql(u8, crate, "self") or
-        std.mem.eql(u8, crate, "crate") or
-        std.mem.eql(u8, crate, "super");
+/// Returns true when the root segment of a use-path is local: either a Rust
+/// path keyword (self, crate, super) or a module that resolves to an
+/// in-project file. Phantoms should only be created for external crates.
+fn isLocalCrate(crate_name: []const u8, importer_path: ?[]const u8, file_index: *const FileIndex) bool {
+    if (std.mem.eql(u8, crate_name, "self") or
+        std.mem.eql(u8, crate_name, "crate") or
+        std.mem.eql(u8, crate_name, "super"))
+        return true;
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    if (importer_path) |ip| {
+        var ci: usize = 0;
+        while (ci < 2) : (ci += 1) {
+            const resolved = resolveImportPath(&buf, ip, crate_name, ci) orelse break;
+            if (file_index.findByName(resolved) != null) return true;
+        }
+    }
+    const suffixes = [_][]const u8{ ".rs", "/mod.rs", "/lib.rs" };
+    for (suffixes) |suffix| {
+        const needed = crate_name.len + suffix.len;
+        if (needed > buf.len) continue;
+        @memcpy(buf[0..crate_name.len], crate_name);
+        @memcpy(buf[crate_name.len..][0..suffix.len], suffix);
+        if (file_index.findByName(buf[0..needed]) != null) return true;
+    }
+    return false;
 }
 
 /// Create phantom nodes and edges for all `use` declarations in a single Rust file.
@@ -214,7 +236,7 @@ pub fn resolvePhantoms(
 
         const sep_pos = std.mem.indexOf(u8, path, "::") orelse continue;
         const crate = path[0..sep_pos];
-        if (isInternalPathKeyword(crate)) continue;
+        if (isLocalCrate(crate, graph.nodes.items[file_idx].file_path, &graph_index.files)) continue;
 
         const external: ExternalInfo = if (std.mem.eql(u8, crate, "std"))
             .{ .stdlib = {} }
@@ -255,7 +277,7 @@ pub fn resolvePhantoms(
         }
     }
 
-    try resolveScopedFieldPhantoms(allocator, graph, file_idx, clamped_end, phantom, log);
+    try resolveScopedFieldPhantoms(allocator, graph, file_idx, clamped_end, phantom, graph_index, log);
 
     try impl_resolve.resolveImplementsEdges(allocator, graph, file_idx, clamped_end, phantom, graph_index);
 }
@@ -387,6 +409,7 @@ fn resolveScopedFieldPhantoms(
     file_idx: usize,
     file_end_idx: usize,
     phantom: *PhantomManager,
+    graph_index: *const GraphIndex,
     log: Logger,
 ) error{OutOfMemory}!void {
     _ = log;
@@ -400,6 +423,8 @@ fn resolveScopedFieldPhantoms(
     var prefix_buf: [max_prefixes]PrefixEntry = undefined;
     var prefix_count: usize = 0;
 
+    const importer_path = graph.nodes.items[file_idx].file_path;
+
     for (graph.nodes.items[file_idx..clamped_end]) |n| {
         if (n.kind != .import_decl) continue;
         if (n.parent_id == null or n.parent_id.? != file_id) continue;
@@ -410,7 +435,7 @@ fn resolveScopedFieldPhantoms(
 
         const sep_pos = std.mem.indexOf(u8, path, "::") orelse continue;
         const crate = path[0..sep_pos];
-        if (isInternalPathKeyword(crate)) continue;
+        if (isLocalCrate(crate, importer_path, &graph_index.files)) continue;
 
         const last_sep = std.mem.lastIndexOf(u8, path, "::") orelse continue;
         const terminal = path[last_sep + 2 ..];

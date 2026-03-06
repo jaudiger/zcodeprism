@@ -1,3 +1,3 @@
 mod deep;
 
-pub use deep::Widget;
+pub use deep::{Widget, Gadget};

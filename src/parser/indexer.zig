@@ -31,6 +31,10 @@ const GraphIndex = graph_index_mod.GraphIndex;
 const KindIndex = @import("../core/kind_index.zig").KindIndex;
 const Metrics = metrics_mod.Metrics;
 
+/// Maximum source file size the indexer will read into memory.
+/// Files that exceed this limit are skipped and counted as errors.
+pub const max_source_bytes: usize = 10 * 1024 * 1024;
+
 /// Configuration for `indexDirectory`.
 ///
 /// - `exclude_paths`: relative paths or basenames to skip during discovery.
@@ -62,15 +66,12 @@ const FileEntry = struct {
     content_hash: [12]u8,
     lang_support: *const lang_support.LanguageSupport,
     import_count: usize = 0,
-    /// Whether ownership of content has been transferred to the consumer.
-    content_consumed: bool = false,
-    /// Whether ownership of rel_path has been transferred to the consumer.
-    path_consumed: bool = false,
 };
 
 /// Tracks a parsed file's node index and source for post-processing.
 const FileInfo = struct {
-    idx: usize,
+    /// Index of the file node in graph.nodes.
+    node_idx: usize,
     scope_end: usize,
     source: []const u8,
     lang_support: *const lang_support.LanguageSupport,
@@ -96,59 +97,10 @@ pub fn indexDirectory(
     var result = IndexResult{};
     const log = options.logger.withScope("indexer");
 
-    // Discover source files in the project directory.
-    var dir = try std.fs.openDirAbsolute(project_root, .{ .iterate = true });
-    defer dir.close();
-
     var file_entries = std.ArrayList(FileEntry){};
     defer file_entries.deinit(allocator);
 
-    {
-        var walker = try dir.walk(allocator);
-        defer walker.deinit();
-
-        while (try walker.next()) |entry| {
-            if (entry.kind != .file) continue;
-            const ext = std.fs.path.extension(entry.path);
-            const file_lang = Registry.getByExtension(ext) orelse continue;
-            if (isExcluded(entry.path, options.exclude_paths)) continue;
-
-            const file = dir.openFile(entry.path, .{}) catch {
-                log.warn("file read error", &.{Field.string("path", entry.path)});
-                result.files_errored += 1;
-                continue;
-            };
-            defer file.close();
-            const content = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch {
-                result.files_errored += 1;
-                continue;
-            };
-
-            errdefer allocator.free(content);
-
-            const hash = computeContentHash(content);
-            const rel_path = try allocator.dupe(u8, entry.path);
-            errdefer allocator.free(rel_path);
-            const basename = std.fs.path.basename(rel_path);
-
-            try file_entries.append(allocator, .{
-                .rel_path = rel_path,
-                .basename = basename,
-                .content = content,
-                .content_hash = hash,
-                .lang_support = file_lang,
-            });
-        }
-    }
-
-    // Cleanup non-consumed entries (skipped or error). This defer runs before
-    // the deinit defers above (reverse declaration order), so items are valid.
-    defer {
-        for (file_entries.items) |fe| {
-            if (!fe.content_consumed) allocator.free(fe.content);
-            if (!fe.path_consumed) allocator.free(fe.rel_path);
-        }
-    }
+    try discoverFiles(allocator, project_root, &file_entries, options, &result, log);
 
     log.info("discovered files", &.{
         Field.uint("count", file_entries.items.len),
@@ -191,306 +143,67 @@ pub fn indexDirectory(
         }
     }
 
-    // Transfer all rel_path strings to graph ownership early. Directory
-    // node names are substrings of these paths, so they must outlive any
-    // individual file entry (skipped or errored files would otherwise
-    // free the backing memory via the cleanup defer).
-    for (0..file_entries.items.len) |i| {
-        try graph.addOwnedBuffer(allocator, file_entries.items[i].rel_path);
-        file_entries.items[i].path_consumed = true;
+    // Transfer all paths and content to graph ownership in one batch.
+    // After this loop the graph is the sole owner; no separate cleanup
+    // defer is needed and no per-entry ownership flag is required.
+    for (file_entries.items) |fe| {
+        try graph.addOwnedBuffer(allocator, fe.rel_path);
+        try graph.addOwnedBuffer(allocator, fe.content);
     }
 
-    // Create directory nodes for the filesystem hierarchy.
     var dir_map = std.StringHashMapUnmanaged(NodeId){};
     defer dir_map.deinit(allocator);
-    // Always assigned before use: either by the incremental scan or by the
-    // root-creation branch. Using undefined so debug mode catches any future
-    // refactoring that breaks this invariant.
-    var root_dir_id: NodeId = undefined;
-    {
-        // Collect unique directory paths from file entries.
-        var dir_set = std.StringHashMapUnmanaged(void){};
-        defer dir_set.deinit(allocator);
+    const root_dir_id = try buildDirectoryNodes(allocator, graph, file_entries.items, options.incremental, &dir_map);
 
-        for (file_entries.items) |fe| {
-            var path: []const u8 = fe.rel_path;
-            while (std.fs.path.dirname(path)) |parent_dir| {
-                const gop = try dir_set.getOrPut(allocator, parent_dir);
-                if (gop.found_existing) break;
-                path = parent_dir;
-            }
-        }
-
-        // Sort unique directory paths lexicographically. Since a parent
-        // path is always a shorter prefix of its children, lexicographic
-        // order ensures parents are created before children.
-        var sorted_dirs = std.ArrayList([]const u8){};
-        defer sorted_dirs.deinit(allocator);
-        try sorted_dirs.ensureTotalCapacity(allocator, @intCast(dir_set.count()));
-        {
-            var it = dir_set.keyIterator();
-            while (it.next()) |key| {
-                sorted_dirs.appendAssumeCapacity(key.*);
-            }
-        }
-        std.mem.sort([]const u8, sorted_dirs.items, {}, struct {
-            fn lessThan(_: void, a: []const u8, b: []const u8) bool {
-                return std.mem.order(u8, a, b) == .lt;
-            }
-        }.lessThan);
-
-        // For incremental runs, reuse existing directory nodes.
-        var root_found = false;
-        if (options.incremental) {
-            var kind_idx = try KindIndex.build(allocator, graph.nodes.items);
-            defer kind_idx.deinit(allocator);
-            for (kind_idx.findByKind(.directory)) |i| {
-                const n = graph.nodes.items[i];
-                const nid: NodeId = @enumFromInt(i);
-                if (n.file_path) |fp| {
-                    try dir_map.put(allocator, fp, nid);
-                } else {
-                    root_dir_id = nid;
-                    root_found = true;
-                }
-            }
-        }
-
-        // Create root directory node if not reused from incremental.
-        if (!root_found) {
-            root_dir_id = try graph.addNode(allocator, .{
-                .id = .root,
-                .name = "",
-                .kind = .directory,
-                .visibility = .public,
-            });
-        }
-
-        // Pre-allocate dir_map so putAssumeCapacity below cannot fail
-        // after addNode succeeds.
-        try dir_map.ensureTotalCapacity(allocator, dir_map.count() + @as(u32, @intCast(sorted_dirs.items.len)));
-
-        // Create one node per unique subdirectory.
-        for (sorted_dirs.items) |dir_path| {
-            if (dir_map.contains(dir_path)) continue;
-            const parent_dir = std.fs.path.dirname(dir_path);
-            const parent_id = if (parent_dir) |pd|
-                dir_map.get(pd) orelse root_dir_id
-            else
-                root_dir_id;
-            const dir_id = try graph.addNode(allocator, .{
-                .id = .root,
-                .name = std.fs.path.basename(dir_path),
-                .kind = .directory,
-                .file_path = dir_path,
-                .visibility = .public,
-                .parent_id = parent_id,
-            });
-            dir_map.putAssumeCapacity(dir_path, dir_id);
-        }
-    }
-
-    // Create module nodes from build config (if any).
-    // Maps root_source_file paths to the module NodeId for later contains-edge creation.
     var module_file_map = std.StringHashMapUnmanaged(NodeId){};
     defer module_file_map.deinit(allocator);
     if (build_config) |bc| {
-        if (bc.build_modules) |modules| {
-            for (modules) |m| {
-                const mod_name = try allocator.dupe(u8, m.name);
-                // Transfer ownership to graph immediately. After this
-                // call succeeds, the graph owns mod_name; no errdefer
-                // needed since graph.deinit will free it.
-                try graph.addOwnedBuffer(allocator, mod_name);
-
-                const mod_id = try graph.addNode(allocator, .{
-                    .id = .root,
-                    .name = mod_name,
-                    .kind = .module,
-                    .visibility = .public,
-                    .parent_id = root_dir_id,
-                });
-                if (m.root_source_file) |rsf| {
-                    try module_file_map.put(allocator, rsf, mod_id);
-                }
-            }
-        }
+        try buildModuleNodes(allocator, graph, root_dir_id, bc, &module_file_map);
     }
 
-    // Parse each file through the visitor in dependency order.
     var file_infos = std.ArrayList(FileInfo){};
     defer file_infos.deinit(allocator);
 
-    for (file_entries.items, 0..) |fe, entry_idx| {
-        // Incremental check: skip if existing file node has matching hash.
-        if (options.incremental) {
-            if (findExistingFileNode(graph, fe.rel_path)) |existing_idx| {
-                const existing = graph.nodes.items[existing_idx];
-                if (existing.content_hash) |old_hash| {
-                    if (std.mem.eql(u8, &old_hash, &fe.content_hash)) {
-                        log.debug("skipping unchanged file", &.{Field.string("path", fe.rel_path)});
-                        result.files_skipped += 1;
-                        continue;
-                    }
-                }
-            }
-        }
-
-        const parse_fn = fe.lang_support.parseFn;
-
-        const before_count = graph.nodeCount();
-
-        // Graph owns the backing memory for all node slices (name, doc, signature).
-        // Ownership must be established before parse_fn, which creates those slices.
-        try graph.addOwnedBuffer(allocator, fe.content);
-        file_entries.items[entry_idx].content_consumed = true;
-
-        // Call visitor via language support. Creates file node + declaration children.
-        log.debug("parsing file", &.{Field.string("path", fe.rel_path)});
-        parse_fn(allocator, fe.content, graph, fe.rel_path, log) catch {
-            log.warn("file parse error", &.{Field.string("path", fe.rel_path)});
-            result.files_errored += 1;
-            continue;
-        };
-
-        // Patch the file node (visitor creates it at before_count with name="").
-        if (before_count < graph.nodeCount()) {
-            var file_node = &graph.nodes.items[before_count];
-            file_node.name = fe.basename;
-            file_node.file_path = fe.rel_path;
-            file_node.content_hash = fe.content_hash;
-            // Set parent_id to the containing directory node.
-            const file_dir = std.fs.path.dirname(fe.rel_path);
-            file_node.parent_id = if (file_dir) |fd| dir_map.get(fd) orelse root_dir_id else root_dir_id;
-
-            if (graph.nodeCount() == before_count + 1) {
-                log.trace("file produced no nodes", &.{Field.string("path", fe.rel_path)});
-            }
-
-            try file_infos.append(allocator, .{
-                .idx = before_count,
-                .scope_end = graph.nodeCount(),
-                .source = fe.content,
-                .lang_support = fe.lang_support,
-            });
-        }
-
-        result.files_indexed += 1;
-    }
+    try parseFiles(allocator, graph, file_entries.items, &dir_map, root_dir_id, options.incremental, &file_infos, &result, log);
 
     // Build graph indexes once for the complete graph.
     var graph_index = try GraphIndex.build(allocator, graph.nodes.items);
     defer graph_index.deinit(allocator);
 
     // Build rel_path-to-FileInfo-index map for cross-file lookup.
-    log.debug("resolving cross-file edges", &.{Field.uint("file_count", file_infos.items.len)});
     var relpath_map = std.StringHashMapUnmanaged(usize){};
     defer relpath_map.deinit(allocator);
     try relpath_map.ensureTotalCapacity(allocator, @intCast(file_infos.items.len));
     for (file_infos.items, 0..) |fi, i| {
-        const file_node = graph.nodes.items[fi.idx];
+        const file_node = graph.nodes.items[fi.node_idx];
         const key = file_node.file_path orelse file_node.name;
         relpath_map.putAssumeCapacity(key, i);
     }
 
-    // Import edges between project files.
-    for (file_infos.items) |fi| {
-        const file_id: NodeId = @enumFromInt(fi.idx);
-        const file_node = graph.nodes.items[fi.idx];
-        const importer_path = file_node.file_path;
+    log.debug("resolving cross-file edges", &.{Field.uint("file_count", file_infos.items.len)});
+    try resolveImportEdges(allocator, graph, file_infos.items, &relpath_map);
 
-        for (graph.nodes.items[fi.idx..fi.scope_end]) |n| {
-            if (n.kind != .import_decl) continue;
-            if (n.parent_id == null or n.parent_id.? != file_id) continue;
-
-            const import_path = n.signature orelse continue;
-
-            const target_idx = blk: {
-                if (importer_path) |ip| {
-                    if (fi.lang_support.resolveImportPathFn) |resolve_fn| {
-                        var buf: [std.fs.max_path_bytes]u8 = undefined;
-                        var ci: usize = 0;
-                        while (ci < 8) : (ci += 1) {
-                            const resolved = resolve_fn(&buf, ip, import_path, ci) orelse break;
-                            if (relpath_map.get(resolved)) |idx| break :blk idx;
-                        }
-                    }
-                }
-                break :blk relpath_map.get(import_path);
-            };
-
-            if (target_idx) |tidx| {
-                _ = try graph.addEdgeIfNew(allocator, .{ .source_id = file_id, .target_id = @enumFromInt(file_infos.items[tidx].idx), .edge_type = .imports });
-            }
-        }
-    }
-
-    // Phantom nodes for external references.
     log.debug("resolving phantom nodes", &.{Field.uint("file_count", file_infos.items.len)});
     var phantom = PhantomManager.init(graph);
     defer phantom.deinit(allocator);
 
-    // Create phantom module nodes for build dependencies.
-    // Duplicate the version string into graph ownership so the phantom
-    // node keeps a valid reference after BuildConfig.deinit frees its copy.
     if (build_config) |bc| {
-        if (bc.build_dependencies) |deps| {
-            for (deps) |dep| {
-                const owned_version: ?[]const u8 = if (dep.version) |v| blk: {
-                    const dup = try allocator.dupe(u8, v);
-                    try graph.addOwnedBuffer(allocator, dup);
-                    break :blk dup;
-                } else null;
-                _ = try phantom.getOrCreate(allocator, dep.name, build_config_lang, .{ .dependency = .{ .version = owned_version } });
-            }
-        }
+        try buildPhantomDependencies(allocator, graph, bc, build_config_lang, &phantom);
     }
 
-    // Index import edges by source file for resolveImplementsEdges.
     try graph_index.buildImportTargets(allocator, graph.edges.items);
 
-    for (file_infos.items) |fi| {
-        if (fi.lang_support.resolvePhantomsFn) |resolve_phantoms| {
-            const bc_ptr: ?*const lang.BuildConfig = if (build_config) |*bc| bc else null;
-            try resolve_phantoms(allocator, graph, fi.source, fi.idx, fi.scope_end, &phantom, &graph_index, bc_ptr, log);
-        }
-    }
+    try resolvePhantomNodes(allocator, graph, file_infos.items, &phantom, &graph_index, build_config, log);
 
-    // Build cross-file edges.
     log.debug("building edges", &.{Field.uint("file_count", file_infos.items.len)});
-    for (file_infos.items) |fi| {
-        if (fi.lang_support.buildEdgesFn) |build_edges| {
-            const file_node = graph.nodes.items[fi.idx];
-            build_edges(allocator, fi.source, graph, fi.idx, fi.scope_end, file_node.file_path, &graph_index, &phantom, log) catch |err| {
-                log.warn("edge building failed", &.{
-                    Field.string("path", file_node.file_path orelse "?"),
-                    Field.string("error", @errorName(err)),
-                });
-                continue;
-            };
-        }
-    }
+    buildCrossFileEdges(allocator, graph, file_infos.items, &graph_index, &phantom, log);
 
-    // Create contains edges from module nodes to their root source files.
     if (module_file_map.count() > 0) {
-        for (file_infos.items) |fi| {
-            const file_node = graph.nodes.items[fi.idx];
-            const fp = file_node.file_path orelse continue;
-            if (module_file_map.get(fp)) |mod_id| {
-                const file_id: NodeId = @enumFromInt(fi.idx);
-                _ = try graph.addEdgeIfNew(allocator, .{
-                    .source_id = mod_id,
-                    .target_id = file_id,
-                    .edge_type = .contains,
-                    .source = .workspace,
-                });
-            }
-        }
+        try buildModuleContainsEdges(allocator, graph, file_infos.items, &module_file_map);
     }
 
-    // Compute metrics for function nodes in each file.
     for (file_infos.items) |fi| {
-        source_scan.computeMetricsForNodes(graph, fi.source, fi.idx, fi.scope_end);
+        source_scan.computeMetricsForNodes(graph, fi.source, fi.node_idx, fi.scope_end);
     }
 
     log.info("indexing complete", &.{
@@ -503,6 +216,348 @@ pub fn indexDirectory(
 
     try graph.freeze(allocator);
     return result;
+}
+
+/// Walk `project_root`, read every supported source file, and append a
+/// `FileEntry` per file to `entries`. Updates `result` error counters.
+fn discoverFiles(
+    allocator: std.mem.Allocator,
+    project_root: []const u8,
+    entries: *std.ArrayList(FileEntry),
+    options: IndexOptions,
+    result: *IndexResult,
+    log: Logger,
+) !void {
+    var dir = try std.fs.openDirAbsolute(project_root, .{ .iterate = true });
+    defer dir.close();
+
+    var walker = try dir.walk(allocator);
+    defer walker.deinit();
+
+    while (try walker.next()) |entry| {
+        if (entry.kind != .file) continue;
+        const ext = std.fs.path.extension(entry.path);
+        const file_lang = Registry.getByExtension(ext) orelse continue;
+        if (isExcluded(entry.path, options.exclude_paths)) continue;
+
+        const file = dir.openFile(entry.path, .{}) catch {
+            log.warn("file read error", &.{Field.string("path", entry.path)});
+            result.files_errored += 1;
+            continue;
+        };
+        defer file.close();
+        const content = file.readToEndAlloc(allocator, max_source_bytes) catch |err| {
+            const reason = if (err == error.StreamTooLong) "exceeds 10 MiB read limit" else @errorName(err);
+            log.warn("skipping file", &.{
+                Field.string("path", entry.path),
+                Field.string("reason", reason),
+            });
+            result.files_errored += 1;
+            continue;
+        };
+        errdefer allocator.free(content);
+
+        const hash = computeContentHash(content);
+        const rel_path = try allocator.dupe(u8, entry.path);
+        errdefer allocator.free(rel_path);
+        const basename = std.fs.path.basename(rel_path);
+
+        try entries.append(allocator, .{
+            .rel_path = rel_path,
+            .basename = basename,
+            .content = content,
+            .content_hash = hash,
+            .lang_support = file_lang,
+        });
+    }
+}
+
+/// Create directory nodes for every unique directory component of the
+/// discovered files, returning the root directory NodeId. Populates
+/// `dir_map` with rel_path -> NodeId entries for all subdirectories.
+fn buildDirectoryNodes(
+    allocator: std.mem.Allocator,
+    graph: *Graph,
+    entries: []const FileEntry,
+    incremental: bool,
+    dir_map: *std.StringHashMapUnmanaged(NodeId),
+) !NodeId {
+    var dir_set = std.StringHashMapUnmanaged(void){};
+    defer dir_set.deinit(allocator);
+
+    for (entries) |fe| {
+        var path: []const u8 = fe.rel_path;
+        while (std.fs.path.dirname(path)) |parent_dir| {
+            const gop = try dir_set.getOrPut(allocator, parent_dir);
+            if (gop.found_existing) break;
+            path = parent_dir;
+        }
+    }
+
+    // Sort unique paths so parents are created before children.
+    var sorted_dirs = std.ArrayList([]const u8){};
+    defer sorted_dirs.deinit(allocator);
+    try sorted_dirs.ensureTotalCapacity(allocator, @intCast(dir_set.count()));
+    {
+        var it = dir_set.keyIterator();
+        while (it.next()) |key| {
+            sorted_dirs.appendAssumeCapacity(key.*);
+        }
+    }
+    std.mem.sort([]const u8, sorted_dirs.items, {}, struct {
+        fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.order(u8, a, b) == .lt;
+        }
+    }.lessThan);
+
+    // For incremental runs, reuse existing directory nodes.
+    var root_dir_id: NodeId = undefined;
+    var root_found = false;
+    if (incremental) {
+        var kind_idx = try KindIndex.build(allocator, graph.nodes.items);
+        defer kind_idx.deinit(allocator);
+        for (kind_idx.findByKind(.directory)) |i| {
+            const n = graph.nodes.items[i];
+            const nid: NodeId = @enumFromInt(i);
+            if (n.file_path) |fp| {
+                try dir_map.put(allocator, fp, nid);
+            } else {
+                root_dir_id = nid;
+                root_found = true;
+            }
+        }
+    }
+
+    if (!root_found) {
+        root_dir_id = try graph.addNode(allocator, .{
+            .id = .root,
+            .name = "",
+            .kind = .directory,
+            .visibility = .public,
+        });
+    }
+
+    try dir_map.ensureTotalCapacity(allocator, dir_map.count() + @as(u32, @intCast(sorted_dirs.items.len)));
+
+    for (sorted_dirs.items) |dir_path| {
+        if (dir_map.contains(dir_path)) continue;
+        const parent_dir = std.fs.path.dirname(dir_path);
+        const parent_id = if (parent_dir) |pd|
+            dir_map.get(pd) orelse root_dir_id
+        else
+            root_dir_id;
+        const dir_id = try graph.addNode(allocator, .{
+            .id = .root,
+            .name = std.fs.path.basename(dir_path),
+            .kind = .directory,
+            .file_path = dir_path,
+            .visibility = .public,
+            .parent_id = parent_id,
+        });
+        dir_map.putAssumeCapacity(dir_path, dir_id);
+    }
+
+    return root_dir_id;
+}
+
+/// Create module nodes from a build config and populate `module_file_map`
+/// with root_source_file -> module NodeId for later contains-edge creation.
+fn buildModuleNodes(
+    allocator: std.mem.Allocator,
+    graph: *Graph,
+    root_dir_id: NodeId,
+    bc: lang.BuildConfig,
+    module_file_map: *std.StringHashMapUnmanaged(NodeId),
+) !void {
+    const modules = bc.build_modules orelse return;
+    for (modules) |m| {
+        const mod_name = try allocator.dupe(u8, m.name);
+        // Transfer ownership to graph immediately.
+        try graph.addOwnedBuffer(allocator, mod_name);
+
+        const mod_id = try graph.addNode(allocator, .{
+            .id = .root,
+            .name = mod_name,
+            .kind = .module,
+            .visibility = .public,
+            .parent_id = root_dir_id,
+        });
+        if (m.root_source_file) |rsf| {
+            try module_file_map.put(allocator, rsf, mod_id);
+        }
+    }
+}
+
+/// Parse each file through the visitor in dependency order. For each
+/// successfully parsed file, appends a FileInfo to `infos` and increments
+/// result counters. Content and path ownership has already been transferred
+/// to the graph before this function is called.
+fn parseFiles(
+    allocator: std.mem.Allocator,
+    graph: *Graph,
+    entries: []const FileEntry,
+    dir_map: *const std.StringHashMapUnmanaged(NodeId),
+    root_dir_id: NodeId,
+    incremental: bool,
+    infos: *std.ArrayList(FileInfo),
+    result: *IndexResult,
+    log: Logger,
+) !void {
+    for (entries) |fe| {
+        if (incremental) {
+            if (findExistingFileNode(graph, fe.rel_path)) |existing_idx| {
+                const existing = graph.nodes.items[existing_idx];
+                if (existing.content_hash) |old_hash| {
+                    if (std.mem.eql(u8, &old_hash, &fe.content_hash)) {
+                        log.debug("skipping unchanged file", &.{Field.string("path", fe.rel_path)});
+                        result.files_skipped += 1;
+                        continue;
+                    }
+                }
+            }
+        }
+
+        const before_count = graph.nodeCount();
+
+        log.debug("parsing file", &.{Field.string("path", fe.rel_path)});
+        fe.lang_support.parseFn(allocator, fe.content, graph, fe.rel_path, log) catch {
+            log.warn("file parse error", &.{Field.string("path", fe.rel_path)});
+            result.files_errored += 1;
+            continue;
+        };
+
+        if (before_count < graph.nodeCount()) {
+            var file_node = &graph.nodes.items[before_count];
+            file_node.name = fe.basename;
+            file_node.file_path = fe.rel_path;
+            file_node.content_hash = fe.content_hash;
+            const file_dir = std.fs.path.dirname(fe.rel_path);
+            file_node.parent_id = if (file_dir) |fd| dir_map.get(fd) orelse root_dir_id else root_dir_id;
+
+            if (graph.nodeCount() == before_count + 1) {
+                log.trace("file produced no nodes", &.{Field.string("path", fe.rel_path)});
+            }
+
+            try infos.append(allocator, .{
+                .node_idx = before_count,
+                .scope_end = graph.nodeCount(),
+                .source = fe.content,
+                .lang_support = fe.lang_support,
+            });
+        }
+
+        result.files_indexed += 1;
+    }
+}
+
+/// Add import edges between project files using the relpath_map for lookup.
+fn resolveImportEdges(
+    allocator: std.mem.Allocator,
+    graph: *Graph,
+    infos: []const FileInfo,
+    relpath_map: *const std.StringHashMapUnmanaged(usize),
+) !void {
+    for (infos) |fi| {
+        const file_id: NodeId = @enumFromInt(fi.node_idx);
+        const file_node = graph.nodes.items[fi.node_idx];
+        const importer_path = file_node.file_path;
+
+        for (graph.nodes.items[fi.node_idx..fi.scope_end]) |n| {
+            if (n.kind != .import_decl) continue;
+            if (n.parent_id == null or n.parent_id.? != file_id) continue;
+
+            const import_path = n.signature orelse continue;
+            const target_idx = resolveToEntryIdx(relpath_map, importer_path, import_path, fi.lang_support.resolveImportPathFn);
+
+            if (target_idx) |tidx| {
+                _ = try graph.addEdgeIfNew(allocator, .{
+                    .source_id = file_id,
+                    .target_id = @enumFromInt(infos[tidx].node_idx),
+                    .edge_type = .imports,
+                });
+            }
+        }
+    }
+}
+
+/// Create phantom module nodes for build dependencies. Duplicate the
+/// version string into graph ownership so the phantom node keeps a valid
+/// reference after BuildConfig.deinit frees its copy.
+fn buildPhantomDependencies(
+    allocator: std.mem.Allocator,
+    graph: *Graph,
+    bc: lang.BuildConfig,
+    bc_lang: Language,
+    phantom: *PhantomManager,
+) !void {
+    const deps = bc.build_dependencies orelse return;
+    for (deps) |dep| {
+        const owned_version: ?[]const u8 = if (dep.version) |v| blk: {
+            const dup = try allocator.dupe(u8, v);
+            try graph.addOwnedBuffer(allocator, dup);
+            break :blk dup;
+        } else null;
+        _ = try phantom.getOrCreate(allocator, dep.name, bc_lang, .{ .dependency = .{ .version = owned_version } });
+    }
+}
+
+/// Call each language's resolvePhantomsFn for every file.
+fn resolvePhantomNodes(
+    allocator: std.mem.Allocator,
+    graph: *Graph,
+    infos: []const FileInfo,
+    phantom: *PhantomManager,
+    graph_index: *GraphIndex,
+    build_config: ?lang.BuildConfig,
+    log: Logger,
+) !void {
+    for (infos) |fi| {
+        const resolve_fn = fi.lang_support.resolvePhantomsFn orelse continue;
+        const bc_ptr: ?*const lang.BuildConfig = if (build_config) |*bc| bc else null;
+        try resolve_fn(allocator, graph, fi.source, fi.node_idx, fi.scope_end, phantom, graph_index, bc_ptr, log);
+    }
+}
+
+/// Call each language's buildEdgesFn for every file.
+fn buildCrossFileEdges(
+    allocator: std.mem.Allocator,
+    graph: *Graph,
+    infos: []const FileInfo,
+    graph_index: *GraphIndex,
+    phantom: *PhantomManager,
+    log: Logger,
+) void {
+    for (infos) |fi| {
+        const build_edges = fi.lang_support.buildEdgesFn orelse continue;
+        const file_node = graph.nodes.items[fi.node_idx];
+        build_edges(allocator, fi.source, graph, fi.node_idx, fi.scope_end, file_node.file_path, graph_index, phantom, log) catch |err| {
+            log.warn("edge building failed", &.{
+                Field.string("path", file_node.file_path orelse "?"),
+                Field.string("error", @errorName(err)),
+            });
+        };
+    }
+}
+
+/// Create contains edges from module nodes to their root source files.
+fn buildModuleContainsEdges(
+    allocator: std.mem.Allocator,
+    graph: *Graph,
+    infos: []const FileInfo,
+    module_file_map: *const std.StringHashMapUnmanaged(NodeId),
+) !void {
+    for (infos) |fi| {
+        const file_node = graph.nodes.items[fi.node_idx];
+        const fp = file_node.file_path orelse continue;
+        const mod_id = module_file_map.get(fp) orelse continue;
+        const file_id: NodeId = @enumFromInt(fi.node_idx);
+        _ = try graph.addEdgeIfNew(allocator, .{
+            .source_id = mod_id,
+            .target_id = file_id,
+            .edge_type = .contains,
+            .source = .workspace,
+        });
+    }
 }
 
 fn computeContentHash(content: []const u8) [12]u8 {
@@ -539,68 +594,60 @@ fn pathHasComponent(path: []const u8, component: []const u8) bool {
     return false;
 }
 
-/// Topological sort of file entries using Kahn's algorithm.
-/// Files with no imports come first; files that import others come after
-/// their dependencies. Handles cycles gracefully by appending remaining files.
-fn topoSortFiles(allocator: std.mem.Allocator, entries: []FileEntry) !void {
-    const n = entries.len;
-    if (n <= 1) return;
-
-    // Build rel_path-to-index map for directory-aware resolution.
-    var relpath_map = std.StringHashMapUnmanaged(usize){};
-    defer relpath_map.deinit(allocator);
-    try relpath_map.ensureTotalCapacity(allocator, @intCast(n));
-    for (entries, 0..) |fe, i| {
-        relpath_map.putAssumeCapacity(fe.rel_path, i);
+/// Resolves an import path to an entry index using the language-specific path
+/// resolver and, if that fails, a direct map lookup.
+fn resolveToEntryIdx(
+    relpath_map: *const std.StringHashMapUnmanaged(usize),
+    importer_path: ?[]const u8,
+    import_path: []const u8,
+    resolve_fn: ?lang.ResolveImportPathFn,
+) ?usize {
+    if (importer_path) |ip| {
+        if (resolve_fn) |rfn| {
+            var buf: [std.fs.max_path_bytes]u8 = undefined;
+            var ci: usize = 0;
+            while (ci < 8) : (ci += 1) {
+                const resolved = rfn(&buf, ip, import_path, ci) orelse break;
+                if (relpath_map.get(resolved)) |idx| return idx;
+            }
+        }
     }
+    return relpath_map.get(import_path);
+}
 
-    // Compute in-degrees and adjacency (importer -> importee).
-    var in_degree = try allocator.alloc(usize, n);
-    defer allocator.free(in_degree);
-    @memset(in_degree, 0);
-
-    // Adjacency: for each file, which files import it (reverse edges for Kahn's).
-    var adj = try allocator.alloc(std.ArrayList(usize), n);
-    defer {
-        for (adj) |*a| a.deinit(allocator);
-        allocator.free(adj);
-    }
-    for (adj) |*a| a.* = .{};
-
+/// Populates in_degree[] and adj[] from the import relationships in entries.
+/// adj[dep_idx] holds all entry indices that import entry dep_idx, so Kahn's
+/// BFS can process importees before their importers.
+fn buildDepGraph(
+    allocator: std.mem.Allocator,
+    entries: []const FileEntry,
+    relpath_map: *const std.StringHashMapUnmanaged(usize),
+    in_degree: []usize,
+    adj: []std.ArrayList(usize),
+) !void {
     var import_buf: [256]lang.ImportEntry = undefined;
     for (entries, 0..) |fe, i| {
         const extract_fn = fe.lang_support.extractImportsFn orelse continue;
         const count = extract_fn(fe.content, &import_buf);
         for (import_buf[0..count]) |ie| {
-            if (ie.kind != .project_file) continue; // only project files affect topo order
-            // Resolve import path relative to the importing file's directory.
-            const dep_idx = blk: {
-                if (fe.lang_support.resolveImportPathFn) |resolve_fn| {
-                    var buf: [std.fs.max_path_bytes]u8 = undefined;
-                    var ci: usize = 0;
-                    while (ci < 8) : (ci += 1) {
-                        const resolved = resolve_fn(&buf, fe.rel_path, ie.path, ci) orelse break;
-                        if (relpath_map.get(resolved)) |idx| break :blk idx;
-                    }
-                }
-                // Fallback: direct lookup (handles same-directory and basename-only).
-                break :blk relpath_map.get(ie.path);
-            };
-
-            if (dep_idx) |didx| {
-                if (didx != i) {
-                    // i imports didx, so didx must come before i.
-                    // Edge: didx -> i in Kahn's sense.
-                    try adj[didx].append(allocator, i);
-                    in_degree[i] += 1;
-                }
-            }
+            if (ie.kind != .project_file) continue;
+            const dep_idx = resolveToEntryIdx(relpath_map, fe.rel_path, ie.path, fe.lang_support.resolveImportPathFn) orelse continue;
+            if (dep_idx == i) continue;
+            try adj[dep_idx].append(allocator, i);
+            in_degree[i] += 1;
         }
     }
+}
 
-    // BFS queue: start with all files that have no dependencies.
-    var queue = try allocator.alloc(usize, n);
-    defer allocator.free(queue);
+/// Kahn's BFS topological sort. Returns the number of entries written to order[].
+/// Cycle nodes are appended in original index order, so the return value always equals n.
+fn kahnTopologicalOrder(
+    n: usize,
+    in_degree: []usize,
+    adj: []const std.ArrayList(usize),
+    queue: []usize,
+    order: []usize,
+) usize {
     var q_head: usize = 0;
     var q_tail: usize = 0;
     for (in_degree, 0..) |deg, i| {
@@ -609,10 +656,6 @@ fn topoSortFiles(allocator: std.mem.Allocator, entries: []FileEntry) !void {
             q_tail += 1;
         }
     }
-
-    // Kahn's BFS produces topological order.
-    var order = try allocator.alloc(usize, n);
-    defer allocator.free(order);
     var order_len: usize = 0;
     while (q_head < q_tail) {
         const u = queue[q_head];
@@ -627,8 +670,6 @@ fn topoSortFiles(allocator: std.mem.Allocator, entries: []FileEntry) !void {
             }
         }
     }
-
-    // Append any remaining files (cycles) in original order.
     if (order_len < n) {
         for (0..n) |i| {
             if (in_degree[i] > 0) {
@@ -637,20 +678,49 @@ fn topoSortFiles(allocator: std.mem.Allocator, entries: []FileEntry) !void {
             }
         }
     }
+    return order_len;
+}
 
-    // Reorder entries in-place using the computed order.
+/// Topological sort of file entries using Kahn's algorithm.
+/// Files with no imports come first; files that import others come after
+/// their dependencies. Handles cycles gracefully by appending remaining files.
+fn topoSortFiles(allocator: std.mem.Allocator, entries: []FileEntry) !void {
+    const n = entries.len;
+    if (n <= 1) return;
+
+    var relpath_map = std.StringHashMapUnmanaged(usize){};
+    defer relpath_map.deinit(allocator);
+    try relpath_map.ensureTotalCapacity(allocator, @intCast(n));
+    for (entries, 0..) |fe, i| relpath_map.putAssumeCapacity(fe.rel_path, i);
+
+    const in_degree = try allocator.alloc(usize, n);
+    defer allocator.free(in_degree);
+    @memset(in_degree, 0);
+
+    const adj = try allocator.alloc(std.ArrayList(usize), n);
+    defer {
+        for (adj) |*a| a.deinit(allocator);
+        allocator.free(adj);
+    }
+    for (adj) |*a| a.* = .{};
+
+    try buildDepGraph(allocator, entries, &relpath_map, in_degree, adj);
+
+    const queue = try allocator.alloc(usize, n);
+    defer allocator.free(queue);
+    var order = try allocator.alloc(usize, n);
+    defer allocator.free(order);
+    _ = kahnTopologicalOrder(n, in_degree, adj, queue, order);
+
     var tmp = try allocator.alloc(FileEntry, n);
     defer allocator.free(tmp);
-    for (order[0..n], 0..) |src_idx, dst| {
-        tmp[dst] = entries[src_idx];
-    }
+    for (order[0..n], 0..) |src_idx, dst| tmp[dst] = entries[src_idx];
     @memcpy(entries, tmp);
 }
 
 fn findExistingFileNode(graph: *const Graph, rel_path: []const u8) ?usize {
     for (graph.nodes.items, 0..) |n, i| {
         if (n.kind != .file) continue;
-        // Match by file_path (rel_path) first, fall back to name (basename).
         const key = n.file_path orelse n.name;
         if (std.mem.eql(u8, key, rel_path)) return i;
     }

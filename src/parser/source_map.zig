@@ -3,7 +3,7 @@ const std = @import("std");
 /// Memory-map a file for zero-copy read access.
 /// Returns the file content as a byte slice backed by the OS page cache.
 /// The caller must call `unmapFile` when done with the slice.
-pub fn mmapFile(path: []const u8) anyerror![]const u8 {
+pub fn mmapFile(path: []const u8) ![]const u8 {
     const file = try std.fs.cwd().openFile(path, .{});
     defer file.close();
 

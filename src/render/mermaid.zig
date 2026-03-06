@@ -30,18 +30,24 @@ pub fn renderMermaid(
     var assignment = try common.buildIdAssignment(allocator, g, options.scope, options.filter);
     defer assignment.deinit(allocator);
 
-    const bytes_per_node = 120; // subgraph nesting + shape syntax + label + class assignment
-    const bytes_per_edge = 50; // indentation + source ID + arrow + target ID + newline
-    const header_overhead = 1024; // header lines + classDef block + section markers
+    var total_name_bytes: usize = 0;
+    for (g.nodes.items) |n| {
+        total_name_bytes += n.name.len;
+        if (n.file_path) |fp| total_name_bytes += fp.len;
+    }
+    const per_node_overhead = 60; // subgraph syntax, shape delimiters, and class assignment
+    const per_edge_overhead = 50; // compact IDs make edge size well-bounded
+    const header_overhead = 1024; // header block, classDef lines, and section markers
     try out.ensureTotalCapacity(allocator, out.items.len +
-        g.nodes.items.len * bytes_per_node +
-        g.edges.items.len * bytes_per_edge +
+        total_name_bytes +
+        g.nodes.items.len * per_node_overhead +
+        g.edges.items.len * per_edge_overhead +
         header_overhead);
 
     const ids = assignment.ids;
     const file_count = assignment.file_indices.items.len;
-    const fn_count = assignment.total_fn_count;
-    const struct_count = assignment.struct_indices.items.len;
+    const fn_count = assignment.fn_indices.items.len;
+    const type_count = assignment.type_indices.items.len;
     const enum_count = assignment.enum_indices.items.len;
     const const_count = assignment.const_indices.items.len;
     const test_count = assignment.test_indices.items.len;
@@ -59,8 +65,8 @@ pub fn renderMermaid(
     try out.appendSlice(allocator, " files, ");
     try appendNum(out, allocator, fn_count, &num_buf);
     try out.appendSlice(allocator, " functions, ");
-    try appendNum(out, allocator, struct_count, &num_buf);
-    try out.appendSlice(allocator, " structs, ");
+    try appendNum(out, allocator, type_count, &num_buf);
+    try out.appendSlice(allocator, " types, ");
     try appendNum(out, allocator, enum_count, &num_buf);
     try out.appendSlice(allocator, " enums, ");
     try appendNum(out, allocator, const_count, &num_buf);
@@ -89,12 +95,14 @@ pub fn renderMermaid(
     try out.appendSlice(allocator, "    classDef fn_style fill:#d6eaf8,stroke:#2e6da4,color:#1a3d5c\n");
     try out.appendSlice(allocator, "    classDef ghost_style fill:#ffffff,stroke:#cccccc,stroke-dasharray:3 3,color:#999999\n");
     try out.appendSlice(allocator, "    classDef phantom_style fill:#f0f0f0,stroke:#999999,stroke-dasharray:5 5,color:#888888\n");
-    try out.appendSlice(allocator, "    classDef st_style fill:#d4edda,stroke:#28a745,color:#155724\n");
     try out.appendSlice(allocator, "    classDef test_style fill:#f8d7da,stroke:#c0392b,color:#721c24\n");
+    try out.appendSlice(allocator, "    classDef ty_style fill:#d4edda,stroke:#28a745,color:#155724\n");
+
+    const ctx = common.SectionCtx{ .g = g, .ids = ids, .num_buf = &num_buf };
 
     // File subgraphs.
     try out.appendSlice(allocator, "\n    %% === File subgraphs ===\n");
-    try sections.renderFileSubgraphs(out, allocator, g, assignment.file_indices.items, ids, &num_buf, &assignment.children_index);
+    try sections.renderFileSubgraphs(out, allocator, &ctx, assignment.file_indices.items, &assignment.children_index);
 
     // Phantom subgraphs.
     try out.appendSlice(allocator, "\n    %% === Phantom subgraphs ===\n");
@@ -111,11 +119,11 @@ pub fn renderMermaid(
 
     // Edges.
     try out.appendSlice(allocator, "\n    %% === Edges ===\n");
-    try sections.renderEdges(out, allocator, g, ids, &assignment.phantom_lookup, options.scope, options.filter, &ghost_map, &num_buf);
+    try sections.renderEdges(out, allocator, &ctx, &assignment.phantom_lookup, options.scope, options.filter, &ghost_map);
 
     // Class assignments.
     try out.appendSlice(allocator, "\n    %% === Class assignments ===\n");
-    try sections.renderClassAssignments(out, allocator, g, ids, assignment.phantom_packages.items, &ghost_map, &num_buf);
+    try sections.renderClassAssignments(out, allocator, &ctx, assignment.phantom_packages.items, &ghost_map);
 }
 
 /// Creates a diverse graph exercising all Mermaid sections.
@@ -492,8 +500,8 @@ test "classDef styles are alphabetical" {
         "classDef fn_style",
         "classDef ghost_style",
         "classDef phantom_style",
-        "classDef st_style",
         "classDef test_style",
+        "classDef ty_style",
     };
 
     var last_pos: usize = 0;
@@ -552,7 +560,7 @@ test "functions use rectangle shape" {
     try std.testing.expect(std.mem.indexOf(u8, output, "[\"fn: main\"]") != null);
 }
 
-test "structs use subroutine shape" {
+test "type_def nodes use subroutine shape" {
     // Arrange
     const allocator = std.testing.allocator;
     var g = try createMermaidTestGraph(allocator);
@@ -568,7 +576,7 @@ test "structs use subroutine shape" {
     // Act
     try renderMermaid(allocator, &g, options, &out);
 
-    // Assert: output contains subroutine shape: st_N[["struct: Tokenizer"]]
+    // Assert: output contains subroutine shape: ty_N[["struct: Tokenizer"]]
     const output = out.items;
     try std.testing.expect(std.mem.indexOf(u8, output, "[[\"struct: Tokenizer\"]]") != null);
 }
@@ -743,7 +751,7 @@ test "scoped export creates ghost nodes" {
     // Act
     try renderMermaid(allocator, &g, options, &out);
 
-    // Assert: ghost nodes appear with ghost_style
+    // Assert: ghost nodes appear with ghoty_style
     const output = out.items;
     try std.testing.expect(std.mem.indexOf(u8, output, ":::ghost_style") != null or
         std.mem.indexOf(u8, output, "ghost_style") != null);

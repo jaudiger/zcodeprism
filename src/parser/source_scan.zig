@@ -133,18 +133,6 @@ fn computeComplexity(fn_source: []const u8) u16 {
     return complexity;
 }
 
-/// Count the number of lines (1-based) from the start of `source` up to `byte_pos`.
-/// Counts newline characters in `source[0..min(byte_pos, source.len)]` and adds one
-/// for the first line. If `byte_pos` is zero, returns 1.
-pub fn countLinesUpTo(source: []const u8, byte_pos: usize) u32 {
-    var line: u32 = 1;
-    const end = @min(byte_pos, source.len);
-    for (source[0..end]) |c| {
-        if (c == '\n') line += 1;
-    }
-    return line;
-}
-
 /// Find the function node that contains the given source `line` within the
 /// subtree rooted at `file_id`. When a KindIndex is available, iterates only
 /// function nodes instead of the full graph. Returns the NodeId of the first

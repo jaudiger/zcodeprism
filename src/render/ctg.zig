@@ -28,65 +28,53 @@ pub const RenderOptions = struct {
     filter: common.FilterOptions = .{},
 };
 
-/// Renders the graph in Compact Text Graph (CTG) format, appending the
-/// result to `out`. Output is deterministic: identical graph + options
-/// produces byte-identical output. See docs/zcodeprism-ctg-spec.md for
-/// the full format specification.
-pub fn renderCtg(
-    allocator: std.mem.Allocator,
-    g: *const Graph,
-    options: RenderOptions,
+/// Header counts passed to the header renderer.
+const HeaderCounts = struct {
+    files: usize,
+    functions: usize,
+    types: usize,
+    unions: usize,
+    enums: usize,
+    constants: usize,
+    tests: usize,
+    externals: usize,
+};
+
+/// Render the CTG header block (lines 1-5).
+fn renderCtgHeader(
     out: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    options: RenderOptions,
+    counts: HeaderCounts,
+    langs: common.LanguageSet,
 ) !void {
-    var assignment = try common.buildIdAssignment(allocator, g, options.scope, options.filter);
-    defer assignment.deinit(allocator);
+    var num_buf: [20]u8 = undefined;
 
-    const bytes_per_node = 80; // ID + name + location + visibility + newline
-    const bytes_per_edge = 40; // source ID + type + target ID + newline
-    const header_overhead = 512; // header lines + section markers + separators
-    try out.ensureTotalCapacity(allocator, out.items.len +
-        g.nodes.items.len * bytes_per_node +
-        g.edges.items.len * bytes_per_edge +
-        header_overhead);
-
-    const ids = assignment.ids;
-    const file_count = assignment.file_indices.items.len;
-    const fn_count = assignment.total_fn_count;
-    const struct_count = assignment.struct_indices.items.len;
-    const union_count = assignment.union_indices.items.len;
-    const enum_count = assignment.enum_indices.items.len;
-    const const_count = assignment.const_indices.items.len;
-    const test_count = assignment.test_indices.items.len;
-    const external_count = assignment.phantom_packages.items.len;
-
-    const langs = assignment.languages;
-
-    // Header line 1: project name.
+    // Line 1: project name.
     try out.appendSlice(allocator, "# zcodeprism graph -- ");
     try out.appendSlice(allocator, options.project_name);
     try out.append(allocator, '\n');
 
-    // Header line 2: stats summary.
-    var num_buf: [20]u8 = undefined;
+    // Line 2: stats summary.
     try out.appendSlice(allocator, "# ");
-    try appendNum(out, allocator, file_count, &num_buf);
+    try appendNum(out, allocator, counts.files, &num_buf);
     try out.appendSlice(allocator, " files, ");
-    try appendNum(out, allocator, fn_count, &num_buf);
+    try appendNum(out, allocator, counts.functions, &num_buf);
     try out.appendSlice(allocator, " functions, ");
-    try appendNum(out, allocator, struct_count, &num_buf);
-    try out.appendSlice(allocator, " structs, ");
-    try appendNum(out, allocator, union_count, &num_buf);
+    try appendNum(out, allocator, counts.types, &num_buf);
+    try out.appendSlice(allocator, " types, ");
+    try appendNum(out, allocator, counts.unions, &num_buf);
     try out.appendSlice(allocator, " unions, ");
-    try appendNum(out, allocator, enum_count, &num_buf);
+    try appendNum(out, allocator, counts.enums, &num_buf);
     try out.appendSlice(allocator, " enums, ");
-    try appendNum(out, allocator, const_count, &num_buf);
+    try appendNum(out, allocator, counts.constants, &num_buf);
     try out.appendSlice(allocator, " constants, ");
-    try appendNum(out, allocator, test_count, &num_buf);
+    try appendNum(out, allocator, counts.tests, &num_buf);
     try out.appendSlice(allocator, " tests, ");
-    try appendNum(out, allocator, external_count, &num_buf);
+    try appendNum(out, allocator, counts.externals, &num_buf);
     try out.appendSlice(allocator, " externals\n");
 
-    // Header line 3: languages (alphabetical).
+    // Line 3: languages (alphabetical).
     try out.appendSlice(allocator, "# languages: ");
     var first_lang = true;
     if (langs.has_rust) {
@@ -103,7 +91,7 @@ pub fn renderCtg(
     }
     try out.append(allocator, '\n');
 
-    // Header line 4: timestamp.
+    // Line 4: timestamp.
     try out.appendSlice(allocator, "# generated ");
     if (options.timestamp) |ts| {
         try out.appendSlice(allocator, ts);
@@ -112,7 +100,7 @@ pub fn renderCtg(
     }
     try out.append(allocator, '\n');
 
-    // Header line 5 (optional): snapshot.
+    // Line 5 (optional): snapshot.
     if (options.snapshot_name) |snap_name| {
         try out.appendSlice(allocator, "# snapshot: ");
         try out.appendSlice(allocator, snap_name);
@@ -122,55 +110,97 @@ pub fn renderCtg(
         }
         try out.append(allocator, '\n');
     }
+}
+
+/// Append a section separator (blank line) if content has already been written.
+fn appendSeparator(out: *std.ArrayList(u8), allocator: std.mem.Allocator, written: *bool) !void {
+    if (written.*) try out.append(allocator, '\n');
+    written.* = true;
+}
+
+/// Renders the graph in Compact Text Graph (CTG) format, appending the
+/// result to `out`. Output is deterministic: identical graph + options
+/// produces byte-identical output. See docs/zcodeprism-ctg-spec.md for
+/// the full format specification.
+pub fn renderCtg(
+    allocator: std.mem.Allocator,
+    g: *const Graph,
+    options: RenderOptions,
+    out: *std.ArrayList(u8),
+) !void {
+    var assignment = try common.buildIdAssignment(allocator, g, options.scope, options.filter);
+    defer assignment.deinit(allocator);
+
+    var total_name_bytes: usize = 0;
+    for (g.nodes.items) |n| {
+        total_name_bytes += n.name.len;
+        if (n.file_path) |fp| total_name_bytes += fp.len;
+    }
+    const per_node_overhead = 30; // fixed per-entry bytes the name scan doesn't cover
+    const per_edge_overhead = 40; // compact IDs make edge size well-bounded
+    const header_overhead = 512; // section labels and header comment block
+    try out.ensureTotalCapacity(allocator, out.items.len +
+        total_name_bytes +
+        g.nodes.items.len * per_node_overhead +
+        g.edges.items.len * per_edge_overhead +
+        header_overhead);
+
+    const ids = assignment.ids;
+
+    try renderCtgHeader(out, allocator, options, .{
+        .files = assignment.file_indices.items.len,
+        .functions = assignment.fn_indices.items.len,
+        .types = assignment.type_indices.items.len,
+        .unions = assignment.union_indices.items.len,
+        .enums = assignment.enum_indices.items.len,
+        .constants = assignment.const_indices.items.len,
+        .tests = assignment.test_indices.items.len,
+        .externals = assignment.phantom_packages.items.len,
+    }, assignment.languages);
 
     // Sections: each renderer returns early if it has no content.
     // A blank line separates the header from the first section and each section from the next.
     try out.append(allocator, '\n');
     var written = false;
 
+    var num_buf: [20]u8 = undefined;
+    const ctx = common.SectionCtx{ .g = g, .ids = ids, .num_buf = &num_buf };
+
     if (assignment.file_indices.items.len > 0) {
-        try sections.renderFilesSection(out, allocator, g, assignment.file_indices.items, ids, &num_buf);
+        try sections.renderFilesSection(out, allocator, &ctx, assignment.file_indices.items);
         written = true;
     }
-    if (assignment.struct_indices.items.len > 0) {
-        if (written) try out.append(allocator, '\n');
-        try sections.renderStructsSection(out, allocator, g, assignment.struct_indices.items, ids, &num_buf, &assignment.children_index);
-        written = true;
+    if (assignment.type_indices.items.len > 0) {
+        try appendSeparator(out, allocator, &written);
+        try sections.renderTypesSection(out, allocator, &ctx, assignment.type_indices.items, &assignment.children_index);
     }
     if (assignment.union_indices.items.len > 0) {
-        if (written) try out.append(allocator, '\n');
-        try sections.renderUnionsSection(out, allocator, g, assignment.union_indices.items, ids, &num_buf, &assignment.children_index);
-        written = true;
+        try appendSeparator(out, allocator, &written);
+        try sections.renderUnionsSection(out, allocator, &ctx, assignment.union_indices.items, &assignment.children_index);
     }
     if (assignment.enum_indices.items.len > 0) {
-        if (written) try out.append(allocator, '\n');
-        try sections.renderEnumsSection(out, allocator, g, assignment.enum_indices.items, ids, &num_buf);
-        written = true;
+        try appendSeparator(out, allocator, &written);
+        try sections.renderEnumsSection(out, allocator, &ctx, assignment.enum_indices.items);
     }
     if (assignment.fn_indices.items.len > 0) {
-        if (written) try out.append(allocator, '\n');
-        try sections.renderFunctionsSection(out, allocator, g, assignment.fn_indices.items, ids, &num_buf);
-        written = true;
+        try appendSeparator(out, allocator, &written);
+        try sections.renderFunctionsSection(out, allocator, &ctx, assignment.fn_indices.items);
     }
     if (assignment.const_indices.items.len > 0) {
-        if (written) try out.append(allocator, '\n');
-        try sections.renderConstantsSection(out, allocator, g, assignment.const_indices.items, ids, &num_buf);
-        written = true;
+        try appendSeparator(out, allocator, &written);
+        try sections.renderConstantsSection(out, allocator, &ctx, assignment.const_indices.items);
     }
     if (assignment.err_indices.items.len > 0) {
-        if (written) try out.append(allocator, '\n');
-        try sections.renderErrorsSection(out, allocator, g, assignment.err_indices.items, ids, &num_buf);
-        written = true;
+        try appendSeparator(out, allocator, &written);
+        try sections.renderErrorsSection(out, allocator, &ctx, assignment.err_indices.items);
     }
     if (assignment.test_indices.items.len > 0) {
-        if (written) try out.append(allocator, '\n');
-        try sections.renderTestsSection(out, allocator, g, assignment.test_indices.items, ids, &num_buf);
-        written = true;
+        try appendSeparator(out, allocator, &written);
+        try sections.renderTestsSection(out, allocator, &ctx, assignment.test_indices.items);
     }
     if (assignment.phantom_packages.items.len > 0) {
-        if (written) try out.append(allocator, '\n');
+        try appendSeparator(out, allocator, &written);
         try sections.renderExternalsSection(out, allocator, g, assignment.phantom_packages.items);
-        written = true;
     }
 
     // Edges: the renderer checks internally and writes nothing if all edges are filtered.
@@ -178,7 +208,7 @@ pub fn renderCtg(
         const mark = out.items.len;
         if (written) try out.append(allocator, '\n');
         const before_section = out.items.len;
-        try sections.renderEdgesSection(out, allocator, g, ids, &assignment.phantom_lookup, options.scope, options.filter, &num_buf);
+        try sections.renderEdgesSection(out, allocator, &ctx, &assignment.phantom_lookup, options.scope, options.filter);
         if (out.items.len == before_section) {
             out.shrinkRetainingCapacity(mark);
         }
@@ -452,6 +482,9 @@ test "header line 2 has stats" {
     try std.testing.expect(std.mem.startsWith(u8, line2, "# "));
     try std.testing.expect(std.mem.indexOf(u8, line2, "files") != null);
     try std.testing.expect(std.mem.indexOf(u8, line2, "functions") != null);
+    // Header counts free functions only; the method next() under Tokenizer must not inflate the count.
+    try std.testing.expect(std.mem.indexOf(u8, line2, "2 functions") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line2, "3 functions") == null);
 }
 
 test "header line 3 has languages" {
@@ -526,7 +559,7 @@ test "sections appear in correct order" {
     const output = out.items;
     const section_markers = [_][]const u8{
         "[files]",
-        "[structs]",
+        "[types]",
         "[enums]",
         "[functions]",
         "[constants]",
@@ -609,7 +642,7 @@ test "function IDs use fn: prefix" {
     try std.testing.expect(found_any);
 }
 
-test "struct IDs use st: prefix" {
+test "type IDs use ty: prefix" {
     // Arrange
     const allocator = std.testing.allocator;
     var g = try createCtgTestGraph(allocator);
@@ -627,16 +660,16 @@ test "struct IDs use st: prefix" {
 
     // Assert
     const output = out.items;
-    const sts_start = (std.mem.indexOf(u8, output, "[structs]\n") orelse return error.MissingSection) + "[structs]\n".len;
-    const sts_end = std.mem.indexOf(u8, output[sts_start..], "\n[") orelse (output.len - sts_start);
-    const sts_section = output[sts_start .. sts_start + sts_end];
+    const types_start = (std.mem.indexOf(u8, output, "[types]\n") orelse return error.MissingSection) + "[types]\n".len;
+    const types_end = std.mem.indexOf(u8, output[types_start..], "\n[") orelse (output.len - types_start);
+    const types_section = output[types_start .. types_start + types_end];
 
-    var lines = std.mem.splitScalar(u8, sts_section, '\n');
+    var lines = std.mem.splitScalar(u8, types_section, '\n');
     var found_any = false;
     while (lines.next()) |line| {
         if (line.len == 0) continue;
         if (std.mem.startsWith(u8, line, "  ")) continue;
-        try std.testing.expect(std.mem.startsWith(u8, line, "st:"));
+        try std.testing.expect(std.mem.startsWith(u8, line, "ty:"));
         found_any = true;
     }
     try std.testing.expect(found_any);
@@ -1015,12 +1048,12 @@ test "with scope filters nodes" {
     // Assert: only src/main.zig nodes appear, not src/lib.zig nodes
     const output = out.items;
     try std.testing.expect(std.mem.indexOf(u8, output, "src/main.zig") != null);
-    const structs_start = std.mem.indexOf(u8, output, "[structs]");
-    if (structs_start) |start| {
+    const types_start = std.mem.indexOf(u8, output, "[types]");
+    if (types_start) |start| {
         const next_section = std.mem.indexOf(u8, output[start + 1 ..], "\n[");
         const end = if (next_section) |ns| start + 1 + ns else output.len;
-        const structs_content = output[start..end];
-        try std.testing.expect(std.mem.indexOf(u8, structs_content, "Tokenizer") == null);
+        const types_content = output[start..end];
+        try std.testing.expect(std.mem.indexOf(u8, types_content, "Tokenizer") == null);
     }
 }
 

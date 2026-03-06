@@ -18,6 +18,14 @@ pub const Point = struct {
     }
 };
 
+pub const Processor = struct {
+    state: u32,
+
+    pub fn process(self: Processor) u32 {
+        return self.state;
+    }
+};
+
 /// Takes a Point parameter by value and calls its method.
 /// p.manhattan() should create a calls edge to Point.manhattan.
 pub fn processPoint(p: Point) i32 {
@@ -29,8 +37,8 @@ pub fn externalParam(allocator: std.mem.Allocator) void {
     _ = allocator;
 }
 
-/// Takes a pointer-to-Point parameter. Pointer types are not handled
-/// by the simple bare-identifier check, so no local calls edge expected.
+/// Takes a pointer-to-Point parameter. Pointer types are unwrapped
+/// to resolve the base type, so p.scale() creates a local calls edge.
 pub fn pointerParam(p: *Point) void {
     p.scale(2);
 }

@@ -160,14 +160,28 @@ test "file struct fixture: edge creation" {
     }
     try std.testing.expect(found);
 
-    // Assert: test "basic" still exists
+    // Assert: test "basic" calls init via Self.init() (@This() alias resolution)
     var basic_test_id: ?NodeId = null;
+    var init_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
         if (n.kind == .test_def and std.mem.eql(u8, n.name, "basic")) {
             basic_test_id = @enumFromInt(idx);
         }
+        if (n.kind == .function and std.mem.eql(u8, n.name, "init")) {
+            init_id = @enumFromInt(idx);
+        }
     }
     try std.testing.expect(basic_test_id != null);
+    try std.testing.expect(init_id != null);
+
+    var found_self_call = false;
+    for (g.edges.items) |e| {
+        if (e.source_id == basic_test_id.? and e.target_id == init_id.? and e.edge_type == .calls) {
+            found_self_call = true;
+            break;
+        }
+    }
+    try std.testing.expect(found_self_call);
 }
 
 test "generic type fixture: edge creation" {
@@ -242,6 +256,27 @@ test "generic type fixture: edge creation" {
         }
     }
     try std.testing.expect(!has_spurious_edge);
+
+    // Assert: reset calls init via Self.init() (@This() alias in nested struct)
+    var reset_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind == .function and std.mem.eql(u8, n.name, "reset") and
+            n.parent_id != null and n.parent_id.? == container_id.?)
+        {
+            reset_id = @enumFromInt(idx);
+            break;
+        }
+    }
+    try std.testing.expect(reset_id != null);
+
+    var found_reset_init = false;
+    for (g.edges.items) |e| {
+        if (e.source_id == reset_id.? and e.target_id == init_id.? and e.edge_type == .calls) {
+            found_reset_init = true;
+            break;
+        }
+    }
+    try std.testing.expect(found_reset_init);
 }
 
 test "test block edges" {
@@ -987,7 +1022,7 @@ test "local-type parameter edges" {
     }
     try std.testing.expect(found_mp);
 
-    // pointerParam does NOT call scale (pointer type not resolved locally)
+    // pointerParam calls scale (pointer types are unwrapped for local resolution)
     var found_ptr = false;
     for (g.edges.items) |e| {
         if (e.source_id == pointerParam_id.? and e.target_id == scale_id.? and e.edge_type == .calls) {
@@ -995,7 +1030,7 @@ test "local-type parameter edges" {
             break;
         }
     }
-    try std.testing.expect(!found_ptr);
+    try std.testing.expect(found_ptr);
 
     // externalParam has no calls edges at all
     var found_ext = false;

@@ -117,11 +117,7 @@ fn writeNodeLine(writer: *std.Io.Writer, n: Node) !void {
     // metrics
     try writer.writeAll(",\"metrics\":");
     if (n.metrics) |m| {
-        try writer.print("{{\"complexity\":{d},\"lines\":{d},\"fan_in\":{d},\"fan_out\":{d},\"branches\":{d},\"loops\":{d},\"error_paths\":{d},\"nesting_depth_max\":{d},\"structural_hash\":{d}}}", .{
-            m.complexity,      m.lines, m.fan_in,      m.fan_out,
-            m.branches,        m.loops, m.error_paths, m.nesting_depth_max,
-            m.structural_hash,
-        });
+        try m.writeJson(writer);
     } else {
         try writer.writeAll("null");
     }
@@ -200,51 +196,129 @@ fn parseExternal(allocator: std.mem.Allocator, g: *Graph, val: std.json.Value) !
     }
 }
 
-fn parseMetrics(val: std.json.Value) ?Metrics {
-    switch (val) {
-        .null => return null,
-        .object => |obj| {
-            return .{
-                .complexity = if (obj.get("complexity")) |v| @intCast(switch (v) {
-                    .integer => |i| i,
-                    else => 0,
-                }) else 0,
-                .lines = if (obj.get("lines")) |v| @intCast(switch (v) {
-                    .integer => |i| i,
-                    else => 0,
-                }) else 0,
-                .fan_in = if (obj.get("fan_in")) |v| @intCast(switch (v) {
-                    .integer => |i| i,
-                    else => 0,
-                }) else 0,
-                .fan_out = if (obj.get("fan_out")) |v| @intCast(switch (v) {
-                    .integer => |i| i,
-                    else => 0,
-                }) else 0,
-                .branches = if (obj.get("branches")) |v| @intCast(switch (v) {
-                    .integer => |i| i,
-                    else => 0,
-                }) else 0,
-                .loops = if (obj.get("loops")) |v| @intCast(switch (v) {
-                    .integer => |i| i,
-                    else => 0,
-                }) else 0,
-                .error_paths = if (obj.get("error_paths")) |v| @intCast(switch (v) {
-                    .integer => |i| i,
-                    else => 0,
-                }) else 0,
-                .nesting_depth_max = if (obj.get("nesting_depth_max")) |v| @intCast(switch (v) {
-                    .integer => |i| i,
-                    else => 0,
-                }) else 0,
-                .structural_hash = if (obj.get("structural_hash")) |v| @intCast(switch (v) {
-                    .integer => |i| i,
-                    else => 0,
-                }) else 0,
-            };
-        },
-        else => return null,
+/// Register heap-allocated buffers from a parsed LangMeta with the graph's
+/// ownership tracker. On failure, frees any buffers not yet registered.
+fn registerLangMetaBuffers(allocator: std.mem.Allocator, g: *Graph, meta: LangMeta) !void {
+    const buffers: [3]?[]const u8 = switch (meta) {
+        .rust => |rm| .{ rm.abi, rm.derives, rm.attributes },
+        .zig => |zm| .{ zm.calling_convention, null, null },
+        .none => .{ null, null, null },
+    };
+    var registered: usize = 0;
+    errdefer {
+        // Free any buffers that were not yet registered.
+        for (buffers[registered..]) |maybe_buf| {
+            if (maybe_buf) |b| allocator.free(b);
+        }
     }
+    for (buffers) |maybe_buf| {
+        if (maybe_buf) |b| {
+            try g.addOwnedBuffer(allocator, b);
+        }
+        registered += 1;
+    }
+}
+
+/// Parse a single JSON node record and add it to the graph. Returns null on skip.
+fn parseNodeFromJson(allocator: std.mem.Allocator, g: *Graph, obj: std.json.ObjectMap) !?NodeId {
+    const name_str = jsonStr(obj.get("name") orelse return null) orelse return null;
+    const kind_str = jsonStr(obj.get("kind") orelse return null) orelse return null;
+    const lang_val = obj.get("language") orelse return null;
+    const vis_str = jsonStr(obj.get("visibility") orelse return null) orelse return null;
+
+    const name = try dupeAndOwn(allocator, g, name_str);
+    const kind = std.meta.stringToEnum(NodeKind, kind_str) orelse return null;
+    const language: ?types.Language = if (lang_val == .null) null else if (jsonStr(lang_val)) |ls| std.meta.stringToEnum(types.Language, ls) else return null;
+    const visibility = std.meta.stringToEnum(Visibility, vis_str) orelse return null;
+
+    const file_path_str = if (obj.get("file_path")) |v| jsonOptStr(v) else null;
+    const file_path = if (file_path_str) |s| try dupeAndOwn(allocator, g, s) else null;
+
+    const doc_str = if (obj.get("doc")) |v| jsonOptStr(v) else null;
+    const doc = if (doc_str) |s| try dupeAndOwn(allocator, g, s) else null;
+
+    const sig_str = if (obj.get("signature")) |v| jsonOptStr(v) else null;
+    const signature = if (sig_str) |s| try dupeAndOwn(allocator, g, s) else null;
+
+    const parent_id: ?NodeId = if (obj.get("parent_id")) |v| blk: {
+        const i = jsonOptInt(v) orelse break :blk null;
+        break :blk @enumFromInt(@as(u64, @intCast(i)));
+    } else null;
+
+    const line_start: ?u32 = if (obj.get("line_start")) |v| blk: {
+        const i = jsonOptInt(v) orelse break :blk null;
+        break :blk @intCast(i);
+    } else null;
+    const line_end: ?u32 = if (obj.get("line_end")) |v| blk: {
+        const i = jsonOptInt(v) orelse break :blk null;
+        break :blk @intCast(i);
+    } else null;
+
+    const content_hash: ?[12]u8 = if (obj.get("content_hash")) |v| blk: {
+        const s = jsonOptStr(v) orelse break :blk null;
+        break :blk parseContentHash(s);
+    } else null;
+
+    const external = if (obj.get("external")) |v| try parseExternal(allocator, g, v) else ExternalInfo{ .none = {} };
+
+    const lang_meta = if (obj.get("lang_meta")) |v| blk: {
+        const meta = try LangMeta.parseJson(allocator, v);
+        try registerLangMetaBuffers(allocator, g, meta);
+        break :blk meta;
+    } else LangMeta{ .none = {} };
+
+    const metrics = if (obj.get("metrics")) |v| Metrics.parseJson(v) else null;
+
+    return try g.addNode(allocator, .{
+        .id = .root,
+        .name = name,
+        .kind = kind,
+        .language = language,
+        .file_path = file_path,
+        .line_start = line_start,
+        .line_end = line_end,
+        .parent_id = parent_id,
+        .visibility = visibility,
+        .doc = doc,
+        .signature = signature,
+        .content_hash = content_hash,
+        .metrics = metrics,
+        .lang_meta = lang_meta,
+        .external = external,
+    });
+}
+
+/// Parse a single JSON edge record and add it to the graph. Returns false on skip.
+fn parseEdgeFromJson(allocator: std.mem.Allocator, g: *Graph, obj: std.json.ObjectMap) !bool {
+    const src_id_val = obj.get("source_id") orelse return false;
+    const tgt_id_val = obj.get("target_id") orelse return false;
+    const et_val = obj.get("edge_type") orelse return false;
+
+    const src_id = switch (src_id_val) {
+        .integer => |i| @as(u64, @intCast(i)),
+        else => return false,
+    };
+    const tgt_id = switch (tgt_id_val) {
+        .integer => |i| @as(u64, @intCast(i)),
+        else => return false,
+    };
+    const et_str = jsonStr(et_val) orelse return false;
+    const edge_type = std.meta.stringToEnum(EdgeType, et_str) orelse return false;
+
+    const edge_source: EdgeSource = if (obj.get("source")) |v| blk: {
+        const s = jsonStr(v) orelse break :blk .tree_sitter;
+        break :blk std.meta.stringToEnum(EdgeSource, s) orelse .tree_sitter;
+    } else .tree_sitter;
+
+    if (src_id >= g.nodes.items.len or tgt_id >= g.nodes.items.len) return false;
+
+    try g.edges.append(allocator, .{
+        .source_id = @enumFromInt(src_id),
+        .target_id = @enumFromInt(tgt_id),
+        .edge_type = edge_type,
+        .source = edge_source,
+    });
+    return true;
 }
 
 /// Comptime lookup table mapping each EdgeType discriminant to its alphabetical rank.
@@ -333,143 +407,9 @@ pub fn importJsonl(allocator: std.mem.Allocator, data: []const u8) !Graph {
         if (type_val != .string) continue;
 
         if (std.mem.eql(u8, type_val.string, "node")) {
-            // Parse node fields
-            const name_str = jsonStr(obj.get("name") orelse continue) orelse continue;
-            const kind_str = jsonStr(obj.get("kind") orelse continue) orelse continue;
-            const lang_val = obj.get("language") orelse continue;
-            const vis_str = jsonStr(obj.get("visibility") orelse continue) orelse continue;
-
-            const name = try dupeAndOwn(allocator, &g, name_str);
-            const kind = std.meta.stringToEnum(NodeKind, kind_str) orelse continue;
-            const language: ?types.Language = if (lang_val == .null) null else if (jsonStr(lang_val)) |ls| std.meta.stringToEnum(types.Language, ls) else continue;
-            const visibility = std.meta.stringToEnum(Visibility, vis_str) orelse continue;
-
-            // Optional strings
-            const file_path_str = if (obj.get("file_path")) |v| jsonOptStr(v) else null;
-            const file_path = if (file_path_str) |s| try dupeAndOwn(allocator, &g, s) else null;
-
-            const doc_str = if (obj.get("doc")) |v| jsonOptStr(v) else null;
-            const doc = if (doc_str) |s| try dupeAndOwn(allocator, &g, s) else null;
-
-            const sig_str = if (obj.get("signature")) |v| jsonOptStr(v) else null;
-            const signature = if (sig_str) |s| try dupeAndOwn(allocator, &g, s) else null;
-
-            // parent_id
-            const parent_id: ?NodeId = if (obj.get("parent_id")) |v| blk: {
-                const i = jsonOptInt(v) orelse break :blk null;
-                break :blk @enumFromInt(@as(u64, @intCast(i)));
-            } else null;
-
-            // line_start / line_end
-            const line_start: ?u32 = if (obj.get("line_start")) |v| blk: {
-                const i = jsonOptInt(v) orelse break :blk null;
-                break :blk @intCast(i);
-            } else null;
-            const line_end: ?u32 = if (obj.get("line_end")) |v| blk: {
-                const i = jsonOptInt(v) orelse break :blk null;
-                break :blk @intCast(i);
-            } else null;
-
-            // content_hash
-            const content_hash: ?[12]u8 = if (obj.get("content_hash")) |v| blk: {
-                const s = jsonOptStr(v) orelse break :blk null;
-                break :blk parseContentHash(s);
-            } else null;
-
-            // external
-            const external = if (obj.get("external")) |v| try parseExternal(allocator, &g, v) else ExternalInfo{ .none = {} };
-
-            // lang_meta (parseJson dupes string data; register with graph)
-            const lang_meta = if (obj.get("lang_meta")) |v| blk: {
-                const meta = try LangMeta.parseJson(allocator, v);
-                switch (meta) {
-                    .rust => |rm| {
-                        if (rm.abi) |abi| {
-                            g.addOwnedBuffer(allocator, abi) catch {
-                                allocator.free(abi);
-                                if (rm.derives) |d| allocator.free(d);
-                                if (rm.attributes) |at| allocator.free(at);
-                                return error.OutOfMemory;
-                            };
-                        }
-                        if (rm.derives) |derives| {
-                            g.addOwnedBuffer(allocator, derives) catch {
-                                allocator.free(derives);
-                                if (rm.attributes) |at| allocator.free(at);
-                                return error.OutOfMemory;
-                            };
-                        }
-                        if (rm.attributes) |attrs| {
-                            g.addOwnedBuffer(allocator, attrs) catch {
-                                allocator.free(attrs);
-                                return error.OutOfMemory;
-                            };
-                        }
-                    },
-                    .zig => |zm| {
-                        if (zm.calling_convention) |cc| {
-                            g.addOwnedBuffer(allocator, cc) catch {
-                                allocator.free(cc);
-                                return error.OutOfMemory;
-                            };
-                        }
-                    },
-                    .none => {},
-                }
-                break :blk meta;
-            } else LangMeta{ .none = {} };
-
-            // metrics
-            const metrics = if (obj.get("metrics")) |v| parseMetrics(v) else null;
-
-            _ = try g.addNode(allocator, .{
-                .id = .root, // overridden by addNode
-                .name = name,
-                .kind = kind,
-                .language = language,
-                .file_path = file_path,
-                .line_start = line_start,
-                .line_end = line_end,
-                .parent_id = parent_id,
-                .visibility = visibility,
-                .doc = doc,
-                .signature = signature,
-                .content_hash = content_hash,
-                .metrics = metrics,
-                .lang_meta = lang_meta,
-                .external = external,
-            });
+            _ = try parseNodeFromJson(allocator, &g, obj);
         } else if (std.mem.eql(u8, type_val.string, "edge")) {
-            const src_id_val = obj.get("source_id") orelse continue;
-            const tgt_id_val = obj.get("target_id") orelse continue;
-            const et_val = obj.get("edge_type") orelse continue;
-
-            const src_id = switch (src_id_val) {
-                .integer => |i| @as(u64, @intCast(i)),
-                else => continue,
-            };
-            const tgt_id = switch (tgt_id_val) {
-                .integer => |i| @as(u64, @intCast(i)),
-                else => continue,
-            };
-            const et_str = jsonStr(et_val) orelse continue;
-            const edge_type = std.meta.stringToEnum(EdgeType, et_str) orelse continue;
-
-            // edge source (optional, defaults to tree_sitter)
-            const edge_source: EdgeSource = if (obj.get("source")) |v| blk: {
-                const s = jsonStr(v) orelse break :blk .tree_sitter;
-                break :blk std.meta.stringToEnum(EdgeSource, s) orelse .tree_sitter;
-            } else .tree_sitter;
-
-            // Skip edges that reference out-of-bounds node IDs.
-            if (src_id >= g.nodes.items.len or tgt_id >= g.nodes.items.len) continue;
-
-            try g.edges.append(allocator, .{
-                .source_id = @enumFromInt(src_id),
-                .target_id = @enumFromInt(tgt_id),
-                .edge_type = edge_type,
-                .source = edge_source,
-            });
+            _ = try parseEdgeFromJson(allocator, &g, obj);
         }
     }
 

@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const zcodeprism = @import("zcodeprism");
+const tool_utils = @import("tool-utils");
 
 const Graph = zcodeprism.Graph;
 const Node = zcodeprism.Node;
@@ -16,17 +17,6 @@ const Registry = zcodeprism.registry.Registry;
 const source_map = zcodeprism.source_map;
 
 const logging = zcodeprism.logging;
-
-fn countVerbosity(arg: []const u8) u8 {
-    if (std.mem.eql(u8, arg, "--verbose")) return 1;
-    if (arg.len >= 2 and arg[0] == '-' and arg[1] != '-') {
-        for (arg[1..]) |c| {
-            if (c != 'v') return 0;
-        }
-        return @intCast(arg.len - 1);
-    }
-    return 0;
-}
 
 fn printHelp(stdout: *std.Io.Writer) !void {
     try stdout.print(
@@ -56,7 +46,7 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    var stdout_buffer: [8192]u8 = undefined;
+    var stdout_buffer: [tool_utils.stdout_buffer_size]u8 = undefined;
     var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
     const stdout = &stdout_writer.interface;
 
@@ -72,7 +62,7 @@ pub fn main() !void {
             try printHelp(stdout);
             return;
         } else {
-            const v = countVerbosity(arg);
+            const v = tool_utils.countVerbosity(arg);
             if (v > 0) {
                 verbosity +|= v;
             } else {
@@ -86,40 +76,42 @@ pub fn main() !void {
         return;
     };
 
+    // Resolve to absolute path so the graph root is accurate.
+    const abs_path = std.fs.cwd().realpathAlloc(allocator, path) catch |err| {
+        try stdout.print("Error resolving path '{s}': {}\n", .{ path, err });
+        try stdout.flush();
+        std.process.exit(1);
+    };
+    defer allocator.free(abs_path);
+
     // Look up language by file extension.
-    const ext = std.fs.path.extension(path);
+    const ext = std.fs.path.extension(abs_path);
     const lang_support = Registry.getByExtension(ext) orelse {
         try stdout.print("Unsupported file extension: '{s}'\n", .{ext});
         try stdout.flush();
-        return;
+        std.process.exit(1);
     };
     const parseFn = lang_support.parseFn;
 
     // Read the file.
-    const source = source_map.mmapFile(path) catch |err| {
-        try stdout.print("Error opening file '{s}': {}\n", .{ path, err });
+    const source = source_map.mmapFile(abs_path) catch |err| {
+        try stdout.print("Error opening file '{s}': {}\n", .{ abs_path, err });
         try stdout.flush();
-        return;
+        std.process.exit(1);
     };
     defer source_map.unmapFile(source);
 
     // Parse.
-    var graph = Graph.init(".");
+    var graph = Graph.init(std.fs.path.dirname(abs_path) orelse abs_path);
     defer graph.deinit(allocator);
 
-    const min_level: logging.Level = switch (verbosity) {
-        0 => .warn,
-        1 => .info,
-        2 => .debug,
-        else => .trace,
-    };
-    var text_logger = logging.TextStderrLogger.init(min_level);
+    var text_logger = logging.TextStderrLogger.init(tool_utils.verbosityToLevel(verbosity));
     const log = if (verbosity > 0) text_logger.logger() else logging.Logger.noop;
 
     parseFn(allocator, source, &graph, null, log) catch |err| {
         try stdout.print("Parse error: {}\n", .{err});
         try stdout.flush();
-        return;
+        std.process.exit(1);
     };
 
     // Build edges (separated from parsing so the indexer can defer edge
@@ -128,7 +120,7 @@ pub fn main() !void {
         var graph_index = zcodeprism.graph_index_mod.GraphIndex.build(allocator, graph.nodes.items) catch |err| {
             try stdout.print("Graph index error: {}\n", .{err});
             try stdout.flush();
-            return;
+            std.process.exit(1);
         };
         defer graph_index.deinit(allocator);
         var phantom_mgr = zcodeprism.phantom.PhantomManager.init(&graph);
@@ -136,12 +128,12 @@ pub fn main() !void {
         build_edges(allocator, source, &graph, 0, graph.nodeCount(), null, &graph_index, &phantom_mgr, log) catch |err| {
             try stdout.print("Edge building error: {}\n", .{err});
             try stdout.flush();
-            return;
+            std.process.exit(1);
         };
     }
 
     // Dump results.
-    try stdout.print("=== File: {s} ===\n", .{path});
+    try stdout.print("=== File: {s} ===\n", .{abs_path});
     try stdout.print("Source size: {} bytes\n", .{source.len});
     try stdout.print("Nodes: {}\n", .{graph.nodes.items.len});
     try stdout.print("Edges: {}\n\n", .{graph.edges.items.len});

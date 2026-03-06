@@ -9,6 +9,9 @@ pub const max_chain_depth: usize = 16;
 /// Maximum AST depth for scan functions that recurse into the tree.
 pub const max_ast_scan_depth: u32 = 256;
 
+/// Shallow search bound for probing a small AST neighborhood.
+pub const max_shallow_search_depth: u32 = 8;
+
 /// A symbol origin: identifies a node within a target file by file id and access chain.
 /// An empty chain refers to the module itself; a non-empty chain contains the
 /// identifier segments extracted from post-import field accesses or use declarations.
@@ -24,18 +27,27 @@ pub const ImportEntry = struct {
     target: NodeId,
     chain: [max_chain_depth][]const u8 = undefined,
     chain_len: usize = 0,
+    /// True when the binding comes from a public re-export declaration.
+    is_reexport: bool = false,
+};
+
+/// A glob import target paired with its visibility at the import site.
+pub const GlobTarget = struct {
+    target: NodeId,
+    is_public: bool,
 };
 
 /// Context for cross-file edge creation during a single file parse.
 /// Holds the file's node scope range and a dynamically-sized table of import
 /// bindings mapped to their resolved target file NodeIds and extraction chains.
-/// The glob_targets list is Rust-specific; Zig code never populates it.
+/// Languages that do not use glob imports leave glob_targets empty.
 pub const EdgeContext = struct {
     scope_start: usize,
     scope_end: usize,
     imports: std.ArrayListUnmanaged(ImportEntry) = .empty,
-    glob_targets: std.ArrayListUnmanaged(NodeId) = .empty,
+    glob_targets: std.ArrayListUnmanaged(GlobTarget) = .empty,
 
+    /// Release the imports and glob_targets lists.
     pub fn deinit(self: *EdgeContext, allocator: std.mem.Allocator) void {
         self.imports.deinit(allocator);
         self.glob_targets.deinit(allocator);
@@ -77,6 +89,7 @@ pub const VarBinding = struct {
 pub const VarTracker = struct {
     bindings: std.ArrayListUnmanaged(VarBinding) = .empty,
 
+    /// Release the bindings list.
     pub fn deinit(self: *VarTracker, allocator: std.mem.Allocator) void {
         self.bindings.deinit(allocator);
     }
@@ -112,6 +125,7 @@ pub const TypeBinding = struct {
 pub const LocalTypeTracker = struct {
     bindings: std.ArrayListUnmanaged(TypeBinding) = .empty,
 
+    /// Release the bindings list.
     pub fn deinit(self: *LocalTypeTracker, allocator: std.mem.Allocator) void {
         self.bindings.deinit(allocator);
     }

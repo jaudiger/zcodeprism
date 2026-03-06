@@ -73,90 +73,25 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run the CLI");
     run_step.dependOn(&run_cmd.step);
 
-    // --- Dump AST tool ---
+    // --- Shared tool utilities module ---
 
-    const dump_ast_mod = b.createModule(.{
-        .root_source_file = b.path("tools/dump_ast.zig"),
+    const tool_utils_mod = b.createModule(.{
+        .root_source_file = b.path("tools/tool_utils.zig"),
         .target = target,
         .optimize = optimize,
     });
-    dump_ast_mod.addImport("zcodeprism", lib_mod);
+    tool_utils_mod.addImport("zcodeprism", lib_mod);
+
+    // --- Debug tools ---
+
+    const dump_ast_mod = addTool(b, "dump-ast", "tools/dump_ast.zig", "Dump the raw tree-sitter AST for a source file", target, optimize, lib_mod, tool_utils_mod);
     dump_ast_mod.addImport("tree-sitter", ts_dep.module("tree_sitter"));
 
-    const dump_ast_exe = b.addExecutable(.{
-        .name = "dump-ast",
-        .root_module = dump_ast_mod,
-    });
-    b.installArtifact(dump_ast_exe);
+    _ = addTool(b, "parse-directory", "tools/parse_directory.zig", "Index a directory and dump the full code graph", target, optimize, lib_mod, tool_utils_mod);
 
-    const run_dump_ast = b.addRunArtifact(dump_ast_exe);
-    run_dump_ast.step.dependOn(b.getInstallStep());
-    if (b.args) |args| run_dump_ast.addArgs(args);
-    const run_dump_ast_step = b.step("dump-ast", "Dump the raw tree-sitter AST for a source file");
-    run_dump_ast_step.dependOn(&run_dump_ast.step);
+    _ = addTool(b, "parse-file", "tools/parse_file.zig", "Parse a single source file and dump the graph", target, optimize, lib_mod, tool_utils_mod);
 
-    // --- Parse directory tool ---
-
-    const parse_dir_mod = b.createModule(.{
-        .root_source_file = b.path("tools/parse_directory.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    parse_dir_mod.addImport("zcodeprism", lib_mod);
-
-    const parse_dir_exe = b.addExecutable(.{
-        .name = "parse-directory",
-        .root_module = parse_dir_mod,
-    });
-    b.installArtifact(parse_dir_exe);
-
-    const run_parse_dir = b.addRunArtifact(parse_dir_exe);
-    run_parse_dir.step.dependOn(b.getInstallStep());
-    if (b.args) |args| run_parse_dir.addArgs(args);
-    const run_parse_dir_step = b.step("parse-directory", "Index a directory and dump the full code graph");
-    run_parse_dir_step.dependOn(&run_parse_dir.step);
-
-    // --- Parse file tool ---
-
-    const parse_file_mod = b.createModule(.{
-        .root_source_file = b.path("tools/parse_file.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    parse_file_mod.addImport("zcodeprism", lib_mod);
-
-    const parse_file_exe = b.addExecutable(.{
-        .name = "parse-file",
-        .root_module = parse_file_mod,
-    });
-    b.installArtifact(parse_file_exe);
-
-    const run_parse_file = b.addRunArtifact(parse_file_exe);
-    run_parse_file.step.dependOn(b.getInstallStep());
-    if (b.args) |args| run_parse_file.addArgs(args);
-    const run_parse_file_step = b.step("parse-file", "Parse a single source file and dump the graph");
-    run_parse_file_step.dependOn(&run_parse_file.step);
-
-    // --- Render graph tool ---
-
-    const render_graph_mod = b.createModule(.{
-        .root_source_file = b.path("tools/render_graph.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    render_graph_mod.addImport("zcodeprism", lib_mod);
-
-    const render_graph_exe = b.addExecutable(.{
-        .name = "render-graph",
-        .root_module = render_graph_mod,
-    });
-    b.installArtifact(render_graph_exe);
-
-    const run_render_graph = b.addRunArtifact(render_graph_exe);
-    run_render_graph.step.dependOn(b.getInstallStep());
-    if (b.args) |args| run_render_graph.addArgs(args);
-    const run_render_graph_step = b.step("render-graph", "Index a directory and render the code graph as CTG or Mermaid");
-    run_render_graph_step.dependOn(&run_render_graph.step);
+    _ = addTool(b, "render-graph", "tools/render_graph.zig", "Render a code graph (directory or file) as CTG or Mermaid", target, optimize, lib_mod, tool_utils_mod);
 
     // --- Tests ---
 
@@ -227,6 +162,21 @@ pub fn build(b: *std.Build) void {
         .root_module = rust_indexer_test_mod,
     }), coverage, kcov_args);
 
+    // Tree-sitter binding integration tests
+    const ts_test_mod = b.createModule(.{
+        .root_source_file = b.path("test/test_tree_sitter.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    ts_test_mod.addImport("zcodeprism", lib_mod);
+    ts_test_mod.addImport("tree-sitter", ts_dep.module("tree_sitter"));
+    ts_test_mod.linkLibrary(ts_rust_lib);
+    ts_test_mod.linkLibrary(ts_zig_dep.artifact("tree-sitter-zig"));
+
+    addTestStep(b, test_step, b.addTest(.{
+        .root_module = ts_test_mod,
+    }), coverage, kcov_args);
+
     // Zig parsing integration tests (single-file parsing: edge_builder + cross_file tests)
     const parsing_test_mod = b.createModule(.{
         .root_source_file = b.path("test/zig/test_parsing.zig"),
@@ -285,4 +235,31 @@ fn addTestStep(
 ) void {
     if (cov) test_artifact.setExecCmd(kcov_args);
     test_step.dependOn(&b.addRunArtifact(test_artifact).step);
+}
+
+fn addTool(
+    b: *std.Build,
+    name: []const u8,
+    source: []const u8,
+    description: []const u8,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    lib_mod: *std.Build.Module,
+    tool_utils_mod: *std.Build.Module,
+) *std.Build.Module {
+    const mod = b.createModule(.{
+        .root_source_file = b.path(source),
+        .target = target,
+        .optimize = optimize,
+    });
+    mod.addImport("zcodeprism", lib_mod);
+    mod.addImport("tool-utils", tool_utils_mod);
+    const exe = b.addExecutable(.{ .name = name, .root_module = mod });
+    b.installArtifact(exe);
+    const run = b.addRunArtifact(exe);
+    run.step.dependOn(b.getInstallStep());
+    if (b.args) |args| run.addArgs(args);
+    const step = b.step(name, description);
+    step.dependOn(&run.step);
+    return mod;
 }

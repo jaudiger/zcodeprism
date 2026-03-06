@@ -8,55 +8,63 @@
 const std = @import("std");
 const ts = @import("tree-sitter");
 const zcodeprism = @import("zcodeprism");
+const tool_utils = @import("tool-utils");
 
 const Registry = zcodeprism.registry.Registry;
 const ts_api = zcodeprism.tree_sitter_api;
 const source_map = zcodeprism.source_map;
 
 pub fn main() !void {
-    var stdout_buffer: [8192]u8 = undefined;
+    var stdout_buffer: [tool_utils.stdout_buffer_size]u8 = undefined;
     var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
     const stdout = &stdout_writer.interface;
 
     // Get file path from args.
     var args = std.process.args();
     _ = args.next(); // skip program name
-    const file_path = args.next() orelse {
+
+    var file_path: ?[]const u8 = null;
+
+    while (args.next()) |arg| {
+        if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
+            try printHelp(stdout);
+            return;
+        } else {
+            file_path = arg;
+        }
+    }
+
+    const path = file_path orelse {
         try printHelp(stdout);
         return;
     };
 
-    if (std.mem.eql(u8, file_path, "--help") or std.mem.eql(u8, file_path, "-h")) {
-        try printHelp(stdout);
-        return;
-    }
-
     // Determine language from extension via Registry.
-    const ext = std.fs.path.extension(file_path);
+    const ext = std.fs.path.extension(path);
     const lang_support = Registry.getByExtension(ext) orelse {
         try stdout.print("Unsupported file extension: '{s}'\n", .{ext});
         try stdout.flush();
-        return;
+        std.process.exit(1);
     };
     const language = lang_support.grammarFn();
 
     // Read the file.
-    const source = source_map.mmapFile(file_path) catch |err| {
-        try stdout.print("Error opening file '{s}': {}\n", .{ file_path, err });
+    const source = source_map.mmapFile(path) catch |err| {
+        try stdout.print("Error opening file '{s}': {}\n", .{ path, err });
         try stdout.flush();
-        return;
+        std.process.exit(1);
     };
     defer source_map.unmapFile(source);
 
     // Parse.
     const tree = ts_api.parseSource(language, source) orelse {
-        try stdout.print("Failed to parse '{s}'\n", .{file_path});
+        try stdout.print("Failed to parse '{s}'\n", .{path});
         try stdout.flush();
-        return;
+        std.process.exit(1);
     };
     defer tree.destroy();
 
-    try stdout.print("=== AST: {s} ({} bytes) ===\n\n", .{ file_path, source.len });
+    try stdout.print("=== AST: {s} ({} bytes) ===\n\n", .{ path, source.len });
 
     // Dump the tree recursively.
     const root = tree.rootNode();

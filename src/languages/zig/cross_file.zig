@@ -192,6 +192,58 @@ pub fn buildImportMap(allocator: std.mem.Allocator, g: *const Graph, source: []c
             log.trace("import target file not found", &.{Field.string("path", import_path)});
         }
     }
+
+    try buildAliasMemberMap(allocator, source, root, ctx, k);
+}
+
+/// Second pass over root-level variable declarations.
+/// For each `const X = mod.member;` pattern whose root is a known import,
+/// registers X as an alias pointing to the same target file with the combined chain.
+/// This allows bare calls to re-exported symbols to resolve across files.
+fn buildAliasMemberMap(
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    root: ts.Node,
+    ctx: *EdgeContext,
+    k: *const KindIds,
+) !void {
+    var i: u32 = 0;
+    while (i < root.childCount()) : (i += 1) {
+        const child = root.child(i) orelse continue;
+        if (!child.isNamed()) continue;
+        if (child.kindId() != k.variable_declaration) continue;
+
+        const alias_name = ast.getIdentifierName(source, child, k) orelse continue;
+        if (ctx.findImportOrigin(alias_name) != null) continue;
+
+        var j: u32 = 0;
+        while (j < child.namedChildCount()) : (j += 1) {
+            const val = child.namedChild(j) orelse continue;
+            if (val.kindId() != k.field_expression) continue;
+
+            var chain: [max_chain_depth][]const u8 = undefined;
+            const chain_len = collectFieldExprChain(source, val, &chain, k);
+            if (chain_len < 2) break;
+
+            const origin = ctx.findImportOrigin(chain[0]) orelse break;
+
+            var entry = ImportEntry{ .name = alias_name, .target = origin.file_id };
+            var new_len: usize = 0;
+            for (origin.chain) |seg| {
+                if (new_len >= max_chain_depth) break;
+                entry.chain[new_len] = seg;
+                new_len += 1;
+            }
+            for (chain[1..chain_len]) |seg| {
+                if (new_len >= max_chain_depth) break;
+                entry.chain[new_len] = seg;
+                new_len += 1;
+            }
+            entry.chain_len = new_len;
+            try ctx.imports.append(allocator, entry);
+            break;
+        }
+    }
 }
 
 /// Check whether a variable_declaration's initializer is rooted in an import-qualified expression.

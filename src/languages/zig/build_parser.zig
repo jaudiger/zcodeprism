@@ -55,6 +55,7 @@ pub const BuildInfo = struct {
         url: []u8,
     };
 
+    /// Free all heap-allocated slices and their contents.
     pub fn deinit(self: BuildInfo, allocator: std.mem.Allocator) void {
         if (self.modules) |modules| {
             for (modules) |m| {
