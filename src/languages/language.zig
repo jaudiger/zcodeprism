@@ -4,19 +4,6 @@ const RustMeta = @import("rust/meta.zig").RustMeta;
 const RustSubKind = @import("rust/meta.zig").RustSubKind;
 const ZigMeta = @import("zig/meta.zig").ZigMeta;
 
-/// Write a string to a JSON writer, escaping special characters.
-fn writeJsonEscaped(writer: *std.Io.Writer, s: []const u8) !void {
-    for (s) |c| {
-        switch (c) {
-            '"' => try writer.writeAll("\\\""),
-            '\\' => try writer.writeAll("\\\\"),
-            '\n' => try writer.writeAll("\\n"),
-            '\r' => try writer.writeAll("\\r"),
-            '\t' => try writer.writeAll("\\t"),
-            else => try writer.writeByte(c),
-        }
-    }
-}
 
 /// Language-specific metadata union carried by each graph node.
 /// `.rust` holds Rust-specific flags and sub-kind.
@@ -165,80 +152,58 @@ pub const LangMeta = union(enum) {
 
     // JSON serialization
 
-    /// Write a JSON representation of this value to `writer`.
+    /// Write a JSON representation of this value to `stream`.
     /// `.none` writes the literal `null`. `.zig` writes `{"type":"zig",...}`.
-    pub fn writeJson(self: LangMeta, writer: *std.Io.Writer) !void {
+    pub fn writeJson(self: LangMeta, stream: *std.json.Stringify) !void {
         switch (self) {
-            .none => try writer.writeAll("null"),
+            .none => try stream.write(null),
             .rust => |rm| {
-                try writer.writeAll("{\"type\":\"rust\"");
-                try writer.print(",\"is_unsafe\":{s}", .{if (rm.is_unsafe) "true" else "false"});
-                try writer.print(",\"is_async\":{s}", .{if (rm.is_async) "true" else "false"});
-                try writer.print(",\"is_const\":{s}", .{if (rm.is_const) "true" else "false"});
-                try writer.print(",\"is_extern\":{s}", .{if (rm.is_extern) "true" else "false"});
-                try writer.print(",\"is_default\":{s}", .{if (rm.is_default) "true" else "false"});
-                try writer.writeAll(",\"sub_kind\":\"");
-                try writer.writeAll(@tagName(rm.sub_kind));
-                try writer.writeByte('"');
-                try writer.writeAll(",\"abi\":");
-                if (rm.abi) |a| {
-                    try writer.writeByte('"');
-                    try writer.writeAll(a);
-                    try writer.writeByte('"');
-                } else {
-                    try writer.writeAll("null");
-                }
-                try writer.writeAll(",\"derives\":");
-                if (rm.derives) |d| {
-                    try writer.writeByte('"');
-                    try writer.writeAll(d);
-                    try writer.writeByte('"');
-                } else {
-                    try writer.writeAll("null");
-                }
-                try writer.writeAll(",\"attributes\":");
-                if (rm.attributes) |at| {
-                    try writer.writeByte('"');
-                    try writeJsonEscaped(writer, at);
-                    try writer.writeByte('"');
-                } else {
-                    try writer.writeAll("null");
-                }
-                try writer.writeAll(",\"inner_attributes\":");
-                if (rm.inner_attributes) |ia| {
-                    try writer.writeByte('"');
-                    try writeJsonEscaped(writer, ia);
-                    try writer.writeByte('"');
-                } else {
-                    try writer.writeAll("null");
-                }
-                try writer.writeAll(",\"visibility_scope\":");
-                if (rm.visibility_scope) |vs| {
-                    try writer.writeByte('"');
-                    try writer.writeAll(vs);
-                    try writer.writeByte('"');
-                } else {
-                    try writer.writeAll("null");
-                }
-                try writer.writeByte('}');
+                try stream.beginObject();
+                try stream.objectField("type");
+                try stream.write("rust");
+                try stream.objectField("is_unsafe");
+                try stream.write(rm.is_unsafe);
+                try stream.objectField("is_async");
+                try stream.write(rm.is_async);
+                try stream.objectField("is_const");
+                try stream.write(rm.is_const);
+                try stream.objectField("is_extern");
+                try stream.write(rm.is_extern);
+                try stream.objectField("is_default");
+                try stream.write(rm.is_default);
+                try stream.objectField("sub_kind");
+                try stream.write(@tagName(rm.sub_kind));
+                try stream.objectField("abi");
+                try stream.write(rm.abi);
+                try stream.objectField("derives");
+                try stream.write(rm.derives);
+                try stream.objectField("attributes");
+                try stream.write(rm.attributes);
+                try stream.objectField("inner_attributes");
+                try stream.write(rm.inner_attributes);
+                try stream.objectField("visibility_scope");
+                try stream.write(rm.visibility_scope);
+                try stream.endObject();
             },
             .zig => |zm| {
-                try writer.writeAll("{\"type\":\"zig\"");
-                try writer.print(",\"is_comptime\":{s}", .{if (zm.is_comptime) "true" else "false"});
-                try writer.print(",\"is_mutable\":{s}", .{if (zm.is_mutable) "true" else "false"});
-                try writer.print(",\"is_inline\":{s}", .{if (zm.is_inline) "true" else "false"});
-                try writer.print(",\"is_extern\":{s}", .{if (zm.is_extern) "true" else "false"});
-                try writer.print(",\"is_packed\":{s}", .{if (zm.is_packed) "true" else "false"});
-                try writer.print(",\"comptime_conditional\":{s}", .{if (zm.comptime_conditional) "true" else "false"});
-                try writer.writeAll(",\"calling_convention\":");
-                if (zm.calling_convention) |cc| {
-                    try writer.writeByte('"');
-                    try writer.writeAll(cc);
-                    try writer.writeByte('"');
-                } else {
-                    try writer.writeAll("null");
-                }
-                try writer.writeByte('}');
+                try stream.beginObject();
+                try stream.objectField("type");
+                try stream.write("zig");
+                try stream.objectField("is_comptime");
+                try stream.write(zm.is_comptime);
+                try stream.objectField("is_mutable");
+                try stream.write(zm.is_mutable);
+                try stream.objectField("is_inline");
+                try stream.write(zm.is_inline);
+                try stream.objectField("is_extern");
+                try stream.write(zm.is_extern);
+                try stream.objectField("is_packed");
+                try stream.write(zm.is_packed);
+                try stream.objectField("comptime_conditional");
+                try stream.write(zm.comptime_conditional);
+                try stream.objectField("calling_convention");
+                try stream.write(zm.calling_convention);
+                try stream.endObject();
             },
         }
     }
@@ -549,7 +514,8 @@ test "LangMeta.writeJson none writes null" {
     defer aw.deinit();
 
     // Act
-    try meta.writeJson(&aw.writer);
+    var stream: std.json.Stringify = .{ .writer = &aw.writer };
+    try meta.writeJson(&stream);
     try aw.writer.flush();
 
     // Assert
@@ -657,7 +623,8 @@ test "LangMeta.writeJson rust produces valid JSON with type rust" {
     defer aw.deinit();
 
     // Act
-    try meta.writeJson(&aw.writer);
+    var stream: std.json.Stringify = .{ .writer = &aw.writer };
+    try meta.writeJson(&stream);
     try aw.writer.flush();
 
     // Assert
@@ -684,7 +651,8 @@ test "LangMeta JSON writeJson/parseJson round-trip for rust" {
     defer aw.deinit();
 
     // Act
-    try original.writeJson(&aw.writer);
+    var stream: std.json.Stringify = .{ .writer = &aw.writer };
+    try original.writeJson(&stream);
     try aw.writer.flush();
     const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, aw.written(), .{});
     defer parsed.deinit();
@@ -818,7 +786,8 @@ test "LangMeta.writeJson zig produces valid JSON" {
     defer aw.deinit();
 
     // Act
-    try meta.writeJson(&aw.writer);
+    var stream: std.json.Stringify = .{ .writer = &aw.writer };
+    try meta.writeJson(&stream);
     try aw.writer.flush();
 
     // Assert: must parse as JSON
@@ -840,7 +809,8 @@ test "LangMeta JSON writeJson/parseJson round-trip for zig" {
     defer aw.deinit();
 
     // Act
-    try original.writeJson(&aw.writer);
+    var stream: std.json.Stringify = .{ .writer = &aw.writer };
+    try original.writeJson(&stream);
     try aw.writer.flush();
     const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, aw.written(), .{});
     defer parsed.deinit();

@@ -18,119 +18,91 @@ const Metrics = metrics_mod.Metrics;
 const LangMeta = lang.LangMeta;
 const ExternalInfo = lang.ExternalInfo;
 
-fn writeStr(writer: *std.Io.Writer, str: []const u8) !void {
-    try writer.writeByte('"');
-    var start: usize = 0;
-    for (str, 0..) |c, i| {
-        const esc: ?[]const u8 = switch (c) {
-            '"' => "\\\"",
-            '\\' => "\\\\",
-            '\n' => "\\n",
-            '\r' => "\\r",
-            '\t' => "\\t",
-            else => null,
-        };
-        if (esc) |e| {
-            if (i > start) try writer.writeAll(str[start..i]);
-            try writer.writeAll(e);
-            start = i + 1;
-        } else if (c < 0x20) {
-            if (i > start) try writer.writeAll(str[start..i]);
-            try writer.print("\\u{x:0>4}", .{c});
-            start = i + 1;
-        }
-    }
-    if (start < str.len) try writer.writeAll(str[start..]);
-    try writer.writeByte('"');
-}
-
-fn writeOptStr(writer: *std.Io.Writer, val: ?[]const u8) !void {
-    if (val) |s| {
-        try writeStr(writer, s);
-    } else {
-        try writer.writeAll("null");
-    }
-}
-
-fn writeOptInt(writer: *std.Io.Writer, val: ?u32) !void {
-    if (val) |v| {
-        try writer.print("{d}", .{@as(u64, v)});
-    } else {
-        try writer.writeAll("null");
-    }
-}
-
-fn writeOptNodeId(writer: *std.Io.Writer, val: ?NodeId) !void {
-    if (val) |v| {
-        try writer.print("{d}", .{@intFromEnum(v)});
-    } else {
-        try writer.writeAll("null");
-    }
-}
-
 fn writeNodeLine(writer: *std.Io.Writer, n: Node) !void {
-    try writer.print("{{\"_type\":\"node\",\"id\":{d},\"name\":", .{@intFromEnum(n.id)});
-    try writeStr(writer, n.name);
-    try writer.print(",\"kind\":\"{t}\",\"language\":", .{n.kind});
+    var stream: std.json.Stringify = .{ .writer = writer };
+    try stream.beginObject();
+    try stream.objectField("_type");
+    try stream.write("node");
+    try stream.objectField("id");
+    try stream.write(@intFromEnum(n.id));
+    try stream.objectField("name");
+    try stream.write(n.name);
+    try stream.objectField("kind");
+    try stream.write(@tagName(n.kind));
+    try stream.objectField("language");
     if (n.language) |l| {
-        try writer.print("\"{t}\"", .{l});
+        try stream.write(@tagName(l));
     } else {
-        try writer.writeAll("null");
+        try stream.write(null);
     }
-    try writer.writeAll(",\"file_path\":");
-    try writeOptStr(writer, n.file_path);
-    try writer.writeAll(",\"line_start\":");
-    try writeOptInt(writer, n.line_start);
-    try writer.writeAll(",\"line_end\":");
-    try writeOptInt(writer, n.line_end);
-    try writer.print(",\"visibility\":\"{t}\",\"parent_id\":", .{n.visibility});
-    try writeOptNodeId(writer, n.parent_id);
-    try writer.writeAll(",\"doc\":");
-    try writeOptStr(writer, n.doc);
-    try writer.writeAll(",\"signature\":");
-    try writeOptStr(writer, n.signature);
-    // content_hash
-    try writer.writeAll(",\"content_hash\":");
+    try stream.objectField("file_path");
+    try stream.write(n.file_path);
+    try stream.objectField("line_start");
+    try stream.write(n.line_start);
+    try stream.objectField("line_end");
+    try stream.write(n.line_end);
+    try stream.objectField("visibility");
+    try stream.write(@tagName(n.visibility));
+    try stream.objectField("parent_id");
+    if (n.parent_id) |pid| {
+        try stream.write(@intFromEnum(pid));
+    } else {
+        try stream.write(null);
+    }
+    try stream.objectField("doc");
+    try stream.write(n.doc);
+    try stream.objectField("signature");
+    try stream.write(n.signature);
+    try stream.objectField("content_hash");
     if (n.content_hash) |ch| {
-        try writer.writeByte('"');
-        for (ch) |byte| {
-            try writer.print("{x:0>2}", .{byte});
+        var hex_buf: [24]u8 = undefined;
+        for (ch, 0..) |byte, i| {
+            _ = std.fmt.bufPrint(hex_buf[i * 2 ..][0..2], "{x:0>2}", .{byte}) catch unreachable;
         }
-        try writer.writeByte('"');
+        try stream.write(@as([]const u8, &hex_buf));
     } else {
-        try writer.writeAll("null");
+        try stream.write(null);
     }
-    // external
-    try writer.writeAll(",\"external\":");
+    try stream.objectField("external");
     switch (n.external) {
-        .none => try writer.writeAll("null"),
-        .stdlib => try writer.writeAll("\"stdlib\""),
+        .none => try stream.write(null),
+        .stdlib => try stream.write("stdlib"),
         .dependency => |d| {
-            try writer.writeAll("{\"type\":\"dependency\",\"version\":");
-            try writeOptStr(writer, d.version);
-            try writer.writeByte('}');
+            try stream.beginObject();
+            try stream.objectField("type");
+            try stream.write("dependency");
+            try stream.objectField("version");
+            try stream.write(d.version);
+            try stream.endObject();
         },
     }
-    // lang_meta
-    try writer.writeAll(",\"lang_meta\":");
-    try n.lang_meta.writeJson(writer);
-    // metrics
-    try writer.writeAll(",\"metrics\":");
+    try stream.objectField("lang_meta");
+    try n.lang_meta.writeJson(&stream);
+    try stream.objectField("metrics");
     if (n.metrics) |m| {
-        try m.writeJson(writer);
+        try m.writeJson(&stream);
     } else {
-        try writer.writeAll("null");
+        try stream.write(null);
     }
-    try writer.writeAll("}\n");
+    try stream.endObject();
+    try writer.writeByte('\n');
 }
 
 fn writeEdgeLine(writer: *std.Io.Writer, e: Edge) !void {
-    try writer.print("{{\"_type\":\"edge\",\"source_id\":{d},\"target_id\":{d},\"edge_type\":\"{t}\",\"source\":\"{t}\"}}\n", .{
-        @intFromEnum(e.source_id),
-        @intFromEnum(e.target_id),
-        e.edge_type,
-        e.source,
-    });
+    var stream: std.json.Stringify = .{ .writer = writer };
+    try stream.beginObject();
+    try stream.objectField("_type");
+    try stream.write("edge");
+    try stream.objectField("source_id");
+    try stream.write(@intFromEnum(e.source_id));
+    try stream.objectField("target_id");
+    try stream.write(@intFromEnum(e.target_id));
+    try stream.objectField("edge_type");
+    try stream.write(@tagName(e.edge_type));
+    try stream.objectField("source");
+    try stream.write(@tagName(e.source));
+    try stream.endObject();
+    try writer.writeByte('\n');
 }
 
 fn jsonStr(val: std.json.Value) ?[]const u8 {

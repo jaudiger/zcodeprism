@@ -16,13 +16,28 @@ pub const Metrics = struct {
     /// Binary record size: matches METRICS_RECORD_SIZE in binary.zig.
     pub const BINARY_SIZE: usize = 24;
 
-    /// Write this metrics value as a JSON object to `writer`.
-    pub fn writeJson(self: Metrics, writer: *std.Io.Writer) !void {
-        try writer.print("{{\"complexity\":{d},\"lines\":{d},\"fan_in\":{d},\"fan_out\":{d},\"branches\":{d},\"loops\":{d},\"error_paths\":{d},\"nesting_depth_max\":{d},\"structural_hash\":{d}}}", .{
-            self.complexity,      self.lines, self.fan_in,      self.fan_out,
-            self.branches,        self.loops, self.error_paths, self.nesting_depth_max,
-            self.structural_hash,
-        });
+    /// Write this metrics value as a JSON object to `stream`.
+    pub fn writeJson(self: Metrics, stream: *std.json.Stringify) !void {
+        try stream.beginObject();
+        try stream.objectField("complexity");
+        try stream.write(self.complexity);
+        try stream.objectField("lines");
+        try stream.write(self.lines);
+        try stream.objectField("fan_in");
+        try stream.write(self.fan_in);
+        try stream.objectField("fan_out");
+        try stream.write(self.fan_out);
+        try stream.objectField("branches");
+        try stream.write(self.branches);
+        try stream.objectField("loops");
+        try stream.write(self.loops);
+        try stream.objectField("error_paths");
+        try stream.write(self.error_paths);
+        try stream.objectField("nesting_depth_max");
+        try stream.write(self.nesting_depth_max);
+        try stream.objectField("structural_hash");
+        try stream.write(self.structural_hash);
+        try stream.endObject();
     }
 
     /// Parse a Metrics from a JSON Value. Returns null for non-object or null values.
