@@ -30,10 +30,12 @@ const tool_defs = [_]Tool{
 pub const Dispatcher = struct {
     tools: []const Tool = &tool_defs,
 
+    /// Create a dispatcher with the default tool definitions.
     pub fn init() Dispatcher {
         return .{};
     }
 
+    /// Release dispatcher resources (currently a no-op).
     pub fn deinit(self: *Dispatcher) void {
         _ = self;
     }

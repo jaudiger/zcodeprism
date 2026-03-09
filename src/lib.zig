@@ -82,8 +82,16 @@ pub const render_common = @import("render/common.zig");
 /// MCP server: JSON-RPC transport, protocol types, dispatch.
 pub const mcp = @import("mcp/mcp.zig");
 
+/// Explorer cursor for interactive graph navigation.
+pub const cursor = @import("explorer/cursor.zig");
+/// Cursor lifecycle manager (create, lookup, close).
+pub const cursor_manager = @import("explorer/cursor_manager.zig");
+
 /// Persistent storage backends (binary and JSONL).
 pub const storage = @import("storage/storage.zig");
+
+/// Code analysis tools (complexity, dead code, duplicates, impact, coupling, cycles).
+pub const analyzer = @import("analyzer/analyzer.zig");
 
 /// Vtable-based structured logging (noop by default, TextStderrLogger for CLI).
 pub const logging = @import("logging.zig");
@@ -141,5 +149,8 @@ test {
     _ = @import("render/mermaid.zig");
     _ = @import("render/mermaid_sections.zig");
     _ = @import("mcp/mcp.zig");
+    _ = @import("explorer/cursor.zig");
+    _ = @import("explorer/cursor_manager.zig");
     _ = @import("storage/storage.zig");
+    _ = @import("analyzer/analyzer.zig");
 }

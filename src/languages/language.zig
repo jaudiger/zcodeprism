@@ -4,7 +4,6 @@ const RustMeta = @import("rust/meta.zig").RustMeta;
 const RustSubKind = @import("rust/meta.zig").RustSubKind;
 const ZigMeta = @import("zig/meta.zig").ZigMeta;
 
-
 /// Language-specific metadata union carried by each graph node.
 /// `.rust` holds Rust-specific flags and sub-kind.
 /// `.zig` holds Zig-specific flags and calling convention.

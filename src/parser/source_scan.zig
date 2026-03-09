@@ -101,8 +101,30 @@ pub fn computeMetricsForNodes(graph: *Graph, source: []const u8, file_idx: usize
         const fn_source = extractLineRange(source, ls, le);
         const complexity = computeComplexity(fn_source);
 
-        n.metrics = Metrics{ .complexity = complexity, .lines = lines };
+        const sh = computeStructuralHash(fn_source);
+        n.metrics = Metrics{ .complexity = complexity, .lines = lines, .structural_hash = sh };
     }
+}
+
+/// Hash the structural skeleton of a function: all non-identifier tokens
+/// contribute to the hash, while identifier sequences are replaced by a
+/// fixed placeholder so that renaming parameters or locals does not change
+/// the result.
+fn computeStructuralHash(fn_source: []const u8) u32 {
+    var h = std.hash.Wyhash.init(0);
+    var in_ident = false;
+    for (fn_source) |c| {
+        if (isIdentChar(c)) {
+            if (!in_ident) {
+                h.update("_");
+                in_ident = true;
+            }
+        } else {
+            in_ident = false;
+            h.update(&[_]u8{c});
+        }
+    }
+    return @truncate(h.final());
 }
 
 /// Compute cyclomatic complexity with first-char switch dispatch.

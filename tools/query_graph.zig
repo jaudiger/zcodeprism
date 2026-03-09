@@ -135,7 +135,15 @@ fn printNodeDetail(stdout: *std.Io.Writer, nd: query.NodeDetail) !void {
     if (n.doc) |d| try stdout.print("  doc:        \"{s}\"\n", .{d});
     if (n.signature) |s| try stdout.print("  signature:  \"{s}\"\n", .{s});
     if (n.metrics) |m| {
-        try stdout.print("  metrics:    C={d} L={d} fan_in={d} fan_out={d}\n", .{ m.complexity, m.lines, m.fan_in, m.fan_out });
+        try stdout.print("  metrics:    C={d} L={d}", .{ m.complexity, m.lines });
+        if (m.fan_in > 0) try stdout.print(" fan_in={d}", .{m.fan_in});
+        if (m.fan_out > 0) try stdout.print(" fan_out={d}", .{m.fan_out});
+        if (m.branches > 0) try stdout.print(" branches={d}", .{m.branches});
+        if (m.loops > 0) try stdout.print(" loops={d}", .{m.loops});
+        if (m.error_paths > 0) try stdout.print(" error_paths={d}", .{m.error_paths});
+        if (m.nesting_depth_max > 0) try stdout.print(" nesting={d}", .{m.nesting_depth_max});
+        if (m.structural_hash != 0) try stdout.print(" hash={x:0>8}", .{m.structural_hash});
+        try stdout.print("\n", .{});
     }
     switch (n.external) {
         .stdlib => try stdout.print("  external:   stdlib\n", .{}),

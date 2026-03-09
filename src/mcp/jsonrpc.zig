@@ -46,6 +46,7 @@ pub const Response = struct {
     @"error": ?ErrorObject,
 };
 
+/// Errors returned when parsing a JSON-RPC 2.0 request fails.
 pub const ParseError = error{
     InvalidJson,
     InvalidRequest,
@@ -94,8 +95,7 @@ pub fn parseRequest(allocator: std.mem.Allocator, input: []const u8) ParseError!
         else => .none,
     } else .none;
 
-    // Params: non-null signals presence, null signals absence.
-    const params: ?std.json.Value = if (obj.get("params") != null) .null else null;
+    const params: ?std.json.Value = obj.get("params");
 
     return .{
         .value = .{

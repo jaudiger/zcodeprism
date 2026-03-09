@@ -186,7 +186,9 @@ pub fn main() !void {
             .none => {},
         }
         if (n.metrics) |m| {
-            try stdout.print("  metrics(C={},L={})", .{ m.complexity, m.lines });
+            try stdout.print("  metrics(C={},L={}", .{ m.complexity, m.lines });
+            if (m.structural_hash != 0) try stdout.print(",H={x:0>8}", .{m.structural_hash});
+            try stdout.print(")", .{});
         }
         if (n.doc != null) {
             try stdout.print("  [has doc]", .{});

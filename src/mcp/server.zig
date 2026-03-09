@@ -1,12 +1,16 @@
 const std = @import("std");
 const generation_mod = @import("../core/generation.zig");
+const cursor_manager_mod = @import("../explorer/cursor_manager.zig");
 const dispatcher_mod = @import("dispatcher.zig");
+const handlers = @import("handlers.zig");
 const jsonrpc = @import("jsonrpc.zig");
 const protocol = @import("protocol.zig");
 
 const GraphGeneration = generation_mod.GraphGeneration;
+const CursorManager = cursor_manager_mod.CursorManager;
 const Dispatcher = dispatcher_mod.Dispatcher;
 
+/// Errors that the MCP server can surface to callers.
 pub const ServerError = error{
     OutOfMemory,
 };
@@ -15,18 +19,21 @@ pub const ServerError = error{
 pub const Server = struct {
     generation: *GraphGeneration,
     dispatcher: Dispatcher,
+    cursor_manager: CursorManager,
 
     /// Create a server bound to a graph generation.
     pub fn init(gen: *GraphGeneration) Server {
         return .{
             .generation = gen,
             .dispatcher = Dispatcher.init(),
+            .cursor_manager = CursorManager.init(),
         };
     }
 
     /// Release server resources.
     pub fn deinit(self: *Server) void {
         self.dispatcher.deinit();
+        self.cursor_manager.deinit();
     }
 
     /// Process a single JSON-RPC message. Returns response bytes,
@@ -50,9 +57,34 @@ pub const Server = struct {
             return try buildSuccessResponse(allocator, req.id, protocol.ToolsListResult{
                 .tools = self.dispatcher.listTools(),
             });
+        } else if (std.mem.eql(u8, req.method, "tools/call")) {
+            return try self.handleToolCall(allocator, req);
         } else {
             return try buildErrorResponse(allocator, req.id, jsonrpc.method_not_found, "Method not found");
         }
+    }
+
+    fn handleToolCall(self: *Server, allocator: std.mem.Allocator, req: jsonrpc.Request) ServerError![]const u8 {
+        const params_obj = if (req.params) |p| (if (p == .object) p.object else null) else null;
+        const tool_name = if (params_obj) |obj| (if (obj.get("name")) |v| (if (v == .string) v.string else null) else null) else null;
+
+        if (tool_name == null) {
+            return try buildErrorResponse(allocator, req.id, jsonrpc.invalid_params, "Missing tool name");
+        }
+
+        const result_json = handlers.handleToolCall(allocator, self.generation, &self.cursor_manager, tool_name.?, req.params) catch
+            return try buildErrorResponse(allocator, req.id, jsonrpc.internal_error, "Handler error");
+
+        if (result_json) |json| {
+            defer allocator.free(json);
+            // Parse the result JSON and embed it in the response
+            var result_parsed = std.json.parseFromSlice(std.json.Value, allocator, json, .{}) catch
+                return try buildErrorResponse(allocator, req.id, jsonrpc.internal_error, "JSON parse error");
+            defer result_parsed.deinit();
+            return try buildSuccessResponse(allocator, req.id, result_parsed.value);
+        }
+
+        return try buildErrorResponse(allocator, req.id, jsonrpc.method_not_found, "Unknown tool");
     }
 
     fn writeId(stream: *std.json.Stringify, id: jsonrpc.RequestId) ServerError!void {

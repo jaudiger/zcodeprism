@@ -40,6 +40,17 @@ pub const zig = struct {
     pub const generic_type = @embedFile("fixtures/zig/generic_type.zig");
     pub const simple = @embedFile("fixtures/zig/simple.zig");
 
+    pub const analysis = struct {
+        pub const circular = struct {
+            pub const a_zig = @embedFile("fixtures/zig/analysis/circular/a.zig");
+            pub const b_zig = @embedFile("fixtures/zig/analysis/circular/b.zig");
+            pub const c_zig = @embedFile("fixtures/zig/analysis/circular/c.zig");
+        };
+        pub const complex = @embedFile("fixtures/zig/analysis/complex.zig");
+        pub const dead_code = @embedFile("fixtures/zig/analysis/dead_code.zig");
+        pub const duplicates = @embedFile("fixtures/zig/analysis/duplicates.zig");
+    };
+
     pub const build_no_deps = struct {
         pub const build_zig = @embedFile("fixtures/zig/build_no_deps/build.zig");
         pub const build_zig_zon = @embedFile("fixtures/zig/build_no_deps/build.zig.zon");

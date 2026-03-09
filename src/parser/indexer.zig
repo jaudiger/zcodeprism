@@ -434,6 +434,11 @@ fn parseFiles(
             const file_dir = std.fs.path.dirname(fe.rel_path);
             file_node.parent_id = if (file_dir) |fd| dir_map.get(fd) orelse root_dir_id else root_dir_id;
 
+            // Propagate file_path to all child nodes the visitor created.
+            for (graph.nodes.items[before_count + 1 .. graph.nodeCount()]) |*child| {
+                if (child.file_path == null) child.file_path = fe.rel_path;
+            }
+
             if (graph.nodeCount() == before_count + 1) {
                 log.trace("file produced no nodes", &.{Field.string("path", fe.rel_path)});
             }

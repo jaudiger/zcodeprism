@@ -92,6 +92,7 @@ defaults. All fields are optional.
 
 | Command | Description |
 |---------|-------------|
+| `zig build analyze-graph -- <dir> <cmd>` | Run analysis algorithms on an indexed directory |
 | `zig build dump-ast -- <file>` | Dump the raw tree-sitter AST for a source file |
 | `zig build parse-directory -- <dir>` | Index all supported source files and dump the full code graph |
 | `zig build parse-file -- <file>` | Parse a source file and dump the semantic graph |
