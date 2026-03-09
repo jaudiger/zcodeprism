@@ -26,11 +26,73 @@ zig build test -Dcoverage=true
 
 Results are written to `kcov-output/`.
 
+## CLI
+
+The `zcodeprism` binary is the main entry point for indexing and inspecting a codebase.
+
+```
+Usage: zcodeprism <command> [options]
+```
+
+### Commands
+
+**`zcodeprism init`** creates a `.zcodeprism.zon` configuration file and a
+`.zcodeprism/` data directory in the current working directory. Use `--force`
+to overwrite an existing configuration.
+
+```sh
+cd my-project
+zcodeprism init
+```
+
+**`zcodeprism index`** parses all supported source files (`.zig`, `.rs`) under
+the current directory, builds the semantic code graph, and saves it to
+`.zcodeprism/graph.bin` (and optionally `.zcodeprism/graph.jsonl` depending on
+the `storage.format` setting). Pass `--full` for a complete re-index.
+
+```sh
+zcodeprism index --full
+```
+
+**`zcodeprism status`** loads the persisted graph and prints statistics: node
+counts by kind, edge count, and a `source_hash` fingerprint derived from file
+content hashes.
+
+```sh
+zcodeprism status
+```
+
+### Global options
+
+| Option | Description |
+|--------|-------------|
+| `--version` | Print version and exit |
+| `--help` | Show usage help |
+| `-v`, `-vv`, `-vvv` | Increase log verbosity (info, debug, trace) |
+
+### Configuration
+
+Running `zcodeprism init` generates a `.zcodeprism.zon` file with sensible
+defaults. All fields are optional.
+
+```zig
+.{
+    .exclude_paths = .{ "zig-cache", "zig-out", ".git", "target" },
+    .storage = .{
+        .path = ".zcodeprism/",
+        .format = .binary,   // .binary or .jsonl
+    },
+    .memory = .{
+        .budget_mb = 512,
+    },
+}
+```
+
 ### Debug Tools
 
 | Command | Description |
 |---------|-------------|
 | `zig build dump-ast -- <file>` | Dump the raw tree-sitter AST for a source file |
 | `zig build parse-file -- <file>` | Parse a source file and dump the semantic graph |
-| `zig build parse-directory -- <dir>` | Index all `.zig` files and dump the full code graph |
-| `zig build render-graph -- <dir>` | Render the code graph in CTG or Mermaid format |
+| `zig build parse-directory -- <dir>` | Index all supported source files and dump the full code graph |
+| `zig build render-graph -- <path>` | Render the code graph in CTG or Mermaid format |

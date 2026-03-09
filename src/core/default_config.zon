@@ -1,0 +1,24 @@
+.{
+    // Paths to exclude from indexation.
+    .exclude_paths = .{ "zig-cache", "zig-out", ".git", "target" },
+
+    // Languages to enable (default: auto-detect by extensions).
+    // .languages = .{ .zig, .rust },
+
+    // LSP configuration (optional).
+    // .lsp = .{
+    //     .zls_path = null,
+    //     .rust_analyzer_path = null,
+    // },
+
+    // Storage configuration.
+    .storage = .{
+        .path = ".zcodeprism/",
+        .format = .binary,
+    },
+
+    // Memory budget.
+    .memory = .{
+        .budget_mb = 512,
+    },
+}

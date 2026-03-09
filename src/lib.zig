@@ -7,14 +7,16 @@
 
 /// Adjacency-list index for fast edge lookups by node.
 pub const adjacency = @import("core/adjacency.zig");
+/// Project configuration loaded from `.zcodeprism.zon`.
+pub const config = @import("core/config.zig");
 /// Edge definition and helpers.
 pub const edge = @import("core/edge.zig");
 /// Generation-swap support for atomic graph replacement.
 pub const generation = @import("core/generation.zig");
-/// Composite graph index (scope, name, file) built once after parsing.
-pub const graph_index_mod = @import("core/graph_index.zig");
 /// The central Graph container (nodes + edges + edge index).
 pub const graph = @import("core/graph.zig");
+/// Composite graph index (scope, name, file) built once after parsing.
+pub const graph_index_mod = @import("core/graph_index.zig");
 /// Node metrics (complexity, fan-in/out, etc.).
 pub const metrics_mod = @import("core/metrics.zig");
 /// Node definition and helpers.
@@ -44,6 +46,8 @@ pub const rust_parse_context = @import("languages/rust/parse_context.zig");
 /// Rust tree-sitter visitor producing nodes and edges from a single file.
 pub const rust_visitor = @import("languages/rust/visitor.zig");
 
+/// Zig tree-sitter visitor producing nodes and edges from a single file.
+pub const visitor = @import("languages/zig/visitor.zig");
 /// Zig-specific AST analysis helpers.
 pub const zig_ast_analysis = @import("languages/zig/ast_analysis.zig");
 /// Zig build.zig / build.zig.zon parser for module and dependency extraction.
@@ -56,8 +60,6 @@ pub const zig_edge_builder = @import("languages/zig/edge_builder.zig");
 pub const zig_indexer_hooks = @import("languages/zig/indexer_hooks.zig");
 /// Zig language-specific metadata (comptime, inline, packed, etc.).
 pub const zig_meta = @import("languages/zig/meta.zig");
-/// Zig tree-sitter visitor producing nodes and edges from a single file.
-pub const visitor = @import("languages/zig/visitor.zig");
 
 /// Multi-file indexer orchestrating per-file visitors and cross-file linking.
 pub const indexer = @import("parser/indexer.zig");
@@ -79,32 +81,33 @@ pub const storage = @import("storage/storage.zig");
 /// Vtable-based structured logging (noop by default, TextStderrLogger for CLI).
 pub const logging = @import("logging.zig");
 
+/// Semantic kind of an edge (calls, uses_type, exports, etc.).
+pub const EdgeType = types.EdgeType;
 /// The central graph container.
 pub const Graph = graph.Graph;
+/// Vtable-based logger interface.
+pub const Logger = logging.Logger;
 /// A single node in the code graph.
 pub const Node = node.Node;
 /// Semantic kind of a node (function, type_def, module, etc.).
 pub const NodeKind = types.NodeKind;
-/// Semantic kind of an edge (calls, uses_type, exports, etc.).
-pub const EdgeType = types.EdgeType;
-/// Vtable-based logger interface.
-pub const Logger = logging.Logger;
 /// Visibility of a declaration (public, private, etc.).
 pub const Visibility = types.Visibility;
 
 test {
     _ = @import("core/adjacency.zig");
+    _ = @import("core/config.zig");
     _ = @import("core/edge.zig");
     _ = @import("core/file_index.zig");
     _ = @import("core/generation.zig");
     _ = @import("core/graph.zig");
     _ = @import("core/graph_index.zig");
     _ = @import("core/kind_index.zig");
-    _ = @import("core/name_index.zig");
-    _ = @import("core/scope_index.zig");
     _ = @import("core/metrics.zig");
+    _ = @import("core/name_index.zig");
     _ = @import("core/node.zig");
     _ = @import("core/phantom.zig");
+    _ = @import("core/scope_index.zig");
     _ = @import("core/types.zig");
     _ = @import("languages/language.zig");
     _ = @import("languages/language_support.zig");
@@ -122,11 +125,11 @@ test {
     _ = @import("languages/zig/visitor.zig");
     _ = @import("logging.zig");
     _ = @import("parser/source_map.zig");
+    _ = @import("parser/tree_sitter_api.zig");
     _ = @import("render/common.zig");
     _ = @import("render/ctg.zig");
     _ = @import("render/ctg_sections.zig");
     _ = @import("render/mermaid.zig");
     _ = @import("render/mermaid_sections.zig");
-    _ = @import("parser/tree_sitter_api.zig");
     _ = @import("storage/storage.zig");
 }
