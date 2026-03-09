@@ -93,6 +93,7 @@ defaults. All fields are optional.
 | Command | Description |
 |---------|-------------|
 | `zig build dump-ast -- <file>` | Dump the raw tree-sitter AST for a source file |
-| `zig build parse-file -- <file>` | Parse a source file and dump the semantic graph |
 | `zig build parse-directory -- <dir>` | Index all supported source files and dump the full code graph |
+| `zig build parse-file -- <file>` | Parse a source file and dump the semantic graph |
+| `zig build query-graph -- <dir> <cmd>` | Exercise the query engine on an indexed directory |
 | `zig build render-graph -- <path>` | Render the code graph in CTG or Mermaid format |

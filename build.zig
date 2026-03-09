@@ -90,10 +90,9 @@ pub fn build(b: *std.Build) void {
     const dump_ast_mod = addTool(b, "dump-ast", "tools/dump_ast.zig", "Dump the raw tree-sitter AST for a source file", target, optimize, lib_mod, tool_utils_mod);
     dump_ast_mod.addImport("tree-sitter", ts_dep.module("tree_sitter"));
 
+    _ = addTool(b, "query-graph", "tools/query_graph.zig", "Exercise the query engine on an indexed directory", target, optimize, lib_mod, tool_utils_mod);
     _ = addTool(b, "parse-directory", "tools/parse_directory.zig", "Index a directory and dump the full code graph", target, optimize, lib_mod, tool_utils_mod);
-
     _ = addTool(b, "parse-file", "tools/parse_file.zig", "Parse a single source file and dump the graph", target, optimize, lib_mod, tool_utils_mod);
-
     _ = addTool(b, "render-graph", "tools/render_graph.zig", "Render a code graph (directory or file) as CTG or Mermaid", target, optimize, lib_mod, tool_utils_mod);
 
     // --- Tests ---

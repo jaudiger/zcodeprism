@@ -23,6 +23,10 @@ pub const metrics_mod = @import("core/metrics.zig");
 pub const node = @import("core/node.zig");
 /// Phantom node creation for external/stdlib references.
 pub const phantom = @import("core/phantom.zig");
+/// Query engine: search, path finding, stats, impact analysis.
+pub const query = @import("core/query.zig");
+/// Scope matching for restricting queries to subtrees.
+pub const scope = @import("core/scope.zig");
 /// Shared type definitions: NodeId, NodeKind, EdgeType, Visibility, etc.
 pub const types = @import("core/types.zig");
 
@@ -107,6 +111,8 @@ test {
     _ = @import("core/name_index.zig");
     _ = @import("core/node.zig");
     _ = @import("core/phantom.zig");
+    _ = @import("core/query.zig");
+    _ = @import("core/scope.zig");
     _ = @import("core/scope_index.zig");
     _ = @import("core/types.zig");
     _ = @import("languages/language.zig");
