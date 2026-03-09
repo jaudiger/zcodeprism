@@ -9,7 +9,6 @@ const CliResult = struct {
     stdout_buf: []u8,
     stderr_buf: []u8,
     exit_code: u8,
-    allocator: std.mem.Allocator,
 
     fn stdout(self: CliResult) []const u8 {
         return self.stdout_buf;
@@ -19,9 +18,9 @@ const CliResult = struct {
         return self.stderr_buf;
     }
 
-    fn deinit(self: CliResult) void {
-        self.allocator.free(self.stdout_buf);
-        self.allocator.free(self.stderr_buf);
+    fn deinit(self: CliResult, allocator: std.mem.Allocator) void {
+        allocator.free(self.stdout_buf);
+        allocator.free(self.stderr_buf);
     }
 };
 
@@ -54,7 +53,6 @@ fn runCli(
         .stdout_buf = result.stdout,
         .stderr_buf = result.stderr,
         .exit_code = exit_code,
-        .allocator = allocator,
     };
 }
 
@@ -66,7 +64,7 @@ test "--version outputs version string" {
 
     // Act
     const result = try runCli(allocator, bin, &.{"--version"}, null);
-    defer result.deinit();
+    defer result.deinit(allocator);
 
     // Assert
     try std.testing.expectEqual(@as(u8, 0), result.exit_code);
@@ -81,7 +79,7 @@ test "--help exits with code 0" {
 
     // Act
     const result = try runCli(allocator, bin, &.{"--help"}, null);
-    defer result.deinit();
+    defer result.deinit(allocator);
 
     // Assert
     try std.testing.expectEqual(@as(u8, 0), result.exit_code);
@@ -96,7 +94,7 @@ test "unknown command exits with code 2" {
 
     // Act
     const result = try runCli(allocator, bin, &.{"foobar"}, null);
-    defer result.deinit();
+    defer result.deinit(allocator);
 
     // Assert
     try std.testing.expectEqual(@as(u8, 2), result.exit_code);
@@ -112,7 +110,7 @@ test "init creates config file" {
 
     // Act
     const result = try runCli(allocator, bin, &.{"init"}, tmp.dir);
-    defer result.deinit();
+    defer result.deinit(allocator);
 
     // Assert
     try std.testing.expectEqual(@as(u8, 0), result.exit_code);
@@ -133,7 +131,7 @@ test "init creates data directory" {
 
     // Act
     const result = try runCli(allocator, bin, &.{"init"}, tmp.dir);
-    defer result.deinit();
+    defer result.deinit(allocator);
 
     // Assert
     try std.testing.expectEqual(@as(u8, 0), result.exit_code);
@@ -153,7 +151,7 @@ test "init --force overwrites existing" {
     defer tmp.cleanup();
 
     const first = try runCli(allocator, bin, &.{"init"}, tmp.dir);
-    first.deinit();
+    first.deinit(allocator);
 
     // Tamper with the config so we can detect overwrite.
     const file = try tmp.dir.createFile(".zcodeprism.zon", .{});
@@ -162,7 +160,7 @@ test "init --force overwrites existing" {
 
     // Act
     const result = try runCli(allocator, bin, &.{ "init", "--force" }, tmp.dir);
-    defer result.deinit();
+    defer result.deinit(allocator);
 
     // Assert
     try std.testing.expectEqual(@as(u8, 0), result.exit_code);
@@ -180,11 +178,11 @@ test "init on already initialized project" {
     defer tmp.cleanup();
 
     const first = try runCli(allocator, bin, &.{"init"}, tmp.dir);
-    first.deinit();
+    first.deinit(allocator);
 
     // Act
     const result = try runCli(allocator, bin, &.{"init"}, tmp.dir);
-    defer result.deinit();
+    defer result.deinit(allocator);
 
     // Assert
     try std.testing.expect(result.exit_code != 0);
@@ -199,7 +197,7 @@ test "index --full on fixture produces output" {
     defer tmp.cleanup();
 
     const init_result = try runCli(allocator, bin, &.{"init"}, tmp.dir);
-    init_result.deinit();
+    init_result.deinit(allocator);
 
     // Write a minimal .zig file for the indexer.
     const src = try tmp.dir.createFile("hello.zig", .{});
@@ -208,7 +206,7 @@ test "index --full on fixture produces output" {
 
     // Act
     const result = try runCli(allocator, bin, &.{ "index", "--full" }, tmp.dir);
-    defer result.deinit();
+    defer result.deinit(allocator);
 
     // Assert
     try std.testing.expectEqual(@as(u8, 0), result.exit_code);
@@ -224,18 +222,18 @@ test "status on indexed project" {
     defer tmp.cleanup();
 
     const init_result = try runCli(allocator, bin, &.{"init"}, tmp.dir);
-    init_result.deinit();
+    init_result.deinit(allocator);
 
     const src = try tmp.dir.createFile("hello.zig", .{});
     try src.writeAll("pub fn hello() void {}");
     src.close();
 
     const idx_result = try runCli(allocator, bin, &.{ "index", "--full" }, tmp.dir);
-    idx_result.deinit();
+    idx_result.deinit(allocator);
 
     // Act
     const result = try runCli(allocator, bin, &.{"status"}, tmp.dir);
-    defer result.deinit();
+    defer result.deinit(allocator);
 
     // Assert
     try std.testing.expectEqual(@as(u8, 0), result.exit_code);
@@ -252,7 +250,7 @@ test "status on uninitialized project" {
 
     // Act
     const result = try runCli(allocator, bin, &.{"status"}, tmp.dir);
-    defer result.deinit();
+    defer result.deinit(allocator);
 
     // Assert
     try std.testing.expectEqual(@as(u8, 1), result.exit_code);

@@ -3,11 +3,10 @@ const utils = @import("utils.zig");
 
 /// A simple token parser.
 pub const Parser = struct {
-    allocator: std.mem.Allocator,
     position: usize,
 
-    pub fn init(allocator: std.mem.Allocator) Parser {
-        return .{ .allocator = allocator, .position = 0 };
+    pub fn init() Parser {
+        return .{ .position = 0 };
     }
 
     pub fn deinit(self: *Parser) void {

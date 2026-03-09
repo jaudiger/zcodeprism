@@ -2,7 +2,9 @@ const std = @import("std");
 const zcodeprism = @import("zcodeprism");
 
 const config = zcodeprism.config;
+const generation_mod = zcodeprism.generation;
 const indexer = zcodeprism.indexer;
+const mcp = zcodeprism.mcp;
 const storage = zcodeprism.storage;
 const Graph = zcodeprism.Graph;
 const NodeKind = zcodeprism.NodeKind;
@@ -17,21 +19,24 @@ const usage_text =
     \\Commands:
     \\  init       Initialize a new project (.zcodeprism.zon + .zcodeprism/)
     \\  index      Index the codebase and build the code graph
+    \\  serve      Start the MCP server (JSON-RPC over stdio)
     \\  status     Show project status and graph statistics
     \\
     \\Options:
-    \\  --version  Print version and exit
-    \\  --help     Show this help message
-    \\  --force    Force overwrite (with init)
-    \\  --full     Full re-index (with index, default)
-    \\  --json     Output in JSON format
-    \\  -v         Increase verbosity (up to -vvv)
+    \\  --version            Print version and exit
+    \\  --help               Show this help message
+    \\  --force              Force overwrite (with init)
+    \\  --full               Full re-index (with index, default)
+    \\  --json               Output in JSON format
+    \\  --project-root PATH  Set the project root directory
+    \\  -v                   Increase verbosity (up to -vvv)
     \\
 ;
 
 const Command = enum {
     init,
     index,
+    serve,
     status,
     help,
     version,
@@ -52,9 +57,16 @@ pub fn main() void {
     var command: ?Command = null;
     var force = false;
     var verbosity: u8 = 0;
+    var project_root_arg: ?[]const u8 = null;
 
     while (args.next()) |arg| {
-        if (std.mem.eql(u8, arg, "--version")) {
+        if (std.mem.eql(u8, arg, "--project-root")) {
+            project_root_arg = args.next() orelse {
+                stderr.writeAll("--project-root requires a path argument\n") catch {};
+                stderr.flush() catch {};
+                std.process.exit(2);
+            };
+        } else if (std.mem.eql(u8, arg, "--version")) {
             command = .version;
         } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             command = .help;
@@ -80,6 +92,8 @@ pub fn main() void {
                     command = .init;
                 } else if (std.mem.eql(u8, arg, "index")) {
                     command = .index;
+                } else if (std.mem.eql(u8, arg, "serve")) {
+                    command = .serve;
                 } else if (std.mem.eql(u8, arg, "status")) {
                     command = .status;
                 } else {
@@ -89,6 +103,14 @@ pub fn main() void {
                 }
             }
         }
+    }
+
+    if (project_root_arg) |root| {
+        std.posix.chdir(root) catch {
+            stderr.print("cannot chdir to: {s}\n", .{root}) catch {};
+            stderr.flush() catch {};
+            std.process.exit(1);
+        };
     }
 
     const cmd = command orelse {
@@ -108,6 +130,7 @@ pub fn main() void {
         },
         .init => runInit(stdout, stderr, force),
         .index => runIndex(stdout, stderr, verbosity),
+        .serve => runServe(stderr),
         .status => runStatus(stdout, stderr),
     }
 }
@@ -210,6 +233,81 @@ fn runIndex(stdout: *std.Io.Writer, stderr: *std.Io.Writer, verbosity: u8) void 
         graph.edgeCount(),
     }) catch {};
     stdout.flush() catch {};
+}
+
+fn runServe(stderr: *std.Io.Writer) void {
+    var gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var gen = generation_mod.GraphGeneration.init(allocator, 1, .{0} ** 12);
+    gen.graph = storage.binary.load(gen.arena.allocator(), ".zcodeprism/graph.bin") catch {
+        stderr.writeAll("failed to load graph (run 'index' first)\n") catch {};
+        stderr.flush() catch {};
+        std.process.exit(1);
+    };
+
+    // Compute source hash from file content hashes.
+    var hasher = std.hash.XxHash3.init(0);
+    for (gen.graph.nodes.items) |n| {
+        if (n.kind == .file) {
+            if (n.content_hash) |h| {
+                hasher.update(&h);
+            }
+        }
+    }
+    const hash_u64 = hasher.final();
+    @memcpy(gen.source_hash[0..8], std.mem.asBytes(&hash_u64));
+
+    gen.acquire();
+    defer gen.release();
+
+    var server = mcp.server.Server.init(&gen);
+    defer server.deinit();
+
+    var stdin_buffer: [4096]u8 = undefined;
+    var stdin_reader = std.fs.File.stdin().readerStreaming(&stdin_buffer);
+    const reader = &stdin_reader.interface;
+
+    var stdout_buffer: [4096]u8 = undefined;
+    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+    const stdout = &stdout_writer.interface;
+
+    var line_buf: std.ArrayList(u8) = .{};
+    defer line_buf.deinit(allocator);
+
+    while (true) {
+        const line = readLine(reader, &line_buf, allocator) orelse break;
+        if (line.len == 0) continue;
+
+        const response = server.handleMessage(allocator, line) catch continue;
+        if (response) |resp| {
+            defer allocator.free(resp);
+            stdout.writeAll(resp) catch break;
+            stdout.writeAll("\n") catch break;
+            stdout.flush() catch break;
+        }
+    }
+}
+
+fn readLine(reader: *std.Io.Reader, line_buf: *std.ArrayList(u8), allocator: std.mem.Allocator) ?[]const u8 {
+    line_buf.clearRetainingCapacity();
+    while (true) {
+        const available = reader.peekGreedy(1) catch |err| switch (err) {
+            error.EndOfStream => {
+                if (line_buf.items.len > 0) return line_buf.items;
+                return null;
+            },
+            error.ReadFailed => return null,
+        };
+        if (std.mem.indexOfScalar(u8, available, '\n')) |pos| {
+            line_buf.appendSlice(allocator, available[0..pos]) catch return null;
+            reader.toss(pos + 1);
+            return line_buf.items;
+        }
+        line_buf.appendSlice(allocator, available) catch return null;
+        reader.toss(available.len);
+    }
 }
 
 fn saveJsonl(allocator: std.mem.Allocator, graph: *const Graph) !void {

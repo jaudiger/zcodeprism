@@ -79,6 +79,9 @@ pub const mermaid = @import("render/mermaid.zig");
 /// Shared rendering utilities (filtering, sorting, label helpers).
 pub const render_common = @import("render/common.zig");
 
+/// MCP server: JSON-RPC transport, protocol types, dispatch.
+pub const mcp = @import("mcp/mcp.zig");
+
 /// Persistent storage backends (binary and JSONL).
 pub const storage = @import("storage/storage.zig");
 
@@ -137,5 +140,6 @@ test {
     _ = @import("render/ctg_sections.zig");
     _ = @import("render/mermaid.zig");
     _ = @import("render/mermaid_sections.zig");
+    _ = @import("mcp/mcp.zig");
     _ = @import("storage/storage.zig");
 }
