@@ -80,12 +80,20 @@ pub fn defaultExcludePaths() []const []const u8 {
 }
 
 const default_config_content = @embedFile("default_config.zon");
+const default_workspace_content = @embedFile("default_workspace.zon");
 
 /// Write the default `.zcodeprism.zon` config file into `dir`.
 pub fn writeDefaultConfig(dir: std.fs.Dir) !void {
     const file = try dir.createFile(".zcodeprism.zon", .{ .exclusive = true });
     defer file.close();
     try file.writeAll(default_config_content);
+}
+
+/// Write the default `zcodeprism-workspace.zon` workspace config into `dir`.
+pub fn writeDefaultWorkspaceConfig(dir: std.fs.Dir) !void {
+    const file = try dir.createFile("zcodeprism-workspace.zon", .{ .exclusive = true });
+    defer file.close();
+    try file.writeAll(default_workspace_content);
 }
 
 /// Create the `.zcodeprism/` data directory inside `dir`.

@@ -11,6 +11,7 @@ const render_common = zcodeprism.render_common;
 const snapshot = zcodeprism.storage.snapshot;
 const snapshot_diff = zcodeprism.diff.snapshot_diff;
 const storage = zcodeprism.storage;
+const workspace_mod = zcodeprism.workspace;
 const Graph = zcodeprism.Graph;
 const NodeKind = zcodeprism.NodeKind;
 const EdgeType = zcodeprism.EdgeType;
@@ -39,6 +40,7 @@ const usage_text =
     \\  --name TAG           Snapshot tag name (with snapshot)
     \\  --snapshot TAG       Load a snapshot instead of current graph (with export)
     \\  --project-root PATH  Set the project root directory
+    \\  --workspace PATH     Workspace config file (with serve, status)
     \\  -v                   Increase verbosity (up to -vvv)
     \\
 ;
@@ -85,6 +87,7 @@ pub fn main() void {
     var output_arg: ?[]const u8 = null;
     var name_arg: ?[]const u8 = null;
     var snapshot_arg: ?[]const u8 = null;
+    var workspace_arg: ?[]const u8 = null;
     var include_test_nodes = false;
     var include_external_nodes = false;
     var positional_args: [2]?[]const u8 = .{ null, null };
@@ -106,6 +109,12 @@ pub fn main() void {
         } else if (std.mem.eql(u8, arg, "--name")) {
             name_arg = args.next() orelse {
                 stderr.writeAll("--name requires a tag argument\n") catch {};
+                stderr.flush() catch {};
+                std.process.exit(2);
+            };
+        } else if (std.mem.eql(u8, arg, "--workspace")) {
+            workspace_arg = args.next() orelse {
+                stderr.writeAll("--workspace requires a path argument\n") catch {};
                 stderr.flush() catch {};
                 std.process.exit(2);
             };
@@ -200,18 +209,39 @@ pub fn main() void {
             stdout.writeAll(usage_text) catch {};
             stdout.flush() catch {};
         },
-        .init => runInit(stdout, stderr, force),
+        .init => runInit(stdout, stderr, force, workspace_arg),
         .index => runIndex(stdout, stderr, verbosity),
         .@"export" => runExport(stdout, stderr, export_format, scope_arg, output_arg, snapshot_arg, include_test_nodes, include_external_nodes),
         .snapshot => runSnapshot(stdout, stderr, name_arg),
         .diff => runDiff(stdout, stderr, positional_args[0], positional_args[1]),
-        .serve => runServe(stderr),
-        .status => runStatus(stdout, stderr),
+        .serve => runServe(stderr, workspace_arg),
+        .status => runStatus(stdout, stderr, workspace_arg),
     }
 }
 
-fn runInit(stdout: *std.Io.Writer, stderr: *std.Io.Writer, force: bool) void {
+fn runInit(stdout: *std.Io.Writer, stderr: *std.Io.Writer, force: bool, workspace_arg: ?[]const u8) void {
     const cwd = std.fs.cwd();
+
+    if (workspace_arg != null) {
+        if (force) {
+            cwd.deleteFile("zcodeprism-workspace.zon") catch {};
+        }
+        config.writeDefaultWorkspaceConfig(cwd) catch |err| {
+            switch (err) {
+                error.PathAlreadyExists => {
+                    stderr.writeAll("workspace already initialized (use --force to reinitialize)\n") catch {};
+                },
+                else => {
+                    stderr.print("init failed: {s}\n", .{@errorName(err)}) catch {};
+                },
+            }
+            stderr.flush() catch {};
+            std.process.exit(1);
+        };
+        stdout.writeAll("initialized zcodeprism workspace\n") catch {};
+        stdout.flush() catch {};
+        return;
+    }
 
     if (force) {
         cwd.deleteFile(".zcodeprism.zon") catch {};
@@ -533,7 +563,7 @@ fn runDiff(stdout: *std.Io.Writer, stderr: *std.Io.Writer, tag_a_arg: ?[]const u
     stdout.flush() catch {};
 }
 
-fn runServe(stderr: *std.Io.Writer) void {
+fn runServe(stderr: *std.Io.Writer, workspace_arg: ?[]const u8) void {
     stdin_fd = std.fs.File.stdin().handle;
     std.posix.sigaction(std.posix.SIG.TERM, &.{
         .handler = .{ .handler = handleSigterm },
@@ -546,11 +576,16 @@ fn runServe(stderr: *std.Io.Writer) void {
     const allocator = gpa.allocator();
 
     var gen = generation_mod.GraphGeneration.init(allocator, 1, .{0} ** 12);
-    gen.graph = storage.binary.load(gen.arena.allocator(), ".zcodeprism/graph.bin") catch {
-        stderr.writeAll("failed to load graph (run 'index' first)\n") catch {};
-        stderr.flush() catch {};
-        std.process.exit(1);
-    };
+
+    if (workspace_arg) |ws_path| {
+        gen.graph = loadWorkspaceGraph(gen.arena.allocator(), ws_path, stderr);
+    } else {
+        gen.graph = storage.binary.load(gen.arena.allocator(), ".zcodeprism/graph.bin") catch {
+            stderr.writeAll("failed to load graph (run 'index' first)\n") catch {};
+            stderr.flush() catch {};
+            std.process.exit(1);
+        };
+    }
 
     // Compute source hash from file content hashes.
     var hasher = std.hash.XxHash3.init(0);
@@ -624,6 +659,70 @@ fn saveJsonl(allocator: std.mem.Allocator, graph: *const Graph) !void {
     try writer.interface.flush();
 }
 
+/// Build a unified graph from a workspace config file.
+/// Exits on any error (config, validation, missing project graphs).
+fn loadWorkspaceGraph(allocator: std.mem.Allocator, ws_path: []const u8, stderr: *std.Io.Writer) Graph {
+    const ws_dir = std.fs.path.dirname(ws_path) orelse ".";
+
+    const file = std.fs.cwd().openFile(ws_path, .{}) catch {
+        stderr.print("cannot open workspace config: {s}\n", .{ws_path}) catch {};
+        stderr.flush() catch {};
+        std.process.exit(1);
+    };
+    defer file.close();
+
+    const content = file.readToEndAllocOptions(allocator, 1024 * 1024, null, .of(u8), 0) catch {
+        stderr.writeAll("failed to read workspace config\n") catch {};
+        stderr.flush() catch {};
+        std.process.exit(1);
+    };
+    defer allocator.free(content);
+
+    const ws = workspace_mod.parseWorkspaceConfig(allocator, content, ws_dir) catch |err| {
+        stderr.print("invalid workspace config: {s}\n", .{@errorName(err)}) catch {};
+        stderr.flush() catch {};
+        std.process.exit(1);
+    };
+    defer workspace_mod.freeWorkspace(allocator, &ws);
+
+    workspace_mod.validateWorkspace(&ws, ws_dir) catch |err| {
+        stderr.print("workspace validation failed: {s}\n", .{@errorName(err)}) catch {};
+        stderr.flush() catch {};
+        std.process.exit(1);
+    };
+
+    var project_graphs = allocator.alloc(Graph, ws.projects.len) catch {
+        stderr.writeAll("out of memory\n") catch {};
+        stderr.flush() catch {};
+        std.process.exit(1);
+    };
+    defer allocator.free(project_graphs);
+
+    for (ws.projects, 0..) |proj, i| {
+        var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const graph_path = std.fmt.bufPrint(&path_buf, "{s}/{s}/.zcodeprism/graph.bin", .{ ws_dir, proj.path }) catch {
+            stderr.print("path too long for project: {s}\n", .{proj.name}) catch {};
+            stderr.flush() catch {};
+            std.process.exit(1);
+        };
+        project_graphs[i] = storage.binary.load(allocator, graph_path) catch {
+            stderr.print("failed to load graph for project '{s}' (run 'index' first)\n", .{proj.name}) catch {};
+            stderr.flush() catch {};
+            std.process.exit(1);
+        };
+    }
+
+    const assembled = workspace_mod.assembleWorkspace(allocator, &ws, project_graphs) catch {
+        stderr.writeAll("failed to assemble workspace graph\n") catch {};
+        stderr.flush() catch {};
+        std.process.exit(1);
+    };
+
+    const graph = assembled.graph;
+    allocator.free(assembled.project_ranges);
+    return graph;
+}
+
 fn loadConfig(allocator: std.mem.Allocator) !config.Config {
     const file = std.fs.cwd().openFile(".zcodeprism.zon", .{}) catch |err| {
         if (err == error.FileNotFound) return config.Config{};
@@ -639,16 +738,19 @@ fn loadConfig(allocator: std.mem.Allocator) !config.Config {
     return config.parseFromSlice(allocator, content);
 }
 
-fn runStatus(stdout: *std.Io.Writer, stderr: *std.Io.Writer) void {
+fn runStatus(stdout: *std.Io.Writer, stderr: *std.Io.Writer, workspace_arg: ?[]const u8) void {
     var gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    var graph = storage.binary.load(allocator, ".zcodeprism/graph.bin") catch {
-        stderr.writeAll("not initialized or not indexed\n") catch {};
-        stderr.flush() catch {};
-        std.process.exit(1);
-    };
+    var graph = if (workspace_arg) |ws_path|
+        loadWorkspaceGraph(allocator, ws_path, stderr)
+    else
+        storage.binary.load(allocator, ".zcodeprism/graph.bin") catch {
+            stderr.writeAll("not initialized or not indexed\n") catch {};
+            stderr.flush() catch {};
+            std.process.exit(1);
+        };
     defer graph.deinit(allocator);
 
     // Count nodes by kind.

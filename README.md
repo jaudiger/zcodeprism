@@ -38,11 +38,15 @@ Usage: zcodeprism <command> [options]
 
 **`zcodeprism init`** creates a `.zcodeprism.zon` configuration file and a
 `.zcodeprism/` data directory in the current working directory. Use `--force`
-to overwrite an existing configuration.
+to overwrite an existing configuration. Pass `--workspace` to create a
+`zcodeprism-workspace.zon` template instead.
 
 ```sh
 cd my-project
 zcodeprism init
+
+# or for a workspace
+zcodeprism init --workspace
 ```
 
 **`zcodeprism index`** parses all supported source files (`.zig`, `.rs`) under
@@ -111,18 +115,25 @@ summary: +1 added, -1 removed, ~1 modified, >0 renamed
 
 **`zcodeprism serve`** starts the MCP server (read-only, JSON-RPC 2.0 over
 stdio). The server exposes tools across the `graph.*`, `explorer.*`, and
-`analysis.*` namespaces.
+`analysis.*` namespaces. Pass `--workspace` to serve a unified graph assembled
+from multiple projects.
 
 ```sh
 zcodeprism serve
+
+# serve a workspace (multiple projects as one graph)
+zcodeprism serve --workspace zcodeprism-workspace.zon
 ```
 
 **`zcodeprism status`** loads the persisted graph and prints statistics: node
 counts by kind, edge count, and a `source_hash` fingerprint derived from file
-content hashes.
+content hashes. Pass `--workspace` for workspace-level stats.
 
 ```sh
 zcodeprism status
+
+# workspace stats
+zcodeprism status --workspace zcodeprism-workspace.zon
 ```
 
 ### Global options
@@ -134,6 +145,7 @@ zcodeprism status
 | `--project-root <path>` | Set the project root directory |
 | `--name <tag>` | Snapshot tag name (with `snapshot`) |
 | `--snapshot <tag>` | Load a snapshot instead of the current graph (with `export`) |
+| `--workspace <path>` | Workspace config file (with `init`, `serve`, `status`) |
 | `-v`, `-vv`, `-vvv` | Increase log verbosity (info, debug, trace) |
 
 ### Configuration
@@ -153,6 +165,27 @@ defaults. All fields are optional.
     },
 }
 ```
+
+### Workspace Configuration
+
+A workspace groups multiple independently-indexed projects into a single
+unified graph. Running `zcodeprism init --workspace` generates a
+`zcodeprism-workspace.zon` file. Each referenced project must have its own
+`.zcodeprism.zon` and be indexed separately.
+
+```zig
+.{
+    .name = "my-workspace",
+    .projects = .{
+        .{ .name = "frontend", .path = "frontend/" },
+        .{ .name = "backend", .path = "backend/" },
+    },
+}
+```
+
+Project names must be unique, at most 64 characters, and must not contain `:`.
+The `.path` field is relative to the workspace file directory. Use `"."` to
+reference the same directory.
 
 ### Debug Tools
 

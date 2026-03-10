@@ -1,6 +1,6 @@
 .{
     // Paths to exclude from indexation.
-    .exclude_paths = .{ "zig-cache", "zig-out", ".git", "target" },
+    .exclude_paths = .{ "zig-cache", "zig-out", ".git" },
 
     // Storage configuration.
     .storage = .{

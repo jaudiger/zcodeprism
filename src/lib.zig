@@ -31,6 +31,8 @@ pub const regex = @import("core/regex.zig");
 pub const scope = @import("core/scope.zig");
 /// Shared type definitions: NodeId, NodeKind, EdgeType, Visibility, etc.
 pub const types = @import("core/types.zig");
+/// Workspace mode: multi-project assembly under a virtual root.
+pub const workspace = @import("core/workspace.zig");
 
 /// Language-agnostic metadata and external-info types.
 pub const language = @import("languages/language.zig");
@@ -136,6 +138,7 @@ test {
     _ = @import("core/scope.zig");
     _ = @import("core/scope_index.zig");
     _ = @import("core/types.zig");
+    _ = @import("core/workspace.zig");
     _ = @import("diff/diff.zig");
     _ = @import("enrichment/enrichment.zig");
     _ = @import("explorer/cursor.zig");

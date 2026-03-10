@@ -1,0 +1,10 @@
+.{
+    // Display name for the workspace.
+    .name = "my-workspace",
+
+    // Projects in this workspace. Each needs its own .zcodeprism.zon.
+    .projects = .{
+        // .{ .name = "frontend", .path = "frontend/" },
+        // .{ .name = "backend", .path = "backend/" },
+    },
+}

@@ -133,20 +133,44 @@ pub fn build(b: *std.Build) void {
     });
     helpers_mod.addImport("zcodeprism", lib_mod);
 
-    // Rust parsing integration tests (single-file parsing)
-    const rust_parsing_test_mod = b.createModule(.{
-        .root_source_file = b.path("test/rust/test_parsing.zig"),
+    // CLI integration tests (spawn the zcodeprism binary)
+    const cli_test_mod = b.createModule(.{
+        .root_source_file = b.path("test/test_cli.zig"),
         .target = target,
         .optimize = optimize,
     });
-    rust_parsing_test_mod.addImport("zcodeprism", lib_mod);
-    rust_parsing_test_mod.addImport("test-fixtures", fixture_mod);
-    rust_parsing_test_mod.addImport("test-helpers", helpers_mod);
-    rust_parsing_test_mod.linkLibrary(ts_rust_lib);
-    rust_parsing_test_mod.linkLibrary(ts_zig_dep.artifact("tree-sitter-zig"));
+    const cli_test = b.addTest(.{ .root_module = cli_test_mod });
+    cli_test.step.dependOn(b.getInstallStep());
+    addTestStep(b, test_step, cli_test, coverage, kcov_args);
+
+    // MCP handler integration tests
+    const mcp_handlers_test_mod = b.createModule(.{
+        .root_source_file = b.path("test/test_mcp_handlers.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    mcp_handlers_test_mod.addImport("zcodeprism", lib_mod);
+    mcp_handlers_test_mod.addImport("test-fixtures", fixture_mod);
+    mcp_handlers_test_mod.addImport("test-helpers", helpers_mod);
+    mcp_handlers_test_mod.linkLibrary(ts_rust_lib);
+    mcp_handlers_test_mod.linkLibrary(ts_zig_dep.artifact("tree-sitter-zig"));
 
     addTestStep(b, test_step, b.addTest(.{
-        .root_module = rust_parsing_test_mod,
+        .root_module = mcp_handlers_test_mod,
+    }), coverage, kcov_args);
+
+    // MCP transport integration tests
+    const mcp_test_mod = b.createModule(.{
+        .root_source_file = b.path("test/test_mcp_transport.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    mcp_test_mod.addImport("zcodeprism", lib_mod);
+    mcp_test_mod.linkLibrary(ts_rust_lib);
+    mcp_test_mod.linkLibrary(ts_zig_dep.artifact("tree-sitter-zig"));
+
+    addTestStep(b, test_step, b.addTest(.{
+        .root_module = mcp_test_mod,
     }), coverage, kcov_args);
 
     // Rust indexer integration tests (multi-file indexing)
@@ -165,97 +189,20 @@ pub fn build(b: *std.Build) void {
         .root_module = rust_indexer_test_mod,
     }), coverage, kcov_args);
 
-    // Tree-sitter binding integration tests
-    const ts_test_mod = b.createModule(.{
-        .root_source_file = b.path("test/test_tree_sitter.zig"),
+    // Rust parsing integration tests (single-file parsing)
+    const rust_parsing_test_mod = b.createModule(.{
+        .root_source_file = b.path("test/rust/test_parsing.zig"),
         .target = target,
         .optimize = optimize,
     });
-    ts_test_mod.addImport("zcodeprism", lib_mod);
-    ts_test_mod.addImport("tree-sitter", ts_dep.module("tree_sitter"));
-    ts_test_mod.linkLibrary(ts_rust_lib);
-    ts_test_mod.linkLibrary(ts_zig_dep.artifact("tree-sitter-zig"));
+    rust_parsing_test_mod.addImport("zcodeprism", lib_mod);
+    rust_parsing_test_mod.addImport("test-fixtures", fixture_mod);
+    rust_parsing_test_mod.addImport("test-helpers", helpers_mod);
+    rust_parsing_test_mod.linkLibrary(ts_rust_lib);
+    rust_parsing_test_mod.linkLibrary(ts_zig_dep.artifact("tree-sitter-zig"));
 
     addTestStep(b, test_step, b.addTest(.{
-        .root_module = ts_test_mod,
-    }), coverage, kcov_args);
-
-    // Zig parsing integration tests (single-file parsing: edge_builder + cross_file tests)
-    const parsing_test_mod = b.createModule(.{
-        .root_source_file = b.path("test/zig/test_parsing.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    parsing_test_mod.addImport("zcodeprism", lib_mod);
-    parsing_test_mod.addImport("test-fixtures", fixture_mod);
-    parsing_test_mod.addImport("test-helpers", helpers_mod);
-    parsing_test_mod.linkLibrary(ts_rust_lib);
-    parsing_test_mod.linkLibrary(ts_zig_dep.artifact("tree-sitter-zig"));
-
-    addTestStep(b, test_step, b.addTest(.{
-        .root_module = parsing_test_mod,
-    }), coverage, kcov_args);
-
-    // Zig indexer integration tests (multi-file indexing)
-    const indexer_test_mod = b.createModule(.{
-        .root_source_file = b.path("test/zig/test_indexer.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    indexer_test_mod.addImport("zcodeprism", lib_mod);
-    indexer_test_mod.addImport("test-fixtures", fixture_mod);
-    indexer_test_mod.addImport("test-helpers", helpers_mod);
-    indexer_test_mod.linkLibrary(ts_rust_lib);
-    indexer_test_mod.linkLibrary(ts_zig_dep.artifact("tree-sitter-zig"));
-
-    addTestStep(b, test_step, b.addTest(.{
-        .root_module = indexer_test_mod,
-    }), coverage, kcov_args);
-
-    // Zig build parsing integration tests (build.zig module/dependency extraction)
-    const build_parsing_test_mod = b.createModule(.{
-        .root_source_file = b.path("test/zig/test_build_parsing.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    build_parsing_test_mod.addImport("zcodeprism", lib_mod);
-    build_parsing_test_mod.addImport("test-fixtures", fixture_mod);
-    build_parsing_test_mod.addImport("test-helpers", helpers_mod);
-    build_parsing_test_mod.linkLibrary(ts_rust_lib);
-    build_parsing_test_mod.linkLibrary(ts_zig_dep.artifact("tree-sitter-zig"));
-
-    addTestStep(b, test_step, b.addTest(.{
-        .root_module = build_parsing_test_mod,
-    }), coverage, kcov_args);
-
-    // MCP transport integration tests
-    const mcp_test_mod = b.createModule(.{
-        .root_source_file = b.path("test/test_mcp_transport.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    mcp_test_mod.addImport("zcodeprism", lib_mod);
-    mcp_test_mod.linkLibrary(ts_rust_lib);
-    mcp_test_mod.linkLibrary(ts_zig_dep.artifact("tree-sitter-zig"));
-
-    addTestStep(b, test_step, b.addTest(.{
-        .root_module = mcp_test_mod,
-    }), coverage, kcov_args);
-
-    // MCP handler integration tests
-    const mcp_handlers_test_mod = b.createModule(.{
-        .root_source_file = b.path("test/test_mcp_handlers.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    mcp_handlers_test_mod.addImport("zcodeprism", lib_mod);
-    mcp_handlers_test_mod.addImport("test-fixtures", fixture_mod);
-    mcp_handlers_test_mod.addImport("test-helpers", helpers_mod);
-    mcp_handlers_test_mod.linkLibrary(ts_rust_lib);
-    mcp_handlers_test_mod.linkLibrary(ts_zig_dep.artifact("tree-sitter-zig"));
-
-    addTestStep(b, test_step, b.addTest(.{
-        .root_module = mcp_handlers_test_mod,
+        .root_module = rust_parsing_test_mod,
     }), coverage, kcov_args);
 
     // Snapshot integration tests
@@ -288,15 +235,83 @@ pub fn build(b: *std.Build) void {
         .root_module = snapshot_diff_test_mod,
     }), coverage, kcov_args);
 
-    // CLI integration tests (spawn the zcodeprism binary)
-    const cli_test_mod = b.createModule(.{
-        .root_source_file = b.path("test/test_cli.zig"),
+    // Tree-sitter binding integration tests
+    const ts_test_mod = b.createModule(.{
+        .root_source_file = b.path("test/test_tree_sitter.zig"),
         .target = target,
         .optimize = optimize,
     });
-    const cli_test = b.addTest(.{ .root_module = cli_test_mod });
-    cli_test.step.dependOn(b.getInstallStep());
-    addTestStep(b, test_step, cli_test, coverage, kcov_args);
+    ts_test_mod.addImport("zcodeprism", lib_mod);
+    ts_test_mod.addImport("tree-sitter", ts_dep.module("tree_sitter"));
+    ts_test_mod.linkLibrary(ts_rust_lib);
+    ts_test_mod.linkLibrary(ts_zig_dep.artifact("tree-sitter-zig"));
+
+    addTestStep(b, test_step, b.addTest(.{
+        .root_module = ts_test_mod,
+    }), coverage, kcov_args);
+
+    // Workspace integration tests
+    const workspace_test_mod = b.createModule(.{
+        .root_source_file = b.path("test/test_workspace.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    workspace_test_mod.addImport("zcodeprism", lib_mod);
+    workspace_test_mod.addImport("test-helpers", helpers_mod);
+    workspace_test_mod.linkLibrary(ts_rust_lib);
+    workspace_test_mod.linkLibrary(ts_zig_dep.artifact("tree-sitter-zig"));
+
+    addTestStep(b, test_step, b.addTest(.{
+        .root_module = workspace_test_mod,
+    }), coverage, kcov_args);
+
+    // Zig build parsing integration tests (build.zig module/dependency extraction)
+    const build_parsing_test_mod = b.createModule(.{
+        .root_source_file = b.path("test/zig/test_build_parsing.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    build_parsing_test_mod.addImport("zcodeprism", lib_mod);
+    build_parsing_test_mod.addImport("test-fixtures", fixture_mod);
+    build_parsing_test_mod.addImport("test-helpers", helpers_mod);
+    build_parsing_test_mod.linkLibrary(ts_rust_lib);
+    build_parsing_test_mod.linkLibrary(ts_zig_dep.artifact("tree-sitter-zig"));
+
+    addTestStep(b, test_step, b.addTest(.{
+        .root_module = build_parsing_test_mod,
+    }), coverage, kcov_args);
+
+    // Zig indexer integration tests (multi-file indexing)
+    const indexer_test_mod = b.createModule(.{
+        .root_source_file = b.path("test/zig/test_indexer.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    indexer_test_mod.addImport("zcodeprism", lib_mod);
+    indexer_test_mod.addImport("test-fixtures", fixture_mod);
+    indexer_test_mod.addImport("test-helpers", helpers_mod);
+    indexer_test_mod.linkLibrary(ts_rust_lib);
+    indexer_test_mod.linkLibrary(ts_zig_dep.artifact("tree-sitter-zig"));
+
+    addTestStep(b, test_step, b.addTest(.{
+        .root_module = indexer_test_mod,
+    }), coverage, kcov_args);
+
+    // Zig parsing integration tests (single-file parsing: edge_builder + cross_file tests)
+    const parsing_test_mod = b.createModule(.{
+        .root_source_file = b.path("test/zig/test_parsing.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    parsing_test_mod.addImport("zcodeprism", lib_mod);
+    parsing_test_mod.addImport("test-fixtures", fixture_mod);
+    parsing_test_mod.addImport("test-helpers", helpers_mod);
+    parsing_test_mod.linkLibrary(ts_rust_lib);
+    parsing_test_mod.linkLibrary(ts_zig_dep.artifact("tree-sitter-zig"));
+
+    addTestStep(b, test_step, b.addTest(.{
+        .root_module = parsing_test_mod,
+    }), coverage, kcov_args);
 }
 
 fn addTestStep(
