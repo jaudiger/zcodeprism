@@ -84,6 +84,9 @@ pub const render_common = @import("render/common.zig");
 /// Code analysis tools (complexity, dead code, duplicates, impact, coupling, cycles).
 pub const analyzer = @import("analyzer/analyzer.zig");
 
+/// Metrics enrichment pipeline (source metrics, fan-in/out, error sets).
+pub const enrichment = @import("enrichment/enrichment.zig");
+
 /// Semantic diff engine for comparing code graph snapshots.
 pub const diff = @import("diff/diff.zig");
 
@@ -134,6 +137,7 @@ test {
     _ = @import("core/scope_index.zig");
     _ = @import("core/types.zig");
     _ = @import("diff/diff.zig");
+    _ = @import("enrichment/enrichment.zig");
     _ = @import("explorer/cursor.zig");
     _ = @import("explorer/cursor_manager.zig");
     _ = @import("languages/language.zig");

@@ -188,6 +188,12 @@ pub fn main() !void {
         if (n.metrics) |m| {
             try stdout.print("  metrics(C={},L={}", .{ m.complexity, m.lines });
             if (m.structural_hash != 0) try stdout.print(",H={x:0>8}", .{m.structural_hash});
+            if (m.fan_in != 0) try stdout.print(",FI={}", .{m.fan_in});
+            if (m.fan_out != 0) try stdout.print(",FO={}", .{m.fan_out});
+            if (m.branches != 0) try stdout.print(",B={}", .{m.branches});
+            if (m.loops != 0) try stdout.print(",LP={}", .{m.loops});
+            if (m.error_paths != 0) try stdout.print(",EP={}", .{m.error_paths});
+            if (m.nesting_depth_max != 0) try stdout.print(",ND={}", .{m.nesting_depth_max});
             try stdout.print(")", .{});
         }
         if (n.doc != null) {

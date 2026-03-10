@@ -86,73 +86,31 @@ pub fn isDescendantOf(graph: *const Graph, node_id: NodeId, ancestor_id: NodeId)
     return false;
 }
 
-/// Compute and attach metrics (line count, cyclomatic complexity) to every
-/// function node in the index range `[file_idx, file_end_idx)`.
-/// `source` must be the full source text of the file that owns these nodes.
-/// Non-function nodes and functions without line information are skipped.
-pub fn computeMetricsForNodes(graph: *Graph, source: []const u8, file_idx: usize, file_end_idx: usize) void {
-    const end = @min(file_end_idx, graph.nodes.items.len);
-    for (graph.nodes.items[file_idx..end]) |*n| {
-        if (n.kind != .function) continue;
-        const ls = n.line_start orelse continue;
-        const le = n.line_end orelse continue;
-
-        const lines: u32 = le - ls + 1;
-        const fn_source = extractLineRange(source, ls, le);
-        const complexity = computeComplexity(fn_source);
-
-        const sh = computeStructuralHash(fn_source);
-        n.metrics = Metrics{ .complexity = complexity, .lines = lines, .structural_hash = sh };
-    }
-}
-
-/// Hash the structural skeleton of a function: all non-identifier tokens
-/// contribute to the hash, while identifier sequences are replaced by a
-/// fixed placeholder so that renaming parameters or locals does not change
-/// the result.
-fn computeStructuralHash(fn_source: []const u8) u32 {
+/// Hash the structural skeleton of a function: identifiers and numeric
+/// literals are replaced by fixed placeholders so that renaming variables
+/// or changing magic numbers does not change the result.
+pub fn computeStructuralHash(fn_source: []const u8) u32 {
     var h = std.hash.Wyhash.init(0);
     var in_ident = false;
+    var in_number = false;
     for (fn_source) |c| {
+        const is_digit = c >= '0' and c <= '9';
         if (isIdentChar(c)) {
-            if (!in_ident) {
+            if (is_digit and !in_ident and !in_number) {
+                // Bare numeric literal starting with a digit.
+                h.update("#");
+                in_number = true;
+            } else if (!in_ident and !in_number) {
                 h.update("_");
                 in_ident = true;
             }
         } else {
             in_ident = false;
+            in_number = false;
             h.update(&[_]u8{c});
         }
     }
     return @truncate(h.final());
-}
-
-/// Compute cyclomatic complexity with first-char switch dispatch.
-fn computeComplexity(fn_source: []const u8) u16 {
-    var complexity: u16 = 1;
-    var pos: usize = 0;
-    while (pos < fn_source.len) : (pos += 1) {
-        if (pos > 0 and isIdentChar(fn_source[pos - 1])) continue;
-        switch (fn_source[pos]) {
-            'i' => {
-                if (matchKeyword(fn_source[pos..], "if")) complexity += 1;
-            },
-            'f' => {
-                if (matchKeyword(fn_source[pos..], "for")) complexity += 1;
-            },
-            'w' => {
-                if (matchKeyword(fn_source[pos..], "while")) complexity += 1;
-            },
-            's' => {
-                if (matchKeyword(fn_source[pos..], "switch")) complexity += 1;
-            },
-            'c' => {
-                if (matchKeyword(fn_source[pos..], "catch")) complexity += 1;
-            },
-            else => {},
-        }
-    }
-    return complexity;
 }
 
 /// Find the function node that contains the given source `line` within the

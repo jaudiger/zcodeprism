@@ -11,6 +11,7 @@ const registry_mod = @import("../languages/registry.zig");
 const phantom_mod = @import("../core/phantom.zig");
 const metrics_mod = @import("../core/metrics.zig");
 const source_scan = @import("source_scan.zig");
+const enrichment = @import("../enrichment/enrichment.zig");
 
 const Field = logging.Field;
 const Logger = logging.Logger;
@@ -202,9 +203,11 @@ pub fn indexDirectory(
         try buildModuleContainsEdges(allocator, graph, file_infos.items, &module_file_map);
     }
 
-    for (file_infos.items) |fi| {
-        source_scan.computeMetricsForNodes(graph, fi.source, fi.node_idx, fi.scope_end);
-    }
+    // Build FileSource slice for the enrichment pipeline.
+    const file_sources = try buildFileSources(allocator, file_infos.items);
+    defer allocator.free(file_sources);
+
+    try enrichment.enrichPreFreeze(allocator, graph, file_sources, .{ .logger = log });
 
     log.info("indexing complete", &.{
         Field.uint("files_indexed", result.files_indexed),
@@ -215,6 +218,9 @@ pub fn indexDirectory(
     });
 
     try graph.freeze(allocator);
+
+    try enrichment.enrichPostFreeze(allocator, graph, .{ .logger = log });
+
     return result;
 }
 
@@ -563,6 +569,15 @@ fn buildModuleContainsEdges(
             .source = .workspace,
         });
     }
+}
+
+/// Map FileInfo slice to enrichment FileSource slice for the enrichment pipeline.
+fn buildFileSources(allocator: std.mem.Allocator, infos: []const FileInfo) ![]const enrichment.FileSource {
+    const result = try allocator.alloc(enrichment.FileSource, infos.len);
+    for (infos, 0..) |fi, i| {
+        result[i] = .{ .node_idx = fi.node_idx, .scope_end = fi.scope_end, .source = fi.source };
+    }
+    return result;
 }
 
 fn computeContentHash(content: []const u8) [12]u8 {
