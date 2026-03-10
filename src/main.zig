@@ -8,6 +8,8 @@ const indexer = zcodeprism.indexer;
 const mcp = zcodeprism.mcp;
 const mermaid = zcodeprism.mermaid;
 const render_common = zcodeprism.render_common;
+const snapshot = zcodeprism.storage.snapshot;
+const snapshot_diff = zcodeprism.diff.snapshot_diff;
 const storage = zcodeprism.storage;
 const Graph = zcodeprism.Graph;
 const NodeKind = zcodeprism.NodeKind;
@@ -23,6 +25,8 @@ const usage_text =
     \\  init       Initialize a new project (.zcodeprism.zon + .zcodeprism/)
     \\  index      Index the codebase and build the code graph
     \\  export     Export the graph (--ctg, --mermaid, or --jsonl)
+    \\  snapshot   Save a named snapshot of the current graph
+    \\  diff       Semantic diff between two snapshots
     \\  serve      Start the MCP server (JSON-RPC over stdio)
     \\  status     Show project status and graph statistics
     \\
@@ -32,6 +36,8 @@ const usage_text =
     \\  --force              Force overwrite (with init)
     \\  --full               Full re-index (with index, default)
     \\  --json               Output in JSON format
+    \\  --name TAG           Snapshot tag name (with snapshot)
+    \\  --snapshot TAG       Load a snapshot instead of current graph (with export)
     \\  --project-root PATH  Set the project root directory
     \\  -v                   Increase verbosity (up to -vvv)
     \\
@@ -50,6 +56,8 @@ const Command = enum {
     init,
     index,
     @"export",
+    snapshot,
+    diff,
     serve,
     status,
     help,
@@ -75,8 +83,12 @@ pub fn main() void {
     var export_format: ?ExportFormat = null;
     var scope_arg: ?[]const u8 = null;
     var output_arg: ?[]const u8 = null;
+    var name_arg: ?[]const u8 = null;
+    var snapshot_arg: ?[]const u8 = null;
     var include_test_nodes = false;
     var include_external_nodes = false;
+    var positional_args: [2]?[]const u8 = .{ null, null };
+    var positional_count: usize = 0;
 
     while (args.next()) |arg| {
         if (std.mem.eql(u8, arg, "--project-root")) {
@@ -91,6 +103,18 @@ pub fn main() void {
             command = .help;
         } else if (std.mem.eql(u8, arg, "--force")) {
             force = true;
+        } else if (std.mem.eql(u8, arg, "--name")) {
+            name_arg = args.next() orelse {
+                stderr.writeAll("--name requires a tag argument\n") catch {};
+                stderr.flush() catch {};
+                std.process.exit(2);
+            };
+        } else if (std.mem.eql(u8, arg, "--snapshot")) {
+            snapshot_arg = args.next() orelse {
+                stderr.writeAll("--snapshot requires a tag argument\n") catch {};
+                stderr.flush() catch {};
+                std.process.exit(2);
+            };
         } else if (std.mem.eql(u8, arg, "--full") or std.mem.eql(u8, arg, "--incremental") or std.mem.eql(u8, arg, "--json")) {
             // Accepted but not yet used beyond index.
         } else if (std.mem.eql(u8, arg, "--ctg")) {
@@ -133,6 +157,10 @@ pub fn main() void {
                     command = .index;
                 } else if (std.mem.eql(u8, arg, "export")) {
                     command = .@"export";
+                } else if (std.mem.eql(u8, arg, "snapshot")) {
+                    command = .snapshot;
+                } else if (std.mem.eql(u8, arg, "diff")) {
+                    command = .diff;
                 } else if (std.mem.eql(u8, arg, "serve")) {
                     command = .serve;
                 } else if (std.mem.eql(u8, arg, "status")) {
@@ -142,6 +170,9 @@ pub fn main() void {
                     stderr.flush() catch {};
                     std.process.exit(2);
                 }
+            } else if (positional_count < 2) {
+                positional_args[positional_count] = arg;
+                positional_count += 1;
             }
         }
     }
@@ -171,7 +202,9 @@ pub fn main() void {
         },
         .init => runInit(stdout, stderr, force),
         .index => runIndex(stdout, stderr, verbosity),
-        .@"export" => runExport(stdout, stderr, export_format, scope_arg, output_arg, include_test_nodes, include_external_nodes),
+        .@"export" => runExport(stdout, stderr, export_format, scope_arg, output_arg, snapshot_arg, include_test_nodes, include_external_nodes),
+        .snapshot => runSnapshot(stdout, stderr, name_arg),
+        .diff => runDiff(stdout, stderr, positional_args[0], positional_args[1]),
         .serve => runServe(stderr),
         .status => runStatus(stdout, stderr),
     }
@@ -283,6 +316,7 @@ fn runExport(
     format_arg: ?ExportFormat,
     scope_arg: ?[]const u8,
     output_arg: ?[]const u8,
+    snapshot_arg: ?[]const u8,
     include_test_nodes: bool,
     include_external_nodes: bool,
 ) void {
@@ -296,11 +330,22 @@ fn runExport(
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    var graph = storage.binary.load(allocator, ".zcodeprism/graph.bin") catch {
-        stderr.writeAll("failed to load graph (run 'index' first)\n") catch {};
-        stderr.flush() catch {};
-        std.process.exit(1);
-    };
+    var graph = if (snapshot_arg) |tag|
+        snapshot.loadSnapshotGraph(allocator, tag, ".zcodeprism") catch |err| {
+            switch (err) {
+                error.SnapshotNotFound => stderr.print("snapshot not found: {s}\n", .{tag}) catch {},
+                error.InvalidTagName => stderr.print("invalid snapshot tag: {s}\n", .{tag}) catch {},
+                else => stderr.print("failed to load snapshot: {s}\n", .{@errorName(err)}) catch {},
+            }
+            stderr.flush() catch {};
+            std.process.exit(1);
+        }
+    else
+        storage.binary.load(allocator, ".zcodeprism/graph.bin") catch {
+            stderr.writeAll("failed to load graph (run 'index' first)\n") catch {};
+            stderr.flush() catch {};
+            std.process.exit(1);
+        };
     defer graph.deinit(allocator);
 
     const project_name = blk: {
@@ -397,6 +442,95 @@ fn writeOutput(stdout: *std.Io.Writer, stderr: *std.Io.Writer, output_arg: ?[]co
         stdout.writeAll(data) catch {};
         stdout.flush() catch {};
     }
+}
+
+fn runSnapshot(stdout: *std.Io.Writer, stderr: *std.Io.Writer, name_arg: ?[]const u8) void {
+    const tag = name_arg orelse {
+        stderr.writeAll("snapshot requires --name <tag>\n") catch {};
+        stderr.flush() catch {};
+        std.process.exit(2);
+    };
+
+    var gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var graph = storage.binary.load(allocator, ".zcodeprism/graph.bin") catch {
+        stderr.writeAll("failed to load graph (run 'index' first)\n") catch {};
+        stderr.flush() catch {};
+        std.process.exit(1);
+    };
+    defer graph.deinit(allocator);
+
+    snapshot.saveSnapshot(allocator, &graph, tag, ".zcodeprism") catch |err| {
+        switch (err) {
+            error.InvalidTagName => stderr.print("invalid snapshot tag: {s}\n", .{tag}) catch {},
+            error.TagTooLong => stderr.print("snapshot tag too long (max {d}): {s}\n", .{ snapshot.MAX_TAG_LENGTH, tag }) catch {},
+            else => stderr.print("failed to save snapshot: {s}\n", .{@errorName(err)}) catch {},
+        }
+        stderr.flush() catch {};
+        std.process.exit(1);
+    };
+
+    stdout.print("snapshot saved: {s}\n", .{tag}) catch {};
+    stdout.flush() catch {};
+}
+
+fn runDiff(stdout: *std.Io.Writer, stderr: *std.Io.Writer, tag_a_arg: ?[]const u8, tag_b_arg: ?[]const u8) void {
+    const tag_a = tag_a_arg orelse {
+        stderr.writeAll("diff requires two snapshot tags: zcodeprism diff <snap-a> <snap-b>\n") catch {};
+        stderr.flush() catch {};
+        std.process.exit(2);
+    };
+    const tag_b = tag_b_arg orelse {
+        stderr.writeAll("diff requires two snapshot tags: zcodeprism diff <snap-a> <snap-b>\n") catch {};
+        stderr.flush() catch {};
+        std.process.exit(2);
+    };
+
+    var gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var graph_a = snapshot.loadSnapshotGraph(allocator, tag_a, ".zcodeprism") catch |err| {
+        switch (err) {
+            error.SnapshotNotFound => stderr.print("snapshot not found: {s}\n", .{tag_a}) catch {},
+            error.InvalidTagName => stderr.print("invalid snapshot tag: {s}\n", .{tag_a}) catch {},
+            else => stderr.print("failed to load snapshot: {s}\n", .{@errorName(err)}) catch {},
+        }
+        stderr.flush() catch {};
+        std.process.exit(1);
+    };
+    defer graph_a.deinit(allocator);
+
+    var graph_b = snapshot.loadSnapshotGraph(allocator, tag_b, ".zcodeprism") catch |err| {
+        switch (err) {
+            error.SnapshotNotFound => stderr.print("snapshot not found: {s}\n", .{tag_b}) catch {},
+            error.InvalidTagName => stderr.print("invalid snapshot tag: {s}\n", .{tag_b}) catch {},
+            else => stderr.print("failed to load snapshot: {s}\n", .{@errorName(err)}) catch {},
+        }
+        stderr.flush() catch {};
+        std.process.exit(1);
+    };
+    defer graph_b.deinit(allocator);
+
+    var report = snapshot_diff.diffGraphs(allocator, &graph_a, &graph_b) catch |err| {
+        stderr.print("diff failed: {s}\n", .{@errorName(err)}) catch {};
+        stderr.flush() catch {};
+        std.process.exit(1);
+    };
+    defer report.deinit(allocator);
+
+    var out: std.ArrayList(u8) = .{};
+    defer out.deinit(allocator);
+    snapshot_diff.renderDiffReport(allocator, &report, &out) catch |err| {
+        stderr.print("render failed: {s}\n", .{@errorName(err)}) catch {};
+        stderr.flush() catch {};
+        std.process.exit(1);
+    };
+
+    stdout.writeAll(out.items) catch {};
+    stdout.flush() catch {};
 }
 
 fn runServe(stderr: *std.Io.Writer) void {

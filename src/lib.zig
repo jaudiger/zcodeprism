@@ -81,19 +81,22 @@ pub const mermaid = @import("render/mermaid.zig");
 /// Shared rendering utilities (filtering, sorting, label helpers).
 pub const render_common = @import("render/common.zig");
 
-/// MCP server: JSON-RPC transport, protocol types, dispatch.
-pub const mcp = @import("mcp/mcp.zig");
+/// Code analysis tools (complexity, dead code, duplicates, impact, coupling, cycles).
+pub const analyzer = @import("analyzer/analyzer.zig");
+
+/// Semantic diff engine for comparing code graph snapshots.
+pub const diff = @import("diff/diff.zig");
 
 /// Explorer cursor for interactive graph navigation.
 pub const cursor = @import("explorer/cursor.zig");
 /// Cursor lifecycle manager (create, lookup, close).
 pub const cursor_manager = @import("explorer/cursor_manager.zig");
 
+/// MCP server: JSON-RPC transport, protocol types, dispatch.
+pub const mcp = @import("mcp/mcp.zig");
+
 /// Persistent storage backends (binary and JSONL).
 pub const storage = @import("storage/storage.zig");
-
-/// Code analysis tools (complexity, dead code, duplicates, impact, coupling, cycles).
-pub const analyzer = @import("analyzer/analyzer.zig");
 
 /// Vtable-based structured logging (noop by default, TextStderrLogger for CLI).
 pub const logging = @import("logging.zig");
@@ -112,6 +115,7 @@ pub const NodeKind = types.NodeKind;
 pub const Visibility = types.Visibility;
 
 test {
+    _ = @import("analyzer/analyzer.zig");
     _ = @import("core/adjacency.zig");
     _ = @import("core/config.zig");
     _ = @import("core/edge.zig");
@@ -129,6 +133,9 @@ test {
     _ = @import("core/scope.zig");
     _ = @import("core/scope_index.zig");
     _ = @import("core/types.zig");
+    _ = @import("diff/diff.zig");
+    _ = @import("explorer/cursor.zig");
+    _ = @import("explorer/cursor_manager.zig");
     _ = @import("languages/language.zig");
     _ = @import("languages/language_support.zig");
     _ = @import("languages/registry.zig");
@@ -144,6 +151,7 @@ test {
     _ = @import("languages/zig/meta.zig");
     _ = @import("languages/zig/visitor.zig");
     _ = @import("logging.zig");
+    _ = @import("mcp/mcp.zig");
     _ = @import("parser/source_map.zig");
     _ = @import("parser/tree_sitter_api.zig");
     _ = @import("render/common.zig");
@@ -151,9 +159,5 @@ test {
     _ = @import("render/ctg_sections.zig");
     _ = @import("render/mermaid.zig");
     _ = @import("render/mermaid_sections.zig");
-    _ = @import("mcp/mcp.zig");
-    _ = @import("explorer/cursor.zig");
-    _ = @import("explorer/cursor_manager.zig");
     _ = @import("storage/storage.zig");
-    _ = @import("analyzer/analyzer.zig");
 }

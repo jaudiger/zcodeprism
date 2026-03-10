@@ -1,5 +1,8 @@
 const std = @import("std");
 
+/// Snapshot save/load and source-hash computation.
+pub const snapshot = @import("snapshot.zig");
+
 /// Binary storage backend (compact, not human-readable).
 pub const binary = @import("binary.zig");
 

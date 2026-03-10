@@ -78,6 +78,37 @@ zcodeprism export --jsonl --output graph.jsonl
 | `--test-nodes` | Include test nodes (excluded by default) |
 | `--external-nodes` | Include external/phantom nodes (excluded by default) |
 
+**`zcodeprism snapshot`** saves a named snapshot of the current graph as a
+binary file under `.zcodeprism/snapshots/<tag>.bin`. Tags must be
+alphanumeric, hyphens, or underscores (max 64 characters).
+
+```sh
+zcodeprism snapshot --name v1
+```
+
+To export a snapshot in any format, use `export --snapshot`:
+
+```sh
+zcodeprism export --ctg --snapshot v1
+```
+
+**`zcodeprism diff`** computes a semantic diff between two named snapshots.
+It detects added, removed, modified (changed structural hash), and renamed
+(same structural hash, different name) entities.
+
+```sh
+zcodeprism diff v1 v2
+```
+
+Example output:
+
+```
+summary: +1 added, -1 removed, ~1 modified, >0 renamed
+  + function newFunc (main.zig:16)
+  - function oldFunc (main.zig:10)
+  ~ function parse (parser.zig:5)
+```
+
 **`zcodeprism serve`** starts the MCP server (read-only, JSON-RPC 2.0 over
 stdio). The server exposes tools across the `graph.*`, `explorer.*`, and
 `analysis.*` namespaces.
@@ -101,6 +132,8 @@ zcodeprism status
 | `--version` | Print version and exit |
 | `--help` | Show usage help |
 | `--project-root <path>` | Set the project root directory |
+| `--name <tag>` | Snapshot tag name (with `snapshot`) |
+| `--snapshot <tag>` | Load a snapshot instead of the current graph (with `export`) |
 | `-v`, `-vv`, `-vvv` | Increase log verbosity (info, debug, trace) |
 
 ### Configuration

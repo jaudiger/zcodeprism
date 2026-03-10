@@ -258,6 +258,36 @@ pub fn build(b: *std.Build) void {
         .root_module = mcp_handlers_test_mod,
     }), coverage, kcov_args);
 
+    // Snapshot integration tests
+    const snapshot_test_mod = b.createModule(.{
+        .root_source_file = b.path("test/test_snapshot.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    snapshot_test_mod.addImport("zcodeprism", lib_mod);
+    snapshot_test_mod.addImport("test-helpers", helpers_mod);
+    snapshot_test_mod.linkLibrary(ts_rust_lib);
+    snapshot_test_mod.linkLibrary(ts_zig_dep.artifact("tree-sitter-zig"));
+
+    addTestStep(b, test_step, b.addTest(.{
+        .root_module = snapshot_test_mod,
+    }), coverage, kcov_args);
+
+    // Snapshot diff integration tests
+    const snapshot_diff_test_mod = b.createModule(.{
+        .root_source_file = b.path("test/test_snapshot_diff.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    snapshot_diff_test_mod.addImport("zcodeprism", lib_mod);
+    snapshot_diff_test_mod.addImport("test-helpers", helpers_mod);
+    snapshot_diff_test_mod.linkLibrary(ts_rust_lib);
+    snapshot_diff_test_mod.linkLibrary(ts_zig_dep.artifact("tree-sitter-zig"));
+
+    addTestStep(b, test_step, b.addTest(.{
+        .root_module = snapshot_diff_test_mod,
+    }), coverage, kcov_args);
+
     // CLI integration tests (spawn the zcodeprism binary)
     const cli_test_mod = b.createModule(.{
         .root_source_file = b.path("test/test_cli.zig"),
