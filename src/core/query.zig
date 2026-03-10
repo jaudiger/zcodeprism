@@ -4,6 +4,7 @@ const types = @import("types.zig");
 const node_mod = @import("node.zig");
 const edge_mod = @import("edge.zig");
 const scope_mod = @import("scope.zig");
+const regex_mod = @import("regex.zig");
 const lang = @import("../languages/language.zig");
 
 const Graph = graph_mod.Graph;
@@ -17,6 +18,7 @@ const EdgeType = types.EdgeType;
 const Visibility = types.Visibility;
 const Language = types.Language;
 const ExternalInfo = lang.ExternalInfo;
+const Regex = regex_mod.Regex;
 const Scope = scope_mod.Scope;
 
 /// Controls how phantom/external nodes are included in results.
@@ -31,7 +33,7 @@ pub const ExternalFilter = enum {
 
 /// Options for the `search` function.
 pub const SearchOptions = struct {
-    /// Regex pattern matched against node names. Null matches all.
+    /// Regex pattern matched against node names. Supports . * + ? ^ $ \ and character classes. Null matches all.
     query: ?[]const u8 = null,
     /// Filter by semantic kind.
     kind: ?NodeKind = null,
@@ -217,47 +219,11 @@ fn nodeInScope(file_path: ?[]const u8, scope: []const u8) bool {
     return std.mem.startsWith(u8, fp, scope);
 }
 
-/// Strip backslashes preceding dots for basic regex-like escaping.
-fn unescapeQuery(allocator: std.mem.Allocator, q: []const u8) ![]u8 {
-    // Measure
-    var len: usize = 0;
-    var i: usize = 0;
-    while (i < q.len) {
-        if (q[i] == '\\' and i + 1 < q.len and q[i + 1] == '.') {
-            len += 1;
-            i += 2;
-        } else {
-            len += 1;
-            i += 1;
-        }
-    }
-
-    // Allocate
-    const buf = try allocator.alloc(u8, len);
-
-    // Fill
-    var pos: usize = 0;
-    i = 0;
-    while (i < q.len) {
-        if (q[i] == '\\' and i + 1 < q.len and q[i + 1] == '.') {
-            buf[pos] = '.';
-            pos += 1;
-            i += 2;
-        } else {
-            buf[pos] = q[i];
-            pos += 1;
-            i += 1;
-        }
-    }
-    std.debug.assert(pos == len);
-    return buf[0..len];
-}
-
 fn nodeMatchesSearch(
     g: *const Graph,
     n: Node,
     node_id: NodeId,
-    query: ?[]const u8,
+    compiled_re: ?Regex,
     scope: ?[]const u8,
     opts: SearchOptions,
 ) bool {
@@ -286,8 +252,8 @@ fn nodeMatchesSearch(
     if (scope) |s| {
         if (!nodeInScope(n.file_path, s)) return false;
     }
-    if (query) |q| {
-        if (std.mem.indexOf(u8, n.name, q) == null) return false;
+    if (compiled_re) |re| {
+        if (!re.matches(n.name)) return false;
     }
     if (opts.min_complexity) |mc| {
         const m = n.metrics orelse return false;
@@ -348,22 +314,20 @@ pub fn search(allocator: std.mem.Allocator, g: *const Graph, options: SearchOpti
     const effective_limit = @min(options.limit, SearchOptions.max_limit);
     const effective_scope: ?[]const u8 = if (options.scope) |s| (if (s.len == 0) null else s) else null;
 
-    // Unescape query (strip \ before . for basic regex compatibility)
-    var unescaped_buf: ?[]u8 = null;
-    defer if (unescaped_buf) |buf| allocator.free(buf);
-    const effective_query: ?[]const u8 = blk: {
-        const q = options.query orelse break :blk null;
-        if (std.mem.indexOf(u8, q, "\\") != null) {
-            unescaped_buf = try unescapeQuery(allocator, q);
-            break :blk unescaped_buf.?;
-        }
-        break :blk q;
-    };
+    // Compile the query as a regex pattern
+    var compiled_re: ?Regex = null;
+    defer if (compiled_re) |re| re.deinit(allocator);
+    if (options.query) |q| {
+        compiled_re = Regex.compile(allocator, q) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.InvalidRegex => return .{ .total_matches = 0, .nodes = &.{} },
+        };
+    }
 
     // Measure
     var total_matches: u32 = 0;
     for (g.nodes.items, 0..) |n, i| {
-        if (nodeMatchesSearch(g, n, @enumFromInt(i), effective_query, effective_scope, options)) {
+        if (nodeMatchesSearch(g, n, @enumFromInt(i), compiled_re, effective_scope, options)) {
             total_matches += 1;
         }
     }
@@ -380,7 +344,7 @@ pub fn search(allocator: std.mem.Allocator, g: *const Graph, options: SearchOpti
     var skipped: u32 = 0;
     var collected: usize = 0;
     for (g.nodes.items, 0..) |n, i| {
-        if (nodeMatchesSearch(g, n, @enumFromInt(i), effective_query, effective_scope, options)) {
+        if (nodeMatchesSearch(g, n, @enumFromInt(i), compiled_re, effective_scope, options)) {
             if (skipped < options.offset) {
                 skipped += 1;
             } else {
@@ -930,10 +894,30 @@ test "search on empty graph and with no matches" {
 
     try testing.expectEqual(@as(u32, 0), no_match.total_matches);
 
-    // Regex special chars should not crash
+    // Escaped dot matches literal dot via regex
     const regex = try search(testing.allocator, &g, .{ .query = "std\\.mem" });
     defer regex.deinit(testing.allocator);
     try testing.expect(regex.total_matches >= 1);
+
+    // Regex with invalid pattern returns zero results
+    const invalid = try search(testing.allocator, &g, .{ .query = "*invalid" });
+    defer invalid.deinit(testing.allocator);
+    try testing.expectEqual(@as(u32, 0), invalid.total_matches);
+
+    // Regex metacharacters actually work
+    const dot_star = try search(testing.allocator, &g, .{ .query = "p.*se" });
+    defer dot_star.deinit(testing.allocator);
+    try testing.expect(dot_star.total_matches >= 1);
+    for (dot_star.nodes) |id| {
+        const name = g.getNode(id).?.name;
+        try testing.expect(std.mem.indexOf(u8, name, "p") != null);
+    }
+
+    // Anchored regex for exact match
+    const exact = try search(testing.allocator, &g, .{ .query = "^parse$" });
+    defer exact.deinit(testing.allocator);
+    try testing.expectEqual(@as(u32, 1), exact.total_matches);
+    try testing.expectEqualStrings("parse", g.getNode(exact.nodes[0]).?.name);
 }
 
 // ===========================================================================

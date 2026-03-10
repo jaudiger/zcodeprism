@@ -11,6 +11,7 @@ pub const GraphGeneration = struct {
     ref_count: std.atomic.Value(u32),
     source_hash: [12]u8,
     generation_id: u64,
+    indexed_at: i128,
 
     /// Create a new generation with the given id and source hash.
     /// Allocates an internal arena from `backing_allocator` for the graph.
@@ -22,6 +23,7 @@ pub const GraphGeneration = struct {
             .ref_count = std.atomic.Value(u32).init(0),
             .source_hash = source_hash,
             .generation_id = generation_id,
+            .indexed_at = std.time.nanoTimestamp(),
         };
     }
 

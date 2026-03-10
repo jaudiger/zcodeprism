@@ -276,7 +276,7 @@ fn printHelp(stdout: *std.Io.Writer) !void {
         \\    <directory>              Path to the directory to index
         \\
         \\COMMANDS:
-        \\    search [QUERY]           Search nodes by name substring
+        \\    search [QUERY]           Search nodes by name regex
         \\    stats                    Compute graph statistics
         \\    ancestors <node_id>      Show ancestor chain for a node
         \\    impact <node_id>         Show transitive dependents of a node

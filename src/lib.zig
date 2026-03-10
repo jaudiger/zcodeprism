@@ -25,6 +25,8 @@ pub const node = @import("core/node.zig");
 pub const phantom = @import("core/phantom.zig");
 /// Query engine: search, path finding, stats, impact analysis.
 pub const query = @import("core/query.zig");
+/// Simple regex engine for pattern matching on node names.
+pub const regex = @import("core/regex.zig");
 /// Scope matching for restricting queries to subtrees.
 pub const scope = @import("core/scope.zig");
 /// Shared type definitions: NodeId, NodeKind, EdgeType, Visibility, etc.
@@ -123,6 +125,7 @@ test {
     _ = @import("core/node.zig");
     _ = @import("core/phantom.zig");
     _ = @import("core/query.zig");
+    _ = @import("core/regex.zig");
     _ = @import("core/scope.zig");
     _ = @import("core/scope_index.zig");
     _ = @import("core/types.zig");

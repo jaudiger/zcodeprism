@@ -54,6 +54,38 @@ the `storage.format` setting). Pass `--full` for a complete re-index.
 zcodeprism index --full
 ```
 
+**`zcodeprism export`** renders the persisted graph in a chosen format and
+writes it to stdout (or to a file with `--output`).
+
+```sh
+# Compact Text Graph to stdout
+zcodeprism export --ctg
+
+# Mermaid flowchart restricted to the parser subtree
+zcodeprism export --mermaid --scope src/parser/ --output parser.mmd
+
+# JSONL (one JSON object per line, diffable with git)
+zcodeprism export --jsonl --output graph.jsonl
+```
+
+| Flag | Description |
+|------|-------------|
+| `--ctg` | Compact Text Graph format |
+| `--mermaid` | Mermaid flowchart format |
+| `--jsonl` | One JSON line per node/edge |
+| `--scope <path>` | Restrict output to nodes whose file path starts with the given prefix |
+| `--output <path>` | Write to a file instead of stdout |
+| `--test-nodes` | Include test nodes (excluded by default) |
+| `--external-nodes` | Include external/phantom nodes (excluded by default) |
+
+**`zcodeprism serve`** starts the MCP server (read-only, JSON-RPC 2.0 over
+stdio). The server exposes tools across the `graph.*`, `explorer.*`, and
+`analysis.*` namespaces.
+
+```sh
+zcodeprism serve
+```
+
 **`zcodeprism status`** loads the persisted graph and prints statistics: node
 counts by kind, edge count, and a `source_hash` fingerprint derived from file
 content hashes.
@@ -68,6 +100,7 @@ zcodeprism status
 |--------|-------------|
 | `--version` | Print version and exit |
 | `--help` | Show usage help |
+| `--project-root <path>` | Set the project root directory |
 | `-v`, `-vv`, `-vvv` | Increase log verbosity (info, debug, trace) |
 
 ### Configuration

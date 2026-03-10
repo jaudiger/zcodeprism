@@ -162,6 +162,24 @@ fn writeNodeIdHex(stream: *std.json.Stringify, id: NodeId) HandlerError!void {
     stream.write(s) catch return error.OutOfMemory;
 }
 
+/// Format a nanoTimestamp as ISO 8601 UTC into the provided buffer.
+fn formatIso8601(nanos: i128, buf: *[30]u8) usize {
+    const epoch = std.time.epoch.EpochSeconds{
+        .secs = @intCast(@divTrunc(nanos, std.time.ns_per_s)),
+    };
+    const day_secs = epoch.getDaySeconds();
+    const year_day = epoch.getEpochDay().calculateYearDay();
+    const month_day = year_day.calculateMonthDay();
+    return (std.fmt.bufPrint(buf, "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z", .{
+        year_day.year,
+        month_day.month.numeric(),
+        @as(u6, month_day.day_index) + 1,
+        day_secs.getHoursIntoDay(),
+        day_secs.getMinutesIntoHour(),
+        day_secs.getSecondsIntoMinute(),
+    }) catch unreachable).len;
+}
+
 fn relativePath(file_path: ?[]const u8, project_root: []const u8) ?[]const u8 {
     const fp = file_path orelse return null;
     if (project_root.len > 0 and std.mem.startsWith(u8, fp, project_root)) {
@@ -511,6 +529,11 @@ fn handleStats(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?std
         _ = std.fmt.bufPrint(hash_hex[bi * 2 ..][0..2], "{x:0>2}", .{byte}) catch unreachable;
     }
     stream.write(@as([]const u8, &hash_hex)) catch return error.OutOfMemory;
+
+    stream.objectField("last_indexed") catch return error.OutOfMemory;
+    var ts_buf: [30]u8 = undefined;
+    const ts_len = formatIso8601(gen.indexed_at, &ts_buf);
+    stream.write(@as([]const u8, ts_buf[0..ts_len])) catch return error.OutOfMemory;
 
     // Node counts by kind
     stream.objectField("nodes") catch return error.OutOfMemory;
@@ -1642,9 +1665,32 @@ fn handleImpact(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?st
     var stream: std.json.Stringify = .{ .writer = &aw.writer };
 
     stream.beginObject() catch return error.OutOfMemory;
+
+    // Emit source context so clients know what the analysis started from.
+    stream.objectField("source_nodes") catch return error.OutOfMemory;
+    stream.beginArray() catch return error.OutOfMemory;
+    for (node_ids) |nid| {
+        try writeNodeIdHex(&stream, nid);
+    }
+    stream.endArray() catch return error.OutOfMemory;
+
+    if (node_ids.len == 1) {
+        if (g.getNode(node_ids[0])) |src_node| {
+            stream.objectField("source_name") catch return error.OutOfMemory;
+            stream.write(src_node.name) catch return error.OutOfMemory;
+            const ext_val: ?[]const u8 = switch (src_node.external) {
+                .none => null,
+                .stdlib => "stdlib",
+                .dependency => "dependency",
+            };
+            stream.objectField("source_external") catch return error.OutOfMemory;
+            stream.write(ext_val) catch return error.OutOfMemory;
+        }
+    }
+
     stream.objectField("total_impacted") catch return error.OutOfMemory;
     stream.write(result.total_impacted) catch return error.OutOfMemory;
-    stream.objectField("dependents") catch return error.OutOfMemory;
+    stream.objectField("impacted") catch return error.OutOfMemory;
     stream.beginArray() catch return error.OutOfMemory;
     for (result.dependents) |dep| {
         stream.beginObject() catch return error.OutOfMemory;

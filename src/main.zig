@@ -2,9 +2,12 @@ const std = @import("std");
 const zcodeprism = @import("zcodeprism");
 
 const config = zcodeprism.config;
+const ctg = zcodeprism.ctg;
 const generation_mod = zcodeprism.generation;
 const indexer = zcodeprism.indexer;
 const mcp = zcodeprism.mcp;
+const mermaid = zcodeprism.mermaid;
+const render_common = zcodeprism.render_common;
 const storage = zcodeprism.storage;
 const Graph = zcodeprism.Graph;
 const NodeKind = zcodeprism.NodeKind;
@@ -19,6 +22,7 @@ const usage_text =
     \\Commands:
     \\  init       Initialize a new project (.zcodeprism.zon + .zcodeprism/)
     \\  index      Index the codebase and build the code graph
+    \\  export     Export the graph (--ctg, --mermaid, or --jsonl)
     \\  serve      Start the MCP server (JSON-RPC over stdio)
     \\  status     Show project status and graph statistics
     \\
@@ -33,9 +37,19 @@ const usage_text =
     \\
 ;
 
+var stdin_fd: std.posix.fd_t = 0;
+
+fn handleSigterm(_: c_int) callconv(.c) void {
+    // Close stdin to unblock the read loop (read retries on EINTR).
+    std.posix.close(stdin_fd);
+}
+
+const ExportFormat = enum { ctg_fmt, mermaid_fmt, jsonl_fmt };
+
 const Command = enum {
     init,
     index,
+    @"export",
     serve,
     status,
     help,
@@ -58,6 +72,11 @@ pub fn main() void {
     var force = false;
     var verbosity: u8 = 0;
     var project_root_arg: ?[]const u8 = null;
+    var export_format: ?ExportFormat = null;
+    var scope_arg: ?[]const u8 = null;
+    var output_arg: ?[]const u8 = null;
+    var include_test_nodes = false;
+    var include_external_nodes = false;
 
     while (args.next()) |arg| {
         if (std.mem.eql(u8, arg, "--project-root")) {
@@ -74,8 +93,29 @@ pub fn main() void {
             force = true;
         } else if (std.mem.eql(u8, arg, "--full") or std.mem.eql(u8, arg, "--incremental") or std.mem.eql(u8, arg, "--json")) {
             // Accepted but not yet used beyond index.
+        } else if (std.mem.eql(u8, arg, "--ctg")) {
+            export_format = .ctg_fmt;
+        } else if (std.mem.eql(u8, arg, "--mermaid")) {
+            export_format = .mermaid_fmt;
+        } else if (std.mem.eql(u8, arg, "--jsonl")) {
+            export_format = .jsonl_fmt;
+        } else if (std.mem.eql(u8, arg, "--scope")) {
+            scope_arg = args.next() orelse {
+                stderr.writeAll("--scope requires a path argument\n") catch {};
+                stderr.flush() catch {};
+                std.process.exit(2);
+            };
+        } else if (std.mem.eql(u8, arg, "--output")) {
+            output_arg = args.next() orelse {
+                stderr.writeAll("--output requires a path argument\n") catch {};
+                stderr.flush() catch {};
+                std.process.exit(2);
+            };
+        } else if (std.mem.eql(u8, arg, "--test-nodes")) {
+            include_test_nodes = true;
+        } else if (std.mem.eql(u8, arg, "--external-nodes")) {
+            include_external_nodes = true;
         } else if (std.mem.startsWith(u8, arg, "-v")) {
-            // Count v's: -v, -vv, -vvv
             var count: u8 = 0;
             for (arg[1..]) |c| {
                 if (c == 'v') count += 1 else break;
@@ -86,12 +126,13 @@ pub fn main() void {
             stderr.flush() catch {};
             std.process.exit(2);
         } else {
-            // Subcommand name.
             if (command == null) {
                 if (std.mem.eql(u8, arg, "init")) {
                     command = .init;
                 } else if (std.mem.eql(u8, arg, "index")) {
                     command = .index;
+                } else if (std.mem.eql(u8, arg, "export")) {
+                    command = .@"export";
                 } else if (std.mem.eql(u8, arg, "serve")) {
                     command = .serve;
                 } else if (std.mem.eql(u8, arg, "status")) {
@@ -130,6 +171,7 @@ pub fn main() void {
         },
         .init => runInit(stdout, stderr, force),
         .index => runIndex(stdout, stderr, verbosity),
+        .@"export" => runExport(stdout, stderr, export_format, scope_arg, output_arg, include_test_nodes, include_external_nodes),
         .serve => runServe(stderr),
         .status => runStatus(stdout, stderr),
     }
@@ -235,7 +277,136 @@ fn runIndex(stdout: *std.Io.Writer, stderr: *std.Io.Writer, verbosity: u8) void 
     stdout.flush() catch {};
 }
 
+fn runExport(
+    stdout: *std.Io.Writer,
+    stderr: *std.Io.Writer,
+    format_arg: ?ExportFormat,
+    scope_arg: ?[]const u8,
+    output_arg: ?[]const u8,
+    include_test_nodes: bool,
+    include_external_nodes: bool,
+) void {
+    const format = format_arg orelse {
+        stderr.writeAll("export requires a format flag: --ctg, --mermaid, or --jsonl\n") catch {};
+        stderr.flush() catch {};
+        std.process.exit(2);
+    };
+
+    var gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var graph = storage.binary.load(allocator, ".zcodeprism/graph.bin") catch {
+        stderr.writeAll("failed to load graph (run 'index' first)\n") catch {};
+        stderr.flush() catch {};
+        std.process.exit(1);
+    };
+    defer graph.deinit(allocator);
+
+    const project_name = blk: {
+        const base = std.fs.path.basename(graph.project_root);
+        if (base.len > 0) break :blk base;
+        var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const cwd = std.posix.getcwd(&cwd_buf) catch break :blk "project";
+        break :blk std.fs.path.basename(cwd);
+    };
+
+    switch (format) {
+        .ctg_fmt => {
+            var out: std.ArrayList(u8) = .{};
+            defer out.deinit(allocator);
+
+            ctg.renderCtg(allocator, &graph, .{
+                .project_name = project_name,
+                .scope = scope_arg,
+                .filter = .{
+                    .include_test_nodes = include_test_nodes,
+                    .include_external_nodes = include_external_nodes,
+                },
+            }, &out) catch |err| {
+                stderr.print("render failed: {s}\n", .{@errorName(err)}) catch {};
+                stderr.flush() catch {};
+                std.process.exit(1);
+            };
+
+            writeOutput(stdout, stderr, output_arg, out.items);
+        },
+        .mermaid_fmt => {
+            var out: std.ArrayList(u8) = .{};
+            defer out.deinit(allocator);
+
+            mermaid.renderMermaid(allocator, &graph, .{
+                .project_name = project_name,
+                .scope = scope_arg,
+                .filter = .{
+                    .include_test_nodes = include_test_nodes,
+                    .include_external_nodes = include_external_nodes,
+                },
+            }, &out) catch |err| {
+                stderr.print("render failed: {s}\n", .{@errorName(err)}) catch {};
+                stderr.flush() catch {};
+                std.process.exit(1);
+            };
+
+            writeOutput(stdout, stderr, output_arg, out.items);
+        },
+        .jsonl_fmt => {
+            if (output_arg) |path| {
+                const file = std.fs.cwd().createFile(path, .{}) catch |err| {
+                    stderr.print("cannot create output file: {s}\n", .{@errorName(err)}) catch {};
+                    stderr.flush() catch {};
+                    std.process.exit(1);
+                };
+                defer file.close();
+                var buf: [8192]u8 = undefined;
+                var writer = file.writer(&buf);
+                storage.jsonl.exportJsonl(allocator, &graph, &writer.interface) catch |err| {
+                    stderr.print("export failed: {s}\n", .{@errorName(err)}) catch {};
+                    stderr.flush() catch {};
+                    std.process.exit(1);
+                };
+                writer.interface.flush() catch {};
+            } else {
+                var buf: [8192]u8 = undefined;
+                var writer = std.fs.File.stdout().writer(&buf);
+                storage.jsonl.exportJsonl(allocator, &graph, &writer.interface) catch |err| {
+                    stderr.print("export failed: {s}\n", .{@errorName(err)}) catch {};
+                    stderr.flush() catch {};
+                    std.process.exit(1);
+                };
+                writer.interface.flush() catch {};
+            }
+        },
+    }
+}
+
+fn writeOutput(stdout: *std.Io.Writer, stderr: *std.Io.Writer, output_arg: ?[]const u8, data: []const u8) void {
+    if (output_arg) |path| {
+        const file = std.fs.cwd().createFile(path, .{}) catch |err| {
+            stderr.print("cannot create output file: {s}\n", .{@errorName(err)}) catch {};
+            stderr.flush() catch {};
+            std.process.exit(1);
+        };
+        defer file.close();
+        file.writeAll(data) catch |err| {
+            stderr.print("write failed: {s}\n", .{@errorName(err)}) catch {};
+            stderr.flush() catch {};
+            std.process.exit(1);
+        };
+    } else {
+        stdout.writeAll(data) catch {};
+        stdout.flush() catch {};
+    }
+}
+
 fn runServe(stderr: *std.Io.Writer) void {
+    stdin_fd = std.fs.File.stdin().handle;
+    std.posix.sigaction(std.posix.SIG.TERM, &.{
+        .handler = .{ .handler = handleSigterm },
+        .mask = std.posix.sigemptyset(),
+        .flags = 0,
+    }, null);
+
     var gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
