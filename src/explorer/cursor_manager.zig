@@ -5,6 +5,12 @@ const cursor_mod = @import("cursor.zig");
 const NodeId = types.NodeId;
 const Cursor = cursor_mod.Cursor;
 
+pub const CursorOptions = struct {
+    scope: ?[]const u8 = null,
+    include_tests: bool = false,
+    include_external_nodes: bool = false,
+};
+
 /// Manages exploration cursors with arena-backed storage.
 pub const CursorManager = struct {
     arena: std.heap.ArenaAllocator,
@@ -27,7 +33,7 @@ pub const CursorManager = struct {
     }
 
     /// Create a cursor at the given position. Returns the cursor ID string.
-    pub fn createCursor(self: *CursorManager, position: NodeId) ![]const u8 {
+    pub fn createCursor(self: *CursorManager, position: NodeId, options: CursorOptions) ![]const u8 {
         const alloc = self.arena.allocator();
         const id_num = self.next_id;
         self.next_id += 1;
@@ -36,7 +42,10 @@ pub const CursorManager = struct {
         const hex = std.fmt.bufPrint(&buf, "cur_{x}", .{id_num}) catch unreachable;
         const id_str = try alloc.dupe(u8, hex);
 
-        const cursor = Cursor.init(position);
+        var cursor = Cursor.init(position);
+        cursor.scope = if (options.scope) |s| try alloc.dupe(u8, s) else null;
+        cursor.include_tests = options.include_tests;
+        cursor.include_external_nodes = options.include_external_nodes;
         try self.cursors.put(alloc, id_str, cursor);
         return id_str;
     }

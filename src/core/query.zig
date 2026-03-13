@@ -57,6 +57,8 @@ pub const SearchOptions = struct {
     offset: u32 = 0,
     /// Maximum number of results (capped at max_limit).
     limit: u32 = 50,
+    /// When non-null, scan only these node IDs instead of the whole graph.
+    node_ids: ?[]const NodeId = null,
 
     pub const max_limit: u32 = 200;
 };
@@ -135,7 +137,7 @@ const edge_type_count = @typeInfo(EdgeType).@"enum".fields.len;
 
 /// Options for `getImpact`.
 pub const ImpactOptions = struct {
-    /// Restrict traversal to these edge types. Null means calls + uses_type.
+    /// Restrict traversal to these edge types. Null means calls + uses_type + accesses_field.
     edge_types: ?[]const EdgeType = null,
     /// Maximum traversal depth.
     max_depth: u32 = 10,
@@ -308,7 +310,8 @@ fn nodePassesStatsFilter(n: Node, scope: ?[]const u8, options: StatsOptions) boo
 
 // -- Public query functions --
 
-/// Search the graph for nodes matching the given filters.
+/// Search the graph for nodes matching the given filters. When options.node_ids is set,
+/// only those nodes are scanned; otherwise the whole graph is scanned.
 /// Returns a paginated result. Caller owns the returned SearchResult.
 pub fn search(allocator: std.mem.Allocator, g: *const Graph, options: SearchOptions) !SearchResult {
     const effective_limit = @min(options.limit, SearchOptions.max_limit);
@@ -322,6 +325,41 @@ pub fn search(allocator: std.mem.Allocator, g: *const Graph, options: SearchOpti
             error.OutOfMemory => return error.OutOfMemory,
             error.InvalidRegex => return .{ .total_matches = 0, .nodes = &.{} },
         };
+    }
+
+    if (options.node_ids) |ids| {
+        // Measure
+        var total_matches: u32 = 0;
+        for (ids) |id| {
+            const n = g.getNode(id) orelse continue;
+            if (nodeMatchesSearch(g, n.*, id, compiled_re, effective_scope, options)) total_matches += 1;
+        }
+
+        if (total_matches == 0 or effective_limit == 0 or options.offset >= total_matches) {
+            return .{ .total_matches = total_matches, .nodes = &.{} };
+        }
+
+        // Allocate + fill
+        const result_count: usize = @min(effective_limit, total_matches - options.offset);
+        const result = try allocator.alloc(NodeId, result_count);
+        errdefer allocator.free(result);
+
+        var skipped: u32 = 0;
+        var collected: usize = 0;
+        for (ids) |id| {
+            const n = g.getNode(id) orelse continue;
+            if (nodeMatchesSearch(g, n.*, id, compiled_re, effective_scope, options)) {
+                if (skipped < options.offset) {
+                    skipped += 1;
+                } else {
+                    result[collected] = id;
+                    collected += 1;
+                    if (collected >= result_count) break;
+                }
+            }
+        }
+
+        return .{ .total_matches = total_matches, .nodes = result[0..collected] };
     }
 
     // Measure
@@ -530,7 +568,7 @@ pub fn getAncestors(allocator: std.mem.Allocator, g: *const Graph, node_id: Node
 pub fn getImpact(allocator: std.mem.Allocator, g: *const Graph, node_id: NodeId, options: ImpactOptions) !ImpactResult {
     if (g.getNode(node_id) == null) return .{ .impacted = &.{}, .total_impacted = 0 };
 
-    const default_types = [_]EdgeType{ .calls, .uses_type };
+    const default_types = [_]EdgeType{ .calls, .uses_type, .accesses_field };
     const allowed_types: []const EdgeType = options.edge_types orelse &default_types;
 
     // Reverse BFS

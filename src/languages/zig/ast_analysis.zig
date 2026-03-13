@@ -80,17 +80,21 @@ fn findTypeInSubtree(node: ts.Node, k: *const KindIds, depth: u32) ?ReturnedType
     return null;
 }
 
-/// Return the text of the first `identifier` child of `ts_node`, or null if none exists.
-pub fn getIdentifierName(source: []const u8, ts_node: ts.Node, k: *const KindIds) ?[]const u8 {
+/// Return the first `identifier` child node of `ts_node`, or null if none exists.
+pub fn getIdentifierNode(ts_node: ts.Node, k: *const KindIds) ?ts.Node {
     var i: u32 = 0;
     while (i < ts_node.namedChildCount()) : (i += 1) {
         const child = ts_node.namedChild(i) orelse continue;
-        if (child.kindId() == k.identifier) {
-            const raw = ts_api.nodeText(source, child);
-            return stripQuotedIdentifier(raw);
-        }
+        if (child.kindId() == k.identifier) return child;
     }
     return null;
+}
+
+/// Return the text of the first `identifier` child of `ts_node`, or null if none exists.
+pub fn getIdentifierName(source: []const u8, ts_node: ts.Node, k: *const KindIds) ?[]const u8 {
+    const child = getIdentifierNode(ts_node, k) orelse return null;
+    const raw = ts_api.nodeText(source, child);
+    return stripQuotedIdentifier(raw);
 }
 
 /// Strip the `@"..."` quoting from a Zig identifier, returning the inner name.

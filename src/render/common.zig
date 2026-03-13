@@ -162,16 +162,17 @@ pub fn prefixOrder(prefix: []const u8) u64 {
 }
 
 /// Returns a numeric sort key for an edge type, matching alphabetical
-/// order of the canonical names (calls=0, exports=1, ..., uses_type=5).
+/// order of the canonical names (accesses_field=0, calls=1, ..., uses_type=7).
 pub fn edgeTypeSortKey(et: EdgeType) u8 {
     return switch (et) {
-        .calls => 0,
-        .contains => 1,
-        .exports => 2,
-        .implements => 3,
-        .imports => 4,
-        .similar_to => 5,
-        .uses_type => 6,
+        .accesses_field => 0,
+        .calls => 1,
+        .contains => 2,
+        .exports => 3,
+        .implements => 4,
+        .imports => 5,
+        .similar_to => 6,
+        .uses_type => 7,
     };
 }
 

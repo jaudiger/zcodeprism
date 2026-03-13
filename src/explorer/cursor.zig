@@ -14,12 +14,18 @@ pub const Annotation = struct {
 pub const Cursor = struct {
     position: NodeId,
     annotations: std.ArrayList(Annotation),
+    scope: ?[]const u8,
+    include_tests: bool,
+    include_external_nodes: bool,
 
     /// Create a cursor at the given node position.
     pub fn init(position: NodeId) Cursor {
         return .{
             .position = position,
             .annotations = .{},
+            .scope = null,
+            .include_tests = false,
+            .include_external_nodes = false,
         };
     }
 

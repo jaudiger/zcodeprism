@@ -182,6 +182,11 @@ pub fn creates_point_literal() -> Point {
     origin
 }
 
+pub fn field_access_after_binding() -> f64 {
+    let p = Point { x: 1.0, y: 2.0 };
+    p.x
+}
+
 pub const fn const_add(a: i32, b: i32) -> i32 {
     a + b
 }

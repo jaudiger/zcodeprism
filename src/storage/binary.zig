@@ -40,9 +40,30 @@ pub const BinaryHeader = struct {
 };
 
 const HEADER_SIZE: usize = 72;
-const NODE_RECORD_SIZE: usize = 96;
-const EDGE_RECORD_SIZE: usize = 24;
+const NODE_RECORD_SIZE: usize = 120;
+const EDGE_RECORD_SIZE: usize = 32;
 const METRICS_RECORD_SIZE: usize = 24;
+
+// Node record layout (120 bytes):
+//   [0..8]   id (u64)
+//   [8..16]  parent_id (u64, present when FLAG_HAS_PARENT)
+//   [16..20] line_start (u32, present when FLAG_HAS_LINE_START)
+//   [20..24] line_end   (u32, present when FLAG_HAS_LINE_END)
+//   [24..28] col_start  (u32, present when FLAG_HAS_COL_START)
+//   [28..32] col_end    (u32, present when FLAG_HAS_COL_END)
+//   [32]     external_kind (u8)
+//   [33]     flags (u8)
+//   [34..36] padding
+//   [36..48] content_hash (12 bytes, present when FLAG_HAS_CONTENT_HASH)
+//   [48..56] kind StringRef
+//   [56..64] language StringRef
+//   [64..72] visibility StringRef
+//   [72..80] name StringRef
+//   [80..88] file_path StringRef
+//   [88..96] signature StringRef
+//   [96..104] doc StringRef
+//   [104..112] ext_version StringRef
+//   [112..120] lang_meta StringRef
 
 // Node flags bitmask
 const FLAG_HAS_CONTENT_HASH: u8 = 0x01;
@@ -50,6 +71,8 @@ const FLAG_HAS_METRICS: u8 = 0x02;
 const FLAG_HAS_PARENT: u8 = 0x04;
 const FLAG_HAS_LINE_START: u8 = 0x08;
 const FLAG_HAS_LINE_END: u8 = 0x10;
+const FLAG_HAS_COL_START: u8 = 0x20;
+const FLAG_HAS_COL_END: u8 = 0x40;
 
 const StringRef = struct {
     offset: u32,
@@ -63,6 +86,9 @@ const NodeRefs = struct {
     doc: StringRef,
     ext_version: StringRef,
     lang_meta: StringRef,
+    kind: StringRef,
+    language: StringRef,
+    visibility: StringRef,
 };
 
 const StringTableBuilder = struct {
@@ -199,7 +225,8 @@ pub fn save(allocator: std.mem.Allocator, g: *const Graph, path: []const u8) !vo
     const node_refs = try allocator.alloc(NodeRefs, if (nc > 0) nc else 1);
     defer allocator.free(node_refs);
 
-    // Pre-compute upper bound on string table bytes for stable dedup pointers
+    // Pre-compute upper bound on string table bytes for stable dedup pointers.
+    // Includes enum tag names (interned, so the overhead is small).
     var total_string_bytes: usize = 0;
     for (g.nodes.items) |n| {
         total_string_bytes += n.name.len;
@@ -213,6 +240,13 @@ pub fn save(allocator: std.mem.Allocator, g: *const Graph, path: []const u8) !vo
             else => {},
         }
         total_string_bytes += n.lang_meta.binarySize();
+        total_string_bytes += @tagName(n.kind).len;
+        total_string_bytes += @tagName(n.visibility).len;
+        if (n.language) |l| total_string_bytes += @tagName(l).len;
+    }
+    for (g.edges.items) |e| {
+        total_string_bytes += @tagName(e.edge_type).len;
+        total_string_bytes += @tagName(e.source).len;
     }
     try stb.ensureBytesCapacity(allocator, total_string_bytes);
 
@@ -232,6 +266,19 @@ pub fn save(allocator: std.mem.Allocator, g: *const Graph, path: []const u8) !vo
                 const meta_len = n.lang_meta.encodeBinary(&meta_buf);
                 break :blk if (meta_len > 0) try stb.intern(allocator, meta_buf[0..meta_len]) else .{ .offset = 0, .len = 0 };
             },
+            .kind = try stb.intern(allocator, @tagName(n.kind)),
+            .language = if (n.language) |l| try stb.intern(allocator, @tagName(l)) else .{ .offset = 0, .len = 0 },
+            .visibility = try stb.intern(allocator, @tagName(n.visibility)),
+        };
+    }
+
+    // Intern edge enum names into the string table before computing offsets.
+    const edge_refs = try allocator.alloc([2]StringRef, if (ec > 0) ec else 1);
+    defer allocator.free(edge_refs);
+    for (g.edges.items, 0..) |e, i| {
+        edge_refs[i] = .{
+            try stb.intern(allocator, @tagName(e.edge_type)),
+            try stb.intern(allocator, @tagName(e.source)),
         };
     }
 
@@ -270,55 +317,61 @@ pub fn save(allocator: std.mem.Allocator, g: *const Graph, path: []const u8) !vo
     // Node records
     for (g.nodes.items, 0..) |n, i| {
         const base = node_table_offset + i * NODE_RECORD_SIZE;
+        const refs = node_refs[i];
 
-        // id (u64)
+        // [0..8] id
         std.mem.writeInt(u64, buf[base..][0..8], @intFromEnum(n.id), .little);
-        // kind (u8)
-        buf[base + 8] = @intFromEnum(n.kind);
-        // language (u8, 0xFF = null)
-        buf[base + 9] = if (n.language) |l| @intFromEnum(l) else 0xFF;
-        // visibility (u8)
-        buf[base + 10] = @intFromEnum(n.visibility);
-        // external_kind (u8)
-        buf[base + 11] = switch (n.external) {
+        // [8..16] parent_id
+        if (n.parent_id) |pid| {
+            std.mem.writeInt(u64, buf[base + 8 ..][0..8], @intFromEnum(pid), .little);
+        }
+        // [16..20] line_start
+        if (n.line_start) |ls| {
+            std.mem.writeInt(u32, buf[base + 16 ..][0..4], ls, .little);
+        }
+        // [20..24] line_end
+        if (n.line_end) |le| {
+            std.mem.writeInt(u32, buf[base + 20 ..][0..4], le, .little);
+        }
+        // [24..28] col_start
+        if (n.col_start) |cs| {
+            std.mem.writeInt(u32, buf[base + 24 ..][0..4], cs, .little);
+        }
+        // [28..32] col_end
+        if (n.col_end) |ce| {
+            std.mem.writeInt(u32, buf[base + 28 ..][0..4], ce, .little);
+        }
+        // [32] external_kind
+        buf[base + 32] = switch (n.external) {
             .none => 0,
             .stdlib => 1,
             .dependency => 2,
         };
-        // flags (u8)
+        // [33] flags
         var flags: u8 = 0;
         if (n.content_hash != null) flags |= FLAG_HAS_CONTENT_HASH;
         if (n.metrics != null) flags |= FLAG_HAS_METRICS;
         if (n.parent_id != null) flags |= FLAG_HAS_PARENT;
         if (n.line_start != null) flags |= FLAG_HAS_LINE_START;
         if (n.line_end != null) flags |= FLAG_HAS_LINE_END;
-        buf[base + 12] = flags;
-        // padding [13..16] already zero
-        // parent_id (u64) at offset 16
-        if (n.parent_id) |pid| {
-            std.mem.writeInt(u64, buf[base + 16 ..][0..8], @intFromEnum(pid), .little);
-        }
-        // line_start (u32) at offset 24
-        if (n.line_start) |ls| {
-            std.mem.writeInt(u32, buf[base + 24 ..][0..4], ls, .little);
-        }
-        // line_end (u32) at offset 28
-        if (n.line_end) |le| {
-            std.mem.writeInt(u32, buf[base + 28 ..][0..4], le, .little);
-        }
-        // content_hash ([12]u8) at offset 32
+        if (n.col_start != null) flags |= FLAG_HAS_COL_START;
+        if (n.col_end != null) flags |= FLAG_HAS_COL_END;
+        buf[base + 33] = flags;
+        // [34..36] padding already zero
+        // [36..48] content_hash
         if (n.content_hash) |ch| {
-            @memcpy(buf[base + 32 ..][0..12], &ch);
+            @memcpy(buf[base + 36 ..][0..12], &ch);
         }
-        // String refs: 6 refs x 8 bytes each starting at offset 44
-        const refs = node_refs[i];
-        writeStringRef(buf, base + 44, refs.name);
-        writeStringRef(buf, base + 52, refs.file_path);
-        writeStringRef(buf, base + 60, refs.signature);
-        writeStringRef(buf, base + 68, refs.doc);
-        writeStringRef(buf, base + 76, refs.ext_version);
-        writeStringRef(buf, base + 84, refs.lang_meta);
-        // padding [92..96] already zero
+        // [48..120] 9 string refs
+        writeStringRef(buf, base + 48, refs.kind);
+        writeStringRef(buf, base + 56, refs.language);
+        writeStringRef(buf, base + 64, refs.visibility);
+        writeStringRef(buf, base + 72, refs.name);
+        writeStringRef(buf, base + 80, refs.file_path);
+        writeStringRef(buf, base + 88, refs.signature);
+        writeStringRef(buf, base + 96, refs.doc);
+        writeStringRef(buf, base + 104, refs.ext_version);
+        writeStringRef(buf, base + 112, refs.lang_meta);
     }
 
     // Edge records
@@ -326,9 +379,8 @@ pub fn save(allocator: std.mem.Allocator, g: *const Graph, path: []const u8) !vo
         const base = edge_table_offset + i * EDGE_RECORD_SIZE;
         std.mem.writeInt(u64, buf[base..][0..8], @intFromEnum(e.source_id), .little);
         std.mem.writeInt(u64, buf[base + 8 ..][0..8], @intFromEnum(e.target_id), .little);
-        buf[base + 16] = @intFromEnum(e.edge_type);
-        buf[base + 17] = @intFromEnum(e.source);
-        // padding [18..24] already zero
+        writeStringRef(buf, base + 16, edge_refs[i][0]);
+        writeStringRef(buf, base + 24, edge_refs[i][1]);
     }
 
     // Metrics records (one per node, same index)
@@ -400,29 +452,44 @@ pub fn load(allocator: std.mem.Allocator, path: []const u8) !Graph {
     for (0..nc) |i| {
         const base = nto + i * NODE_RECORD_SIZE;
 
-        const flags = buf[base + 12];
+        const flags = buf[base + 33];
         const has_content_hash = flags & FLAG_HAS_CONTENT_HASH != 0;
         const has_metrics = flags & FLAG_HAS_METRICS != 0;
         const has_parent = flags & FLAG_HAS_PARENT != 0;
         const has_line_start = flags & FLAG_HAS_LINE_START != 0;
         const has_line_end = flags & FLAG_HAS_LINE_END != 0;
+        const has_col_start = flags & FLAG_HAS_COL_START != 0;
+        const has_col_end = flags & FLAG_HAS_COL_END != 0;
 
-        // String refs
-        const name_ref = readStringRef(buf, base + 44);
-        const file_path_ref = readStringRef(buf, base + 52);
-        const sig_ref = readStringRef(buf, base + 60);
-        const doc_ref = readStringRef(buf, base + 68);
-        const ext_ver_ref = readStringRef(buf, base + 76);
-        const lang_meta_ref = readStringRef(buf, base + 84);
+        // Enum StringRefs
+        const kind_ref = readStringRef(buf, base + 48);
+        const lang_ref = readStringRef(buf, base + 56);
+        const vis_ref = readStringRef(buf, base + 64);
 
-        // Resolve strings from duped string table (zero additional allocations)
+        const kind_str = try resolveStr(st_data, kind_ref);
+        const kind = std.meta.stringToEnum(NodeKind, kind_str) orelse return error.InvalidFormat;
+        const language: ?types.Language = if (lang_ref.len == 0) null else blk: {
+            const ls = try resolveStr(st_data, lang_ref);
+            break :blk std.meta.stringToEnum(types.Language, ls) orelse return error.InvalidFormat;
+        };
+        const vis_str = try resolveStr(st_data, vis_ref);
+        const visibility = std.meta.stringToEnum(Visibility, vis_str) orelse return error.InvalidFormat;
+
+        // Data StringRefs
+        const name_ref = readStringRef(buf, base + 72);
+        const file_path_ref = readStringRef(buf, base + 80);
+        const sig_ref = readStringRef(buf, base + 88);
+        const doc_ref = readStringRef(buf, base + 96);
+        const ext_ver_ref = readStringRef(buf, base + 104);
+        const lang_meta_ref = readStringRef(buf, base + 112);
+
         const name = try resolveStr(st_data, name_ref);
         const file_path = try resolveOptStr(st_data, file_path_ref);
         const signature = try resolveOptStr(st_data, sig_ref);
         const doc = try resolveOptStr(st_data, doc_ref);
 
         // External info
-        const external_kind = buf[base + 11];
+        const external_kind = buf[base + 32];
         const external: ExternalInfo = switch (external_kind) {
             0 => .{ .none = {} },
             1 => .{ .stdlib = {} },
@@ -445,16 +512,18 @@ pub fn load(allocator: std.mem.Allocator, path: []const u8) !Graph {
         g.nodes.appendAssumeCapacity(.{
             .id = @enumFromInt(std.mem.readInt(u64, buf[base..][0..8], .little)),
             .name = name,
-            .kind = std.meta.intToEnum(NodeKind, buf[base + 8]) catch return error.InvalidFormat,
-            .language = if (buf[base + 9] == 0xFF) null else std.meta.intToEnum(types.Language, buf[base + 9]) catch return error.InvalidFormat,
+            .kind = kind,
+            .language = language,
             .file_path = file_path,
-            .line_start = if (has_line_start) std.mem.readInt(u32, buf[base + 24 ..][0..4], .little) else null,
-            .line_end = if (has_line_end) std.mem.readInt(u32, buf[base + 28 ..][0..4], .little) else null,
-            .parent_id = if (has_parent) @as(NodeId, @enumFromInt(std.mem.readInt(u64, buf[base + 16 ..][0..8], .little))) else null,
-            .visibility = std.meta.intToEnum(Visibility, buf[base + 10]) catch return error.InvalidFormat,
+            .parent_id = if (has_parent) @as(NodeId, @enumFromInt(std.mem.readInt(u64, buf[base + 8 ..][0..8], .little))) else null,
+            .line_start = if (has_line_start) std.mem.readInt(u32, buf[base + 16 ..][0..4], .little) else null,
+            .line_end = if (has_line_end) std.mem.readInt(u32, buf[base + 20 ..][0..4], .little) else null,
+            .col_start = if (has_col_start) std.mem.readInt(u32, buf[base + 24 ..][0..4], .little) else null,
+            .col_end = if (has_col_end) std.mem.readInt(u32, buf[base + 28 ..][0..4], .little) else null,
+            .visibility = visibility,
             .doc = doc,
             .signature = signature,
-            .content_hash = if (has_content_hash) buf[base + 32 ..][0..12].* else null,
+            .content_hash = if (has_content_hash) buf[base + 36 ..][0..12].* else null,
             .metrics = metrics,
             .lang_meta = lang_meta,
             .external = external,
@@ -467,11 +536,17 @@ pub fn load(allocator: std.mem.Allocator, path: []const u8) !Graph {
         const src_id = std.mem.readInt(u64, buf[base..][0..8], .little);
         const tgt_id = std.mem.readInt(u64, buf[base + 8 ..][0..8], .little);
         if (src_id >= nc or tgt_id >= nc) continue;
+
+        const et_ref = readStringRef(buf, base + 16);
+        const es_ref = readStringRef(buf, base + 24);
+        const et_str = try resolveStr(st_data, et_ref);
+        const es_str = try resolveStr(st_data, es_ref);
+
         g.edges.appendAssumeCapacity(.{
             .source_id = @enumFromInt(src_id),
             .target_id = @enumFromInt(tgt_id),
-            .edge_type = std.meta.intToEnum(EdgeType, buf[base + 16]) catch return error.InvalidFormat,
-            .source = std.meta.intToEnum(EdgeSource, buf[base + 17]) catch return error.InvalidFormat,
+            .edge_type = std.meta.stringToEnum(EdgeType, et_str) orelse return error.InvalidFormat,
+            .source = std.meta.stringToEnum(EdgeSource, es_str) orelse return error.InvalidFormat,
         });
     }
 
@@ -529,6 +604,8 @@ fn createTestGraph(allocator: std.mem.Allocator) !Graph {
         .file_path = "src/main.zig",
         .line_start = 10,
         .line_end = 50,
+        .col_start = 7,
+        .col_end = 14,
         .parent_id = @enumFromInt(0),
         .doc = "/// Process the input data.",
         .signature = "pub fn process(data: []const u8) !void",
@@ -608,6 +685,8 @@ test "binary round-trip preserves nodes, edges, and metrics" {
         try std.testing.expectEqual(original.parent_id, restored.parent_id);
         try std.testing.expectEqual(original.line_start, restored.line_start);
         try std.testing.expectEqual(original.line_end, restored.line_end);
+        try std.testing.expectEqual(original.col_start, restored.col_start);
+        try std.testing.expectEqual(original.col_end, restored.col_end);
     }
 
     // Assert: edges
@@ -1054,7 +1133,7 @@ test "load rejects truncated file with table regions past EOF" {
     defer file.close();
     try file.writeAll(&header);
 
-    // Act / Assert: node table (72 + 96 = 168) exceeds 72-byte file
+    // Act / Assert: node table (72 + 120 = 192) exceeds 72-byte file
     const result = load(std.testing.allocator, file_path);
     try std.testing.expectError(error.InvalidFormat, result);
 }
@@ -1074,10 +1153,10 @@ test "load rejects corrupt string ref past string table" {
 
     try save(std.testing.allocator, &g, file_path);
 
-    // Overwrite name StringRef (node base + 44) with out-of-bounds offset
+    // Overwrite name StringRef (node base + 72) with out-of-bounds offset
     const raw_file = try std.fs.cwd().openFile(file_path, .{ .mode = .read_write });
     defer raw_file.close();
-    try raw_file.seekTo(HEADER_SIZE + 44);
+    try raw_file.seekTo(HEADER_SIZE + 72);
     var ref_buf: [8]u8 = undefined;
     std.mem.writeInt(u32, ref_buf[0..4], 0xFFFF, .little);
     std.mem.writeInt(u32, ref_buf[4..8], 10, .little);
@@ -1088,8 +1167,9 @@ test "load rejects corrupt string ref past string table" {
     try std.testing.expectError(error.InvalidFormat, result);
 }
 
-test "load rejects invalid enum discriminant" {
-    // Arrange: save a valid graph, then corrupt the NodeKind byte
+test "load rejects invalid enum string" {
+    // Arrange: save a valid graph, then corrupt the kind StringRef
+    // to point to an out-of-bounds offset so resolveStr fails
     var g = Graph.init("/tmp/test-project");
     defer g.deinit(std.testing.allocator);
     _ = try g.addNode(std.testing.allocator, .{ .id = .root, .name = "n", .kind = .file, .language = .zig });
@@ -1103,11 +1183,14 @@ test "load rejects invalid enum discriminant" {
 
     try save(std.testing.allocator, &g, file_path);
 
-    // Overwrite NodeKind byte (node base + 8) with invalid value
+    // Overwrite kind StringRef (node base + 48) with out-of-bounds offset
     const raw_file = try std.fs.cwd().openFile(file_path, .{ .mode = .read_write });
     defer raw_file.close();
-    try raw_file.seekTo(HEADER_SIZE + 8);
-    try raw_file.writeAll(&[_]u8{0xFF});
+    try raw_file.seekTo(HEADER_SIZE + 48);
+    var ref_buf: [8]u8 = undefined;
+    std.mem.writeInt(u32, ref_buf[0..4], 0xFFFF, .little);
+    std.mem.writeInt(u32, ref_buf[4..8], 10, .little);
+    try raw_file.writeAll(&ref_buf);
 
     // Act / Assert
     const result = load(std.testing.allocator, file_path);

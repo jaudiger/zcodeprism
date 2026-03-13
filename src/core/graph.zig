@@ -25,6 +25,22 @@ pub const Direction = enum {
     both,
 };
 
+/// Type-erased buffer entry that preserves the original allocation alignment.
+/// Captures pointer, byte length, and alignment from any typed slice.
+pub const OwnedBuffer = struct {
+    ptr: [*]u8,
+    len: usize,
+    alignment: std.mem.Alignment,
+
+    pub fn fromSlice(comptime T: type, buf: []const T) OwnedBuffer {
+        return .{
+            .ptr = @ptrCast(@constCast(buf.ptr)),
+            .len = buf.len * @sizeOf(T),
+            .alignment = comptime std.mem.Alignment.of(T),
+        };
+    }
+};
+
 /// The core code graph: a mutable collection of semantic nodes and edges.
 /// Build phase: populate with addNode/addEdgeIfNew.
 /// Query phase: call freeze() once, then use getNode, getChildren,
@@ -36,8 +52,8 @@ pub const Graph = struct {
     // Pre-computed CSR adjacency index. Built by freeze(), enables O(1) lookups.
     adjacency: ?Adjacency = null,
     // Tracks allocated buffers (source files, duped strings) that node slices point into.
-    // Freed on deinit so that node name/doc/signature slices remain valid for the graph's lifetime.
-    owned_buffers: std.ArrayList([]const u8),
+    // Freed on deinit; node name/doc/signature slices borrow into these.
+    owned_buffers: std.ArrayList(OwnedBuffer),
     // Hash index for edge deduplication. Maps (source, target, type) to void.
     edge_index: std.AutoHashMapUnmanaged(EdgeKey, void),
 
@@ -61,8 +77,8 @@ pub const Graph = struct {
     pub fn deinit(self: *Graph, allocator: std.mem.Allocator) void {
         // Free owned buffers first -- node name/doc/signature slices
         // may point into these, so they must outlive the node array.
-        for (self.owned_buffers.items) |buf| {
-            allocator.free(buf);
+        for (self.owned_buffers.items) |ob| {
+            allocator.rawFree(ob.ptr[0..ob.len], ob.alignment, @returnAddress());
         }
         self.owned_buffers.deinit(allocator);
         self.nodes.deinit(allocator);
@@ -73,18 +89,25 @@ pub const Graph = struct {
         self.* = undefined;
     }
 
-    /// Register an allocator-owned buffer to be freed on deinit().
-    /// Use this for source file contents or duped strings that node
-    /// name/doc/signature slices borrow into. Each buffer must be added
-    /// exactly once; adding the same pointer twice causes a double-free.
-    /// Returns `error.OutOfMemory` if the internal list cannot grow.
-    pub fn addOwnedBuffer(self: *Graph, allocator: std.mem.Allocator, buf: []const u8) !void {
+    /// Register an allocator-owned slice to be freed on deinit().
+    /// Accepts any slice type; the element alignment is captured at comptime
+    /// so rawFree receives the correct alignment on deallocation.
+    /// Each buffer must be added exactly once; adding the same pointer twice
+    /// causes a double-free.
+    pub fn addOwnedSlice(self: *Graph, allocator: std.mem.Allocator, comptime T: type, buf: []const T) !void {
+        const ob = OwnedBuffer.fromSlice(T, buf);
+        if (ob.len == 0) return;
         if (std.debug.runtime_safety) {
             for (self.owned_buffers.items) |existing| {
-                std.debug.assert(existing.ptr != buf.ptr);
+                std.debug.assert(existing.ptr != ob.ptr);
             }
         }
-        try self.owned_buffers.append(allocator, buf);
+        try self.owned_buffers.append(allocator, ob);
+    }
+
+    /// Convenience wrapper for the common case of registering a []const u8.
+    pub fn addOwnedBuffer(self: *Graph, allocator: std.mem.Allocator, buf: []const u8) !void {
+        return self.addOwnedSlice(allocator, u8, buf);
     }
 
     /// Append a node and return its assigned NodeId. Overwrites the node's
@@ -96,7 +119,7 @@ pub const Graph = struct {
         if (stored.signature) |sig| {
             if (std.mem.indexOfAny(u8, sig, "\n\r") != null) {
                 const normalized = try collapseWhitespace(allocator, sig);
-                self.owned_buffers.append(allocator, normalized) catch |err| {
+                self.addOwnedBuffer(allocator, normalized) catch |err| {
                     allocator.free(normalized);
                     return err;
                 };

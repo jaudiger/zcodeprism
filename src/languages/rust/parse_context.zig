@@ -62,6 +62,15 @@ pub const KindIds = struct {
     enum_variant: u16,
     associated_type: u16,
 
+    // Control flow
+    if_expression: u16,
+    for_expression: u16,
+    while_expression: u16,
+    loop_expression: u16,
+    match_expression: u16,
+    closure_expression: u16,
+    try_expression: u16,
+
     // Expressions
     call_expression: u16,
     field_expression: u16,
@@ -69,6 +78,11 @@ pub const KindIds = struct {
     arguments: u16,
     block: u16,
     let_declaration: u16,
+    struct_expression: u16,
+    field_initializer_list: u16,
+    field_initializer: u16,
+    shorthand_field_initializer: u16,
+    base_field_initializer: u16,
 
     // Literals and strings
     string_literal: u16,
@@ -159,12 +173,25 @@ pub const KindIds = struct {
             .enum_variant = lang.idForNodeKind("enum_variant", true),
             .associated_type = lang.idForNodeKind("associated_type", true),
 
+            .if_expression = lang.idForNodeKind("if_expression", true),
+            .for_expression = lang.idForNodeKind("for_expression", true),
+            .while_expression = lang.idForNodeKind("while_expression", true),
+            .loop_expression = lang.idForNodeKind("loop_expression", true),
+            .match_expression = lang.idForNodeKind("match_expression", true),
+            .closure_expression = lang.idForNodeKind("closure_expression", true),
+            .try_expression = lang.idForNodeKind("try_expression", true),
+
             .call_expression = lang.idForNodeKind("call_expression", true),
             .field_expression = lang.idForNodeKind("field_expression", true),
             .generic_function = lang.idForNodeKind("generic_function", true),
             .arguments = lang.idForNodeKind("arguments", true),
             .block = lang.idForNodeKind("block", true),
             .let_declaration = lang.idForNodeKind("let_declaration", true),
+            .struct_expression = lang.idForNodeKind("struct_expression", true),
+            .field_initializer_list = lang.idForNodeKind("field_initializer_list", true),
+            .field_initializer = lang.idForNodeKind("field_initializer", true),
+            .shorthand_field_initializer = lang.idForNodeKind("shorthand_field_initializer", true),
+            .base_field_initializer = lang.idForNodeKind("base_field_initializer", true),
 
             .string_literal = lang.idForNodeKind("string_literal", true),
             .string_content = lang.idForNodeKind("string_content", true),

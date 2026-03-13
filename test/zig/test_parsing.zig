@@ -22,7 +22,9 @@ fn parseWithEdges(allocator: std.mem.Allocator, source: []const u8, g: *Graph) !
     defer gi.deinit(allocator);
     var phantom_mgr = zcodeprism.phantom.PhantomManager.init(g);
     defer phantom_mgr.deinit(allocator);
-    try buildEdges(allocator, source, g, 0, g.nodeCount(), null, &gi, &phantom_mgr, Logger.noop);
+    var wl = zcodeprism.lsp.worklist.LspWorklist{};
+    defer wl.deinit(allocator);
+    try buildEdges(allocator, source, g, 0, g.nodeCount(), null, &gi, &phantom_mgr, &wl, Logger.noop);
 }
 
 test "simple fixture: edge creation" {
@@ -1994,4 +1996,60 @@ test "top-level comptime blocks produce no nodes" {
 
     // Assert: only file + std import + Config (type_def) + name (field) + init (function) = 5 nodes
     try std.testing.expectEqual(@as(usize, 5), g.nodeCount());
+}
+
+test "self.field access in file-struct method creates accesses_field edge" {
+    // Arrange
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
+
+    // Act: file_struct.zig has `return self.value` inside getValue
+    try parseWithEdges(std.testing.allocator, fixtures.zig.file_struct, &g);
+
+    var getvalue_id: ?NodeId = null;
+    var value_field_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, i| {
+        if (n.kind == .function and std.mem.eql(u8, n.name, "getValue")) getvalue_id = @enumFromInt(i);
+        if (n.kind == .field and std.mem.eql(u8, n.name, "value")) value_field_id = @enumFromInt(i);
+    }
+    try std.testing.expect(getvalue_id != null);
+    try std.testing.expect(value_field_id != null);
+
+    // Assert: getValue -> accesses_field -> value (self.value resolution via self binding)
+    var found = false;
+    for (g.edges.items) |e| {
+        if (e.source_id == getvalue_id.? and e.target_id == value_field_id.? and e.edge_type == .accesses_field) {
+            found = true;
+            break;
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "anonymous struct with type annotation creates accesses_field edge" {
+    // Arrange
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
+
+    // Act: file_struct.zig has `var c: Self = .{ .value = v, .name = "anon" }; return c.value`
+    try parseWithEdges(std.testing.allocator, fixtures.zig.file_struct, &g);
+
+    var anon_init_id: ?NodeId = null;
+    var value_field_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, i| {
+        if (n.kind == .function and std.mem.eql(u8, n.name, "anonymousInit")) anon_init_id = @enumFromInt(i);
+        if (n.kind == .field and std.mem.eql(u8, n.name, "value")) value_field_id = @enumFromInt(i);
+    }
+    try std.testing.expect(anon_init_id != null);
+    try std.testing.expect(value_field_id != null);
+
+    // Assert: anonymousInit -> accesses_field -> value (via annotated .{} binding then c.value)
+    var found = false;
+    for (g.edges.items) |e| {
+        if (e.source_id == anon_init_id.? and e.target_id == value_field_id.? and e.edge_type == .accesses_field) {
+            found = true;
+            break;
+        }
+    }
+    try std.testing.expect(found);
 }

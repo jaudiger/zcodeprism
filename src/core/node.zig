@@ -49,6 +49,14 @@ pub const Node = struct {
     /// Null for phantom nodes and the root node.
     line_end: ?u32 = null,
 
+    /// 0-based column of the first character of this element.
+    /// Null for phantom nodes, the root node, and file nodes.
+    col_start: ?u32 = null,
+
+    /// 0-based column just past the last character of this element.
+    /// Null for phantom nodes, the root node, and file nodes.
+    col_end: ?u32 = null,
+
     /// NodeId of the lexical parent (the struct containing a method, etc.).
     /// Null for root-level directory nodes and phantom root nodes.
     /// File nodes point to their containing directory; declaration nodes

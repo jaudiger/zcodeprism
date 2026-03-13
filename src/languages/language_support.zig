@@ -10,6 +10,9 @@ const types = @import("../core/types.zig");
 const Graph = graph_mod.Graph;
 const PhantomManager = phantom_mod.PhantomManager;
 const Logger = logging.Logger;
+const LspClient = @import("../lsp/client.zig").LspClient;
+const worklist_mod = @import("../lsp/worklist.zig");
+const LspWorklist = worklist_mod.LspWorklist;
 
 pub const GraphIndex = graph_index_mod.GraphIndex;
 pub const ScopeIndex = graph_index_mod.ScopeIndex;
@@ -25,8 +28,8 @@ pub const ImportEntry = lang.ImportEntry;
 pub const ImportGranularity = lang.ImportGranularity;
 /// Parsed build-system configuration (dependency paths, package roots).
 pub const BuildConfig = lang.BuildConfig;
-/// Extracts import entries from a source string.
-pub const ExtractImportsFn = lang.ExtractImportsFn;
+/// Extracts import entries from source code by walking the tree-sitter AST.
+pub const ExtractImportsFn = *const fn (source: []const u8, ts_language: *const ts.Language, out: []ImportEntry) usize;
 /// Resolves an import path to an absolute filesystem path.
 pub const ResolveImportPathFn = lang.ResolveImportPathFn;
 /// Parses a build-system file into a BuildConfig.
@@ -43,13 +46,15 @@ pub const Language = types.Language;
 /// Returns `error.OutOfMemory` if graph mutation fails.
 pub const ParseFn = *const fn (allocator: std.mem.Allocator, source: []const u8, graph: *Graph, file_path: ?[]const u8, logger: Logger) error{OutOfMemory}!void;
 
-/// Function pointer type for resolving phantom (external) references in a single file.
+/// Resolves external references for a single file's node range.
 ///
-/// Scans nodes in the range `[file_idx, scope_end)` of `graph`, identifies unresolved
-/// references, and registers them as phantom nodes via `phantom_mgr`.
-/// `allocator` is passed through to graph and phantom mutation methods.
-/// `graph_index` provides pre-built scope, name, and file indexes over the full graph.
-/// `build_config`, when provided, supplies dependency paths for import resolution.
+/// Scans `graph` nodes in `[file_idx, scope_end)`, creates phantom nodes for
+/// unresolved external symbols via `phantom_mgr`, and records a `UsageSite`
+/// for each phantom through `PhantomManager.recordUsageSite`. The caller
+/// (`indexDirectory`) transfers those sites into the worklist after all files
+/// have been processed.
+/// `graph_index` provides pre-built scope, name, and file indexes.
+/// `build_config`, when non-null, supplies dependency paths for import resolution.
 /// Returns `OutOfMemory` if graph or phantom registration fails.
 pub const ResolvePhantomsFn = *const fn (
     allocator: std.mem.Allocator,
@@ -65,7 +70,7 @@ pub const ResolvePhantomsFn = *const fn (
 
 /// Re-parses source with tree-sitter to emit cross-file edges for a single
 /// file's node range. `phantom_mgr` is the shared phantom registry for
-/// external symbol lookups.
+/// external symbol lookups. `wl` collects unresolved references.
 pub const BuildEdgesFn = *const fn (
     allocator: std.mem.Allocator,
     source: []const u8,
@@ -75,6 +80,7 @@ pub const BuildEdgesFn = *const fn (
     file_path: ?[]const u8,
     graph_index: *const GraphIndex,
     phantom_mgr: *const PhantomManager,
+    wl: *LspWorklist,
     logger: Logger,
 ) error{OutOfMemory}!void;
 
@@ -116,6 +122,57 @@ pub const LanguageSupport = struct {
     grammarFn: *const fn () callconv(.c) *const ts.Language,
 };
 
+/// Accumulated counters from an LSP enrichment pass.
+pub const EnrichResult = struct {
+    worklist_total: usize = 0,
+    worklist_resolved: usize = 0,
+    definition_queries: usize = 0,
+    definition_successes: usize = 0,
+    type_definition_queries: usize = 0,
+    type_definition_successes: usize = 0,
+    hover_queries: usize = 0,
+    hover_successes: usize = 0,
+    reference_queries: usize = 0,
+    reference_successes: usize = 0,
+    edges_promoted: usize = 0,
+    edges_added: usize = 0,
+    errors_inferred: usize = 0,
+    phantoms_enriched: usize = 0,
+    phantoms_remaining: usize = 0,
+    warmup_ms: u64 = 0,
+
+    /// Merge counters from another result into this one.
+    pub fn accumulate(self: *EnrichResult, other: EnrichResult) void {
+        self.worklist_total += other.worklist_total;
+        self.worklist_resolved += other.worklist_resolved;
+        self.definition_queries += other.definition_queries;
+        self.definition_successes += other.definition_successes;
+        self.type_definition_queries += other.type_definition_queries;
+        self.type_definition_successes += other.type_definition_successes;
+        self.hover_queries += other.hover_queries;
+        self.hover_successes += other.hover_successes;
+        self.reference_queries += other.reference_queries;
+        self.reference_successes += other.reference_successes;
+        self.edges_promoted += other.edges_promoted;
+        self.edges_added += other.edges_added;
+        self.errors_inferred += other.errors_inferred;
+        self.phantoms_enriched += other.phantoms_enriched;
+        self.phantoms_remaining += other.phantoms_remaining;
+        if (other.warmup_ms > self.warmup_ms) self.warmup_ms = other.warmup_ms;
+    }
+};
+
+/// Language-specific callback that queries an LSP client and enriches
+/// the graph with edges and metadata that tree-sitter alone cannot provide.
+/// `wl` carries both unresolved AST references and phantom hover sites.
+pub const EnrichFn = *const fn (
+    allocator: std.mem.Allocator,
+    graph: *Graph,
+    client: *LspClient,
+    wl: *const LspWorklist,
+    logger: Logger,
+) error{OutOfMemory}!EnrichResult;
+
 /// Configuration for launching an LSP server to enrich the code graph.
 pub const LspConfig = struct {
     /// Display name of the LSP server.
@@ -124,4 +181,6 @@ pub const LspConfig = struct {
     server_command: []const u8,
     /// Optional JSON string passed as `initializationOptions` to the server.
     init_options: ?[]const u8 = null,
+    /// Language-specific enrichment callback. Null when not yet implemented.
+    enrichFn: ?EnrichFn = null,
 };

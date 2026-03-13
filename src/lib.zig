@@ -97,6 +97,9 @@ pub const cursor = @import("explorer/cursor.zig");
 /// Cursor lifecycle manager (create, lookup, close).
 pub const cursor_manager = @import("explorer/cursor_manager.zig");
 
+/// LSP client, protocol types, and enrichment orchestration.
+pub const lsp = @import("lsp/lsp.zig");
+
 /// MCP server: JSON-RPC transport, protocol types, dispatch.
 pub const mcp = @import("mcp/mcp.zig");
 
@@ -158,6 +161,7 @@ test {
     _ = @import("languages/zig/meta.zig");
     _ = @import("languages/zig/visitor.zig");
     _ = @import("logging.zig");
+    _ = @import("lsp/lsp.zig");
     _ = @import("mcp/mcp.zig");
     _ = @import("parser/source_map.zig");
     _ = @import("parser/tree_sitter_api.zig");

@@ -57,6 +57,8 @@ pub const NodeKind = enum {
 /// The semantic relationship between two nodes in the code graph.
 /// An edge always points from a source node to a target node.
 pub const EdgeType = enum {
+    /// Source node reads a field on the target field node.
+    accesses_field,
     /// Source node invokes or calls the target node (function call).
     calls,
     /// Source node imports the target module or file.
@@ -137,10 +139,10 @@ test "isTypeContainer returns true for type_def, enum_def, union_def" {
     try std.testing.expect(!NodeKind.directory.isTypeContainer());
 }
 
-test "EdgeType has exactly 7 variants" {
+test "EdgeType has exactly 8 variants" {
     comptime {
         const fields = @typeInfo(EdgeType).@"enum".fields;
-        std.debug.assert(fields.len == 7);
+        std.debug.assert(fields.len == 8);
     }
 }
 

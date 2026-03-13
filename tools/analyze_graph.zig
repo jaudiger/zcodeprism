@@ -13,64 +13,44 @@ const logging = zcodeprism.logging;
 const analyzer = zcodeprism.analyzer;
 
 const ParsedFlags = struct {
+    common: tool_utils.CommonFlags,
     scope: ?[]const u8 = null,
     include_public: bool = false,
-    exclude: std.ArrayList([]const u8),
     limit: u32 = 20,
     min_lines: u32 = 3,
     max_depth: u32 = 10,
     max_cycle_length: u32 = 20,
     min_coupling: f64 = 1.0,
-    verbosity: u8 = 0,
     positional: std.ArrayList([]const u8),
 
     fn deinit(self: *ParsedFlags, allocator: std.mem.Allocator) void {
-        self.exclude.deinit(allocator);
+        self.common.deinit(allocator);
         self.positional.deinit(allocator);
     }
 };
 
 fn parseFlags(allocator: std.mem.Allocator, raw_args: []const []const u8) !ParsedFlags {
-    var flags = ParsedFlags{ .exclude = .{}, .positional = .{} };
+    var flags = ParsedFlags{ .common = tool_utils.CommonFlags.init(), .positional = .{} };
     errdefer flags.deinit(allocator);
-    var i: usize = 0;
-    while (i < raw_args.len) : (i += 1) {
-        const a = raw_args[i];
+    var iter = tool_utils.SliceIter.init(raw_args);
+    while (iter.next()) |a| {
+        if (try tool_utils.parseCommonFlag(allocator, a, &iter, &flags.common)) continue;
         if (std.mem.eql(u8, a, "--scope")) {
-            i += 1;
-            if (i < raw_args.len) flags.scope = raw_args[i];
+            if (iter.next()) |v| flags.scope = v;
         } else if (std.mem.eql(u8, a, "--include-public")) {
             flags.include_public = true;
-        } else if (std.mem.eql(u8, a, "--exclude")) {
-            i += 1;
-            if (i < raw_args.len) {
-                var it = std.mem.splitScalar(u8, raw_args[i], ',');
-                while (it.next()) |p| {
-                    if (p.len > 0) try flags.exclude.append(allocator, p);
-                }
-            }
         } else if (std.mem.eql(u8, a, "--limit")) {
-            i += 1;
-            if (i < raw_args.len) flags.limit = std.fmt.parseInt(u32, raw_args[i], 10) catch 20;
+            if (iter.next()) |v| flags.limit = std.fmt.parseInt(u32, v, 10) catch 20;
         } else if (std.mem.eql(u8, a, "--min-lines")) {
-            i += 1;
-            if (i < raw_args.len) flags.min_lines = std.fmt.parseInt(u32, raw_args[i], 10) catch 3;
+            if (iter.next()) |v| flags.min_lines = std.fmt.parseInt(u32, v, 10) catch 3;
         } else if (std.mem.eql(u8, a, "--max-depth")) {
-            i += 1;
-            if (i < raw_args.len) flags.max_depth = std.fmt.parseInt(u32, raw_args[i], 10) catch 10;
+            if (iter.next()) |v| flags.max_depth = std.fmt.parseInt(u32, v, 10) catch 10;
         } else if (std.mem.eql(u8, a, "--max-cycle-length")) {
-            i += 1;
-            if (i < raw_args.len) flags.max_cycle_length = std.fmt.parseInt(u32, raw_args[i], 10) catch 20;
+            if (iter.next()) |v| flags.max_cycle_length = std.fmt.parseInt(u32, v, 10) catch 20;
         } else if (std.mem.eql(u8, a, "--min-coupling")) {
-            i += 1;
-            if (i < raw_args.len) flags.min_coupling = std.fmt.parseFloat(f64, raw_args[i]) catch 1.0;
+            if (iter.next()) |v| flags.min_coupling = std.fmt.parseFloat(f64, v) catch 1.0;
         } else {
-            const v = tool_utils.countVerbosity(a);
-            if (v > 0) {
-                flags.verbosity +|= v;
-            } else {
-                try flags.positional.append(allocator, a);
-            }
+            try flags.positional.append(allocator, a);
         }
     }
     return flags;
@@ -111,7 +91,7 @@ fn cmdDeadCode(allocator: std.mem.Allocator, g: *const Graph, flags: ParsedFlags
     });
     defer result.deinit(allocator);
 
-    try stdout.print("Dead code ({d} symbols):\n\n", .{result.nodes.len});
+    try stdout.print("Dead code ({d} symbols):\n\n", .{result.total_count});
     for (result.nodes) |entry| {
         try stdout.print("  [{d}] {s} {s} \"{s}\"", .{
             @intFromEnum(entry.node_id),
@@ -131,7 +111,7 @@ fn cmdDuplicates(allocator: std.mem.Allocator, g: *const Graph, flags: ParsedFla
     });
     defer result.deinit(allocator);
 
-    try stdout.print("Duplicate function groups ({d}):\n", .{result.groups.len});
+    try stdout.print("Duplicate function groups ({d}):\n", .{result.total_groups});
     for (result.groups, 0..) |group, gi| {
         try stdout.print("\n  Group {d} (hash={x:0>8}, {d} members):\n", .{
             gi + 1,
@@ -242,6 +222,7 @@ fn printHelp(stdout: *std.Io.Writer) !void {
         \\    --scope <prefix>         Restrict to files matching prefix
         \\    --include-public         Include public symbols in dead-code results
         \\    --exclude path1,path2    Exclude paths from indexation
+        \\    --without-lsp            Skip LSP enrichment
         \\    --limit N                Max results (default 20)
         \\    --min-lines N            Min function lines for duplicates (default 3)
         \\    --max-depth N            Max BFS depth for impact (default 10)
@@ -299,20 +280,24 @@ pub fn main() !void {
     };
     defer allocator.free(dir_path);
 
-    var text_logger = logging.TextStderrLogger.init(tool_utils.verbosityToLevel(flags.verbosity));
-    const log = if (flags.verbosity > 0) text_logger.logger() else logging.Logger.noop;
+    var text_logger = logging.TextStderrLogger.init(tool_utils.verbosityToLevel(flags.common.verbosity));
+    const log = if (flags.common.verbosity > 0) text_logger.logger() else logging.Logger.noop;
 
     var graph = Graph.init(dir_path);
     defer graph.deinit(allocator);
 
-    const idx_result = indexer.indexDirectory(allocator, dir_path, &graph, .{
-        .exclude_paths = flags.exclude.items,
+    const idx_result = indexer.indexDirectory(allocator, dir_path, &graph, null, .{
+        .exclude_paths = flags.common.exclude.items,
         .logger = log,
     }) catch |err| {
         try stdout.print("Index error: {}\n", .{err});
         try stdout.flush();
         std.process.exit(1);
     };
+
+    if (flags.common.lsp) {
+        try tool_utils.runLspEnrichment(allocator, &graph, log, stdout);
+    }
 
     try stdout.print("Indexed {d} files ({d} nodes, {d} edges)\n\n", .{
         idx_result.files_indexed, graph.nodes.items.len, graph.edges.items.len,

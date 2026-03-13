@@ -148,6 +148,17 @@ pub fn findFunctionByNameAndLine(graph: *const Graph, name: []const u8, line: u3
     return null;
 }
 
+/// Find a field node by name among the direct children of a type node.
+pub fn findFieldByName(g: *const Graph, type_id: NodeId, field_name: []const u8, scope_index: *const ScopeIndex) ?NodeId {
+    for (scope_index.childrenOf(type_id)) |child_idx| {
+        const n = g.nodes.items[child_idx];
+        if (n.kind == .field and std.mem.eql(u8, n.name, field_name)) {
+            return @enumFromInt(child_idx);
+        }
+    }
+    return null;
+}
+
 fn matchesFunctionKind(kind: NodeKind, extra_kinds: []const NodeKind) bool {
     if (kind == .function) return true;
     for (extra_kinds) |ek| {

@@ -38,6 +38,7 @@ fn printHelp(stdout: *std.Io.Writer) !void {
         \\    --depth N                Limit output to N levels of nesting below file nodes
         \\    --test-nodes             Include test nodes in output
         \\    --external-nodes         Include external nodes in output
+        \\    --without-lsp            Skip LSP enrichment (directory mode only)
         \\    -v                       Increase verbosity (-v info, -vv debug, -vvv trace)
         \\    --verbose                Same as -v
         \\    -h, --help               Show this help message
@@ -59,14 +60,21 @@ pub fn main() !void {
     var args = std.process.args();
     _ = args.next(); // skip program name
 
-    var path_arg: ?[]const u8 = null;
+    const input_path_arg = args.next() orelse {
+        try printHelp(stdout);
+        return;
+    };
+    if (std.mem.eql(u8, input_path_arg, "--help") or std.mem.eql(u8, input_path_arg, "-h")) {
+        try printHelp(stdout);
+        return;
+    }
+
     var format: Format = .ctg;
     var project_name: ?[]const u8 = null;
     var include_test_nodes: bool = false;
     var include_external_nodes: bool = false;
-    var verbosity: u8 = 0;
-    var exclude_list: std.ArrayList([]const u8) = .{};
-    defer exclude_list.deinit(allocator);
+    var common_flags = tool_utils.CommonFlags.init();
+    defer common_flags.deinit(allocator);
     var scope_arg: ?[]const u8 = null;
     var depth_arg: ?u32 = null;
 
@@ -92,15 +100,6 @@ pub fn main() !void {
                 try stdout.flush();
                 std.process.exit(1);
             };
-        } else if (std.mem.eql(u8, arg, "--exclude")) {
-            if (args.next()) |csv| {
-                var it = std.mem.splitScalar(u8, csv, ',');
-                while (it.next()) |path| {
-                    if (path.len > 0) {
-                        try exclude_list.append(allocator, path);
-                    }
-                }
-            }
         } else if (std.mem.eql(u8, arg, "--scope")) {
             scope_arg = args.next() orelse {
                 try stdout.print("Error: --scope requires a value\n", .{});
@@ -122,23 +121,10 @@ pub fn main() !void {
             include_test_nodes = true;
         } else if (std.mem.eql(u8, arg, "--external-nodes")) {
             include_external_nodes = true;
-        } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
-            try printHelp(stdout);
-            return;
-        } else {
-            const v = tool_utils.countVerbosity(arg);
-            if (v > 0) {
-                verbosity +|= v;
-            } else {
-                path_arg = arg;
-            }
+        } else if (try tool_utils.parseCommonFlag(allocator, arg, &args, &common_flags)) {
+            // consumed
         }
     }
-
-    const input_path_arg = path_arg orelse {
-        try printHelp(stdout);
-        return;
-    };
 
     // Resolve to absolute path.
     const input_path = std.fs.cwd().realpathAlloc(allocator, input_path_arg) catch |err| {
@@ -148,8 +134,8 @@ pub fn main() !void {
     };
     defer allocator.free(input_path);
 
-    var text_logger = logging.TextStderrLogger.init(tool_utils.verbosityToLevel(verbosity));
-    const log = if (verbosity > 0) text_logger.logger() else logging.Logger.noop;
+    var text_logger = logging.TextStderrLogger.init(tool_utils.verbosityToLevel(common_flags.verbosity));
+    const log = if (common_flags.verbosity > 0) text_logger.logger() else logging.Logger.noop;
 
     // Determine whether the input is a directory or a regular file.
     // openDirAbsolute returns error.NotDir when the path points to a file.
@@ -167,7 +153,7 @@ pub fn main() !void {
     };
 
     // --exclude is only meaningful in directory mode.
-    if (is_file and exclude_list.items.len > 0) {
+    if (is_file and common_flags.exclude.items.len > 0) {
         try stdout.print("Error: --exclude is not valid when <path> is a single file\n", .{});
         try stdout.flush();
         std.process.exit(1);
@@ -226,7 +212,9 @@ pub fn main() !void {
             defer graph_index.deinit(allocator);
             var phantom_mgr = zcodeprism.phantom.PhantomManager.init(&graph);
             defer phantom_mgr.deinit(allocator);
-            build_edges(allocator, source, &graph, 0, graph.nodeCount(), null, &graph_index, &phantom_mgr, log) catch |err| {
+            var wl = zcodeprism.lsp.worklist.LspWorklist{};
+            defer wl.deinit(allocator);
+            build_edges(allocator, source, &graph, 0, graph.nodeCount(), null, &graph_index, &phantom_mgr, &wl, log) catch |err| {
                 try stdout.print("Edge building error: {}\n", .{err});
                 try stdout.flush();
                 std.process.exit(1);
@@ -236,14 +224,18 @@ pub fn main() !void {
         try graph.freeze(allocator);
     } else {
         // Directory path: full multi-file indexation.
-        _ = indexer.indexDirectory(allocator, input_path, &graph, .{
-            .exclude_paths = exclude_list.items,
+        _ = indexer.indexDirectory(allocator, input_path, &graph, null, .{
+            .exclude_paths = common_flags.exclude.items,
             .logger = log,
         }) catch |err| {
             try stdout.print("Index error: {}\n", .{err});
             try stdout.flush();
             std.process.exit(1);
         };
+
+        if (common_flags.lsp) {
+            try tool_utils.runLspEnrichment(allocator, &graph, log, stdout);
+        }
     }
 
     // Render.

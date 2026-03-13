@@ -5,6 +5,10 @@
 pub const rust = struct {
     pub const simple = @embedFile("fixtures/rust/simple.rs");
 
+    pub const analysis = struct {
+        pub const dead_code = @embedFile("fixtures/rust/analysis/dead_code.rs");
+    };
+
     pub const edge_cases = struct {
         pub const aliased_trait = @embedFile("fixtures/rust/edge_cases/aliased_trait.rs");
         pub const deeply_nested = @embedFile("fixtures/rust/edge_cases/deeply_nested.rs");
@@ -39,6 +43,10 @@ pub const zig = struct {
     pub const file_struct = @embedFile("fixtures/zig/file_struct.zig");
     pub const generic_type = @embedFile("fixtures/zig/generic_type.zig");
     pub const simple = @embedFile("fixtures/zig/simple.zig");
+
+    pub const lsp = struct {
+        pub const inferred_errors = @embedFile("fixtures/zig/lsp/inferred_errors.zig");
+    };
 
     pub const analysis = struct {
         pub const circular = struct {

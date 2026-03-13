@@ -143,6 +143,22 @@ pub fn build(b: *std.Build) void {
     cli_test.step.dependOn(b.getInstallStep());
     addTestStep(b, test_step, cli_test, coverage, kcov_args);
 
+    // LSP integration tests
+    const lsp_test_mod = b.createModule(.{
+        .root_source_file = b.path("test/test_lsp.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    lsp_test_mod.addImport("zcodeprism", lib_mod);
+    lsp_test_mod.addImport("test-helpers", helpers_mod);
+    lsp_test_mod.addImport("test-fixtures", fixture_mod);
+    lsp_test_mod.linkLibrary(ts_rust_lib);
+    lsp_test_mod.linkLibrary(ts_zig_dep.artifact("tree-sitter-zig"));
+
+    addTestStep(b, test_step, b.addTest(.{
+        .root_module = lsp_test_mod,
+    }), coverage, kcov_args);
+
     // MCP handler integration tests
     const mcp_handlers_test_mod = b.createModule(.{
         .root_source_file = b.path("test/test_mcp_handlers.zig"),

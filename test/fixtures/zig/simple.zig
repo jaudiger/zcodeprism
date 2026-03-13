@@ -68,6 +68,11 @@ const RawValue = union {
     float: f64,
 };
 
+pub const Wrapper = struct {
+    inner: Point,
+    direction: Direction,
+};
+
 test "point manhattan distance" {
     const p = Point{ .x = 3, .y = -4 };
     const dist = p.manhattan();

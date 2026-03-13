@@ -6,6 +6,7 @@ const Node = zcodeprism.node.Node;
 const NodeId = zcodeprism.types.NodeId;
 const NodeKind = zcodeprism.types.NodeKind;
 const EdgeType = zcodeprism.types.EdgeType;
+const EdgeSource = zcodeprism.types.EdgeSource;
 
 /// Count nodes of a given kind in the graph.
 pub fn countNodesByKind(g: *const Graph, kind: NodeKind) usize {
@@ -48,6 +49,23 @@ pub fn findNodeInFile(g: *const Graph, name: []const u8, kind: NodeKind, ancesto
         if (n.kind == kind and std.mem.eql(u8, n.name, name) and isDescendantOf(g, nid, ancestor_id)) return nid;
     }
     return null;
+}
+
+/// True if any edge in the graph has the given discovery source.
+pub fn hasEdgeWithSource(g: *const Graph, source_kind: EdgeSource) bool {
+    for (g.edges.items) |e| {
+        if (e.source == source_kind) return true;
+    }
+    return false;
+}
+
+/// Count edges in the graph with the given discovery source.
+pub fn countEdgesBySource(g: *const Graph, source_kind: EdgeSource) usize {
+    var count: usize = 0;
+    for (g.edges.items) |e| {
+        if (e.source == source_kind) count += 1;
+    }
+    return count;
 }
 
 /// Walk the parent chain to check if node_id is a descendant of ancestor_id.

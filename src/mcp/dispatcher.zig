@@ -5,7 +5,7 @@ const Tool = protocol.Tool;
 const P = protocol.SchemaProperty;
 
 const node_kinds = [_][]const u8{ "file", "module", "function", "type_def", "enum_def", "field", "constant", "test_def", "error_def", "import_decl", "union_def", "directory" };
-const edge_types = [_][]const u8{ "calls", "imports", "uses_type", "similar_to", "exports", "implements" };
+const edge_types = [_][]const u8{ "accesses_field", "calls", "imports", "uses_type", "similar_to", "exports", "implements", "contains" };
 const languages = [_][]const u8{ "zig", "rust" };
 
 const tool_defs = [_]Tool{
@@ -230,7 +230,7 @@ const tool_defs = [_]Tool{
         .description = "Compute coupling metrics between modules. Returns pairs ranked by coupling strength.",
         .properties = &.{
             P{ .name = "scope" },
-            P{ .name = "granularity", .enum_values = &[_][]const u8{ "file", "directory" }, .default_str = "directory" },
+            P{ .name = "granularity", .enum_values = &[_][]const u8{ "file", "directory" }, .default_str = "file" },
             P{ .name = "min_coupling", .type = "number", .default_float = 0.3 },
             P{ .name = "top_n", .type = "integer", .default_int = 10 },
             P{ .name = "external", .enum_values = &[_][]const u8{ "include", "exclude" }, .default_str = "exclude", .description = "Include coupling to external deps in the analysis." },

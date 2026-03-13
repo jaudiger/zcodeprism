@@ -12,6 +12,9 @@ const phantom_mod = @import("../core/phantom.zig");
 const metrics_mod = @import("../core/metrics.zig");
 const source_scan = @import("source_scan.zig");
 const enrichment = @import("../enrichment/enrichment.zig");
+const worklist_mod = @import("../lsp/worklist.zig");
+const LspWorklist = worklist_mod.LspWorklist;
+const WorklistEntry = worklist_mod.WorklistEntry;
 
 const Field = logging.Field;
 const Logger = logging.Logger;
@@ -85,14 +88,11 @@ const FileInfo = struct {
 ///
 /// Files are parsed in topological order so that imported files are visited
 /// before their importers. After all files are processed, the graph is frozen.
-///
-/// Returns an `IndexResult` with per-file counters. The caller owns `graph`;
-/// the indexer transfers ownership of file content and path buffers into
-/// `graph.owned_buffers`.
 pub fn indexDirectory(
     allocator: std.mem.Allocator,
     project_root: []const u8,
     graph: *Graph,
+    out_worklist: ?*LspWorklist,
     options: IndexOptions,
 ) !IndexResult {
     var result = IndexResult{};
@@ -194,10 +194,33 @@ pub fn indexDirectory(
 
     try graph_index.buildImportTargets(allocator, graph.edges.items);
 
+    var local_wl = LspWorklist{};
+    defer local_wl.deinit(allocator);
+    const wl: *LspWorklist = out_worklist orelse &local_wl;
+
     try resolvePhantomNodes(allocator, graph, file_infos.items, &phantom, &graph_index, build_config, log);
 
+    // Transfer phantom usage sites into the phantom_hovers list, one entry per phantom NodeId.
+    {
+        var sit = phantom.usage_sites.iterator();
+        while (sit.next()) |kv| {
+            try wl.appendPhantomHover(allocator, WorklistEntry{
+                .source_node_id = kv.key_ptr.*,
+                .file_path = kv.value_ptr.file_path,
+                .line = kv.value_ptr.line,
+                .col = kv.value_ptr.col,
+                .query_kind = .hover,
+                .hint_name = kv.value_ptr.hint_name,
+            });
+        }
+    }
+
     log.debug("building edges", &.{Field.uint("file_count", file_infos.items.len)});
-    buildCrossFileEdges(allocator, graph, file_infos.items, &graph_index, &phantom, log);
+    buildCrossFileEdges(allocator, graph, file_infos.items, &graph_index, &phantom, wl, log);
+
+    if (wl.count() > 0) {
+        log.info("worklist entries collected", &.{Field.uint("count", wl.count())});
+    }
 
     if (module_file_map.count() > 0) {
         try buildModuleContainsEdges(allocator, graph, file_infos.items, &module_file_map);
@@ -220,6 +243,26 @@ pub fn indexDirectory(
     try graph.freeze(allocator);
 
     try enrichment.enrichPostFreeze(allocator, graph, .{ .logger = log });
+
+    // Append hover entries for Zig function nodes that still need error set inference.
+    // Runs after enrichPreFreeze and enrichPostFreeze so AST-extracted error sets are
+    // already present; functions with inferred_errors are skipped.
+    for (graph.nodes.items) |n| {
+        if (n.kind != .function) continue;
+        if (n.language != .zig) continue;
+        if (n.lang_meta == .zig and n.lang_meta.zig.inferred_errors != null) continue;
+        const file_path = n.file_path orelse continue;
+        const line_start = n.line_start orelse continue;
+        const lsp_line: u32 = if (line_start > 0) line_start - 1 else 0;
+        try wl.append(allocator, WorklistEntry{
+            .source_node_id = n.id,
+            .file_path = file_path,
+            .line = lsp_line,
+            .col = n.col_start orelse 0,
+            .query_kind = .hover,
+            .hint_name = n.name,
+        });
+    }
 
     return result;
 }
@@ -529,19 +572,21 @@ fn resolvePhantomNodes(
     }
 }
 
-/// Call each language's buildEdgesFn for every file.
+/// Call each language's buildEdgesFn for every file. Unresolved references
+/// are appended to `wl`.
 fn buildCrossFileEdges(
     allocator: std.mem.Allocator,
     graph: *Graph,
     infos: []const FileInfo,
     graph_index: *GraphIndex,
     phantom: *PhantomManager,
+    wl: *LspWorklist,
     log: Logger,
 ) void {
     for (infos) |fi| {
         const build_edges = fi.lang_support.buildEdgesFn orelse continue;
         const file_node = graph.nodes.items[fi.node_idx];
-        build_edges(allocator, fi.source, graph, fi.node_idx, fi.scope_end, file_node.file_path, graph_index, phantom, log) catch |err| {
+        build_edges(allocator, fi.source, graph, fi.node_idx, fi.scope_end, file_node.file_path, graph_index, phantom, wl, log) catch |err| {
             log.warn("edge building failed", &.{
                 Field.string("path", file_node.file_path orelse "?"),
                 Field.string("error", @errorName(err)),
@@ -648,7 +693,7 @@ fn buildDepGraph(
     var import_buf: [256]lang.ImportEntry = undefined;
     for (entries, 0..) |fe, i| {
         const extract_fn = fe.lang_support.extractImportsFn orelse continue;
-        const count = extract_fn(fe.content, &import_buf);
+        const count = extract_fn(fe.content, fe.lang_support.grammarFn(), &import_buf);
         for (import_buf[0..count]) |ie| {
             if (ie.kind != .project_file) continue;
             const dep_idx = resolveToEntryIdx(relpath_map, fe.rel_path, ie.path, fe.lang_support.resolveImportPathFn) orelse continue;

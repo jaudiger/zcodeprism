@@ -10,6 +10,9 @@ const mermaid = zcodeprism.mermaid;
 const render_common = zcodeprism.render_common;
 const snapshot = zcodeprism.storage.snapshot;
 const snapshot_diff = zcodeprism.diff.snapshot_diff;
+const lang_support = zcodeprism.language_support;
+const lsp_enricher = zcodeprism.lsp.enricher;
+const registry = zcodeprism.registry;
 const storage = zcodeprism.storage;
 const workspace_mod = zcodeprism.workspace;
 const Graph = zcodeprism.Graph;
@@ -305,7 +308,10 @@ fn runIndex(stdout: *std.Io.Writer, stderr: *std.Io.Writer, verbosity: u8) void 
     var graph = Graph.init(project_root);
     defer graph.deinit(allocator);
 
-    const idx_result = indexer.indexDirectory(allocator, project_root, &graph, .{
+    var wl = zcodeprism.lsp.worklist.LspWorklist{};
+    defer wl.deinit(allocator);
+
+    const idx_result = indexer.indexDirectory(allocator, project_root, &graph, &wl, .{
         .exclude_paths = full.exclude_paths orelse config.defaultExcludePaths(),
         .logger = logger,
     }) catch |err| {
@@ -313,6 +319,20 @@ fn runIndex(stdout: *std.Io.Writer, stderr: *std.Io.Writer, verbosity: u8) void 
         stderr.flush() catch {};
         std.process.exit(1);
     };
+
+    // LSP enrichment pass.
+    var lsp_result = EnrichResult{};
+    for (registry.Registry.allLanguages()) |ls| {
+        const result = lsp_enricher.enrich(allocator, &graph, ls, &wl, .{
+            .logger = logger,
+            .project_root = project_root,
+        }) catch |err| {
+            stderr.print("LSP enrichment failed: {s}\n", .{@errorName(err)}) catch {};
+            stderr.flush() catch {};
+            std.process.exit(1);
+        };
+        lsp_result.accumulate(result);
+    }
 
     const fmt = if (full.storage) |s| s.format orelse .binary else .binary;
     switch (fmt) {
@@ -337,6 +357,7 @@ fn runIndex(stdout: *std.Io.Writer, stderr: *std.Io.Writer, verbosity: u8) void 
         graph.nodeCount(),
         graph.edgeCount(),
     }) catch {};
+    printEnrichSummary(stdout, lsp_result);
     stdout.flush() catch {};
 }
 
@@ -792,4 +813,35 @@ fn runStatus(stdout: *std.Io.Writer, stderr: *std.Io.Writer, workspace_arg: ?[]c
         },
     ) catch {};
     stdout.flush() catch {};
+}
+
+const EnrichResult = lang_support.EnrichResult;
+
+fn printEnrichSummary(stdout: *std.Io.Writer, result: EnrichResult) void {
+    const fields = .{
+        .{ result.edges_promoted, "edges promoted" },
+        .{ result.edges_added, "edges added" },
+        .{ result.errors_inferred, "errors inferred" },
+        .{ result.phantoms_enriched, "phantoms enriched" },
+    };
+
+    var has_any = false;
+    inline for (fields) |f| {
+        if (f[0] > 0) has_any = true;
+    }
+    if (!has_any) return;
+
+    stdout.writeAll("LSP enrichment:") catch return;
+    var first = true;
+    inline for (fields) |f| {
+        if (f[0] > 0) {
+            stdout.print("{s}{} {s}", .{
+                if (first) @as([]const u8, " ") else @as([]const u8, ", "),
+                f[0],
+                f[1],
+            }) catch return;
+            first = false;
+        }
+    }
+    stdout.writeAll("\n") catch {};
 }

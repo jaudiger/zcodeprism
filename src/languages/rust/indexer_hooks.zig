@@ -1,13 +1,18 @@
 const std = @import("std");
+const ts = @import("tree-sitter");
 const graph_mod = @import("../../core/graph.zig");
 const phantom_mod = @import("../../core/phantom.zig");
 const graph_index_mod = @import("../../core/graph_index.zig");
 const source_scan = @import("../../parser/source_scan.zig");
+const ts_api = @import("../../parser/tree_sitter_api.zig");
 const source_utils = @import("source_utils.zig");
 const impl_resolve = @import("impl_resolve.zig");
 const logging = @import("../../logging.zig");
 const types = @import("../../core/types.zig");
 const lang = @import("../language.zig");
+const rust_ctx = @import("parse_context.zig");
+const node_mod = @import("../../core/node.zig");
+const worklist_mod = @import("../../lsp/worklist.zig");
 
 const Graph = graph_mod.Graph;
 const PhantomManager = phantom_mod.PhantomManager;
@@ -22,60 +27,54 @@ const ImportEntry = lang.ImportEntry;
 const ImportKind = lang.ImportKind;
 const ExternalInfo = lang.ExternalInfo;
 const BuildConfig = lang.BuildConfig;
+const Node = node_mod.Node;
+const UsageSite = worklist_mod.UsageSite;
 
-/// Scan Rust source text for `mod <name>;` patterns (external module declarations).
-/// Returns the number of entries written to `out`.
-pub fn extractImports(source: []const u8, out: []ImportEntry) usize {
-    var pos: usize = 0;
+/// Parse source with tree-sitter and extract external mod declarations from the AST.
+///
+/// Writes results into `out` and returns the count of entries written.
+pub fn extractImports(source: []const u8, ts_language: *const ts.Language, out: []ImportEntry) usize {
+    const tree = ts_api.parseSource(ts_language, source) orelse return 0;
+    defer tree.destroy();
+
+    const k = rust_ctx.KindIds.init(ts_language);
+    const root = tree.rootNode();
     var count: usize = 0;
 
-    while (pos < source.len) {
-        // Find next "mod " at a word boundary.
-        const idx = std.mem.indexOf(u8, source[pos..], "mod ") orelse break;
-        const abs_idx = pos + idx;
-
-        // Ensure word boundary before "mod".
-        if (abs_idx > 0 and source_scan.isIdentChar(source[abs_idx - 1])) {
-            pos = abs_idx + 4;
-            continue;
-        }
-
-        const name_start = abs_idx + 4;
-        if (name_start >= source.len) break;
-
-        // Skip whitespace after "mod ".
-        var ns = name_start;
-        while (ns < source.len and (source[ns] == ' ' or source[ns] == '\t')) ns += 1;
-        if (ns >= source.len) break;
-
-        // Read identifier.
-        var ne = ns;
-        while (ne < source.len and source_scan.isIdentChar(source[ne])) ne += 1;
-        if (ne == ns) {
-            pos = ne;
-            continue;
-        }
-
-        const name = source[ns..ne];
-
-        // Skip whitespace after name.
-        var after = ne;
-        while (after < source.len and (source[after] == ' ' or source[after] == '\t')) after += 1;
-
-        // Check for semicolon (external module) vs '{' (inline module).
-        if (after < source.len and source[after] == ';') {
-            if (count < out.len) {
-                out[count] = .{
-                    .path = name,
-                    .kind = .project_file,
-                };
-                count += 1;
-            }
-        }
-
-        pos = if (after < source.len) after + 1 else source.len;
+    var i: u32 = 0;
+    while (i < root.namedChildCount()) : (i += 1) {
+        if (count >= out.len) break;
+        const child = root.namedChild(i) orelse continue;
+        if (child.kindId() != k.mod_item) continue;
+        // Skip inline modules (they have a declaration_list body).
+        if (hasChildOfKind(child, k.declaration_list)) continue;
+        const name = extractIdentifier(source, child, k) orelse continue;
+        out[count] = .{
+            .path = name,
+            .kind = .project_file,
+        };
+        count += 1;
     }
     return count;
+}
+
+fn hasChildOfKind(node: ts.Node, kind_id: u16) bool {
+    var ci: u32 = 0;
+    while (ci < node.namedChildCount()) : (ci += 1) {
+        const c = node.namedChild(ci) orelse continue;
+        if (c.kindId() == kind_id) return true;
+    }
+    return false;
+}
+
+/// Return the text of the first identifier child.
+fn extractIdentifier(source: []const u8, node: ts.Node, k: rust_ctx.KindIds) ?[]const u8 {
+    var ci: u32 = 0;
+    while (ci < node.namedChildCount()) : (ci += 1) {
+        const c = node.namedChild(ci) orelse continue;
+        if (c.kindId() == k.identifier) return ts_api.nodeText(source, c);
+    }
+    return null;
 }
 
 /// Resolve a Rust module import path relative to the importing file.
@@ -203,7 +202,8 @@ fn isLocalCrate(crate_name: []const u8, importer_path: ?[]const u8, file_index: 
 
 /// Create phantom nodes and edges for all `use` declarations in a single Rust file.
 /// Stdlib paths map to the `.stdlib` external variant; all other crates map
-/// to `.dependency`.
+/// to `.dependency`. Records a usage site for each phantom so the worklist
+/// transfer loop in indexer.zig can build phantom hover entries.
 pub fn resolvePhantoms(
     allocator: std.mem.Allocator,
     graph: *Graph,
@@ -219,6 +219,7 @@ pub fn resolvePhantoms(
     _ = source;
 
     const file_id: NodeId = @enumFromInt(file_idx);
+    const file_path = graph.nodes.items[file_idx].file_path;
     const clamped_end = @min(scope_end, graph.nodes.items.len);
 
     // Track root crate phantoms created this call to avoid duplicate file edges.
@@ -236,12 +237,15 @@ pub fn resolvePhantoms(
 
         const sep_pos = std.mem.indexOf(u8, path, "::") orelse continue;
         const crate = path[0..sep_pos];
-        if (isLocalCrate(crate, graph.nodes.items[file_idx].file_path, &graph_index.files)) continue;
+        if (isLocalCrate(crate, file_path, &graph_index.files)) continue;
 
         const external: ExternalInfo = if (std.mem.eql(u8, crate, "std"))
             .{ .stdlib = {} }
         else
             .{ .dependency = .{ .version = null } };
+
+        // 0-based LSP position derived from the import_decl node's 1-based line.
+        const site = usageSiteFromNode(n, file_path, crate);
 
         // Ensure the root crate phantom exists and has a file-level edge.
         const import_decl_id: NodeId = @enumFromInt(node_idx);
@@ -256,6 +260,7 @@ pub fn resolvePhantoms(
             if (!found) {
                 const crate_id = try phantom.getOrCreate(allocator, crate, .rust, external);
                 _ = try graph.addEdgeIfNew(allocator, .{ .source_id = file_id, .target_id = crate_id, .edge_type = .imports, .source = .phantom });
+                if (site) |s| try phantom.recordUsageSite(allocator, crate_id, s);
                 if (crate_count < max_crates) {
                     seen_crates[crate_count] = .{ .name = crate, .id = crate_id };
                     crate_count += 1;
@@ -271,15 +276,27 @@ pub fn resolvePhantoms(
                 path[0 .. path.len - 2]
             else
                 path;
-            try expandGroupPhantoms(allocator, graph, file_id, import_decl_id, phantom, common, group, crate, external, log);
+            try expandGroupPhantoms(allocator, graph, file_id, import_decl_id, phantom, common, group, crate, external, site, log);
         } else {
-            try createExternalPhantom(allocator, graph, file_id, import_decl_id, phantom, path, crate, external, log);
+            try createExternalPhantom(allocator, graph, file_id, import_decl_id, phantom, path, crate, external, site, log);
         }
     }
 
     try resolveScopedFieldPhantoms(allocator, graph, file_idx, clamped_end, phantom, graph_index, log);
 
     try impl_resolve.resolveImplementsEdges(allocator, graph, file_idx, clamped_end, phantom, graph_index);
+}
+
+/// Build a UsageSite from an import_decl node's stored position.
+/// Returns null when the node has no line_start.
+fn usageSiteFromNode(n: Node, file_path: ?[]const u8, hint_name: ?[]const u8) ?UsageSite {
+    const ls = n.line_start orelse return null;
+    return .{
+        .file_path = file_path orelse return null,
+        .line = if (ls > 0) ls - 1 else 0,
+        .col = n.col_start orelse 0,
+        .hint_name = hint_name,
+    };
 }
 
 /// Expand a brace group and create phantom nodes for each member. Handles
@@ -294,6 +311,7 @@ fn expandGroupPhantoms(
     group: []const u8,
     crate: []const u8,
     external: ExternalInfo,
+    site: ?UsageSite,
     log: Logger,
 ) error{OutOfMemory}!void {
     var pos: usize = 0;
@@ -329,7 +347,7 @@ fn expandGroupPhantoms(
                         nested_buf[common_prefix.len] = ':';
                         nested_buf[common_prefix.len + 1] = ':';
                         @memcpy(nested_buf[common_prefix.len + 2 ..][0..ident.len], ident);
-                        try expandGroupPhantoms(allocator, graph, file_id, import_decl_id, phantom, nested_buf[0..needed], group[pos + 1 .. close], crate, external, log);
+                        try expandGroupPhantoms(allocator, graph, file_id, import_decl_id, phantom, nested_buf[0..needed], group[pos + 1 .. close], crate, external, site, log);
                     }
                     pos = close + 1;
                 } else break;
@@ -354,14 +372,15 @@ fn expandGroupPhantoms(
             full_buf[common_prefix.len] = ':';
             full_buf[common_prefix.len + 1] = ':';
             @memcpy(full_buf[common_prefix.len + 2 ..][0..ident.len], ident);
-            try createExternalPhantom(allocator, graph, file_id, import_decl_id, phantom, full_buf[0..needed], crate, external, log);
+            try createExternalPhantom(allocator, graph, file_id, import_decl_id, phantom, full_buf[0..needed], crate, external, site, log);
         }
     }
 }
 
 /// Create a phantom node for a single Rust `::` path. Converts the path to
 /// dot-separated form, infers the edge type from the leaf segment's case,
-/// and attaches edges from both the file node and the import_decl node.
+/// attaches edges from both the file node and the import_decl node, and
+/// records the import_decl's position as the phantom's usage site.
 fn createExternalPhantom(
     allocator: std.mem.Allocator,
     graph: *Graph,
@@ -371,6 +390,7 @@ fn createExternalPhantom(
     path: []const u8,
     crate: []const u8,
     external: ExternalInfo,
+    site: ?UsageSite,
     log: Logger,
 ) error{OutOfMemory}!void {
     _ = log;
@@ -386,6 +406,8 @@ fn createExternalPhantom(
     const edge_type: EdgeType = if (is_type) .uses_type else .imports;
 
     const leaf_id = try phantom.getOrCreate(allocator, qname, .rust, external);
+    if (site) |s| try phantom.recordUsageSite(allocator, leaf_id, s);
+
     _ = try graph.addEdgeIfNew(allocator, .{
         .source_id = file_id,
         .target_id = leaf_id,
@@ -488,6 +510,11 @@ fn resolveScopedFieldPhantoms(
             const qname = impl_resolve.rustPathToDot(full_buf[0..needed], &qname_buf) orelse continue;
 
             const leaf_id = try phantom.getOrCreate(allocator, qname, .rust, entry.external);
+
+            // Record the field's position as the usage site for this phantom.
+            if (usageSiteFromNode(n, importer_path, type_name)) |s| {
+                try phantom.recordUsageSite(allocator, leaf_id, s);
+            }
 
             // Walk up from the field to find the owning struct/enum.
             var owner_id = n.parent_id orelse continue;

@@ -1,7 +1,7 @@
-//! Enrichment pipeline: the sole authority for all node metrics and
-//! error set population. Designed as a two-phase pipeline (pre-freeze
-//! and post-freeze) so that LSP integration later only needs to re-run
-//! the post-freeze pass after adding new edges.
+//! Enrichment pipeline: two-phase computation split around freeze().
+//! Pre-freeze computes source-level metrics (structural_hash, lines).
+//! Post-freeze computes fan metrics (fan_in, fan_out) and propagates
+//! error sets.
 
 const std = @import("std");
 const graph_mod = @import("../core/graph.zig");
@@ -15,9 +15,7 @@ const Graph = graph_mod.Graph;
 const Logger = logging.Logger;
 const Field = logging.Field;
 
-/// Per-file source info needed for source-level metrics.
-/// Mirrors the relevant fields of indexer.FileInfo without coupling
-/// the enrichment module to the indexer.
+/// Per-file source info for source-level metric computation.
 pub const FileSource = struct {
     /// Index of the file node in graph.nodes.
     node_idx: usize,
@@ -32,35 +30,25 @@ pub const EnrichmentOptions = struct {
     logger: Logger = Logger.noop,
 };
 
-/// Pre-freeze pass: source metrics + fan-out + error set extraction.
-/// Idempotent. Call after all nodes and edges exist, before freeze().
+/// Pre-freeze pass: source-level metrics only.
+/// Idempotent. Call after all nodes exist, before freeze().
 pub fn enrichPreFreeze(
     allocator: std.mem.Allocator,
     graph: *Graph,
     file_sources: []const FileSource,
     options: EnrichmentOptions,
 ) !void {
+    _ = allocator;
     const log = options.logger;
 
-    // Source-level metrics: complexity, lines, structural_hash,
-    // branches, loops, error_paths, nesting_depth_max.
     for (file_sources) |fs| {
         source_metrics.computeAllSourceMetrics(graph, fs.source, fs.node_idx, fs.scope_end);
     }
     log.debug("source metrics computed", &.{Field.uint("files", file_sources.len)});
-
-    // Fan-out from edges (calls + uses_type).
-    fan_metrics.computeFanOut(graph);
-    log.debug("fan-out computed", &.{});
-
-    // Error set name extraction from error_def signatures.
-    try error_sets.extractErrorSets(allocator, graph);
-    log.debug("error sets extracted", &.{});
 }
 
-/// Post-freeze pass: fan-in + error set propagation.
-/// Idempotent. Call after freeze(). Re-run after LSP adds edges
-/// and re-freezes.
+/// Post-freeze pass: fan_in, fan_out, and error set propagation.
+/// Idempotent.
 pub fn enrichPostFreeze(
     allocator: std.mem.Allocator,
     graph: *Graph,
@@ -68,11 +56,10 @@ pub fn enrichPostFreeze(
 ) !void {
     const log = options.logger;
 
-    // Fan-in from edges (calls + uses_type).
+    fan_metrics.computeFanOut(graph);
     fan_metrics.computeFanIn(graph);
-    log.debug("fan-in computed", &.{});
+    log.debug("fan metrics computed", &.{});
 
-    // Error set propagation along call edges.
     try error_sets.propagateErrorSets(allocator, graph, log);
 }
 

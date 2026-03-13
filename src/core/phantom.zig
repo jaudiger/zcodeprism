@@ -3,6 +3,7 @@ const graph_mod = @import("graph.zig");
 const types = @import("types.zig");
 const node_mod = @import("node.zig");
 const lang = @import("../languages/language.zig");
+const worklist_mod = @import("../lsp/worklist.zig");
 
 const Graph = graph_mod.Graph;
 const Node = node_mod.Node;
@@ -10,6 +11,7 @@ const NodeId = types.NodeId;
 const NodeKind = types.NodeKind;
 const Language = types.Language;
 const ExternalInfo = lang.ExternalInfo;
+const UsageSite = worklist_mod.UsageSite;
 
 /// Deduplicated store for phantom nodes -- external symbols (stdlib, dependencies)
 /// referenced but not defined in the project.
@@ -21,12 +23,14 @@ const ExternalInfo = lang.ExternalInfo;
 pub const PhantomManager = struct {
     graph: *Graph,
     lookup: std.StringHashMapUnmanaged(NodeId),
+    usage_sites: std.AutoHashMapUnmanaged(NodeId, UsageSite),
 
     /// Creates a new PhantomManager backed by the given graph.
     pub fn init(graph: *Graph) PhantomManager {
         return .{
             .graph = graph,
             .lookup = .{},
+            .usage_sites = .{},
         };
     }
 
@@ -92,6 +96,18 @@ pub const PhantomManager = struct {
         return self.lookup.get(qualified_name).?;
     }
 
+    /// Records the first usage site seen for the given phantom node.
+    /// Subsequent calls for the same `id` are ignored.
+    pub fn recordUsageSite(
+        self: *PhantomManager,
+        allocator: std.mem.Allocator,
+        id: NodeId,
+        site: UsageSite,
+    ) error{OutOfMemory}!void {
+        const gop = try self.usage_sites.getOrPut(allocator, id);
+        if (!gop.found_existing) gop.value_ptr.* = site;
+    }
+
     /// Find a phantom node by its leaf segment (the name after the last '.').
     /// Returns null if no match exists or if multiple phantoms share the same leaf.
     pub fn findByShortName(self: *const PhantomManager, name: []const u8) ?NodeId {
@@ -110,16 +126,17 @@ pub const PhantomManager = struct {
         return match;
     }
 
-    /// Frees all lookup-key memory owned by this manager.
+    /// Frees all memory owned by this manager.
     ///
-    /// Does not free the phantom nodes themselves; those are owned by the graph.
-    /// `allocator` must be the same allocator used for all prior getOrCreate calls.
+    /// Does not free the phantom nodes themselves.
+    /// `allocator` must be the same allocator used for all prior calls.
     pub fn deinit(self: *PhantomManager, allocator: std.mem.Allocator) void {
         var it = self.lookup.iterator();
         while (it.next()) |entry| {
             allocator.free(@constCast(entry.key_ptr.*));
         }
         self.lookup.deinit(allocator);
+        self.usage_sites.deinit(allocator);
     }
 
     /// Intermediate segments are always modules. Leaf segments use naming

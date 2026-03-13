@@ -29,8 +29,6 @@ pub const max_chain_depth = shared_types.max_chain_depth;
 pub const max_ast_scan_depth = shared_types.max_ast_scan_depth;
 pub const ImportEntry = shared_types.ImportEntry;
 pub const EdgeContext = shared_types.EdgeContext;
-pub const VarBinding = shared_types.VarBinding;
-pub const VarTracker = shared_types.VarTracker;
 pub const ResolvedEdge = shared_types.ResolvedEdge;
 pub const resolveQualifiedCall = shared_resolve.resolveQualifiedCall;
 
@@ -896,7 +894,7 @@ pub fn resolveVarTargetThroughReturnType(
 
 /// Collect identifier segments from a Rust field_expression chain for variable resolution.
 /// Handles nested field_expression and call_expression wrappers.
-fn collectFieldChainForVar(source: []const u8, node: ts.Node, chain: *[max_chain_depth][]const u8, count: *usize, k: *const KindIds) void {
+pub fn collectFieldChainForVar(source: []const u8, node: ts.Node, chain: *[max_chain_depth][]const u8, count: *usize, k: *const KindIds) void {
     const kid = node.kindId();
     if (kid == k.identifier or kid == k.type_identifier) {
         if (count.* < max_chain_depth) {

@@ -1,6 +1,7 @@
 const std = @import("std");
 const graph_mod = @import("../../core/graph.zig");
 const logging = @import("../../logging.zig");
+const metrics_mod = @import("../../core/metrics.zig");
 const node_mod = @import("../../core/node.zig");
 const types = @import("../../core/types.zig");
 const lang = @import("../language.zig");
@@ -12,6 +13,8 @@ const eb = @import("edge_builder.zig");
 const pc = @import("parse_context.zig");
 const fixtures = @import("test-fixtures");
 const phantom_mod = @import("../../core/phantom.zig");
+
+const Metrics = metrics_mod.Metrics;
 
 const KindIds = pc.KindIds;
 const GraphIndex = @import("../../core/graph_index.zig").GraphIndex;
@@ -103,7 +106,8 @@ pub fn parse(allocator: std.mem.Allocator, source: []const u8, g: *Graph, file_p
 }
 
 /// Re-parse source and emit cross-file edges for the Zig file at file_idx.
-pub fn buildEdges(allocator: std.mem.Allocator, source: []const u8, g: *Graph, file_idx: usize, scope_end: usize, file_path: ?[]const u8, graph_index: *const GraphIndex, phantom_mgr: *const phantom_mod.PhantomManager, logger: Logger) error{OutOfMemory}!void {
+/// Unresolved references are appended to `wl`.
+pub fn buildEdges(allocator: std.mem.Allocator, source: []const u8, g: *Graph, file_idx: usize, scope_end: usize, file_path: ?[]const u8, graph_index: *const GraphIndex, phantom_mgr: *const phantom_mod.PhantomManager, wl: *@import("../../lsp/worklist.zig").LspWorklist, logger: Logger) error{OutOfMemory}!void {
     const log = logger.withScope("zig-edges");
 
     const ts_lang = ts_api.tree_sitter_zig();
@@ -124,7 +128,7 @@ pub fn buildEdges(allocator: std.mem.Allocator, source: []const u8, g: *Graph, f
     try cf.buildImportMap(allocator, g, source, root, &ctx, &graph_index.files, file_path, &k, log);
 
     log.debug("building edges", &.{});
-    try eb.walkForEdges(allocator, g, source, root, &ctx, &k, graph_index, phantom_mgr, log);
+    try eb.walkForEdges(allocator, g, source, root, &ctx, &k, graph_index, phantom_mgr, wl, log);
 }
 
 /// Dispatch a single top-level or nested declaration to the appropriate
@@ -144,6 +148,57 @@ fn processDeclaration(allocator: std.mem.Allocator, ctx: *const VisitorContext, 
     } else if (kid == ctx.k.comptime_declaration) {
         try processComptimeDecl(allocator, ctx, ts_node, parent_id);
     }
+}
+
+/// Walk an error_set_declaration AST node and collect identifier children
+/// into a flat buffer + slice array, both registered in graph.owned_buffers.
+/// Returns null if the node has no identifier children.
+fn extractErrorSetNames(allocator: std.mem.Allocator, g: *Graph, source: []const u8, body: ts.Node, k: *const KindIds) error{OutOfMemory}!?[]const []const u8 {
+    // Count identifiers and total name length.
+    var count: usize = 0;
+    var flat_len: usize = 0;
+    var i: u32 = 0;
+    while (i < body.childCount()) : (i += 1) {
+        const child = body.child(i) orelse continue;
+        if (child.kindId() != k.identifier) continue;
+        const end = child.endByte();
+        const start = child.startByte();
+        if (end <= start) continue;
+        count += 1;
+        flat_len += end - start;
+    }
+    if (count == 0) return null;
+
+    // Allocate flat buffer + slice array (MAF).
+    const flat_buf = try allocator.alloc(u8, flat_len);
+    errdefer allocator.free(flat_buf);
+    const slices = try allocator.alloc([]const u8, count);
+    errdefer allocator.free(slices);
+
+    // Fill from AST identifier nodes.
+    var pos: usize = 0;
+    var si: usize = 0;
+    i = 0;
+    while (i < body.childCount()) : (i += 1) {
+        const child = body.child(i) orelse continue;
+        if (child.kindId() != k.identifier) continue;
+        const end = child.endByte();
+        const start = child.startByte();
+        if (end <= start) continue;
+        const len = end - start;
+        @memcpy(flat_buf[pos..][0..len], source[start..end]);
+        slices[si] = flat_buf[pos..][0..len];
+        pos += len;
+        si += 1;
+    }
+    std.debug.assert(pos == flat_len);
+    std.debug.assert(si == count);
+
+    // Hand ownership to the graph.
+    try g.addOwnedBuffer(allocator, flat_buf);
+    try g.addOwnedSlice(allocator, []const u8, slices);
+
+    return slices;
 }
 
 /// Process a const/var declaration and add a graph node for it.
@@ -191,13 +246,20 @@ fn processVariableDecl(allocator: std.mem.Allocator, ctx: *const VisitorContext,
     const is_extern = if (classification.body) |body| ast.hasKeyword(body, ctx.k.extern_kw) else false;
     const comptime_conditional = classification.comptime_conditional;
 
-    const has_zig_meta = is_mutable or is_comptime or is_packed or is_extern or comptime_conditional;
+    // Extract error value names from the error_set_declaration body.
+    const error_set_names: ?[]const []const u8 = if (kind == .error_def)
+        if (classification.body) |body| try extractErrorSetNames(allocator, ctx.g, ctx.source, body, ctx.k) else null
+    else
+        null;
+
+    const has_zig_meta = is_mutable or is_comptime or is_packed or is_extern or comptime_conditional or error_set_names != null;
     const lang_meta: LangMeta = if (has_zig_meta) .{ .zig = .{
         .is_mutable = is_mutable,
         .is_comptime = is_comptime,
         .is_packed = is_packed,
         .is_extern = is_extern,
         .comptime_conditional = comptime_conditional,
+        .error_set_names = error_set_names,
     } } else .{ .none = {} };
 
     // For import declarations, store the import path extracted from the AST.
@@ -219,6 +281,8 @@ fn processVariableDecl(allocator: std.mem.Allocator, ctx: *const VisitorContext,
         .signature = sig,
         .line_start = ts_node.startPoint().row + 1,
         .line_end = ts_node.endPoint().row + 1,
+        .col_start = if (ast.getIdentifierNode(ts_node, ctx.k)) |id_node| id_node.startPoint().column else null,
+        .col_end = if (ast.getIdentifierNode(ts_node, ctx.k)) |id_node| id_node.endPoint().column else null,
         .lang_meta = lang_meta,
     });
 
@@ -231,6 +295,91 @@ fn processVariableDecl(allocator: std.mem.Allocator, ctx: *const VisitorContext,
             try processDeclaration(allocator, ctx, child, node_id);
         }
     }
+}
+
+/// Running tallies for control-flow metrics.
+const MetricsAccum = struct {
+    complexity: u16 = 1,
+    branches: u16 = 0,
+    loops: u16 = 0,
+    error_paths: u16 = 0,
+    max_depth: u16 = 0,
+};
+
+/// Walk a function body AST and return intrinsic metrics.
+fn computeFunctionMetrics(body: ts.Node, k: *const KindIds) Metrics {
+    var acc = MetricsAccum{};
+    walkForMetrics(body, k, 0, &acc);
+    return .{
+        .complexity = acc.complexity,
+        .branches = acc.branches,
+        .loops = acc.loops,
+        .error_paths = acc.error_paths,
+        .nesting_depth_max = if (acc.max_depth > std.math.maxInt(u8)) std.math.maxInt(u8) else @intCast(acc.max_depth),
+    };
+}
+
+/// Recursive walk over AST children, tallying control-flow nodes.
+fn walkForMetrics(node: ts.Node, k: *const KindIds, depth: u16, acc: *MetricsAccum) void {
+    const kid = node.kindId();
+
+    var child_depth = depth;
+    if (kid == k.block) {
+        child_depth = depth + 1;
+        if (child_depth > acc.max_depth) acc.max_depth = child_depth;
+    }
+
+    if (kid == k.if_statement or kid == k.if_expression) {
+        acc.complexity += 1;
+        acc.branches += 1;
+    } else if (kid == k.for_statement) {
+        acc.complexity += 1;
+        acc.loops += 1;
+    } else if (kid == k.while_statement) {
+        acc.complexity += 1;
+        acc.loops += 1;
+    } else if (kid == k.switch_expression) {
+        acc.complexity += 1;
+        acc.branches += 1;
+    } else if (kid == k.catch_expression) {
+        acc.complexity += 1;
+        acc.error_paths += 1;
+    } else if (kid == k.try_expression) {
+        acc.error_paths += 1;
+    } else if (kid == k.errdefer_statement) {
+        acc.error_paths += 1;
+    } else if (kid == k.binary_expression) {
+        if (hasAnonymousChild(node, k.orelse_kw)) {
+            acc.complexity += 1;
+            acc.branches += 1;
+        }
+    }
+
+    var i: u32 = 0;
+    while (i < node.childCount()) : (i += 1) {
+        const child = node.child(i) orelse continue;
+        walkForMetrics(child, k, child_depth, acc);
+    }
+}
+
+/// Find the first direct child that is a block node.
+fn findBlockChild(parent: ts.Node, k: *const KindIds) ?ts.Node {
+    var i: u32 = 0;
+    while (i < parent.childCount()) : (i += 1) {
+        const child = parent.child(i) orelse continue;
+        if (child.kindId() == k.block) return child;
+    }
+    return null;
+}
+
+/// Check whether a node has a direct anonymous child with the given kind ID.
+fn hasAnonymousChild(node: ts.Node, kind_id: u16) bool {
+    var i: u32 = 0;
+    while (i < node.childCount()) : (i += 1) {
+        const child = node.child(i) orelse continue;
+        if (!child.isNamed() and child.kindId() == kind_id) return true;
+    }
+    return false;
 }
 
 /// Process a function declaration and add a graph node for it.
@@ -307,6 +456,10 @@ fn processFunctionDecl(allocator: std.mem.Allocator, ctx: *const VisitorContext,
         .calling_convention = if (is_extern) ast.extractCallingConvention(ctx.source, ts_node, ctx.k) else null,
     } } else .{ .none = {} };
 
+    // Find the block body for metric computation and inner type discovery.
+    const block_body = findBlockChild(ts_node, ctx.k);
+    const metrics: ?Metrics = if (block_body) |body| computeFunctionMetrics(body, ctx.k) else null;
+
     const fn_id = try ctx.g.addNode(allocator, .{
         .id = .root,
         .name = name,
@@ -317,18 +470,15 @@ fn processFunctionDecl(allocator: std.mem.Allocator, ctx: *const VisitorContext,
         .doc = doc,
         .signature = signature,
         .lang_meta = lang_meta,
+        .metrics = metrics,
         .line_start = ts_node.startPoint().row + 1,
         .line_end = ts_node.endPoint().row + 1,
+        .col_start = if (ast.getIdentifierNode(ts_node, ctx.k)) |id_node| id_node.startPoint().column else null,
+        .col_end = if (ast.getIdentifierNode(ts_node, ctx.k)) |id_node| id_node.endPoint().column else null,
     });
 
-    // Discover inner type definitions inside the function block body.
-    var fi: u32 = 0;
-    while (fi < ts_node.childCount()) : (fi += 1) {
-        const child = ts_node.child(fi) orelse continue;
-        if (child.kindId() == ctx.k.block) {
-            try discoverInnerTypes(allocator, ctx, child, fn_id);
-            break;
-        }
+    if (block_body) |body| {
+        try discoverInnerTypes(allocator, ctx, body, fn_id);
     }
 }
 
@@ -376,6 +526,8 @@ fn processTestDecl(allocator: std.mem.Allocator, ctx: *const VisitorContext, ts_
         .doc = doc,
         .line_start = ts_node.startPoint().row + 1,
         .line_end = ts_node.endPoint().row + 1,
+        .col_start = if (ast.getIdentifierNode(ts_node, ctx.k)) |id_node| id_node.startPoint().column else null,
+        .col_end = if (ast.getIdentifierNode(ts_node, ctx.k)) |id_node| id_node.endPoint().column else null,
     });
 
     // Discover inner type definitions inside the test block body.
@@ -456,6 +608,8 @@ fn processContainerField(allocator: std.mem.Allocator, ctx: *const VisitorContex
         .doc = doc,
         .line_start = ts_node.startPoint().row + 1,
         .line_end = ts_node.endPoint().row + 1,
+        .col_start = if (ast.getIdentifierNode(ts_node, ctx.k)) |id_node| id_node.startPoint().column else null,
+        .col_end = if (ast.getIdentifierNode(ts_node, ctx.k)) |id_node| id_node.endPoint().column else null,
     });
 }
 
@@ -788,7 +942,7 @@ test "fields are private" {
     }
 }
 
-test "error_def has signature with error set body" {
+test "error_def has signature and error_set_names from AST" {
     // Arrange
     var g = Graph.init("/tmp/project");
     defer g.deinit(std.testing.allocator);
@@ -796,12 +950,19 @@ test "error_def has signature with error set body" {
     // Act
     try parse(std.testing.allocator, fixtures.zig.simple, &g, null, Logger.noop);
 
-    // Assert: at least one error_def has a non-null signature
+    // Assert: ParseError error_def has signature and extracted names
     var found = false;
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {
         const n = g.getNode(@enumFromInt(i)) orelse continue;
-        if (n.kind == .error_def and n.signature != null) {
+        if (n.kind == .error_def and std.mem.eql(u8, n.name, "ParseError")) {
+            try std.testing.expect(n.signature != null);
+            try std.testing.expect(n.lang_meta == .zig);
+            const names = n.lang_meta.zig.error_set_names.?;
+            try std.testing.expectEqual(@as(usize, 3), names.len);
+            try std.testing.expectEqualStrings("InvalidToken", names[0]);
+            try std.testing.expectEqualStrings("UnexpectedEof", names[1]);
+            try std.testing.expectEqualStrings("BadEncoding", names[2]);
             found = true;
             break;
         }

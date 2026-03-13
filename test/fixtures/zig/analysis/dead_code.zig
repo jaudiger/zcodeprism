@@ -24,3 +24,45 @@ test "exercise unreferenced private" {
     const result = unreferencedPrivate(10);
     try std.testing.expectEqual(@as(u32, 20), result);
 }
+
+const Counter = struct {
+    value: u32,
+    limit: u32,
+    label: []const u8,
+    orphaned: u32 = 0,
+
+    fn increment(self: @This()) @This() {
+        return .{ .value = self.value + 1, .limit = self.limit, .label = self.label };
+    }
+};
+
+/// Accesses Counter.value via struct literal and Counter.limit via field expression.
+pub fn useCounter() u32 {
+    var c = Counter{ .value = 0, .limit = 10, .label = "x" };
+    c = c.increment();
+    return c.limit;
+}
+
+test "local struct method called within test" {
+    var c = Counter{ .value = 0, .limit = 5, .label = "test" };
+    c = c.increment();
+    _ = c;
+}
+
+const ItemData = struct {
+    data: u64,
+};
+
+const PtrTarget = struct {
+    id: u32,
+};
+
+const OptTarget = struct {
+    name: []const u8,
+};
+
+pub const Container = struct {
+    direct: ItemData,
+    ptr: *PtrTarget,
+    opt: ?OptTarget,
+};

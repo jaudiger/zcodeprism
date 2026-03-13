@@ -409,11 +409,6 @@ pub const BuildConfig = struct {
     }
 };
 
-/// Callback that extracts import entries from raw source text.
-/// Writes up to `out.len` entries into the caller-provided buffer and
-/// returns the number of entries actually written.
-pub const ExtractImportsFn = *const fn (source: []const u8, out: []ImportEntry) usize;
-
 /// Callback that resolves an import path relative to the importing file.
 /// Returns a slice into `buf` with the resolved absolute path, or null if
 /// `candidate_idx` is out of range or resolution fails. Languages with

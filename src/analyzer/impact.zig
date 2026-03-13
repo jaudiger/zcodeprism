@@ -27,14 +27,16 @@ pub const ImpactAnalysis = struct {
 
 pub const ImpactAnalysisOptions = struct {
     max_depth: u32 = 10,
+    edge_types: ?[]const EdgeType = null,
+    include_parent_chain: bool = true,
 };
 
 /// Compute the combined reverse-impact set for one or more seed nodes.
 pub fn analyzeImpact(allocator: std.mem.Allocator, g: *const Graph, node_ids: []const NodeId, options: ImpactAnalysisOptions) !ImpactAnalysis {
     if (node_ids.len == 0) return .{ .total_impacted = 0, .dependents = &.{} };
 
-    const default_types = [_]EdgeType{ .calls, .uses_type };
-    const allowed_types: []const EdgeType = &default_types;
+    const default_types = [_]EdgeType{ .calls, .uses_type, .accesses_field };
+    const allowed_types: []const EdgeType = options.edge_types orelse &default_types;
 
     var visited = std.AutoHashMapUnmanaged(u64, void){};
     defer visited.deinit(allocator);
@@ -85,6 +87,34 @@ pub fn analyzeImpact(allocator: std.mem.Allocator, g: *const Graph, node_ids: []
     // Remove seed nodes from the result set.
     for (node_ids) |nid| {
         _ = visited.remove(@intFromEnum(nid));
+    }
+
+    // Walk up parent chains for every impacted node so callers see the owning file/module too.
+    if (options.include_parent_chain) {
+        var keys_buf = try allocator.alloc(u64, visited.count());
+        defer allocator.free(keys_buf);
+        var ki: usize = 0;
+        var kit = visited.keyIterator();
+        while (kit.next()) |k| {
+            keys_buf[ki] = k.*;
+            ki += 1;
+        }
+        for (keys_buf[0..ki]) |raw| {
+            var parent_opt = if (g.getNode(@enumFromInt(raw))) |n| n.parent_id else null;
+            while (parent_opt) |pid| {
+                if (pid == .root) break;
+                const praw = @intFromEnum(pid);
+                var is_seed = false;
+                for (node_ids) |sid| {
+                    if (@intFromEnum(sid) == praw) {
+                        is_seed = true;
+                        break;
+                    }
+                }
+                if (!is_seed) _ = try visited.getOrPut(allocator, praw);
+                parent_opt = if (g.getNode(pid)) |pn| pn.parent_id else null;
+            }
+        }
     }
 
     const count = visited.count();

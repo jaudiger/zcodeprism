@@ -24,7 +24,9 @@ fn parseWithEdges(allocator: std.mem.Allocator, source: []const u8, g: *Graph) !
     defer gi.deinit(allocator);
     var phantom_mgr = zcodeprism.phantom.PhantomManager.init(g);
     defer phantom_mgr.deinit(allocator);
-    try buildEdges(allocator, source, g, 0, g.nodeCount(), null, &gi, &phantom_mgr, Logger.noop);
+    var wl = zcodeprism.lsp.worklist.LspWorklist{};
+    defer wl.deinit(allocator);
+    try buildEdges(allocator, source, g, 0, g.nodeCount(), null, &gi, &phantom_mgr, &wl, Logger.noop);
 }
 
 // --- Nominal tests (simple.rs) ---
@@ -1154,4 +1156,50 @@ test "struct and enum field types create uses_type for local types" {
         if (n.kind == .enum_def and std.mem.eql(u8, n.name, "Container")) break @as(NodeId, @enumFromInt(i));
     } else return error.NodeNotFound;
     try std.testing.expect(helpers.hasEdge(&g, container_id, color_id, .uses_type));
+}
+
+test "Self shorthand struct init creates accesses_field edges to fields" {
+    // Arrange
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
+
+    // Act: simple.rs has `Self { x, y }` inside Point::new
+    try parseWithEdges(std.testing.allocator, fixtures.rust.simple, &g);
+
+    const new_id = for (g.nodes.items, 0..) |n, i| {
+        if (n.kind == .function and std.mem.eql(u8, n.name, "new") and
+            n.parent_id != null) break @as(NodeId, @enumFromInt(i));
+    } else return error.NodeNotFound;
+
+    const x_id = for (g.nodes.items, 0..) |n, i| {
+        if (n.kind == .field and std.mem.eql(u8, n.name, "x")) break @as(NodeId, @enumFromInt(i));
+    } else return error.NodeNotFound;
+
+    const y_id = for (g.nodes.items, 0..) |n, i| {
+        if (n.kind == .field and std.mem.eql(u8, n.name, "y")) break @as(NodeId, @enumFromInt(i));
+    } else return error.NodeNotFound;
+
+    // Assert: Point::new -> accesses_field -> x and y (shorthand Self { x, y })
+    try std.testing.expect(helpers.hasEdge(&g, new_id, x_id, .accesses_field));
+    try std.testing.expect(helpers.hasEdge(&g, new_id, y_id, .accesses_field));
+}
+
+test "let-bound struct literal field access creates accesses_field edge" {
+    // Arrange
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
+
+    // Act: simple.rs has `let p = Point { x: 1.0, y: 2.0 }; p.x`
+    try parseWithEdges(std.testing.allocator, fixtures.rust.simple, &g);
+
+    const fn_id = for (g.nodes.items, 0..) |n, i| {
+        if (n.kind == .function and std.mem.eql(u8, n.name, "field_access_after_binding")) break @as(NodeId, @enumFromInt(i));
+    } else return error.NodeNotFound;
+
+    const x_id = for (g.nodes.items, 0..) |n, i| {
+        if (n.kind == .field and std.mem.eql(u8, n.name, "x")) break @as(NodeId, @enumFromInt(i));
+    } else return error.NodeNotFound;
+
+    // Assert: field_access_after_binding -> accesses_field -> Point::x
+    try std.testing.expect(helpers.hasEdge(&g, fn_id, x_id, .accesses_field));
 }

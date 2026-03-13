@@ -23,21 +23,15 @@ pub fn main() !void {
     var args = std.process.args();
     _ = args.next(); // skip program name
 
-    var file_path: ?[]const u8 = null;
-
-    while (args.next()) |arg| {
-        if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
-            try printHelp(stdout);
-            return;
-        } else {
-            file_path = arg;
-        }
-    }
-
-    const path = file_path orelse {
+    const path_arg = args.next() orelse {
         try printHelp(stdout);
         return;
     };
+    if (std.mem.eql(u8, path_arg, "--help") or std.mem.eql(u8, path_arg, "-h")) {
+        try printHelp(stdout);
+        return;
+    }
+    const path = path_arg;
 
     // Determine language from extension via Registry.
     const ext = std.fs.path.extension(path);

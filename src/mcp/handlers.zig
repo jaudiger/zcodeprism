@@ -31,6 +31,7 @@ const Visibility = types.Visibility;
 const Language = types.Language;
 const GraphGeneration = generation_mod.GraphGeneration;
 const CursorManager = cursor_manager_mod.CursorManager;
+const CursorOptions = cursor_manager_mod.CursorOptions;
 const ExternalInfo = lang_mod.ExternalInfo;
 const LangMeta = lang_mod.LangMeta;
 
@@ -148,10 +149,74 @@ fn parseVisibility(name: []const u8) ?Visibility {
     return null;
 }
 
+/// Parse the "edge_types" JSON array into buf and return the filled slice.
+fn parseEdgeTypesArray(args: ?std.json.ObjectMap, buf: []EdgeType) []EdgeType {
+    const a = args orelse return buf[0..0];
+    const val = a.get("edge_types") orelse return buf[0..0];
+    if (val != .array) return buf[0..0];
+    var count: usize = 0;
+    for (val.array.items) |item| {
+        if (item == .string) {
+            if (parseEdgeType(item.string)) |et| {
+                if (count < buf.len) {
+                    buf[count] = et;
+                    count += 1;
+                }
+            }
+        }
+    }
+    return buf[0..count];
+}
+
 fn parseDirection(name: []const u8) Direction {
     if (std.mem.eql(u8, name, "in")) return .in;
     if (std.mem.eql(u8, name, "out")) return .out;
     return .both;
+}
+
+/// BFS from start, following edges in both directions and the parent-child
+/// hierarchy, up to max_depth hops.
+fn collectReachable(
+    allocator: std.mem.Allocator,
+    g: *const Graph,
+    start: NodeId,
+    max_depth: u32,
+    out: *std.AutoHashMapUnmanaged(NodeId, void),
+) !void {
+    const Entry = struct { id: NodeId, depth: u32 };
+    var queue = std.ArrayList(Entry){};
+    defer queue.deinit(allocator);
+
+    try out.put(allocator, start, {});
+    try queue.append(allocator, .{ .id = start, .depth = 0 });
+
+    var front: usize = 0;
+    while (front < queue.items.len) {
+        const current = queue.items[front];
+        front += 1;
+        if (current.depth >= max_depth) continue;
+
+        const next_depth = current.depth + 1;
+
+        for (g.outEdges(current.id)) |eid| {
+            const e = g.edges.items[@intFromEnum(eid)];
+            const gop = try out.getOrPut(allocator, e.target_id);
+            if (!gop.found_existing) try queue.append(allocator, .{ .id = e.target_id, .depth = next_depth });
+        }
+        for (g.inEdges(current.id)) |eid| {
+            const e = g.edges.items[@intFromEnum(eid)];
+            const gop = try out.getOrPut(allocator, e.source_id);
+            if (!gop.found_existing) try queue.append(allocator, .{ .id = e.source_id, .depth = next_depth });
+        }
+        if (g.getParent(current.id)) |pid| {
+            const gop = try out.getOrPut(allocator, pid);
+            if (!gop.found_existing) try queue.append(allocator, .{ .id = pid, .depth = next_depth });
+        }
+        for (g.getChildren(current.id)) |cid| {
+            const gop = try out.getOrPut(allocator, cid);
+            if (!gop.found_existing) try queue.append(allocator, .{ .id = cid, .depth = next_depth });
+        }
+    }
 }
 
 // -- JSON writing helpers --
@@ -226,6 +291,20 @@ fn writeNodeSummary(stream: *std.json.Stringify, n: *const Node, id: NodeId, pro
         stream.write(null) catch return error.OutOfMemory;
     }
 
+    stream.objectField("col_start") catch return error.OutOfMemory;
+    if (n.col_start) |cs| {
+        stream.write(cs) catch return error.OutOfMemory;
+    } else {
+        stream.write(null) catch return error.OutOfMemory;
+    }
+
+    stream.objectField("col_end") catch return error.OutOfMemory;
+    if (n.col_end) |ce| {
+        stream.write(ce) catch return error.OutOfMemory;
+    } else {
+        stream.write(null) catch return error.OutOfMemory;
+    }
+
     stream.objectField("visibility") catch return error.OutOfMemory;
     stream.write(@tagName(n.visibility)) catch return error.OutOfMemory;
 
@@ -287,6 +366,20 @@ fn writeFullNode(stream: *std.json.Stringify, n: *const Node, id: NodeId, projec
     stream.objectField("line_end") catch return error.OutOfMemory;
     if (n.line_end) |le| {
         stream.write(le) catch return error.OutOfMemory;
+    } else {
+        stream.write(null) catch return error.OutOfMemory;
+    }
+
+    stream.objectField("col_start") catch return error.OutOfMemory;
+    if (n.col_start) |cs| {
+        stream.write(cs) catch return error.OutOfMemory;
+    } else {
+        stream.write(null) catch return error.OutOfMemory;
+    }
+
+    stream.objectField("col_end") catch return error.OutOfMemory;
+    if (n.col_end) |ce| {
+        stream.write(ce) catch return error.OutOfMemory;
     } else {
         stream.write(null) catch return error.OutOfMemory;
     }
@@ -986,7 +1079,11 @@ fn handleCursorCreate(allocator: std.mem.Allocator, gen: *GraphGeneration, curso
     const start_str = getOptionalString(args, "start_node_id");
     const position: NodeId = if (start_str) |s| parseNodeId(s) orelse .root else .root;
 
-    const cursor_id = cursor_mgr.createCursor(position) catch return error.OutOfMemory;
+    const cursor_id = cursor_mgr.createCursor(position, .{
+        .scope = getOptionalString(args, "scope"),
+        .include_tests = getOptionalBool(args, "include_tests", false),
+        .include_external_nodes = getOptionalBool(args, "include_external_nodes", false),
+    }) catch return error.OutOfMemory;
 
     var aw: std.io.Writer.Allocating = .init(allocator);
     errdefer aw.deinit();
@@ -1077,12 +1174,16 @@ fn handleCursorExpand(allocator: std.mem.Allocator, gen: *GraphGeneration, curso
         const current = frontier.orderedRemove(0);
         if (current.remaining == 0) continue;
 
-        // Collect edges based on direction
+        // Collect edges based on direction, respecting cursor filter state.
         if (direction == .out or direction == .both) {
             for (g.outEdges(current.id)) |eid| {
                 const idx = @intFromEnum(eid);
                 if (idx >= g.edges.items.len) continue;
                 const e = g.edges.items[idx];
+                if (g.getNode(e.target_id)) |tn| {
+                    if (tn.kind == .test_def and !cursor.include_tests) continue;
+                    if (tn.external != .none and !cursor.include_external_nodes) continue;
+                }
                 try collected_edges.append(allocator, .{ .from = e.source_id, .to = e.target_id, .edge_type = e.edge_type, .source = e.source });
                 const gop = try visited.getOrPut(allocator, e.target_id);
                 if (!gop.found_existing) {
@@ -1095,6 +1196,10 @@ fn handleCursorExpand(allocator: std.mem.Allocator, gen: *GraphGeneration, curso
                 const idx = @intFromEnum(eid);
                 if (idx >= g.edges.items.len) continue;
                 const e = g.edges.items[idx];
+                if (g.getNode(e.source_id)) |sn| {
+                    if (sn.kind == .test_def and !cursor.include_tests) continue;
+                    if (sn.external != .none and !cursor.include_external_nodes) continue;
+                }
                 try collected_edges.append(allocator, .{ .from = e.source_id, .to = e.target_id, .edge_type = e.edge_type, .source = e.source });
                 const gop = try visited.getOrPut(allocator, e.source_id);
                 if (!gop.found_existing) {
@@ -1166,18 +1271,41 @@ fn handleCursorQuery(allocator: std.mem.Allocator, gen: *GraphGeneration, cursor
     const g = &gen.graph;
 
     const cursor_id = getOptionalString(args, "cursor_id") orelse return try errorResult(allocator, "invalid_cursor");
-    _ = cursor_mgr.getCursor(cursor_id) orelse return try errorResult(allocator, "invalid_cursor");
+    const cursor = cursor_mgr.getCursor(cursor_id) orelse return try errorResult(allocator, "invalid_cursor");
 
     const kind_str = getOptionalString(args, "kind");
     const query_str = getOptionalString(args, "query");
     const limit = getOptionalInt(args, "limit", 20);
+    const min_complexity_raw = getOptionalInt(args, "min_complexity", 0);
+    const max_depth = getOptionalInt(args, "max_depth_from_position", 5);
 
-    const result = query_mod.search(allocator, g, .{
+    // Collect nodes reachable within max_depth hops from cursor position.
+    var reachable = std.AutoHashMapUnmanaged(NodeId, void){};
+    defer reachable.deinit(allocator);
+    collectReachable(allocator, g, cursor.position, max_depth, &reachable) catch return error.OutOfMemory;
+
+    // Convert the reachable set into a slice for searchIn.
+    const reachable_ids = try allocator.alloc(NodeId, reachable.count());
+    defer allocator.free(reachable_ids);
+    var ri: usize = 0;
+    var rit = reachable.keyIterator();
+    while (rit.next()) |k| {
+        reachable_ids[ri] = k.*;
+        ri += 1;
+    }
+
+    // Apply all filters over the reachable set only, bypassing the global search cap.
+    const filtered = query_mod.search(allocator, g, .{
+        .node_ids = reachable_ids,
         .query = query_str,
         .kind = if (kind_str) |ks| parseNodeKind(ks) else null,
+        .scope = cursor.scope,
+        .include_tests = cursor.include_tests,
+        .external = if (cursor.include_external_nodes) .include else .exclude,
+        .min_complexity = if (min_complexity_raw > 0) @as(?u16, @intCast(@min(min_complexity_raw, std.math.maxInt(u16)))) else null,
         .limit = limit,
     }) catch return error.OutOfMemory;
-    defer result.deinit(allocator);
+    defer filtered.deinit(allocator);
 
     var aw: std.io.Writer.Allocating = .init(allocator);
     errdefer aw.deinit();
@@ -1186,7 +1314,7 @@ fn handleCursorQuery(allocator: std.mem.Allocator, gen: *GraphGeneration, cursor
     stream.beginObject() catch return error.OutOfMemory;
     stream.objectField("nodes") catch return error.OutOfMemory;
     stream.beginArray() catch return error.OutOfMemory;
-    for (result.nodes) |nid| {
+    for (filtered.nodes) |nid| {
         const n = g.getNode(nid) orelse continue;
         try writeNodeSummary(&stream, n, nid, g.project_root);
     }
@@ -1438,43 +1566,190 @@ fn handleAnnotations(allocator: std.mem.Allocator, cursor_mgr: *CursorManager, p
 
 // -- analysis.duplicates --
 
-fn handleDuplicates(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?std.json.Value) HandlerError![]const u8 {
-    const args = getArgs(params);
-    const g = &gen.graph;
-    const min_lines = getOptionalInt(args, "min_lines", 3);
+/// Path-compressing union-find root lookup.
+fn unionFindRoot(parents: []usize, i: usize) usize {
+    var x = i;
+    while (parents[x] != x) {
+        parents[x] = parents[parents[x]];
+        x = parents[x];
+    }
+    return x;
+}
 
-    const result = duplicates_mod.findDuplicates(allocator, g, .{
-        .min_lines = min_lines,
-    }) catch return error.OutOfMemory;
-    defer result.deinit(allocator);
-
-    var aw: std.io.Writer.Allocating = .init(allocator);
-    errdefer aw.deinit();
-    var stream: std.json.Stringify = .{ .writer = &aw.writer };
-
-    stream.beginObject() catch return error.OutOfMemory;
+/// Emit total_groups + groups array into stream, optionally including source text.
+fn writeDuplicateGroups(
+    stream: *std.json.Stringify,
+    g: *const Graph,
+    allocator: std.mem.Allocator,
+    groups_slice: []const duplicates_mod.DuplicateGroup,
+    total_groups: u32,
+    include_source: bool,
+) HandlerError!void {
+    stream.objectField("total_groups") catch return error.OutOfMemory;
+    stream.write(total_groups) catch return error.OutOfMemory;
     stream.objectField("groups") catch return error.OutOfMemory;
     stream.beginArray() catch return error.OutOfMemory;
-    for (result.groups) |group| {
+    for (groups_slice) |group| {
         stream.beginObject() catch return error.OutOfMemory;
         stream.objectField("structural_hash") catch return error.OutOfMemory;
         stream.write(group.structural_hash) catch return error.OutOfMemory;
+        stream.objectField("similarity") catch return error.OutOfMemory;
+        stream.write(group.similarity) catch return error.OutOfMemory;
         stream.objectField("members") catch return error.OutOfMemory;
         stream.beginArray() catch return error.OutOfMemory;
         for (group.members) |member| {
+            const n = g.getNode(member.node_id);
             stream.beginObject() catch return error.OutOfMemory;
             stream.objectField("node_id") catch return error.OutOfMemory;
-            try writeNodeIdHex(&stream, member.node_id);
+            try writeNodeIdHex(stream, member.node_id);
             stream.objectField("name") catch return error.OutOfMemory;
             stream.write(member.name) catch return error.OutOfMemory;
             stream.objectField("file") catch return error.OutOfMemory;
             stream.write(relativePath(member.file_path, g.project_root)) catch return error.OutOfMemory;
+            if (include_source) {
+                stream.objectField("source") catch return error.OutOfMemory;
+                if (n) |node| {
+                    const src = extractNodeSource(allocator, g, node);
+                    defer if (src) |s| allocator.free(s);
+                    stream.write(src) catch return error.OutOfMemory;
+                } else {
+                    stream.write(null) catch return error.OutOfMemory;
+                }
+            }
             stream.endObject() catch return error.OutOfMemory;
         }
         stream.endArray() catch return error.OutOfMemory;
         stream.endObject() catch return error.OutOfMemory;
     }
     stream.endArray() catch return error.OutOfMemory;
+}
+
+fn handleDuplicates(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?std.json.Value) HandlerError![]const u8 {
+    const args = getArgs(params);
+    const g = &gen.graph;
+    const min_lines = getOptionalInt(args, "min_lines", 3);
+    const threshold = getOptionalFloat(args, "threshold", 0.75);
+    const scope = getOptionalString(args, "scope");
+    const language_str = getOptionalString(args, "language");
+    const include_source = getOptionalBool(args, "include_source", false);
+    const offset = getOptionalInt(args, "offset", 0);
+    const limit = getOptionalInt(args, "limit", 10);
+
+    var aw: std.io.Writer.Allocating = .init(allocator);
+    errdefer aw.deinit();
+    var stream: std.json.Stringify = .{ .writer = &aw.writer };
+
+    stream.beginObject() catch return error.OutOfMemory;
+
+    if (threshold >= 1.0) {
+        const result = duplicates_mod.findDuplicates(allocator, g, .{
+            .min_lines = min_lines,
+            .scope = scope,
+            .language = if (language_str) |ls| parseLanguage(ls) else null,
+            .offset = offset,
+            .limit = limit,
+        }) catch return error.OutOfMemory;
+        defer result.deinit(allocator);
+        try writeDuplicateGroups(&stream, g, allocator, result.groups, result.total_groups, include_source);
+    } else {
+        // Fuzzy mode: pairwise Jaccard similarity with union-find clustering.
+        const lang_filter = if (language_str) |ls| parseLanguage(ls) else null;
+        const scope_str = scope;
+
+        const fuzzy_candidate_cap: usize = 300;
+
+        var candidates = std.ArrayList(NodeId){};
+        defer candidates.deinit(allocator);
+
+        for (g.nodes.items, 0..) |n, i| {
+            if (candidates.items.len >= fuzzy_candidate_cap) break;
+            if (n.kind != .function) continue;
+            if (n.external != .none) continue;
+            if (lang_filter) |lf| {
+                if (n.language == null or n.language.? != lf) continue;
+            }
+            if (scope_str) |sc| {
+                const fp = n.file_path orelse continue;
+                if (!std.mem.startsWith(u8, fp, sc)) continue;
+            }
+            const m = n.metrics orelse continue;
+            if (m.lines < min_lines) continue;
+            try candidates.append(allocator, @enumFromInt(i));
+        }
+
+        const nc = candidates.items.len;
+        const parents = try allocator.alloc(usize, nc);
+        defer allocator.free(parents);
+        for (0..nc) |i| parents[i] = i;
+
+        const min_sim_arr = try allocator.alloc(f64, nc);
+        defer allocator.free(min_sim_arr);
+        @memset(min_sim_arr, 1.0);
+
+        for (0..nc) |i| {
+            for (i + 1..nc) |j| {
+                const sim = computeNodeSimilarity(allocator, g, candidates.items[i], candidates.items[j]);
+                if (sim >= threshold) {
+                    const ri = unionFindRoot(parents, i);
+                    const rj = unionFindRoot(parents, j);
+                    if (ri != rj) {
+                        parents[ri] = rj;
+                        min_sim_arr[rj] = @min(@min(min_sim_arr[ri], min_sim_arr[rj]), sim);
+                    } else {
+                        min_sim_arr[rj] = @min(min_sim_arr[rj], sim);
+                    }
+                }
+            }
+        }
+
+        // Collect groups: map root -> list of member indices.
+        var group_map = std.AutoHashMapUnmanaged(usize, std.ArrayList(NodeId)){};
+        defer {
+            var it = group_map.iterator();
+            while (it.next()) |entry| entry.value_ptr.deinit(allocator);
+            group_map.deinit(allocator);
+        }
+        for (0..nc) |i| {
+            const root = unionFindRoot(parents, i);
+            const gop = try group_map.getOrPut(allocator, root);
+            if (!gop.found_existing) gop.value_ptr.* = .{};
+            try gop.value_ptr.append(allocator, candidates.items[i]);
+        }
+
+        // Build sorted group list (only multi-member groups).
+        var fuzzy_groups = std.ArrayList(duplicates_mod.DuplicateGroup){};
+        defer {
+            for (fuzzy_groups.items) |gr| allocator.free(gr.members);
+            fuzzy_groups.deinit(allocator);
+        }
+        var gmap_it = group_map.iterator();
+        while (gmap_it.next()) |entry| {
+            const members_list = entry.value_ptr;
+            if (members_list.items.len < 2) continue;
+            const root = entry.key_ptr.*;
+            const members = try allocator.alloc(duplicates_mod.DuplicateMember, members_list.items.len);
+            for (members_list.items, 0..) |nid, mi| {
+                const n = g.getNode(nid) orelse continue;
+                members[mi] = .{ .node_id = nid, .name = n.name, .file_path = n.file_path };
+            }
+            try fuzzy_groups.append(allocator, .{
+                .structural_hash = 0,
+                .similarity = min_sim_arr[root],
+                .members = members,
+            });
+        }
+        std.mem.sort(duplicates_mod.DuplicateGroup, fuzzy_groups.items, {}, struct {
+            fn lt(_: void, a: duplicates_mod.DuplicateGroup, b: duplicates_mod.DuplicateGroup) bool {
+                return a.members.len > b.members.len;
+            }
+        }.lt);
+
+        const total: u32 = @intCast(fuzzy_groups.items.len);
+        const off = @min(offset, total);
+        const end = @min(off + limit, total);
+        try writeDuplicateGroups(&stream, g, allocator, fuzzy_groups.items[off..end], total, include_source);
+    }
+
     stream.endObject() catch return error.OutOfMemory;
 
     return wrapToolResult(allocator, &aw);
@@ -1487,10 +1762,16 @@ fn handleComplexity(allocator: std.mem.Allocator, gen: *GraphGeneration, params:
     const g = &gen.graph;
     const top_n = getOptionalInt(args, "top_n", 10);
     const scope = getOptionalString(args, "scope");
+    const kind_str = getOptionalString(args, "kind") orelse "function";
+    const language_str = getOptionalString(args, "language");
+
+    const kind: NodeKind = if (std.mem.eql(u8, kind_str, "file")) .file else .function;
 
     const result = complexity_mod.findComplex(allocator, g, .{
         .top_n = top_n,
         .scope = scope,
+        .kind = kind,
+        .language = if (language_str) |ls| parseLanguage(ls) else null,
     }) catch return error.OutOfMemory;
     defer result.deinit(allocator);
 
@@ -1525,11 +1806,23 @@ fn handleDeadCode(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?
     const args = getArgs(params);
     const g = &gen.graph;
     const include_public = getOptionalBool(args, "include_public", false);
+    const include_test_only = getOptionalBool(args, "include_test_only", false);
     const scope = getOptionalString(args, "scope");
+    const kind_str = getOptionalString(args, "kind") orelse "all";
+    const language_str = getOptionalString(args, "language");
+    const offset = getOptionalInt(args, "offset", 0);
+    const limit = getOptionalInt(args, "limit", 50);
+
+    const kind: ?NodeKind = if (std.mem.eql(u8, kind_str, "all")) null else parseNodeKind(kind_str);
 
     const result = dead_code_mod.findDeadCode(allocator, g, .{
         .include_public = include_public,
+        .include_test_only = include_test_only,
         .scope = scope,
+        .kind = kind,
+        .language = if (language_str) |ls| parseLanguage(ls) else null,
+        .offset = offset,
+        .limit = limit,
     }) catch return error.OutOfMemory;
     defer result.deinit(allocator);
 
@@ -1538,6 +1831,8 @@ fn handleDeadCode(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?
     var stream: std.json.Stringify = .{ .writer = &aw.writer };
 
     stream.beginObject() catch return error.OutOfMemory;
+    stream.objectField("total_count") catch return error.OutOfMemory;
+    stream.write(result.total_count) catch return error.OutOfMemory;
     stream.objectField("nodes") catch return error.OutOfMemory;
     stream.beginArray() catch return error.OutOfMemory;
     for (result.nodes) |entry| {
@@ -1566,9 +1861,17 @@ fn handleDependencyCycles(allocator: std.mem.Allocator, gen: *GraphGeneration, p
     const args = getArgs(params);
     const g = &gen.graph;
     const max_cycle_length = getOptionalInt(args, "max_cycle_length", 20);
+    const scope = getOptionalString(args, "scope");
+    const language_str = getOptionalString(args, "language");
+
+    var et_buf: [16]EdgeType = undefined;
+    const parsed_et = parseEdgeTypesArray(args, &et_buf);
 
     const result = cycles_mod.findCycles(allocator, g, .{
         .max_cycle_length = max_cycle_length,
+        .edge_types = if (parsed_et.len > 0) parsed_et else null,
+        .scope = scope,
+        .language = if (language_str) |ls| parseLanguage(ls) else null,
     }) catch return error.OutOfMemory;
     defer result.deinit(allocator);
 
@@ -1607,12 +1910,23 @@ fn handleDependencyCycles(allocator: std.mem.Allocator, gen: *GraphGeneration, p
 fn handleCoupling(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?std.json.Value) HandlerError![]const u8 {
     const args = getArgs(params);
     const g = &gen.graph;
-    const top_n = getOptionalInt(args, "top_n", 20);
-    const min_coupling = getOptionalFloat(args, "min_coupling", 1.0);
+    const top_n = getOptionalInt(args, "top_n", 10);
+    const min_coupling = getOptionalFloat(args, "min_coupling", 0.3);
+    const scope = getOptionalString(args, "scope");
+    const granularity_str = getOptionalString(args, "granularity") orelse "file";
+    const external_str = getOptionalString(args, "external") orelse "exclude";
+    const language_str = getOptionalString(args, "language");
+
+    const granularity: coupling_mod.Granularity = if (std.mem.eql(u8, granularity_str, "file")) .file else .directory;
+    const include_external = std.mem.eql(u8, external_str, "include");
 
     const result = coupling_mod.findCoupling(allocator, g, .{
         .min_coupling = min_coupling,
         .top_n = top_n,
+        .scope = scope,
+        .granularity = granularity,
+        .include_external = include_external,
+        .language = if (language_str) |ls| parseLanguage(ls) else null,
     }) catch return error.OutOfMemory;
     defer result.deinit(allocator);
 
@@ -1647,6 +1961,10 @@ fn handleImpact(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?st
     const args = getArgs(params);
     const g = &gen.graph;
     const max_depth = getOptionalInt(args, "max_depth", 10);
+    const include_parent_chain = getOptionalBool(args, "include_parent_chain", true);
+
+    var et_buf: [16]EdgeType = undefined;
+    const parsed_et = parseEdgeTypesArray(args, &et_buf);
 
     const node_ids = try collectNodeIds(allocator, args, "node_ids");
     defer if (node_ids.len > 0) allocator.free(node_ids);
@@ -1657,6 +1975,8 @@ fn handleImpact(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?st
 
     const result = impact_mod.analyzeImpact(allocator, g, node_ids, .{
         .max_depth = max_depth,
+        .edge_types = if (parsed_et.len > 0) parsed_et else null,
+        .include_parent_chain = include_parent_chain,
     }) catch return error.OutOfMemory;
     defer result.deinit(allocator);
 

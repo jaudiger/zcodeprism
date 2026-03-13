@@ -76,70 +76,8 @@ pub const EdgeContext = struct {
     }
 };
 
-/// A single variable-to-file binding.
-pub const VarBinding = struct {
-    name: []const u8,
-    target: NodeId,
-};
-
-/// Tracks variable-to-file bindings within a function scope.
-/// Stores mappings from local variable names to the target file NodeId they
-/// were assigned from via import-qualified expressions, so that later method
-/// calls can be resolved to the correct cross-file target.
-pub const VarTracker = struct {
-    bindings: std.ArrayListUnmanaged(VarBinding) = .empty,
-
-    /// Release the bindings list.
-    pub fn deinit(self: *VarTracker, allocator: std.mem.Allocator) void {
-        self.bindings.deinit(allocator);
-    }
-
-    /// Record a variable-to-file binding.
-    pub fn addBinding(self: *VarTracker, allocator: std.mem.Allocator, name: []const u8, target_file: NodeId) !void {
-        try self.bindings.append(allocator, .{ .name = name, .target = target_file });
-    }
-
-    /// Return the target file NodeId associated with a variable name, or null if not tracked.
-    pub fn findTarget(self: *const VarTracker, name: []const u8) ?NodeId {
-        for (self.bindings.items) |b| {
-            if (std.mem.eql(u8, b.name, name)) return b.target;
-        }
-        return null;
-    }
-};
-
 /// A resolved edge target from qualified chain resolution.
 pub const ResolvedEdge = struct {
     target_id: NodeId,
     edge_type: EdgeType,
-};
-
-/// A local variable bound to a type name inferred from its initializer.
-pub const TypeBinding = struct {
-    var_name: []const u8,
-    type_name: []const u8,
-};
-
-/// Tracks local variable bindings from initializers to their inferred struct types.
-/// Populated during prescan, queried during call resolution.
-pub const LocalTypeTracker = struct {
-    bindings: std.ArrayListUnmanaged(TypeBinding) = .empty,
-
-    /// Release the bindings list.
-    pub fn deinit(self: *LocalTypeTracker, allocator: std.mem.Allocator) void {
-        self.bindings.deinit(allocator);
-    }
-
-    /// Record that local variable `name` was initialized from type `type_name`.
-    pub fn addBinding(self: *LocalTypeTracker, allocator: std.mem.Allocator, name: []const u8, type_name: []const u8) !void {
-        try self.bindings.append(allocator, .{ .var_name = name, .type_name = type_name });
-    }
-
-    /// Return the type name bound to `name`, or null if not tracked.
-    pub fn findTypeName(self: *const LocalTypeTracker, name: []const u8) ?[]const u8 {
-        for (self.bindings.items) |b| {
-            if (std.mem.eql(u8, b.var_name, name)) return b.type_name;
-        }
-        return null;
-    }
 };

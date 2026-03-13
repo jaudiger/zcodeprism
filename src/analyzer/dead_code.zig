@@ -3,15 +3,19 @@ const graph_mod = @import("../core/graph.zig");
 const types = @import("../core/types.zig");
 const node_mod = @import("../core/node.zig");
 const scope_mod = @import("../core/scope.zig");
+const lang = @import("../languages/language.zig");
 
 const Graph = graph_mod.Graph;
 const Node = node_mod.Node;
 const NodeId = types.NodeId;
 const EdgeId = types.EdgeId;
 const NodeKind = types.NodeKind;
+const EdgeType = types.EdgeType;
 const Visibility = types.Visibility;
-const ExternalInfo = @import("../languages/language.zig").ExternalInfo;
+const Language = types.Language;
+const ExternalInfo = lang.ExternalInfo;
 const Scope = scope_mod.Scope;
+const RustSubKind = @import("../languages/rust/meta.zig").RustSubKind;
 
 pub const DeadCodeEntry = struct {
     node_id: NodeId,
@@ -22,6 +26,7 @@ pub const DeadCodeEntry = struct {
 };
 
 pub const DeadCodeResult = struct {
+    total_count: u32,
     nodes: []const DeadCodeEntry,
 
     pub fn deinit(self: DeadCodeResult, allocator: std.mem.Allocator) void {
@@ -32,7 +37,24 @@ pub const DeadCodeResult = struct {
 pub const DeadCodeOptions = struct {
     include_public: bool = false,
     scope: ?[]const u8 = null,
+    include_test_only: bool = false,
+    kind: ?NodeKind = null,
+    language: ?Language = null,
+    offset: u32 = 0,
+    limit: u32 = 50,
 };
+
+/// Walk up the parent chain to check whether a node lives inside a test block.
+fn isTestLocal(g: *const Graph, node_id: NodeId) bool {
+    var current_opt = g.getNode(node_id).?.parent_id;
+    while (current_opt) |pid| {
+        const parent = g.getNode(pid) orelse return false;
+        if (parent.kind == .test_def) return true;
+        if (parent.kind == .file or parent.kind == .directory) return false;
+        current_opt = parent.parent_id;
+    }
+    return false;
+}
 
 /// Find declaration nodes with zero non-test incoming edges.
 pub fn findDeadCode(allocator: std.mem.Allocator, g: *const Graph, options: DeadCodeOptions) !DeadCodeResult {
@@ -43,9 +65,21 @@ pub fn findDeadCode(allocator: std.mem.Allocator, g: *const Graph, options: Dead
 
     for (g.nodes.items, 0..) |n, i| {
         switch (n.kind) {
-            .file, .module, .import_decl, .directory, .test_def => continue,
+            .file, .module, .import_decl, .directory => continue,
+            .test_def => if (!options.include_test_only) continue,
             else => {},
         }
+
+        if (options.kind) |kf| {
+            if (n.kind != kf) continue;
+        }
+
+        if (options.language) |lf| {
+            if (n.language == null or n.language.? != lf) continue;
+        }
+
+        // Impl blocks are organizational containers, not referenceable entities.
+        if (n.lang_meta == .rust and n.lang_meta.rust.sub_kind == .impl_block) continue;
 
         if (n.external != .none) continue;
         if (!options.include_public and n.visibility == .public) continue;
@@ -54,20 +88,39 @@ pub fn findDeadCode(allocator: std.mem.Allocator, g: *const Graph, options: Dead
             if (!sf.matches(n.file_path orelse continue)) continue;
         }
 
-        const in_edges = g.inEdges(@enumFromInt(i));
+        const node_id: NodeId = @enumFromInt(i);
+        const in_edges = g.inEdges(node_id);
         var has_non_test_ref = false;
-        for (in_edges) |eid| {
-            const edge = g.edges.items[@intFromEnum(eid)];
-            const source_node = g.getNode(edge.source_id) orelse continue;
-            if (source_node.kind != .test_def) {
-                has_non_test_ref = true;
-                break;
+
+        if (isTestLocal(g, node_id)) {
+            if (n.kind == .field) {
+                // test-local field: live if any accesses_field edge reaches it
+                for (in_edges) |eid| {
+                    if (g.edges.items[@intFromEnum(eid)].edge_type == .accesses_field) {
+                        has_non_test_ref = true;
+                        break;
+                    }
+                }
+            } else {
+                // A test-local node can only be referenced from within its test block,
+                // so any incoming edge is a valid reference.
+                has_non_test_ref = in_edges.len > 0;
+            }
+        } else {
+            for (in_edges) |eid| {
+                const edge = g.edges.items[@intFromEnum(eid)];
+                if (n.kind == .field and edge.edge_type != .accesses_field) continue;
+                const source_node = g.getNode(edge.source_id) orelse continue;
+                if (source_node.kind != .test_def) {
+                    has_non_test_ref = true;
+                    break;
+                }
             }
         }
 
         if (!has_non_test_ref) {
             try candidates.append(allocator, .{
-                .node_id = @enumFromInt(i),
+                .node_id = node_id,
                 .name = n.name,
                 .kind = n.kind,
                 .file_path = n.file_path,
@@ -76,9 +129,15 @@ pub fn findDeadCode(allocator: std.mem.Allocator, g: *const Graph, options: Dead
         }
     }
 
-    if (candidates.items.len == 0) return .{ .nodes = &.{} };
+    const total_count: u32 = @intCast(candidates.items.len);
+    if (total_count == 0) return .{ .total_count = 0, .nodes = &.{} };
 
-    const result = try allocator.alloc(DeadCodeEntry, candidates.items.len);
-    @memcpy(result, candidates.items);
-    return .{ .nodes = result };
+    const offset = @min(options.offset, total_count);
+    const end = @min(offset + options.limit, total_count);
+    const page_len = end - offset;
+    if (page_len == 0) return .{ .total_count = total_count, .nodes = &.{} };
+
+    const result = try allocator.alloc(DeadCodeEntry, page_len);
+    @memcpy(result, candidates.items[offset..end]);
+    return .{ .total_count = total_count, .nodes = result };
 }

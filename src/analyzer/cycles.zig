@@ -2,6 +2,7 @@ const std = @import("std");
 const graph_mod = @import("../core/graph.zig");
 const types = @import("../core/types.zig");
 const node_mod = @import("../core/node.zig");
+const scope_mod = @import("../core/scope.zig");
 
 const Graph = graph_mod.Graph;
 const Node = node_mod.Node;
@@ -9,6 +10,8 @@ const NodeId = types.NodeId;
 const EdgeId = types.EdgeId;
 const NodeKind = types.NodeKind;
 const EdgeType = types.EdgeType;
+const Language = types.Language;
+const Scope = scope_mod.Scope;
 
 pub const CycleNode = struct {
     node_id: NodeId,
@@ -34,12 +37,15 @@ pub const CycleResult = struct {
 pub const CycleOptions = struct {
     edge_types: ?[]const EdgeType = null,
     max_cycle_length: u32 = 20,
+    scope: ?[]const u8 = null,
+    language: ?Language = null,
 };
 
 /// Detect dependency cycles among file nodes using Tarjan SCC.
 pub fn findCycles(allocator: std.mem.Allocator, g: *const Graph, options: CycleOptions) !CycleResult {
     const default_types = [_]EdgeType{.imports};
     const allowed_types: []const EdgeType = options.edge_types orelse &default_types;
+    const scope_filter: ?Scope = if (options.scope) |s| Scope.parse(s) else null;
 
     // Collect file nodes and assign them dense indices 0..file_count-1.
     var file_nodes = std.ArrayList(NodeId){};
@@ -50,6 +56,12 @@ pub fn findCycles(allocator: std.mem.Allocator, g: *const Graph, options: CycleO
 
     for (g.nodes.items, 0..) |n, i| {
         if (n.kind == .file) {
+            if (options.language) |lf| {
+                if (n.language == null or n.language.? != lf) continue;
+            }
+            if (scope_filter) |sf| {
+                if (!sf.matches(n.file_path orelse "")) continue;
+            }
             const dense: u32 = @intCast(file_nodes.items.len);
             try node_to_dense.put(allocator, @as(u64, i), dense);
             try file_nodes.append(allocator, @enumFromInt(i));

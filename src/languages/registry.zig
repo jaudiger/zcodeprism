@@ -28,7 +28,11 @@ const zig_support = LanguageSupport{
     .language = .zig,
     .extensions = &.{".zig"},
     .parseFn = &zig_visitor.parse,
-    .lsp_config = null,
+    .lsp_config = .{
+        .server_name = "zls",
+        .server_command = "zls",
+        .enrichFn = &zig_hooks.enrichWithLsp,
+    },
     .excluded_dirs = &.{ ".zig-cache", "zig-out" },
     .build_files = &.{ "build.zig.zon", "build.zig" },
     .import_granularity = .file,

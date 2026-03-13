@@ -54,27 +54,20 @@ pub fn main() !void {
     var args = std.process.args();
     _ = args.next(); // skip program name
 
-    var file_path: ?[]const u8 = null;
-    var verbosity: u8 = 0;
-
-    while (args.next()) |arg| {
-        if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
-            try printHelp(stdout);
-            return;
-        } else {
-            const v = tool_utils.countVerbosity(arg);
-            if (v > 0) {
-                verbosity +|= v;
-            } else {
-                file_path = arg;
-            }
-        }
-    }
-
-    const path = file_path orelse {
+    const path_arg = args.next() orelse {
         try printHelp(stdout);
         return;
     };
+    if (std.mem.eql(u8, path_arg, "--help") or std.mem.eql(u8, path_arg, "-h")) {
+        try printHelp(stdout);
+        return;
+    }
+    const path = path_arg;
+
+    var verbosity: u8 = 0;
+    while (args.next()) |arg| {
+        verbosity +|= tool_utils.countVerbosity(arg);
+    }
 
     // Resolve to absolute path so the graph root is accurate.
     const abs_path = std.fs.cwd().realpathAlloc(allocator, path) catch |err| {
@@ -125,7 +118,9 @@ pub fn main() !void {
         defer graph_index.deinit(allocator);
         var phantom_mgr = zcodeprism.phantom.PhantomManager.init(&graph);
         defer phantom_mgr.deinit(allocator);
-        build_edges(allocator, source, &graph, 0, graph.nodeCount(), null, &graph_index, &phantom_mgr, log) catch |err| {
+        var wl = zcodeprism.lsp.worklist.LspWorklist{};
+        defer wl.deinit(allocator);
+        build_edges(allocator, source, &graph, 0, graph.nodeCount(), null, &graph_index, &phantom_mgr, &wl, log) catch |err| {
             try stdout.print("Edge building error: {}\n", .{err});
             try stdout.flush();
             std.process.exit(1);
@@ -177,6 +172,13 @@ pub fn main() !void {
                 try stdout.print("  L{}-{}", .{ ls, le });
             } else {
                 try stdout.print("  L{}", .{ls});
+            }
+        }
+        if (n.col_start) |cs| {
+            if (n.col_end) |ce| {
+                try stdout.print("  C{}-{}", .{ cs, ce });
+            } else {
+                try stdout.print("  C{}", .{cs});
             }
         }
         if (n.parent_id) |pid| {

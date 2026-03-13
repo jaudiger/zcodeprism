@@ -7,28 +7,42 @@ const types = @import("../../core/types.zig");
 const KindIds = pc.KindIds;
 const Visibility = types.Visibility;
 
-/// Extract the `identifier` child text from a declaration node.
-pub fn getIdentifierName(source: []const u8, node: ts.Node, k: *const KindIds) ?[]const u8 {
+/// Return the name identifier node of a declaration: checks `identifier` first, then `type_identifier`.
+/// Covers functions/consts/mods (identifier) and structs/enums/traits (type_identifier).
+pub fn getNameNode(node: ts.Node, k: *const KindIds) ?ts.Node {
+    return getIdentifierNode(node, k) orelse getTypeIdentifierNode(node, k);
+}
+
+/// Return the `identifier` child node of a declaration, or null if none exists.
+pub fn getIdentifierNode(node: ts.Node, k: *const KindIds) ?ts.Node {
     var i: u32 = 0;
     while (i < node.childCount()) : (i += 1) {
         const child = node.child(i) orelse continue;
-        if (child.kindId() == k.identifier) {
-            return ts_api.nodeText(source, child);
-        }
+        if (child.kindId() == k.identifier) return child;
     }
     return null;
 }
 
-/// Extract the `type_identifier` child text from a declaration node.
-pub fn getTypeIdentifierName(source: []const u8, node: ts.Node, k: *const KindIds) ?[]const u8 {
+/// Return the `type_identifier` child node of a declaration, or null if none exists.
+pub fn getTypeIdentifierNode(node: ts.Node, k: *const KindIds) ?ts.Node {
     var i: u32 = 0;
     while (i < node.childCount()) : (i += 1) {
         const child = node.child(i) orelse continue;
-        if (child.kindId() == k.type_identifier) {
-            return ts_api.nodeText(source, child);
-        }
+        if (child.kindId() == k.type_identifier) return child;
     }
     return null;
+}
+
+/// Extract the `identifier` child text from a declaration node.
+pub fn getIdentifierName(source: []const u8, node: ts.Node, k: *const KindIds) ?[]const u8 {
+    const child = getIdentifierNode(node, k) orelse return null;
+    return ts_api.nodeText(source, child);
+}
+
+/// Extract the `type_identifier` child text from a declaration node.
+pub fn getTypeIdentifierName(source: []const u8, node: ts.Node, k: *const KindIds) ?[]const u8 {
+    const child = getTypeIdentifierNode(node, k) orelse return null;
+    return ts_api.nodeText(source, child);
 }
 
 /// Visibility plus optional restriction scope for pub(crate/super/in ...) forms.

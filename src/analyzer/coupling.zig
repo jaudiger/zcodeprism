@@ -2,11 +2,16 @@ const std = @import("std");
 const graph_mod = @import("../core/graph.zig");
 const types = @import("../core/types.zig");
 const node_mod = @import("../core/node.zig");
+const scope_mod = @import("../core/scope.zig");
 
 const Graph = graph_mod.Graph;
 const Node = node_mod.Node;
 const NodeId = types.NodeId;
 const NodeKind = types.NodeKind;
+const Language = types.Language;
+const Scope = scope_mod.Scope;
+
+pub const Granularity = enum { file, directory };
 
 pub const CouplingPair = struct {
     file_a: NodeId,
@@ -28,29 +33,54 @@ pub const CouplingResult = struct {
 pub const CouplingOptions = struct {
     min_coupling: f64 = 1.0,
     top_n: u32 = 20,
+    scope: ?[]const u8 = null,
+    granularity: Granularity = .file,
+    include_external: bool = false,
+    language: ?Language = null,
 };
 
-/// Find pairs of files that share cross-file edges.
+/// Find pairs of files (or directories) that share cross-unit edges.
 pub fn findCoupling(allocator: std.mem.Allocator, g: *const Graph, options: CouplingOptions) !CouplingResult {
-    // Precompute node -> owning file for every node.
-    const file_of = try buildFileOwnerMap(allocator, g);
-    defer allocator.free(file_of);
+    const scope_filter: ?Scope = if (options.scope) |s| Scope.parse(s) else null;
 
-    // Count cross-file edges per ordered file pair.
+    // unit_of maps every node index to its owning unit (file or directory index).
+    const unit_of = switch (options.granularity) {
+        .file => try buildFileOwnerMap(allocator, g),
+        .directory => try buildDirectoryOwnerMap(allocator, g),
+    };
+    defer allocator.free(unit_of);
+
+    // Count cross-unit edges per ordered unit pair.
     var pair_counts = std.AutoHashMapUnmanaged(u64, u32){};
     defer pair_counts.deinit(allocator);
 
     for (g.edges.items) |edge| {
         const src_idx = @intFromEnum(edge.source_id);
         const tgt_idx = @intFromEnum(edge.target_id);
-        if (src_idx >= file_of.len or tgt_idx >= file_of.len) continue;
+        if (src_idx >= unit_of.len or tgt_idx >= unit_of.len) continue;
 
-        const source_file = file_of[src_idx];
-        const target_file = file_of[tgt_idx];
-        if (source_file == std.math.maxInt(u32) or target_file == std.math.maxInt(u32)) continue;
-        if (source_file == target_file) continue;
+        const source_unit = unit_of[src_idx];
+        const target_unit = unit_of[tgt_idx];
+        if (source_unit == std.math.maxInt(u32) or target_unit == std.math.maxInt(u32)) continue;
+        if (source_unit == target_unit) continue;
 
-        const key = packPair(@min(source_file, target_file), @max(source_file, target_file));
+        const unit_a_node = g.getNode(@enumFromInt(@as(u64, source_unit))) orelse continue;
+        const unit_b_node = g.getNode(@enumFromInt(@as(u64, target_unit))) orelse continue;
+
+        if (!options.include_external) {
+            if (unit_a_node.external != .none or unit_b_node.external != .none) continue;
+        }
+
+        if (options.language) |lf| {
+            if (unit_a_node.language == null or unit_a_node.language.? != lf) continue;
+        }
+
+        if (scope_filter) |sf| {
+            const path_a = unit_a_node.file_path orelse continue;
+            if (!sf.matches(path_a)) continue;
+        }
+
+        const key = packPair(@min(source_unit, target_unit), @max(source_unit, target_unit));
 
         const gop = try pair_counts.getOrPut(allocator, key);
         if (!gop.found_existing) gop.value_ptr.* = 0;
@@ -111,6 +141,26 @@ fn buildFileOwnerMap(allocator: std.mem.Allocator, g: *const Graph) ![]u32 {
 
     // Propagate file ownership down the parent chain. Nodes are stored in
     // tree order (parent index < child index), so a forward pass suffices.
+    for (g.nodes.items, 0..) |node, i| {
+        if (map[i] != std.math.maxInt(u32)) continue;
+        const pid = node.parent_id orelse continue;
+        const pi = @intFromEnum(pid);
+        if (pi < n) map[i] = map[pi];
+    }
+
+    return map;
+}
+
+/// Maps every node to the index of its nearest directory ancestor (or itself if it is one).
+fn buildDirectoryOwnerMap(allocator: std.mem.Allocator, g: *const Graph) ![]u32 {
+    const n = g.nodes.items.len;
+    const map = try allocator.alloc(u32, n);
+    @memset(map, std.math.maxInt(u32));
+
+    for (g.nodes.items, 0..) |node, i| {
+        if (node.kind == .directory) map[i] = @intCast(i);
+    }
+
     for (g.nodes.items, 0..) |node, i| {
         if (map[i] != std.math.maxInt(u32)) continue;
         const pid = node.parent_id orelse continue;

@@ -1,6 +1,7 @@
 const std = @import("std");
 const graph_mod = @import("../../core/graph.zig");
 const logging = @import("../../logging.zig");
+const metrics_mod = @import("../../core/metrics.zig");
 const node_mod = @import("../../core/node.zig");
 const types = @import("../../core/types.zig");
 const lang = @import("../language.zig");
@@ -12,6 +13,8 @@ const eb = @import("edge_builder.zig");
 const pc = @import("parse_context.zig");
 const rust_meta = @import("meta.zig");
 const phantom_mod = @import("../../core/phantom.zig");
+
+const Metrics = metrics_mod.Metrics;
 
 const KindIds = pc.KindIds;
 const GraphIndex = @import("../../core/graph_index.zig").GraphIndex;
@@ -105,7 +108,8 @@ pub fn parse(allocator: std.mem.Allocator, source: []const u8, g: *Graph, file_p
 }
 
 /// Re-parse source and emit cross-file edges for the Rust file at file_idx.
-pub fn buildEdges(allocator: std.mem.Allocator, source: []const u8, g: *Graph, file_idx: usize, scope_end: usize, file_path: ?[]const u8, graph_index: *const GraphIndex, phantom_mgr: *const PhantomManager, logger: Logger) error{OutOfMemory}!void {
+/// Unresolved references are appended to `wl`.
+pub fn buildEdges(allocator: std.mem.Allocator, source: []const u8, g: *Graph, file_idx: usize, scope_end: usize, file_path: ?[]const u8, graph_index: *const GraphIndex, phantom_mgr: *const PhantomManager, wl: *@import("../../lsp/worklist.zig").LspWorklist, logger: Logger) error{OutOfMemory}!void {
     const log = logger.withScope("rust-edges");
 
     const ts_lang = ts_api.tree_sitter_rust();
@@ -125,7 +129,7 @@ pub fn buildEdges(allocator: std.mem.Allocator, source: []const u8, g: *Graph, f
     try cf.buildExportEdges(allocator, g, &ctx, graph_index, log);
 
     log.debug("building edges", &.{});
-    try eb.walkForEdges(allocator, g, source, root, &k, &ctx, graph_index, phantom_mgr, log);
+    try eb.walkForEdges(allocator, g, source, root, &k, &ctx, graph_index, phantom_mgr, wl, log);
 }
 
 /// Extract outer attributes and register the allocated buffer with the
@@ -181,6 +185,76 @@ fn processDeclaration(allocator: std.mem.Allocator, ctx: *const VisitorContext, 
     }
 }
 
+/// Running tallies for control-flow metrics.
+const MetricsAccum = struct {
+    complexity: u16 = 1,
+    branches: u16 = 0,
+    loops: u16 = 0,
+    error_paths: u16 = 0,
+    max_depth: u16 = 0,
+};
+
+/// Walk a function body AST and return intrinsic metrics.
+fn computeFunctionMetrics(body: ts.Node, k: *const KindIds) Metrics {
+    var acc = MetricsAccum{};
+    walkForMetrics(body, k, 0, &acc);
+    return .{
+        .complexity = acc.complexity,
+        .branches = acc.branches,
+        .loops = acc.loops,
+        .error_paths = acc.error_paths,
+        .nesting_depth_max = if (acc.max_depth > std.math.maxInt(u8)) std.math.maxInt(u8) else @intCast(acc.max_depth),
+    };
+}
+
+/// Recursive walk over AST children, tallying control-flow nodes.
+fn walkForMetrics(node: ts.Node, k: *const KindIds, depth: u16, acc: *MetricsAccum) void {
+    const kid = node.kindId();
+
+    var child_depth = depth;
+    if (kid == k.block) {
+        child_depth = depth + 1;
+        if (child_depth > acc.max_depth) acc.max_depth = child_depth;
+    }
+
+    if (kid == k.if_expression) {
+        acc.complexity += 1;
+        acc.branches += 1;
+    } else if (kid == k.for_expression) {
+        acc.complexity += 1;
+        acc.loops += 1;
+    } else if (kid == k.while_expression) {
+        acc.complexity += 1;
+        acc.loops += 1;
+    } else if (kid == k.loop_expression) {
+        acc.complexity += 1;
+        acc.loops += 1;
+    } else if (kid == k.match_expression) {
+        acc.complexity += 1;
+        acc.branches += 1;
+    } else if (kid == k.closure_expression) {
+        acc.complexity += 1;
+    } else if (kid == k.try_expression) {
+        acc.error_paths += 1;
+    }
+
+    var i: u32 = 0;
+    while (i < node.childCount()) : (i += 1) {
+        const child = node.child(i) orelse continue;
+        walkForMetrics(child, k, child_depth, acc);
+    }
+}
+
+/// Find the first direct child that is a block node.
+fn findBlockChild(parent: ts.Node, k: *const KindIds) ?ts.Node {
+    var i: u32 = 0;
+    while (i < parent.childCount()) : (i += 1) {
+        const child = parent.child(i) orelse continue;
+        if (child.kindId() == k.block) return child;
+    }
+    return null;
+}
+
 /// Process a function_item. Detects modifiers (unsafe, async, const, extern),
 /// #[test] attribute, and creates the appropriate node.
 fn processFunctionItem(allocator: std.mem.Allocator, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
@@ -205,6 +279,11 @@ fn processFunctionItem(allocator: std.mem.Allocator, ctx: *const VisitorContext,
     const attributes = try extractAndRegisterAttributes(allocator, ctx.g, ctx.source, ts_node, ctx.k);
 
     const kind: NodeKind = if (is_test) .test_def else .function;
+    const block_body = findBlockChild(ts_node, ctx.k);
+    const metrics: ?Metrics = if (kind == .function)
+        if (block_body) |body| computeFunctionMetrics(body, ctx.k) else null
+    else
+        null;
 
     _ = try ctx.g.addNode(allocator, .{
         .id = .root,
@@ -215,8 +294,11 @@ fn processFunctionItem(allocator: std.mem.Allocator, ctx: *const VisitorContext,
         .visibility = vis_info.visibility,
         .line_start = ts_node.startPoint().row + 1,
         .line_end = ts_node.endPoint().row + 1,
+        .col_start = if (ast.getIdentifierNode(ts_node, ctx.k)) |id| id.startPoint().column else null,
+        .col_end = if (ast.getIdentifierNode(ts_node, ctx.k)) |id| id.endPoint().column else null,
         .doc = doc,
         .signature = signature,
+        .metrics = metrics,
         .lang_meta = .{ .rust = .{
             .is_unsafe = is_unsafe,
             .is_async = is_async,
@@ -250,6 +332,8 @@ fn processFunctionSignatureItem(allocator: std.mem.Allocator, ctx: *const Visito
         .visibility = vis_info.visibility,
         .line_start = ts_node.startPoint().row + 1,
         .line_end = ts_node.endPoint().row + 1,
+        .col_start = if (ast.getIdentifierNode(ts_node, ctx.k)) |id| id.startPoint().column else null,
+        .col_end = if (ast.getIdentifierNode(ts_node, ctx.k)) |id| id.endPoint().column else null,
         .doc = doc,
         .signature = signature,
         .lang_meta = .{ .rust = .{ .sub_kind = .fn_signature, .attributes = attributes, .visibility_scope = vis_info.scope } },
@@ -279,6 +363,8 @@ fn processStructItem(allocator: std.mem.Allocator, ctx: *const VisitorContext, t
         .visibility = vis_info.visibility,
         .line_start = ts_node.startPoint().row + 1,
         .line_end = ts_node.endPoint().row + 1,
+        .col_start = if (ast.getTypeIdentifierNode(ts_node, ctx.k)) |id| id.startPoint().column else null,
+        .col_end = if (ast.getTypeIdentifierNode(ts_node, ctx.k)) |id| id.endPoint().column else null,
         .doc = doc,
         .signature = signature,
         .lang_meta = .{ .rust = .{ .derives = derives, .attributes = attributes, .visibility_scope = vis_info.scope } },
@@ -311,6 +397,8 @@ fn processEnumItem(allocator: std.mem.Allocator, ctx: *const VisitorContext, ts_
         .visibility = vis_info.visibility,
         .line_start = ts_node.startPoint().row + 1,
         .line_end = ts_node.endPoint().row + 1,
+        .col_start = if (ast.getTypeIdentifierNode(ts_node, ctx.k)) |id| id.startPoint().column else null,
+        .col_end = if (ast.getTypeIdentifierNode(ts_node, ctx.k)) |id| id.endPoint().column else null,
         .doc = doc,
         .signature = signature,
         .lang_meta = .{ .rust = .{ .derives = derives, .attributes = attributes, .visibility_scope = vis_info.scope } },
@@ -343,6 +431,8 @@ fn processUnionItem(allocator: std.mem.Allocator, ctx: *const VisitorContext, ts
         .visibility = vis_info.visibility,
         .line_start = ts_node.startPoint().row + 1,
         .line_end = ts_node.endPoint().row + 1,
+        .col_start = if (ast.getTypeIdentifierNode(ts_node, ctx.k)) |id| id.startPoint().column else null,
+        .col_end = if (ast.getTypeIdentifierNode(ts_node, ctx.k)) |id| id.endPoint().column else null,
         .doc = doc,
         .signature = signature,
         .lang_meta = .{ .rust = .{ .derives = derives, .attributes = attributes, .visibility_scope = vis_info.scope } },
@@ -374,6 +464,8 @@ fn processTraitItem(allocator: std.mem.Allocator, ctx: *const VisitorContext, ts
         .visibility = vis_info.visibility,
         .line_start = ts_node.startPoint().row + 1,
         .line_end = ts_node.endPoint().row + 1,
+        .col_start = if (ast.getTypeIdentifierNode(ts_node, ctx.k)) |id| id.startPoint().column else null,
+        .col_end = if (ast.getTypeIdentifierNode(ts_node, ctx.k)) |id| id.endPoint().column else null,
         .doc = doc,
         .signature = signature,
         .lang_meta = .{ .rust = .{ .sub_kind = .trait_, .attributes = attributes, .visibility_scope = vis_info.scope } },
@@ -433,6 +525,8 @@ fn processConstItem(allocator: std.mem.Allocator, ctx: *const VisitorContext, ts
         .visibility = vis_info.visibility,
         .line_start = ts_node.startPoint().row + 1,
         .line_end = ts_node.endPoint().row + 1,
+        .col_start = if (ast.getIdentifierNode(ts_node, ctx.k)) |id| id.startPoint().column else null,
+        .col_end = if (ast.getIdentifierNode(ts_node, ctx.k)) |id| id.endPoint().column else null,
         .doc = doc,
         .lang_meta = .{ .rust = .{ .attributes = attributes, .visibility_scope = vis_info.scope } },
     });
@@ -458,6 +552,8 @@ fn processStaticItem(allocator: std.mem.Allocator, ctx: *const VisitorContext, t
         .visibility = vis_info.visibility,
         .line_start = ts_node.startPoint().row + 1,
         .line_end = ts_node.endPoint().row + 1,
+        .col_start = if (ast.getIdentifierNode(ts_node, ctx.k)) |id| id.startPoint().column else null,
+        .col_end = if (ast.getIdentifierNode(ts_node, ctx.k)) |id| id.endPoint().column else null,
         .doc = doc,
         .lang_meta = .{ .rust = .{ .sub_kind = .static_item, .attributes = attributes, .visibility_scope = vis_info.scope } },
     });
@@ -484,6 +580,8 @@ fn processTypeItem(allocator: std.mem.Allocator, ctx: *const VisitorContext, ts_
         .visibility = vis_info.visibility,
         .line_start = ts_node.startPoint().row + 1,
         .line_end = ts_node.endPoint().row + 1,
+        .col_start = if (ast.getTypeIdentifierNode(ts_node, ctx.k)) |id| id.startPoint().column else null,
+        .col_end = if (ast.getTypeIdentifierNode(ts_node, ctx.k)) |id| id.endPoint().column else null,
         .doc = doc,
         .signature = signature,
         .lang_meta = .{ .rust = .{ .sub_kind = .type_alias, .attributes = attributes, .visibility_scope = vis_info.scope } },
@@ -515,6 +613,8 @@ fn processMacroDefinition(allocator: std.mem.Allocator, ctx: *const VisitorConte
         .visibility = vis_info.visibility,
         .line_start = ts_node.startPoint().row + 1,
         .line_end = ts_node.endPoint().row + 1,
+        .col_start = if (ast.getIdentifierNode(ts_node, ctx.k)) |id| id.startPoint().column else null,
+        .col_end = if (ast.getIdentifierNode(ts_node, ctx.k)) |id| id.endPoint().column else null,
         .doc = doc,
         .lang_meta = .{ .rust = .{ .sub_kind = .macro_rules, .attributes = attributes, .visibility_scope = vis_info.scope } },
     });
@@ -641,6 +741,8 @@ fn processEnumVariant(allocator: std.mem.Allocator, ctx: *const VisitorContext, 
         .visibility = parent_vis,
         .line_start = ts_node.startPoint().row + 1,
         .line_end = ts_node.endPoint().row + 1,
+        .col_start = if (ast.getIdentifierNode(ts_node, ctx.k)) |id| id.startPoint().column else null,
+        .col_end = if (ast.getIdentifierNode(ts_node, ctx.k)) |id| id.endPoint().column else null,
         .doc = doc,
         .lang_meta = .{ .rust = .{ .attributes = attributes } },
     });
@@ -682,6 +784,8 @@ fn processAssociatedType(allocator: std.mem.Allocator, ctx: *const VisitorContex
         .visibility = parent_vis,
         .line_start = ts_node.startPoint().row + 1,
         .line_end = ts_node.endPoint().row + 1,
+        .col_start = if (ast.getTypeIdentifierNode(ts_node, ctx.k)) |id| id.startPoint().column else null,
+        .col_end = if (ast.getTypeIdentifierNode(ts_node, ctx.k)) |id| id.endPoint().column else null,
         .doc = doc,
         .lang_meta = .{ .rust = .{ .sub_kind = .associated_type, .attributes = attributes } },
     });

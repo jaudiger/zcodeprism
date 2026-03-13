@@ -15,55 +15,38 @@ const logging = zcodeprism.logging;
 const query = zcodeprism.query;
 
 const ParsedFlags = struct {
+    common: tool_utils.CommonFlags,
     kind: ?NodeKind = null,
     scope: ?[]const u8 = null,
     include_tests: bool = false,
     include_external: bool = false,
-    exclude: std.ArrayList([]const u8),
     limit: u32 = 50,
-    verbosity: u8 = 0,
     positional: std.ArrayList([]const u8),
 
     fn deinit(self: *ParsedFlags, allocator: std.mem.Allocator) void {
-        self.exclude.deinit(allocator);
+        self.common.deinit(allocator);
         self.positional.deinit(allocator);
     }
 };
 
 fn parseFlags(allocator: std.mem.Allocator, raw_args: []const []const u8) !ParsedFlags {
-    var flags = ParsedFlags{ .exclude = .{}, .positional = .{} };
+    var flags = ParsedFlags{ .common = tool_utils.CommonFlags.init(), .positional = .{} };
     errdefer flags.deinit(allocator);
-    var i: usize = 0;
-    while (i < raw_args.len) : (i += 1) {
-        const a = raw_args[i];
+    var iter = tool_utils.SliceIter.init(raw_args);
+    while (iter.next()) |a| {
+        if (try tool_utils.parseCommonFlag(allocator, a, &iter, &flags.common)) continue;
         if (std.mem.eql(u8, a, "--kind")) {
-            i += 1;
-            if (i < raw_args.len) flags.kind = parseNodeKind(raw_args[i]);
+            if (iter.next()) |v| flags.kind = parseNodeKind(v);
         } else if (std.mem.eql(u8, a, "--scope")) {
-            i += 1;
-            if (i < raw_args.len) flags.scope = raw_args[i];
+            if (iter.next()) |v| flags.scope = v;
         } else if (std.mem.eql(u8, a, "--include-tests")) {
             flags.include_tests = true;
         } else if (std.mem.eql(u8, a, "--include-external")) {
             flags.include_external = true;
-        } else if (std.mem.eql(u8, a, "--exclude")) {
-            i += 1;
-            if (i < raw_args.len) {
-                var it = std.mem.splitScalar(u8, raw_args[i], ',');
-                while (it.next()) |p| {
-                    if (p.len > 0) try flags.exclude.append(allocator, p);
-                }
-            }
         } else if (std.mem.eql(u8, a, "--limit")) {
-            i += 1;
-            if (i < raw_args.len) flags.limit = std.fmt.parseInt(u32, raw_args[i], 10) catch 50;
+            if (iter.next()) |v| flags.limit = std.fmt.parseInt(u32, v, 10) catch 50;
         } else {
-            const v = tool_utils.countVerbosity(a);
-            if (v > 0) {
-                flags.verbosity +|= v;
-            } else {
-                try flags.positional.append(allocator, a);
-            }
+            try flags.positional.append(allocator, a);
         }
     }
     return flags;
@@ -290,6 +273,7 @@ fn printHelp(stdout: *std.Io.Writer) !void {
         \\    --include-tests          Include test_def nodes
         \\    --include-external       Include external/phantom nodes
         \\    --exclude path1,path2    Exclude paths from indexation
+        \\    --without-lsp            Skip LSP enrichment
         \\    --limit N                Max results (default 50)
         \\    -v                       Increase verbosity
         \\    -h, --help               Show this help message
@@ -345,20 +329,24 @@ pub fn main() !void {
     };
     defer allocator.free(dir_path);
 
-    var text_logger = logging.TextStderrLogger.init(tool_utils.verbosityToLevel(flags.verbosity));
-    const log = if (flags.verbosity > 0) text_logger.logger() else logging.Logger.noop;
+    var text_logger = logging.TextStderrLogger.init(tool_utils.verbosityToLevel(flags.common.verbosity));
+    const log = if (flags.common.verbosity > 0) text_logger.logger() else logging.Logger.noop;
 
     var graph = Graph.init(dir_path);
     defer graph.deinit(allocator);
 
-    const idx_result = indexer.indexDirectory(allocator, dir_path, &graph, .{
-        .exclude_paths = flags.exclude.items,
+    const idx_result = indexer.indexDirectory(allocator, dir_path, &graph, null, .{
+        .exclude_paths = flags.common.exclude.items,
         .logger = log,
     }) catch |err| {
         try stdout.print("Index error: {}\n", .{err});
         try stdout.flush();
         std.process.exit(1);
     };
+
+    if (flags.common.lsp) {
+        try tool_utils.runLspEnrichment(allocator, &graph, log, stdout);
+    }
 
     try stdout.print("Indexed {d} files ({d} nodes, {d} edges)\n\n", .{
         idx_result.files_indexed, graph.nodes.items.len, graph.edges.items.len,

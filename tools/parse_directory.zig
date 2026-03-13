@@ -31,6 +31,7 @@ fn printHelp(stdout: *std.Io.Writer) !void {
         \\
         \\OPTIONS:
         \\    --exclude path1,path2    Comma-separated paths to exclude from indexation
+        \\    --without-lsp            Skip LSP enrichment
         \\    -v                       Increase verbosity (-v info, -vv debug, -vvv trace)
         \\    --verbose                Same as -v
         \\    -h, --help               Show this help message
@@ -80,33 +81,18 @@ pub fn main() !void {
     defer allocator.free(dir_path);
 
     // Parse optional flags.
-    var exclude_list: std.ArrayList([]const u8) = .{};
-    defer exclude_list.deinit(allocator);
-    var verbosity: u8 = 0;
+    var common_flags = tool_utils.CommonFlags.init();
+    defer common_flags.deinit(allocator);
 
     while (args.next()) |arg| {
-        if (std.mem.eql(u8, arg, "--exclude")) {
-            if (args.next()) |csv| {
-                var it = std.mem.splitScalar(u8, csv, ',');
-                while (it.next()) |p| {
-                    if (p.len > 0) {
-                        try exclude_list.append(allocator, p);
-                    }
-                }
-            }
-        } else {
-            const v = tool_utils.countVerbosity(arg);
-            if (v > 0) {
-                verbosity +|= v;
-            }
-        }
+        _ = try tool_utils.parseCommonFlag(allocator, arg, &args, &common_flags);
     }
 
-    var text_logger = logging.TextStderrLogger.init(tool_utils.verbosityToLevel(verbosity));
-    const log = if (verbosity > 0) text_logger.logger() else logging.Logger.noop;
+    var text_logger = logging.TextStderrLogger.init(tool_utils.verbosityToLevel(common_flags.verbosity));
+    const log = if (common_flags.verbosity > 0) text_logger.logger() else logging.Logger.noop;
 
     const options = indexer.IndexOptions{
-        .exclude_paths = exclude_list.items,
+        .exclude_paths = common_flags.exclude.items,
         .logger = log,
     };
 
@@ -114,11 +100,15 @@ pub fn main() !void {
     var graph = Graph.init(dir_path);
     defer graph.deinit(allocator);
 
-    const result = indexer.indexDirectory(allocator, dir_path, &graph, options) catch |err| {
+    const result = indexer.indexDirectory(allocator, dir_path, &graph, null, options) catch |err| {
         try stdout.print("Index error: {}\n", .{err});
         try stdout.flush();
         std.process.exit(1);
     };
+
+    if (common_flags.lsp) {
+        try tool_utils.runLspEnrichment(allocator, &graph, log, stdout);
+    }
 
     // Summary.
     try stdout.print("=== Directory: {s} ===\n", .{dir_path});
@@ -166,6 +156,13 @@ pub fn main() !void {
                 try stdout.print("  L{}-{}", .{ ls, le });
             } else {
                 try stdout.print("  L{}", .{ls});
+            }
+        }
+        if (n.col_start) |cs| {
+            if (n.col_end) |ce| {
+                try stdout.print("  C{}-{}", .{ cs, ce });
+            } else {
+                try stdout.print("  C{}", .{cs});
             }
         }
         if (n.parent_id) |pid| {

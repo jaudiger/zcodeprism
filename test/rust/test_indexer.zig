@@ -27,7 +27,7 @@ fn setupProjectFixtures(tmp_dir: *std.testing.TmpDir) ![]const u8 {
 fn indexProjectFixtures(graph: *Graph, tmp_dir: *std.testing.TmpDir) !zcodeprism.indexer.IndexResult {
     const project_root = try setupProjectFixtures(tmp_dir);
     defer std.testing.allocator.free(project_root);
-    return indexDirectory(std.testing.allocator, project_root, graph, .{});
+    return indexDirectory(std.testing.allocator, project_root, graph, null, .{});
 }
 
 // --- Nominal tests (project/) ---
@@ -203,8 +203,8 @@ test "incremental skips unchanged files" {
     defer std.testing.allocator.free(project_root);
 
     // Act: index twice with incremental=true
-    _ = indexDirectory(std.testing.allocator, project_root, &g, .{ .incremental = true }) catch |err| return err;
-    const result2 = indexDirectory(std.testing.allocator, project_root, &g, .{ .incremental = true }) catch |err| return err;
+    _ = indexDirectory(std.testing.allocator, project_root, &g, null, .{ .incremental = true }) catch |err| return err;
+    const result2 = indexDirectory(std.testing.allocator, project_root, &g, null, .{ .incremental = true }) catch |err| return err;
 
     // Assert
     try std.testing.expect(result2.files_skipped > 0);
@@ -227,7 +227,7 @@ test "single file project" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = indexDirectory(std.testing.allocator, project_root, &g, .{}) catch |err| return err;
+    _ = indexDirectory(std.testing.allocator, project_root, &g, null, .{}) catch |err| return err;
 
     // Assert
     try std.testing.expectEqual(@as(usize, 1), helpers.countNodesByKind(&g, .file));
@@ -249,7 +249,7 @@ test "directory with no rs files" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = indexDirectory(std.testing.allocator, project_root, &g, .{}) catch |err| return err;
+    _ = indexDirectory(std.testing.allocator, project_root, &g, null, .{}) catch |err| return err;
 
     // Assert
     try std.testing.expectEqual(@as(usize, 0), helpers.countNodesByKind(&g, .file));
@@ -278,7 +278,7 @@ test "mod foo resolves to foo.rs" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = indexDirectory(std.testing.allocator, project_root, &g, .{}) catch |err| return err;
+    _ = indexDirectory(std.testing.allocator, project_root, &g, null, .{}) catch |err| return err;
 
     // Assert: lib.rs has imports edge to parser.rs
     const lib_file = helpers.findNode(&g, "lib.rs", .file) orelse return error.TestExpectedEqual;
@@ -314,7 +314,7 @@ test "module-prefix import resolves to qualified phantom" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = try indexDirectory(std.testing.allocator, project_root, &g, .{});
+    _ = try indexDirectory(std.testing.allocator, project_root, &g, null, .{});
 
     // Assert: a phantom "Display" node exists whose parent is "fmt"
     var found_qualified = false;
@@ -388,7 +388,7 @@ test "aliased use import resolves to qualified phantom" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = try indexDirectory(std.testing.allocator, project_root, &g, .{});
+    _ = try indexDirectory(std.testing.allocator, project_root, &g, null, .{});
 
     // Assert: a phantom "Display" node exists whose parent is "fmt"
     var found_qualified = false;
@@ -460,7 +460,7 @@ test "phantom module kind and edge type follow Rust naming convention" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = try indexDirectory(std.testing.allocator, project_root, &g, .{});
+    _ = try indexDirectory(std.testing.allocator, project_root, &g, null, .{});
 
     // Assert: snake_case "io" is kind=module, PascalCase "Read" is kind=type_def
     for (g.nodes.items) |n| {
@@ -509,7 +509,7 @@ test "mod foo resolves to foo/mod.rs" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = indexDirectory(std.testing.allocator, project_root, &g, .{}) catch |err| return err;
+    _ = indexDirectory(std.testing.allocator, project_root, &g, null, .{}) catch |err| return err;
 
     // Assert: lib.rs has imports edge to parser/mod.rs
     const lib_file = helpers.findNode(&g, "lib.rs", .file) orelse return error.TestExpectedEqual;
@@ -595,7 +595,7 @@ test "transitive re-export resolves through chain" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = try indexDirectory(std.testing.allocator, project_root, &g, .{});
+    _ = try indexDirectory(std.testing.allocator, project_root, &g, null, .{});
 
     // Assert: Widget is defined in deep.rs
     const deep_file = helpers.findNode(&g, "deep.rs", .file) orelse return error.TestExpectedEqual;
@@ -640,7 +640,7 @@ test "pub use emits exports edge to resolved type" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = try indexDirectory(std.testing.allocator, project_root, &g, .{});
+    _ = try indexDirectory(std.testing.allocator, project_root, &g, null, .{});
 
     // Assert: Widget and Gadget are type nodes in deep.rs
     const deep_file = helpers.findNode(&g, "deep.rs", .file) orelse return error.TestExpectedEqual;
@@ -676,7 +676,7 @@ test "glob import resolves public symbols but not private ones" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = try indexDirectory(std.testing.allocator, project_root, &g, .{});
+    _ = try indexDirectory(std.testing.allocator, project_root, &g, null, .{});
 
     // Assert: lib.rs functions have calls edges to public utils.rs functions
     const lib_file = helpers.findNode(&g, "lib.rs", .file) orelse return error.TestExpectedEqual;
@@ -744,7 +744,7 @@ test "scoped field type creates phantom uses_type edge" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = try indexDirectory(std.testing.allocator, project_root, &g, .{});
+    _ = try indexDirectory(std.testing.allocator, project_root, &g, null, .{});
 
     // Assert: phantom Error node exists under phantom io module
     var found_error = false;

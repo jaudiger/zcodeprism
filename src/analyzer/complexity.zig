@@ -8,6 +8,7 @@ const Graph = graph_mod.Graph;
 const Node = node_mod.Node;
 const NodeId = types.NodeId;
 const NodeKind = types.NodeKind;
+const Language = types.Language;
 const ExternalInfo = @import("../languages/language.zig").ExternalInfo;
 const Scope = scope_mod.Scope;
 
@@ -29,6 +30,8 @@ pub const ComplexityResult = struct {
 pub const ComplexityOptions = struct {
     top_n: u32 = 10,
     scope: ?[]const u8 = null,
+    kind: NodeKind = .function,
+    language: ?Language = null,
 };
 
 /// Return the top-N most complex functions, sorted descending.
@@ -42,27 +45,35 @@ pub fn findComplex(allocator: std.mem.Allocator, g: *const Graph, options: Compl
     var heap_len: usize = 0;
 
     for (g.nodes.items, 0..) |n, i| {
-        if (n.kind != .function) continue;
+        if (n.kind != options.kind) continue;
         if (n.external != .none) continue;
+        if (options.language) |lf| {
+            if (n.language == null or n.language.? != lf) continue;
+        }
         const m = n.metrics orelse continue;
-        if (m.complexity == 0) continue;
+        if (options.kind != .file and m.complexity == 0) continue;
 
         if (scope_filter) |sf| {
             if (!sf.matches(n.file_path orelse continue)) continue;
         }
 
+        const score: u16 = if (options.kind == .file)
+            @intCast(@min(m.lines, std.math.maxInt(u16)))
+        else
+            m.complexity;
+
         const entry = ComplexityEntry{
             .node_id = @enumFromInt(i),
             .name = n.name,
             .file_path = n.file_path,
-            .complexity = m.complexity,
+            .complexity = score,
         };
 
         if (heap_len < cap) {
             heap_buf[heap_len] = entry;
             heap_len += 1;
             siftUp(heap_buf[0..heap_len], heap_len - 1);
-        } else if (m.complexity > heap_buf[0].complexity) {
+        } else if (score > heap_buf[0].complexity) {
             heap_buf[0] = entry;
             siftDown(heap_buf[0..heap_len], 0);
         }

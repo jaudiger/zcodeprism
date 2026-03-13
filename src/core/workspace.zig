@@ -240,8 +240,8 @@ pub fn assembleWorkspace(
         };
 
         // Transfer owned buffers, then dismantle the project graph.
-        for (project_graphs[i].owned_buffers.items) |buf| {
-            try graph.addOwnedBuffer(allocator, buf);
+        for (project_graphs[i].owned_buffers.items) |ob| {
+            try graph.owned_buffers.append(allocator, ob);
         }
         project_graphs[i].owned_buffers.clearRetainingCapacity();
         project_graphs[i].deinit(allocator);
