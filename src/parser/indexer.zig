@@ -149,6 +149,7 @@ pub fn indexDirectory(
     // defer is needed and no per-entry ownership flag is required.
     for (file_entries.items) |fe| {
         try graph.addOwnedBuffer(allocator, fe.rel_path);
+        errdefer allocator.free(fe.content);
         try graph.addOwnedBuffer(allocator, fe.content);
     }
 

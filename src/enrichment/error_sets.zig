@@ -63,6 +63,7 @@ pub fn propagateErrorSets(allocator: std.mem.Allocator, graph: *Graph, logger: L
                 if (!isSubset(callee_errors, existing)) {
                     const merged = try mergeErrorSets(allocator, existing, callee_errors);
                     try graph.addOwnedBuffer(allocator, merged.flat_buf);
+                    errdefer allocator.free(merged.slices);
                     try graph.addOwnedSlice(allocator, []const u8, merged.slices);
                     gop.value_ptr.* = merged.slices;
                     changed = true;

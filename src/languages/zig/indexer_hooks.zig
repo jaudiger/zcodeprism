@@ -389,6 +389,7 @@ fn dispatchWorklist(
                 const parsed = parseErrorsFromHover(allocator, hover_text) catch continue;
                 const names = parsed orelse continue;
                 try graph.addOwnedBuffer(allocator, names.flat_buf);
+                errdefer allocator.free(names.slices);
                 try graph.addOwnedSlice(allocator, []const u8, names.slices);
                 var zm = if (graph.nodes.items[src_idx].lang_meta == .zig) graph.nodes.items[src_idx].lang_meta.zig else @import("meta.zig").ZigMeta{};
                 zm.inferred_errors = names.slices;
