@@ -70,6 +70,94 @@ const Command = enum {
     version,
 };
 
+const CliArgs = struct {
+    command: ?Command = null,
+    force: bool = false,
+    verbosity: u8 = 0,
+    project_root: ?[]const u8 = null,
+    export_format: ?ExportFormat = null,
+    scope: ?[]const u8 = null,
+    output: ?[]const u8 = null,
+    name: ?[]const u8 = null,
+    snapshot: ?[]const u8 = null,
+    workspace: ?[]const u8 = null,
+    include_test_nodes: bool = false,
+    include_external_nodes: bool = false,
+    positional_args: [2]?[]const u8 = .{ null, null },
+    positional_count: usize = 0,
+};
+
+fn requireArg(args: *std.process.ArgIterator, flag: []const u8, stderr: *std.Io.Writer) []const u8 {
+    return args.next() orelse {
+        stderr.print("{s} requires an argument\n", .{flag}) catch {};
+        stderr.flush() catch {};
+        std.process.exit(2);
+    };
+}
+
+fn parseArgs(stderr: *std.Io.Writer) CliArgs {
+    var cli = CliArgs{};
+    var args = std.process.args();
+    _ = args.next();
+
+    while (args.next()) |arg| {
+        if (std.mem.eql(u8, arg, "--project-root")) {
+            cli.project_root = requireArg(&args, "--project-root", stderr);
+        } else if (std.mem.eql(u8, arg, "--version")) {
+            cli.command = .version;
+        } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
+            cli.command = .help;
+        } else if (std.mem.eql(u8, arg, "--force")) {
+            cli.force = true;
+        } else if (std.mem.eql(u8, arg, "--name")) {
+            cli.name = requireArg(&args, "--name", stderr);
+        } else if (std.mem.eql(u8, arg, "--workspace")) {
+            cli.workspace = requireArg(&args, "--workspace", stderr);
+        } else if (std.mem.eql(u8, arg, "--snapshot")) {
+            cli.snapshot = requireArg(&args, "--snapshot", stderr);
+        } else if (std.mem.eql(u8, arg, "--full") or std.mem.eql(u8, arg, "--incremental") or std.mem.eql(u8, arg, "--json")) {
+            // Accepted but not yet used beyond index.
+        } else if (std.mem.eql(u8, arg, "--ctg")) {
+            cli.export_format = .ctg_fmt;
+        } else if (std.mem.eql(u8, arg, "--mermaid")) {
+            cli.export_format = .mermaid_fmt;
+        } else if (std.mem.eql(u8, arg, "--jsonl")) {
+            cli.export_format = .jsonl_fmt;
+        } else if (std.mem.eql(u8, arg, "--scope")) {
+            cli.scope = requireArg(&args, "--scope", stderr);
+        } else if (std.mem.eql(u8, arg, "--output")) {
+            cli.output = requireArg(&args, "--output", stderr);
+        } else if (std.mem.eql(u8, arg, "--test-nodes")) {
+            cli.include_test_nodes = true;
+        } else if (std.mem.eql(u8, arg, "--external-nodes")) {
+            cli.include_external_nodes = true;
+        } else if (std.mem.startsWith(u8, arg, "-v")) {
+            var count: u8 = 0;
+            for (arg[1..]) |c| {
+                if (c == 'v') count += 1 else break;
+            }
+            cli.verbosity = @max(cli.verbosity, count);
+        } else if (arg[0] == '-') {
+            stderr.print("unknown option: {s}\n", .{arg}) catch {};
+            stderr.flush() catch {};
+            std.process.exit(2);
+        } else {
+            if (cli.command == null) {
+                cli.command = std.meta.stringToEnum(Command, arg) orelse {
+                    stderr.print("unknown command: {s}\n", .{arg}) catch {};
+                    stderr.flush() catch {};
+                    std.process.exit(2);
+                };
+            } else if (cli.positional_count < 2) {
+                cli.positional_args[cli.positional_count] = arg;
+                cli.positional_count += 1;
+            }
+        }
+    }
+
+    return cli;
+}
+
 pub fn main() void {
     var stdout_buffer: [4096]u8 = undefined;
     var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
@@ -79,118 +167,9 @@ pub fn main() void {
     var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
     const stderr = &stderr_writer.interface;
 
-    var args = std.process.args();
-    _ = args.next();
+    const cli = parseArgs(stderr);
 
-    var command: ?Command = null;
-    var force = false;
-    var verbosity: u8 = 0;
-    var project_root_arg: ?[]const u8 = null;
-    var export_format: ?ExportFormat = null;
-    var scope_arg: ?[]const u8 = null;
-    var output_arg: ?[]const u8 = null;
-    var name_arg: ?[]const u8 = null;
-    var snapshot_arg: ?[]const u8 = null;
-    var workspace_arg: ?[]const u8 = null;
-    var include_test_nodes = false;
-    var include_external_nodes = false;
-    var positional_args: [2]?[]const u8 = .{ null, null };
-    var positional_count: usize = 0;
-
-    while (args.next()) |arg| {
-        if (std.mem.eql(u8, arg, "--project-root")) {
-            project_root_arg = args.next() orelse {
-                stderr.writeAll("--project-root requires a path argument\n") catch {};
-                stderr.flush() catch {};
-                std.process.exit(2);
-            };
-        } else if (std.mem.eql(u8, arg, "--version")) {
-            command = .version;
-        } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
-            command = .help;
-        } else if (std.mem.eql(u8, arg, "--force")) {
-            force = true;
-        } else if (std.mem.eql(u8, arg, "--name")) {
-            name_arg = args.next() orelse {
-                stderr.writeAll("--name requires a tag argument\n") catch {};
-                stderr.flush() catch {};
-                std.process.exit(2);
-            };
-        } else if (std.mem.eql(u8, arg, "--workspace")) {
-            workspace_arg = args.next() orelse {
-                stderr.writeAll("--workspace requires a path argument\n") catch {};
-                stderr.flush() catch {};
-                std.process.exit(2);
-            };
-        } else if (std.mem.eql(u8, arg, "--snapshot")) {
-            snapshot_arg = args.next() orelse {
-                stderr.writeAll("--snapshot requires a tag argument\n") catch {};
-                stderr.flush() catch {};
-                std.process.exit(2);
-            };
-        } else if (std.mem.eql(u8, arg, "--full") or std.mem.eql(u8, arg, "--incremental") or std.mem.eql(u8, arg, "--json")) {
-            // Accepted but not yet used beyond index.
-        } else if (std.mem.eql(u8, arg, "--ctg")) {
-            export_format = .ctg_fmt;
-        } else if (std.mem.eql(u8, arg, "--mermaid")) {
-            export_format = .mermaid_fmt;
-        } else if (std.mem.eql(u8, arg, "--jsonl")) {
-            export_format = .jsonl_fmt;
-        } else if (std.mem.eql(u8, arg, "--scope")) {
-            scope_arg = args.next() orelse {
-                stderr.writeAll("--scope requires a path argument\n") catch {};
-                stderr.flush() catch {};
-                std.process.exit(2);
-            };
-        } else if (std.mem.eql(u8, arg, "--output")) {
-            output_arg = args.next() orelse {
-                stderr.writeAll("--output requires a path argument\n") catch {};
-                stderr.flush() catch {};
-                std.process.exit(2);
-            };
-        } else if (std.mem.eql(u8, arg, "--test-nodes")) {
-            include_test_nodes = true;
-        } else if (std.mem.eql(u8, arg, "--external-nodes")) {
-            include_external_nodes = true;
-        } else if (std.mem.startsWith(u8, arg, "-v")) {
-            var count: u8 = 0;
-            for (arg[1..]) |c| {
-                if (c == 'v') count += 1 else break;
-            }
-            verbosity = @max(verbosity, count);
-        } else if (arg[0] == '-') {
-            stderr.print("unknown option: {s}\n", .{arg}) catch {};
-            stderr.flush() catch {};
-            std.process.exit(2);
-        } else {
-            if (command == null) {
-                if (std.mem.eql(u8, arg, "init")) {
-                    command = .init;
-                } else if (std.mem.eql(u8, arg, "index")) {
-                    command = .index;
-                } else if (std.mem.eql(u8, arg, "export")) {
-                    command = .@"export";
-                } else if (std.mem.eql(u8, arg, "snapshot")) {
-                    command = .snapshot;
-                } else if (std.mem.eql(u8, arg, "diff")) {
-                    command = .diff;
-                } else if (std.mem.eql(u8, arg, "serve")) {
-                    command = .serve;
-                } else if (std.mem.eql(u8, arg, "status")) {
-                    command = .status;
-                } else {
-                    stderr.print("unknown command: {s}\n", .{arg}) catch {};
-                    stderr.flush() catch {};
-                    std.process.exit(2);
-                }
-            } else if (positional_count < 2) {
-                positional_args[positional_count] = arg;
-                positional_count += 1;
-            }
-        }
-    }
-
-    if (project_root_arg) |root| {
+    if (cli.project_root) |root| {
         std.posix.chdir(root) catch {
             stderr.print("cannot chdir to: {s}\n", .{root}) catch {};
             stderr.flush() catch {};
@@ -198,7 +177,7 @@ pub fn main() void {
         };
     }
 
-    const cmd = command orelse {
+    const cmd = cli.command orelse {
         stdout.writeAll(usage_text) catch {};
         stdout.flush() catch {};
         return;
@@ -213,13 +192,13 @@ pub fn main() void {
             stdout.writeAll(usage_text) catch {};
             stdout.flush() catch {};
         },
-        .init => runInit(stdout, stderr, force, workspace_arg),
-        .index => runIndex(stdout, stderr, verbosity),
-        .@"export" => runExport(stdout, stderr, export_format, scope_arg, output_arg, snapshot_arg, include_test_nodes, include_external_nodes),
-        .snapshot => runSnapshot(stdout, stderr, name_arg),
-        .diff => runDiff(stdout, stderr, positional_args[0], positional_args[1]),
-        .serve => runServe(stderr, workspace_arg),
-        .status => runStatus(stdout, stderr, workspace_arg),
+        .init => runInit(stdout, stderr, cli.force, cli.workspace),
+        .index => runIndex(stdout, stderr, cli.verbosity),
+        .@"export" => runExport(stdout, stderr, cli.export_format, cli.scope, cli.output, cli.snapshot, cli.include_test_nodes, cli.include_external_nodes),
+        .snapshot => runSnapshot(stdout, stderr, cli.name),
+        .diff => runDiff(stdout, stderr, cli.positional_args[0], cli.positional_args[1]),
+        .serve => runServe(stderr, cli.workspace),
+        .status => runStatus(stdout, stderr, cli.workspace),
     }
 }
 

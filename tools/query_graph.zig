@@ -242,6 +242,16 @@ fn cmdNode(allocator: std.mem.Allocator, g: *const Graph, flags: ParsedFlags, st
     }
 }
 
+const QueryCommand = enum {
+    search,
+    stats,
+    ancestors,
+    impact,
+    path,
+    edges,
+    node,
+};
+
 // -- Help --
 
 fn printHelp(stdout: *std.Io.Writer) !void {
@@ -348,24 +358,20 @@ pub fn main() !void {
         idx_result.files_indexed, graph.nodes.items.len, graph.edges.items.len,
     });
 
-    // Dispatch.
-    if (std.mem.eql(u8, command, "search")) {
-        try cmdSearch(allocator, &graph, flags, stdout);
-    } else if (std.mem.eql(u8, command, "stats")) {
-        try cmdStats(allocator, &graph, flags, stdout);
-    } else if (std.mem.eql(u8, command, "ancestors")) {
-        try cmdAncestors(allocator, &graph, flags, stdout);
-    } else if (std.mem.eql(u8, command, "impact")) {
-        try cmdImpact(allocator, &graph, flags, stdout);
-    } else if (std.mem.eql(u8, command, "path")) {
-        try cmdPath(allocator, &graph, flags, stdout);
-    } else if (std.mem.eql(u8, command, "edges")) {
-        try cmdEdges(allocator, &graph, flags, stdout);
-    } else if (std.mem.eql(u8, command, "node")) {
-        try cmdNode(allocator, &graph, flags, stdout);
-    } else {
+    const cmd = std.meta.stringToEnum(QueryCommand, command) orelse {
         try stdout.print("Unknown command: {s}\n\n", .{command});
         try printHelp(stdout);
+        return;
+    };
+
+    switch (cmd) {
+        .search => try cmdSearch(allocator, &graph, flags, stdout),
+        .stats => try cmdStats(allocator, &graph, flags, stdout),
+        .ancestors => try cmdAncestors(allocator, &graph, flags, stdout),
+        .impact => try cmdImpact(allocator, &graph, flags, stdout),
+        .path => try cmdPath(allocator, &graph, flags, stdout),
+        .edges => try cmdEdges(allocator, &graph, flags, stdout),
+        .node => try cmdNode(allocator, &graph, flags, stdout),
     }
 
     try stdout.flush();

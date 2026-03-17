@@ -205,6 +205,15 @@ fn cmdImpact(allocator: std.mem.Allocator, g: *const Graph, flags: ParsedFlags, 
     if (result.total_impacted == 0) try stdout.print("  (none)\n", .{});
 }
 
+const AnalyzeCommand = enum {
+    complexity,
+    @"dead-code",
+    duplicates,
+    cycles,
+    coupling,
+    impact,
+};
+
 // -- Help --
 
 fn printHelp(stdout: *std.Io.Writer) !void {
@@ -307,21 +316,19 @@ pub fn main() !void {
         idx_result.files_indexed, graph.nodes.items.len, graph.edges.items.len,
     });
 
-    if (std.mem.eql(u8, command, "complexity")) {
-        try cmdComplexity(allocator, &graph, flags, stdout);
-    } else if (std.mem.eql(u8, command, "dead-code")) {
-        try cmdDeadCode(allocator, &graph, flags, stdout);
-    } else if (std.mem.eql(u8, command, "duplicates")) {
-        try cmdDuplicates(allocator, &graph, flags, stdout);
-    } else if (std.mem.eql(u8, command, "cycles")) {
-        try cmdCycles(allocator, &graph, flags, stdout);
-    } else if (std.mem.eql(u8, command, "coupling")) {
-        try cmdCoupling(allocator, &graph, flags, stdout);
-    } else if (std.mem.eql(u8, command, "impact")) {
-        try cmdImpact(allocator, &graph, flags, stdout);
-    } else {
+    const cmd = std.meta.stringToEnum(AnalyzeCommand, command) orelse {
         try stdout.print("Unknown command: {s}\n\n", .{command});
         try printHelp(stdout);
+        return;
+    };
+
+    switch (cmd) {
+        .complexity => try cmdComplexity(allocator, &graph, flags, stdout),
+        .@"dead-code" => try cmdDeadCode(allocator, &graph, flags, stdout),
+        .duplicates => try cmdDuplicates(allocator, &graph, flags, stdout),
+        .cycles => try cmdCycles(allocator, &graph, flags, stdout),
+        .coupling => try cmdCoupling(allocator, &graph, flags, stdout),
+        .impact => try cmdImpact(allocator, &graph, flags, stdout),
     }
 
     try stdout.flush();
