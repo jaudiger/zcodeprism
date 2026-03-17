@@ -115,6 +115,20 @@ pub const Language = enum {
     zig,
 };
 
+/// Parse a string into any enum type by matching against field names.
+pub fn parseEnum(comptime E: type, name: []const u8) ?E {
+    inline for (@typeInfo(E).@"enum".fields) |f| {
+        if (std.mem.eql(u8, name, f.name)) return @enumFromInt(f.value);
+    }
+    return null;
+}
+
+/// Parse a NodeId from a string in the given radix.
+pub fn parseNodeId(s: []const u8, radix: u8) ?NodeId {
+    const v = std.fmt.parseInt(u64, s, radix) catch return null;
+    return @enumFromInt(v);
+}
+
 test "NodeId is 8 bytes" {
     comptime {
         std.debug.assert(@sizeOf(NodeId) == 8);

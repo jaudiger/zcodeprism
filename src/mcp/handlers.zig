@@ -41,8 +41,7 @@ pub const HandlerError = error{OutOfMemory};
 // -- Param helpers --
 
 fn parseNodeId(hex_str: []const u8) ?NodeId {
-    const val = std.fmt.parseInt(u64, hex_str, 16) catch return null;
-    return @enumFromInt(val);
+    return types.parseNodeId(hex_str, 16);
 }
 
 fn getArgs(params: ?std.json.Value) ?std.json.ObjectMap {
@@ -122,31 +121,19 @@ fn collectNodeIds(allocator: std.mem.Allocator, args: ?std.json.ObjectMap, key: 
 }
 
 fn parseEdgeType(name: []const u8) ?EdgeType {
-    inline for (@typeInfo(EdgeType).@"enum".fields) |f| {
-        if (std.mem.eql(u8, name, f.name)) return @enumFromInt(f.value);
-    }
-    return null;
+    return types.parseEnum(EdgeType, name);
 }
 
 fn parseNodeKind(name: []const u8) ?NodeKind {
-    inline for (@typeInfo(NodeKind).@"enum".fields) |f| {
-        if (std.mem.eql(u8, name, f.name)) return @enumFromInt(f.value);
-    }
-    return null;
+    return types.parseEnum(NodeKind, name);
 }
 
 fn parseLanguage(name: []const u8) ?Language {
-    inline for (@typeInfo(Language).@"enum".fields) |f| {
-        if (std.mem.eql(u8, name, f.name)) return @enumFromInt(f.value);
-    }
-    return null;
+    return types.parseEnum(Language, name);
 }
 
 fn parseVisibility(name: []const u8) ?Visibility {
-    inline for (@typeInfo(Visibility).@"enum".fields) |f| {
-        if (std.mem.eql(u8, name, f.name)) return @enumFromInt(f.value);
-    }
-    return null;
+    return types.parseEnum(Visibility, name);
 }
 
 /// Parse the "edge_types" JSON array into buf and return the filled slice.

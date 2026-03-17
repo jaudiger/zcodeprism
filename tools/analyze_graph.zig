@@ -57,8 +57,7 @@ fn parseFlags(allocator: std.mem.Allocator, raw_args: []const []const u8) !Parse
 }
 
 fn parseNodeId(s: []const u8) ?NodeId {
-    const v = std.fmt.parseInt(u64, s, 10) catch return null;
-    return @enumFromInt(v);
+    return zcodeprism.types.parseNodeId(s, 10);
 }
 
 // -- Command handlers --

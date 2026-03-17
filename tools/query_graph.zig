@@ -68,15 +68,11 @@ fn requirePositionalId(positional: []const []const u8, idx: usize, stdout: *std.
 // -- Parsing helpers --
 
 fn parseNodeId(s: []const u8) ?NodeId {
-    const v = std.fmt.parseInt(u64, s, 10) catch return null;
-    return @enumFromInt(v);
+    return zcodeprism.types.parseNodeId(s, 10);
 }
 
 fn parseNodeKind(s: []const u8) ?NodeKind {
-    inline for (@typeInfo(NodeKind).@"enum".fields) |f| {
-        if (std.mem.eql(u8, s, f.name)) return @enumFromInt(f.value);
-    }
-    return null;
+    return zcodeprism.types.parseEnum(NodeKind, s);
 }
 
 // -- Display helpers --
