@@ -88,6 +88,7 @@ fn cmdDeadCode(allocator: std.mem.Allocator, g: *const Graph, flags: ParsedFlags
     const result = try analyzer.dead_code.findDeadCode(allocator, g, .{
         .include_public = flags.include_public,
         .scope = flags.scope,
+        .limit = flags.limit,
     });
     defer result.deinit(allocator);
 
@@ -108,6 +109,8 @@ fn cmdDeadCode(allocator: std.mem.Allocator, g: *const Graph, flags: ParsedFlags
 fn cmdDuplicates(allocator: std.mem.Allocator, g: *const Graph, flags: ParsedFlags, stdout: *std.Io.Writer) !void {
     const result = try analyzer.duplicates.findDuplicates(allocator, g, .{
         .min_lines = flags.min_lines,
+        .scope = flags.scope,
+        .limit = flags.limit,
     });
     defer result.deinit(allocator);
 
@@ -130,6 +133,7 @@ fn cmdDuplicates(allocator: std.mem.Allocator, g: *const Graph, flags: ParsedFla
 fn cmdCycles(allocator: std.mem.Allocator, g: *const Graph, flags: ParsedFlags, stdout: *std.Io.Writer) !void {
     const result = try analyzer.cycles.findCycles(allocator, g, .{
         .max_cycle_length = flags.max_cycle_length,
+        .scope = flags.scope,
     });
     defer result.deinit(allocator);
 
@@ -149,6 +153,7 @@ fn cmdCoupling(allocator: std.mem.Allocator, g: *const Graph, flags: ParsedFlags
     const result = try analyzer.coupling.findCoupling(allocator, g, .{
         .min_coupling = flags.min_coupling,
         .top_n = flags.limit,
+        .scope = flags.scope,
     });
     defer result.deinit(allocator);
 
