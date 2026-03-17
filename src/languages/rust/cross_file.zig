@@ -98,7 +98,7 @@ pub fn buildImportMap(
                 is_public = true;
                 continue;
             }
-            try resolveUseNode(allocator, g, source, payload, &.{}, is_public, ctx, graph_index, importer_path, k, log);
+            try resolveUseNode(allocator, g, source, payload, &.{}, is_public, ctx, graph_index, importer_path, k, log, 0);
             break;
         }
     }
@@ -148,13 +148,15 @@ fn resolveUseNode(
     importer_path: ?[]const u8,
     k: *const KindIds,
     log: Logger,
+    depth: u32,
 ) !void {
+    if (depth >= max_ast_scan_depth) return;
     const kid = node.kindId();
 
     if (kid == k.scoped_identifier or kid == k.identifier or kid == k.type_identifier) {
         var segments: [max_chain_depth][]const u8 = undefined;
         var seg_count = copyPrefix(prefix, &segments);
-        collectScopedSegments(source, node, &segments, &seg_count, k);
+        collectScopedSegments(source, node, &segments, &seg_count, k, 0);
         if (seg_count == 0) return;
         try resolveAndAddEntry(allocator, g, ctx, graph_index, importer_path, segments[0..seg_count], segments[seg_count - 1], is_public, log);
     } else if (kid == k.scoped_use_list) {
@@ -169,10 +171,10 @@ fn resolveUseNode(
                 var mi: u32 = 0;
                 while (mi < child.namedChildCount()) : (mi += 1) {
                     const member = child.namedChild(mi) orelse continue;
-                    try resolveUseNode(allocator, g, source, member, new_prefix[0..pcount], is_public, ctx, graph_index, importer_path, k, log);
+                    try resolveUseNode(allocator, g, source, member, new_prefix[0..pcount], is_public, ctx, graph_index, importer_path, k, log, depth + 1);
                 }
             } else {
-                collectScopedSegments(source, child, &new_prefix, &pcount, k);
+                collectScopedSegments(source, child, &new_prefix, &pcount, k, 0);
             }
         }
     } else if (kid == k.use_as_clause) {
@@ -180,7 +182,7 @@ fn resolveUseNode(
         var segments: [max_chain_depth][]const u8 = undefined;
         var seg_count = copyPrefix(prefix, &segments);
         if (node.namedChild(0)) |path_node| {
-            collectScopedSegments(source, path_node, &segments, &seg_count, k);
+            collectScopedSegments(source, path_node, &segments, &seg_count, k, 0);
         }
         if (seg_count == 0) return;
         const alias: ?[]const u8 = if (node.namedChild(1)) |alias_node| ts_api.nodeText(source, alias_node) else null;
@@ -194,7 +196,7 @@ fn resolveUseNode(
         var ci: u32 = 0;
         while (ci < node.namedChildCount()) : (ci += 1) {
             const wchild = node.namedChild(ci) orelse continue;
-            collectScopedSegments(source, wchild, &full_prefix, &pcount, k);
+            collectScopedSegments(source, wchild, &full_prefix, &pcount, k, 0);
         }
 
         if (pcount == 0) return;
@@ -567,7 +569,7 @@ pub fn findImportQualifiedRoot(
     var i: u32 = 0;
     while (i < let_node.childCount()) : (i += 1) {
         const child = let_node.child(i) orelse continue;
-        if (extractExpressionImportRoot(source, child, ctx, k)) |target| return target;
+        if (extractExpressionImportRoot(source, child, ctx, k, 0)) |target| return target;
     }
     return null;
 }
@@ -579,41 +581,42 @@ fn extractExpressionImportRoot(
     node: ts.Node,
     ctx: *const EdgeContext,
     k: *const KindIds,
+    depth: u32,
 ) ?NodeId {
+    if (depth >= max_ast_scan_depth) return null;
     const kid = node.kindId();
 
     if (kid == k.scoped_identifier) {
-        // Extract the leftmost segment from the scoped chain.
         var segments: [max_chain_depth][]const u8 = undefined;
         var seg_count: usize = 0;
-        collectScopedSegments(source, node, &segments, &seg_count, k);
+        collectScopedSegments(source, node, &segments, &seg_count, k, 0);
         if (seg_count > 0) {
             return ctx.findImportTarget(segments[0]);
         }
     }
     if (kid == k.call_expression) {
         if (node.child(0)) |fn_ref| {
-            return extractExpressionImportRoot(source, fn_ref, ctx, k);
+            return extractExpressionImportRoot(source, fn_ref, ctx, k, depth + 1);
         }
     }
     if (kid == k.field_expression) {
         if (node.namedChild(0)) |obj| {
-            return extractExpressionImportRoot(source, obj, ctx, k);
+            return extractExpressionImportRoot(source, obj, ctx, k, depth + 1);
         }
     }
 
-    // Recurse into children for nested expressions.
     var i: u32 = 0;
     while (i < node.namedChildCount()) : (i += 1) {
         const child = node.namedChild(i) orelse continue;
-        if (extractExpressionImportRoot(source, child, ctx, k)) |target| return target;
+        if (extractExpressionImportRoot(source, child, ctx, k, depth + 1)) |target| return target;
     }
     return null;
 }
 
 /// Recursively collect identifier segments from a scoped_identifier or plain
 /// identifier AST node. Handles all Rust path keywords: super, crate, self.
-pub fn collectScopedSegments(source: []const u8, node: ts.Node, segments: *[max_chain_depth][]const u8, count: *usize, k: *const KindIds) void {
+pub fn collectScopedSegments(source: []const u8, node: ts.Node, segments: *[max_chain_depth][]const u8, count: *usize, k: *const KindIds, depth: u32) void {
+    if (depth >= max_chain_depth) return;
     const nkid = node.kindId();
     if (nkid == k.identifier or nkid == k.type_identifier) {
         if (count.* < max_chain_depth) {
@@ -622,7 +625,6 @@ pub fn collectScopedSegments(source: []const u8, node: ts.Node, segments: *[max_
         }
         return;
     }
-    // Handle keyword nodes passed in directly (not as children).
     if (nkid == k.kw_super or nkid == k.kw_crate or nkid == k.self_expr) {
         if (count.* < max_chain_depth) {
             segments[count.*] = if (nkid == k.kw_super) "super" else if (nkid == k.kw_crate) "crate" else "self";
@@ -636,7 +638,7 @@ pub fn collectScopedSegments(source: []const u8, node: ts.Node, segments: *[max_
         const kid = child.kindId();
 
         if (kid == k.scoped_identifier) {
-            collectScopedSegments(source, child, segments, count, k);
+            collectScopedSegments(source, child, segments, count, k, depth + 1);
         } else if (kid == k.identifier or kid == k.type_identifier) {
             if (count.* < max_chain_depth) {
                 segments[count.*] = ts_api.nodeText(source, child);
@@ -815,19 +817,19 @@ pub fn resolveVarTargetThroughReturnType(
             if (c.child(0)) |fn_ref| {
                 const fk = fn_ref.kindId();
                 if (fk == k.scoped_identifier) {
-                    collectScopedSegments(source, fn_ref, &chain, &chain_len, k);
+                    collectScopedSegments(source, fn_ref, &chain, &chain_len, k, 0);
                 } else if (fk == k.field_expression) {
-                    collectFieldChainForVar(source, fn_ref, &chain, &chain_len, k);
+                    collectFieldChainForVar(source, fn_ref, &chain, &chain_len, k, 0);
                 }
             }
             break;
         }
         if (ck == k.scoped_identifier) {
-            collectScopedSegments(source, c, &chain, &chain_len, k);
+            collectScopedSegments(source, c, &chain, &chain_len, k, 0);
             break;
         }
         if (ck == k.field_expression) {
-            collectFieldChainForVar(source, c, &chain, &chain_len, k);
+            collectFieldChainForVar(source, c, &chain, &chain_len, k, 0);
             break;
         }
     }
@@ -894,7 +896,8 @@ pub fn resolveVarTargetThroughReturnType(
 
 /// Collect identifier segments from a Rust field_expression chain for variable resolution.
 /// Handles nested field_expression and call_expression wrappers.
-pub fn collectFieldChainForVar(source: []const u8, node: ts.Node, chain: *[max_chain_depth][]const u8, count: *usize, k: *const KindIds) void {
+pub fn collectFieldChainForVar(source: []const u8, node: ts.Node, chain: *[max_chain_depth][]const u8, count: *usize, k: *const KindIds, depth: u32) void {
+    if (depth >= max_chain_depth) return;
     const kid = node.kindId();
     if (kid == k.identifier or kid == k.type_identifier) {
         if (count.* < max_chain_depth) {
@@ -904,24 +907,24 @@ pub fn collectFieldChainForVar(source: []const u8, node: ts.Node, chain: *[max_c
         return;
     }
     if (kid == k.scoped_identifier) {
-        collectScopedSegments(source, node, chain, count, k);
+        collectScopedSegments(source, node, chain, count, k, 0);
         return;
     }
     if (kid == k.field_expression) {
         if (node.namedChild(0)) |obj| {
-            collectFieldChainForVar(source, obj, chain, count, k);
+            collectFieldChainForVar(source, obj, chain, count, k, depth + 1);
         }
         const nc = node.namedChildCount();
         if (nc >= 2) {
             if (node.namedChild(nc - 1)) |field| {
-                collectFieldChainForVar(source, field, chain, count, k);
+                collectFieldChainForVar(source, field, chain, count, k, depth + 1);
             }
         }
         return;
     }
     if (kid == k.call_expression) {
         if (node.child(0)) |fn_ref| {
-            collectFieldChainForVar(source, fn_ref, chain, count, k);
+            collectFieldChainForVar(source, fn_ref, chain, count, k, depth + 1);
         }
         return;
     }

@@ -257,7 +257,7 @@ pub fn findImportQualifiedRoot(
     var i: u32 = 0;
     while (i < var_decl.childCount()) : (i += 1) {
         const child = var_decl.child(i) orelse continue;
-        if (extractExpressionImportRoot(source, child, ctx, k)) |target| return target;
+        if (extractExpressionImportRoot(source, child, ctx, k, 0)) |target| return target;
     }
     return null;
 }
@@ -266,7 +266,8 @@ pub fn findImportQualifiedRoot(
 /// Unwraps call_expression, field_expression, and try_expression wrappers,
 /// collects the identifier chain, and looks up the first segment in `ctx`.
 /// Returns the target file NodeId if the root identifier is a known import, null otherwise.
-pub fn extractExpressionImportRoot(source: []const u8, node: ts.Node, ctx: *const EdgeContext, k: *const KindIds) ?NodeId {
+pub fn extractExpressionImportRoot(source: []const u8, node: ts.Node, ctx: *const EdgeContext, k: *const KindIds, depth: u32) ?NodeId {
+    if (depth >= max_ast_scan_depth) return null;
     const kid = node.kindId();
     if (kid == k.call_expression or kid == k.field_expression) {
         var chain: [max_chain_depth][]const u8 = undefined;
@@ -275,12 +276,11 @@ pub fn extractExpressionImportRoot(source: []const u8, node: ts.Node, ctx: *cons
             return ctx.findImportTarget(chain[0]);
         }
     }
-    // Unwrap try_expression: `try alpha.init()`
     if (kid == k.try_expression) {
         var i: u32 = 0;
         while (i < node.namedChildCount()) : (i += 1) {
             const child = node.namedChild(i) orelse continue;
-            if (extractExpressionImportRoot(source, child, ctx, k)) |target| return target;
+            if (extractExpressionImportRoot(source, child, ctx, k, depth + 1)) |target| return target;
         }
     }
     return null;

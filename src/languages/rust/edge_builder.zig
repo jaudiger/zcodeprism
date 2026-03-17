@@ -482,7 +482,7 @@ fn resolveScopedFieldType(
 ) !void {
     var segments: [cf.max_chain_depth][]const u8 = undefined;
     var seg_count: usize = 0;
-    cf.collectScopedSegments(source, scoped_node, &segments, &seg_count, k);
+    cf.collectScopedSegments(source, scoped_node, &segments, &seg_count, k, 0);
     if (seg_count < 2) return;
 
     const qualifier = segments[0];
@@ -611,7 +611,7 @@ fn resolveScopedCall(allocator: std.mem.Allocator, sctx: *const ScanContext, sco
     const scope_start = sctx.edge_ctx.scope_start;
     const scope_end = sctx.edge_ctx.scope_end;
 
-    cf.collectScopedSegments(sctx.source, scoped_node, &segments, &seg_count, sctx.k);
+    cf.collectScopedSegments(sctx.source, scoped_node, &segments, &seg_count, sctx.k, 0);
 
     if (seg_count < 2) {
         if (seg_count == 1) {
@@ -668,7 +668,7 @@ fn resolveFieldCall(allocator: std.mem.Allocator, sctx: *const ScanContext, fiel
 
     var chain: [cf.max_chain_depth][]const u8 = undefined;
     var chain_len: usize = 0;
-    cf.collectFieldChainForVar(sctx.source, field_node, &chain, &chain_len, sctx.k);
+    cf.collectFieldChainForVar(sctx.source, field_node, &chain, &chain_len, sctx.k, 0);
     if (chain_len >= 1) {
         const root_name = chain[0];
 
@@ -740,7 +740,7 @@ fn resolveGenericFunctionCall(allocator: std.mem.Allocator, sctx: *const ScanCon
 fn handleFieldAccess(allocator: std.mem.Allocator, sctx: *const ScanContext, field_expr: ts.Node) !void {
     var chain: [cf.max_chain_depth][]const u8 = undefined;
     var chain_len: usize = 0;
-    cf.collectFieldChainForVar(sctx.source, field_expr, &chain, &chain_len, sctx.k);
+    cf.collectFieldChainForVar(sctx.source, field_expr, &chain, &chain_len, sctx.k, 0);
     if (chain_len < 2) return;
     const root_name = chain[0];
     const field_name = chain[chain_len - 1];
@@ -1056,7 +1056,7 @@ fn resolveCallResultType(
         // obj.method() -- look up obj's type, find method in impl blocks.
         var chain: [cf.max_chain_depth][]const u8 = undefined;
         var chain_len: usize = 0;
-        cf.collectFieldChainForVar(source, func_ref, &chain, &chain_len, k);
+        cf.collectFieldChainForVar(source, func_ref, &chain, &chain_len, k, 0);
         if (chain_len >= 2) {
             const root_name = chain[0];
             const method_name = chain[chain_len - 1];
@@ -1068,7 +1068,7 @@ fn resolveCallResultType(
         // Type::method() -- find the type and then the method.
         var segments: [cf.max_chain_depth][]const u8 = undefined;
         var seg_count: usize = 0;
-        cf.collectScopedSegments(source, func_ref, &segments, &seg_count, k);
+        cf.collectScopedSegments(source, func_ref, &segments, &seg_count, k, 0);
         if (seg_count >= 2) {
             const type_name = segments[0];
             const method_name = segments[seg_count - 1];
@@ -1085,7 +1085,7 @@ fn resolveCallResultType(
             } else if (inner.kindId() == k.scoped_identifier) {
                 var segments: [cf.max_chain_depth][]const u8 = undefined;
                 var seg_count: usize = 0;
-                cf.collectScopedSegments(source, inner, &segments, &seg_count, k);
+                cf.collectScopedSegments(source, inner, &segments, &seg_count, k, 0);
                 if (seg_count >= 2) {
                     const type_name = segments[0];
                     const method_name = segments[seg_count - 1];
@@ -1120,7 +1120,7 @@ fn extractScopedTypeChain(source: []const u8, type_node: ts.Node, out: *[cf.max_
     const kid = unwrapped.kindId();
     if (kid == k.scoped_type_identifier or kid == k.scoped_identifier) {
         var count: usize = 0;
-        cf.collectScopedSegments(source, unwrapped, out, &count, k);
+        cf.collectScopedSegments(source, unwrapped, out, &count, k, 0);
         return count;
     }
     return 0;
