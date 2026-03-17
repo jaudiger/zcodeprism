@@ -121,10 +121,7 @@ pub fn indexDirectory(
         const est_nodes: u32 = @intCast(file_count * 30);
         const est_edges: u32 = @intCast(file_count * 20);
         const est_bufs: u32 = @intCast(graph.owned_buffers.items.len + file_count * 2);
-        try graph.nodes.ensureTotalCapacity(allocator, est_nodes);
-        try graph.edges.ensureTotalCapacity(allocator, est_edges);
-        try graph.edge_index.ensureTotalCapacity(allocator, est_edges);
-        try graph.owned_buffers.ensureTotalCapacity(allocator, est_bufs);
+        try graph.ensureCapacity(allocator, est_nodes, est_edges, est_bufs);
     }
 
     // Topological sort: imported files are parsed before their importers.

@@ -19,7 +19,7 @@ const coupling_mod = @import("../analyzer/coupling.zig");
 const cycles_mod = @import("../analyzer/cycles.zig");
 
 const Graph = graph_mod.Graph;
-const Direction = graph_mod.Direction;
+const Direction = types.Direction;
 const Node = node_mod.Node;
 const Edge = edge_mod.Edge;
 const NodeId = types.NodeId;

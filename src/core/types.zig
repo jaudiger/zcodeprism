@@ -96,6 +96,16 @@ pub const Visibility = enum {
     private,
 };
 
+/// Traversal direction for neighbor queries on the code graph.
+pub const Direction = enum {
+    /// Follow outgoing edges (source -> target).
+    out,
+    /// Follow incoming edges (target <- source).
+    in,
+    /// Follow edges in both directions.
+    both,
+};
+
 /// Programming languages supported by the indexer and visitor pipeline.
 /// Each variant corresponds to a language-specific visitor implementation.
 pub const Language = enum {

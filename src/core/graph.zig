@@ -14,16 +14,7 @@ const Node = node_mod.Node;
 const Edge = edge_mod.Edge;
 const EdgeKey = edge_mod.EdgeKey;
 const Adjacency = adjacency_mod.Adjacency;
-
-/// Traversal direction for neighbor queries on the code graph.
-pub const Direction = enum {
-    /// Follow outgoing edges (source -> target).
-    out,
-    /// Follow incoming edges (target <- source).
-    in,
-    /// Follow edges in both directions.
-    both,
-};
+const Direction = types.Direction;
 
 /// Type-erased buffer entry that preserves the original allocation alignment.
 /// Captures pointer, byte length, and alignment from any typed slice.
@@ -110,6 +101,15 @@ pub const Graph = struct {
         return self.addOwnedSlice(allocator, u8, buf);
     }
 
+    /// Move all owned buffers from `source` into this graph. After the call,
+    /// `source` no longer owns those buffers and must not free them.
+    pub fn takeOwnedBuffers(self: *Graph, allocator: std.mem.Allocator, source: *Graph) !void {
+        for (source.owned_buffers.items) |ob| {
+            try self.owned_buffers.append(allocator, ob);
+        }
+        source.owned_buffers.clearRetainingCapacity();
+    }
+
     /// Append a node and return its assigned NodeId. Overwrites the node's
     /// `id` field. Multi-line signatures are collapsed to a single line.
     pub fn addNode(self: *Graph, allocator: std.mem.Allocator, node: Node) !NodeId {
@@ -154,6 +154,21 @@ pub const Graph = struct {
         for (self.edges.items) |e| {
             self.edge_index.putAssumeCapacity(e.key(), {});
         }
+    }
+
+    /// Pre-allocate capacity for nodes, edges, owned buffers, and the edge
+    /// dedup index. Avoids incremental reallocation during bulk insertion.
+    pub fn ensureCapacity(
+        self: *Graph,
+        allocator: std.mem.Allocator,
+        est_nodes: u32,
+        est_edges: u32,
+        est_buffers: u32,
+    ) !void {
+        try self.nodes.ensureTotalCapacity(allocator, est_nodes);
+        try self.edges.ensureTotalCapacity(allocator, est_edges);
+        try self.edge_index.ensureTotalCapacity(allocator, est_edges);
+        try self.owned_buffers.ensureTotalCapacity(allocator, est_buffers);
     }
 
     /// Build the pre-computed CSR adjacency index from current nodes and edges.
