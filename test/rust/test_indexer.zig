@@ -13,13 +13,29 @@ const Language = zcodeprism.types.Language;
 
 const indexDirectory = zcodeprism.indexer.indexDirectory;
 
-/// Write Rust project fixture files into a temporary directory and return the real path.
+const writeFixtureFiles = helpers.writeFixtureFiles;
+
+const rust_project_files: []const helpers.FileEntry = &.{
+    .{ .sub_path = "lib.rs", .data = fixtures.rust.project.lib_rs },
+    .{ .sub_path = "parser.rs", .data = fixtures.rust.project.parser_rs },
+    .{ .sub_path = "parser/helpers.rs", .data = fixtures.rust.project.parser_helpers_rs },
+    .{ .sub_path = "utils.rs", .data = fixtures.rust.project.utils_rs },
+};
+
+const reexport_chain_files: []const helpers.FileEntry = &.{
+    .{ .sub_path = "lib.rs", .data = fixtures.rust.reexport_chain.lib_rs },
+    .{ .sub_path = "mid.rs", .data = fixtures.rust.reexport_chain.mid_rs },
+    .{ .sub_path = "mid/deep.rs", .data = fixtures.rust.reexport_chain.deep_rs },
+};
+
+const glob_import_files: []const helpers.FileEntry = &.{
+    .{ .sub_path = "lib.rs", .data = fixtures.rust.glob_import.lib_rs },
+    .{ .sub_path = "sub.rs", .data = fixtures.rust.glob_import.sub_rs },
+    .{ .sub_path = "utils.rs", .data = fixtures.rust.glob_import.utils_rs },
+};
+
 fn setupProjectFixtures(tmp_dir: *std.testing.TmpDir) ![]const u8 {
-    try tmp_dir.dir.writeFile(.{ .sub_path = "lib.rs", .data = fixtures.rust.project.lib_rs });
-    try tmp_dir.dir.writeFile(.{ .sub_path = "parser.rs", .data = fixtures.rust.project.parser_rs });
-    try tmp_dir.dir.makePath("parser");
-    try tmp_dir.dir.writeFile(.{ .sub_path = "parser/helpers.rs", .data = fixtures.rust.project.parser_helpers_rs });
-    try tmp_dir.dir.writeFile(.{ .sub_path = "utils.rs", .data = fixtures.rust.project.utils_rs });
+    try writeFixtureFiles(tmp_dir.dir, rust_project_files);
     return try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
 }
 
@@ -587,10 +603,7 @@ test "transitive re-export resolves through chain" {
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try tmp_dir.dir.writeFile(.{ .sub_path = "lib.rs", .data = fixtures.rust.reexport_chain.lib_rs });
-    try tmp_dir.dir.writeFile(.{ .sub_path = "mid.rs", .data = fixtures.rust.reexport_chain.mid_rs });
-    try tmp_dir.dir.makePath("mid");
-    try tmp_dir.dir.writeFile(.{ .sub_path = "mid/deep.rs", .data = fixtures.rust.reexport_chain.deep_rs });
+    try writeFixtureFiles(tmp_dir.dir, reexport_chain_files);
     const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
     defer std.testing.allocator.free(project_root);
 
@@ -632,10 +645,7 @@ test "pub use emits exports edge to resolved type" {
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try tmp_dir.dir.writeFile(.{ .sub_path = "lib.rs", .data = fixtures.rust.reexport_chain.lib_rs });
-    try tmp_dir.dir.writeFile(.{ .sub_path = "mid.rs", .data = fixtures.rust.reexport_chain.mid_rs });
-    try tmp_dir.dir.makePath("mid");
-    try tmp_dir.dir.writeFile(.{ .sub_path = "mid/deep.rs", .data = fixtures.rust.reexport_chain.deep_rs });
+    try writeFixtureFiles(tmp_dir.dir, reexport_chain_files);
     const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
     defer std.testing.allocator.free(project_root);
 
@@ -669,9 +679,7 @@ test "glob import resolves public symbols but not private ones" {
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try tmp_dir.dir.writeFile(.{ .sub_path = "lib.rs", .data = fixtures.rust.glob_import.lib_rs });
-    try tmp_dir.dir.writeFile(.{ .sub_path = "sub.rs", .data = fixtures.rust.glob_import.sub_rs });
-    try tmp_dir.dir.writeFile(.{ .sub_path = "utils.rs", .data = fixtures.rust.glob_import.utils_rs });
+    try writeFixtureFiles(tmp_dir.dir, glob_import_files);
     const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
     defer std.testing.allocator.free(project_root);
 

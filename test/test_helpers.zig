@@ -8,6 +8,21 @@ const NodeKind = zcodeprism.types.NodeKind;
 const EdgeType = zcodeprism.types.EdgeType;
 const EdgeSource = zcodeprism.types.EdgeSource;
 
+pub const FileEntry = struct {
+    sub_path: []const u8,
+    data: []const u8,
+};
+
+/// Write fixture files into a directory, creating parent subdirectories as needed.
+pub fn writeFixtureFiles(dir: std.fs.Dir, files: []const FileEntry) !void {
+    for (files) |f| {
+        if (std.fs.path.dirname(f.sub_path)) |parent| {
+            try dir.makePath(parent);
+        }
+        try dir.writeFile(.{ .sub_path = f.sub_path, .data = f.data });
+    }
+}
+
 /// Count nodes of a given kind in the graph.
 pub fn countNodesByKind(g: *const Graph, kind: NodeKind) usize {
     var count: usize = 0;

@@ -1,4 +1,5 @@
 const std = @import("std");
+const fixtures = @import("test-fixtures");
 
 /// Memory-map a file for zero-copy read access.
 /// Returns the file content as a byte slice backed by the OS page cache.

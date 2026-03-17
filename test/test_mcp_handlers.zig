@@ -16,15 +16,18 @@ const generation_mod = zcodeprism.generation;
 const Server = server_mod.Server;
 const GraphGeneration = generation_mod.GraphGeneration;
 const indexDirectory = zcodeprism.indexer.indexDirectory;
+const writeFixtureFiles = helpers.writeFixtureFiles;
 
 fn parseJsonResponse(allocator: std.mem.Allocator, bytes: []const u8) !std.json.Parsed(std.json.Value) {
     return std.json.parseFromSlice(std.json.Value, allocator, bytes, .{});
 }
 
 fn setupProjectFixtures(tmp_dir: *std.testing.TmpDir) ![]const u8 {
-    try tmp_dir.dir.writeFile(.{ .sub_path = "main.zig", .data = fixtures.zig.project.main_zig });
-    try tmp_dir.dir.writeFile(.{ .sub_path = "parser.zig", .data = fixtures.zig.project.parser_zig });
-    try tmp_dir.dir.writeFile(.{ .sub_path = "utils.zig", .data = fixtures.zig.project.utils_zig });
+    try writeFixtureFiles(tmp_dir.dir, &.{
+        .{ .sub_path = "main.zig", .data = fixtures.zig.project.main_zig },
+        .{ .sub_path = "parser.zig", .data = fixtures.zig.project.parser_zig },
+        .{ .sub_path = "utils.zig", .data = fixtures.zig.project.utils_zig },
+    });
     return try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
 }
 
@@ -1994,24 +1997,32 @@ test "annotations on wrong cursor returns empty" {
 // ---------------------------------------------------------------------------
 
 fn setupDuplicatesFixture(tmp_dir: *std.testing.TmpDir) ![]const u8 {
-    try tmp_dir.dir.writeFile(.{ .sub_path = "duplicates.zig", .data = fixtures.zig.analysis.duplicates });
+    try writeFixtureFiles(tmp_dir.dir, &.{
+        .{ .sub_path = "duplicates.zig", .data = fixtures.zig.analysis.duplicates },
+    });
     return try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
 }
 
 fn setupDeadCodeFixture(tmp_dir: *std.testing.TmpDir) ![]const u8 {
-    try tmp_dir.dir.writeFile(.{ .sub_path = "dead_code.zig", .data = fixtures.zig.analysis.dead_code });
+    try writeFixtureFiles(tmp_dir.dir, &.{
+        .{ .sub_path = "dead_code.zig", .data = fixtures.zig.analysis.dead_code },
+    });
     return try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
 }
 
 fn setupCircularFixture(tmp_dir: *std.testing.TmpDir) ![]const u8 {
-    try tmp_dir.dir.writeFile(.{ .sub_path = "a.zig", .data = fixtures.zig.analysis.circular.a_zig });
-    try tmp_dir.dir.writeFile(.{ .sub_path = "b.zig", .data = fixtures.zig.analysis.circular.b_zig });
-    try tmp_dir.dir.writeFile(.{ .sub_path = "c.zig", .data = fixtures.zig.analysis.circular.c_zig });
+    try writeFixtureFiles(tmp_dir.dir, &.{
+        .{ .sub_path = "a.zig", .data = fixtures.zig.analysis.circular.a_zig },
+        .{ .sub_path = "b.zig", .data = fixtures.zig.analysis.circular.b_zig },
+        .{ .sub_path = "c.zig", .data = fixtures.zig.analysis.circular.c_zig },
+    });
     return try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
 }
 
 fn setupComplexFixture(tmp_dir: *std.testing.TmpDir) ![]const u8 {
-    try tmp_dir.dir.writeFile(.{ .sub_path = "complex.zig", .data = fixtures.zig.analysis.complex });
+    try writeFixtureFiles(tmp_dir.dir, &.{
+        .{ .sub_path = "complex.zig", .data = fixtures.zig.analysis.complex },
+    });
     return try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
 }
 

@@ -11,22 +11,24 @@ const EdgeSource = zcodeprism.types.EdgeSource;
 
 const indexDirectory = zcodeprism.indexer.indexDirectory;
 
-/// Write the build_parsing fixture files into a temporary directory.
+const writeFixtureFiles = helpers.writeFixtureFiles;
+
 fn setupBuildParsingFixtures(tmp_dir: *std.testing.TmpDir) ![]const u8 {
-    try tmp_dir.dir.makePath("src");
-    try tmp_dir.dir.writeFile(.{ .sub_path = "build.zig", .data = fixtures.zig.build_parsing.build_zig });
-    try tmp_dir.dir.writeFile(.{ .sub_path = "build.zig.zon", .data = fixtures.zig.build_parsing.build_zig_zon });
-    try tmp_dir.dir.writeFile(.{ .sub_path = "src/lib.zig", .data = fixtures.zig.build_parsing.src_lib_zig });
-    try tmp_dir.dir.writeFile(.{ .sub_path = "src/main.zig", .data = fixtures.zig.build_parsing.src_main_zig });
+    try writeFixtureFiles(tmp_dir.dir, &.{
+        .{ .sub_path = "build.zig", .data = fixtures.zig.build_parsing.build_zig },
+        .{ .sub_path = "build.zig.zon", .data = fixtures.zig.build_parsing.build_zig_zon },
+        .{ .sub_path = "src/lib.zig", .data = fixtures.zig.build_parsing.src_lib_zig },
+        .{ .sub_path = "src/main.zig", .data = fixtures.zig.build_parsing.src_main_zig },
+    });
     return try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
 }
 
-/// Write the build_no_deps fixture files into a temporary directory.
 fn setupBuildNoDepFixtures(tmp_dir: *std.testing.TmpDir) ![]const u8 {
-    try tmp_dir.dir.makePath("src");
-    try tmp_dir.dir.writeFile(.{ .sub_path = "build.zig", .data = fixtures.zig.build_no_deps.build_zig });
-    try tmp_dir.dir.writeFile(.{ .sub_path = "build.zig.zon", .data = fixtures.zig.build_no_deps.build_zig_zon });
-    try tmp_dir.dir.writeFile(.{ .sub_path = "src/main.zig", .data = fixtures.zig.build_no_deps.src_main_zig });
+    try writeFixtureFiles(tmp_dir.dir, &.{
+        .{ .sub_path = "build.zig", .data = fixtures.zig.build_no_deps.build_zig },
+        .{ .sub_path = "build.zig.zon", .data = fixtures.zig.build_no_deps.build_zig_zon },
+        .{ .sub_path = "src/main.zig", .data = fixtures.zig.build_no_deps.src_main_zig },
+    });
     return try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
 }
 
@@ -207,9 +209,11 @@ test "missing build.zig produces no module nodes" {
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
     // Write only source files, no build.zig.
-    try tmp_dir.dir.writeFile(.{ .sub_path = "main.zig", .data = fixtures.zig.project.main_zig });
-    try tmp_dir.dir.writeFile(.{ .sub_path = "parser.zig", .data = fixtures.zig.project.parser_zig });
-    try tmp_dir.dir.writeFile(.{ .sub_path = "utils.zig", .data = fixtures.zig.project.utils_zig });
+    try writeFixtureFiles(tmp_dir.dir, &.{
+        .{ .sub_path = "main.zig", .data = fixtures.zig.project.main_zig },
+        .{ .sub_path = "parser.zig", .data = fixtures.zig.project.parser_zig },
+        .{ .sub_path = "utils.zig", .data = fixtures.zig.project.utils_zig },
+    });
     const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
     defer std.testing.allocator.free(project_root);
 

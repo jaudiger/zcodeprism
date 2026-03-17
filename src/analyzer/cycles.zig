@@ -12,6 +12,7 @@ const NodeKind = types.NodeKind;
 const EdgeType = types.EdgeType;
 const Language = types.Language;
 const Scope = scope_mod.Scope;
+const UNDEFINED: u32 = std.math.maxInt(u32);
 
 pub const CycleNode = struct {
     node_id: NodeId,
@@ -225,8 +226,6 @@ fn buildFileAdjacency(
 }
 
 // -- Iterative Tarjan SCC on dense indices --
-
-const UNDEFINED: u32 = std.math.maxInt(u32);
 
 const TarjanState = struct {
     index_of: []u32,

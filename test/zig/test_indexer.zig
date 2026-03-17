@@ -13,11 +13,17 @@ const Language = zcodeprism.types.Language;
 
 const indexDirectory = zcodeprism.indexer.indexDirectory;
 
+const writeFixtureFiles = helpers.writeFixtureFiles;
+
+const zig_project_files: []const helpers.FileEntry = &.{
+    .{ .sub_path = "main.zig", .data = fixtures.zig.project.main_zig },
+    .{ .sub_path = "parser.zig", .data = fixtures.zig.project.parser_zig },
+    .{ .sub_path = "utils.zig", .data = fixtures.zig.project.utils_zig },
+};
+
 /// Write project fixture files into a temporary directory and return the real path.
 fn setupProjectFixtures(tmp_dir: *std.testing.TmpDir) ![]const u8 {
-    try tmp_dir.dir.writeFile(.{ .sub_path = "main.zig", .data = fixtures.zig.project.main_zig });
-    try tmp_dir.dir.writeFile(.{ .sub_path = "parser.zig", .data = fixtures.zig.project.parser_zig });
-    try tmp_dir.dir.writeFile(.{ .sub_path = "utils.zig", .data = fixtures.zig.project.utils_zig });
+    try writeFixtureFiles(tmp_dir.dir, zig_project_files);
     return try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
 }
 
@@ -28,77 +34,84 @@ fn indexProjectFixtures(graph: *Graph, tmp_dir: *std.testing.TmpDir) !zcodeprism
     return indexDirectory(std.testing.allocator, project_root, graph, null, .{});
 }
 
-/// Write name collision fixture files into a temporary directory.
 fn writeCollisionFixtures(dir: std.fs.Dir) !void {
-    try dir.writeFile(.{ .sub_path = "alpha.zig", .data = fixtures.zig.name_collision.alpha_zig });
-    try dir.writeFile(.{ .sub_path = "beta.zig", .data = fixtures.zig.name_collision.beta_zig });
-    try dir.writeFile(.{ .sub_path = "consumer.zig", .data = fixtures.zig.name_collision.consumer_zig });
+    try writeFixtureFiles(dir, &.{
+        .{ .sub_path = "alpha.zig", .data = fixtures.zig.name_collision.alpha_zig },
+        .{ .sub_path = "beta.zig", .data = fixtures.zig.name_collision.beta_zig },
+        .{ .sub_path = "consumer.zig", .data = fixtures.zig.name_collision.consumer_zig },
+    });
 }
 
-/// Write basic param_method_call fixtures.
 fn writeBasicParamFixtures(dir: std.fs.Dir) !void {
-    try dir.writeFile(.{ .sub_path = "service.zig", .data = fixtures.zig.param_method_call.service_zig });
-    try dir.writeFile(.{ .sub_path = "consumer.zig", .data = fixtures.zig.param_method_call.consumer_zig });
+    try writeFixtureFiles(dir, &.{
+        .{ .sub_path = "service.zig", .data = fixtures.zig.param_method_call.service_zig },
+        .{ .sub_path = "consumer.zig", .data = fixtures.zig.param_method_call.consumer_zig },
+    });
 }
 
-/// Write service.zig + pointer_param.zig fixtures.
 fn writePointerParamFixtures(dir: std.fs.Dir) !void {
-    try dir.writeFile(.{ .sub_path = "service.zig", .data = fixtures.zig.param_method_call.service_zig });
-    try dir.writeFile(.{ .sub_path = "pointer_param.zig", .data = fixtures.zig.param_method_call.pointer_param_zig });
+    try writeFixtureFiles(dir, &.{
+        .{ .sub_path = "service.zig", .data = fixtures.zig.param_method_call.service_zig },
+        .{ .sub_path = "pointer_param.zig", .data = fixtures.zig.param_method_call.pointer_param_zig },
+    });
 }
 
-/// Write service.zig + optional_param.zig fixtures.
 fn writeOptionalParamFixtures(dir: std.fs.Dir) !void {
-    try dir.writeFile(.{ .sub_path = "service.zig", .data = fixtures.zig.param_method_call.service_zig });
-    try dir.writeFile(.{ .sub_path = "optional_param.zig", .data = fixtures.zig.param_method_call.optional_param_zig });
+    try writeFixtureFiles(dir, &.{
+        .{ .sub_path = "service.zig", .data = fixtures.zig.param_method_call.service_zig },
+        .{ .sub_path = "optional_param.zig", .data = fixtures.zig.param_method_call.optional_param_zig },
+    });
 }
 
-/// Write service.zig + client.zig + service_with_client.zig + chained.zig fixtures.
 fn writeChainedParamFixtures(dir: std.fs.Dir) !void {
-    try dir.writeFile(.{ .sub_path = "client.zig", .data = fixtures.zig.param_method_call.client_zig });
-    try dir.writeFile(.{ .sub_path = "service_with_client.zig", .data = fixtures.zig.param_method_call.service_with_client_zig });
-    try dir.writeFile(.{ .sub_path = "chained.zig", .data = fixtures.zig.param_method_call.chained_zig });
+    try writeFixtureFiles(dir, &.{
+        .{ .sub_path = "client.zig", .data = fixtures.zig.param_method_call.client_zig },
+        .{ .sub_path = "service_with_client.zig", .data = fixtures.zig.param_method_call.service_with_client_zig },
+        .{ .sub_path = "chained.zig", .data = fixtures.zig.param_method_call.chained_zig },
+    });
 }
 
-/// Write service.zig + client.zig + multi_param.zig fixtures.
 fn writeMultiParamFixtures(dir: std.fs.Dir) !void {
-    try dir.writeFile(.{ .sub_path = "service.zig", .data = fixtures.zig.param_method_call.service_zig });
-    try dir.writeFile(.{ .sub_path = "client.zig", .data = fixtures.zig.param_method_call.client_zig });
-    try dir.writeFile(.{ .sub_path = "multi_param.zig", .data = fixtures.zig.param_method_call.multi_param_zig });
+    try writeFixtureFiles(dir, &.{
+        .{ .sub_path = "service.zig", .data = fixtures.zig.param_method_call.service_zig },
+        .{ .sub_path = "client.zig", .data = fixtures.zig.param_method_call.client_zig },
+        .{ .sub_path = "multi_param.zig", .data = fixtures.zig.param_method_call.multi_param_zig },
+    });
 }
 
-/// Write service.zig + self_calls_param.zig fixtures.
 fn writeSelfCallsParamFixtures(dir: std.fs.Dir) !void {
-    try dir.writeFile(.{ .sub_path = "service.zig", .data = fixtures.zig.param_method_call.service_zig });
-    try dir.writeFile(.{ .sub_path = "self_calls_param.zig", .data = fixtures.zig.param_method_call.self_calls_param_zig });
+    try writeFixtureFiles(dir, &.{
+        .{ .sub_path = "service.zig", .data = fixtures.zig.param_method_call.service_zig },
+        .{ .sub_path = "self_calls_param.zig", .data = fixtures.zig.param_method_call.self_calls_param_zig },
+    });
 }
 
-/// Write service.zig + factory.zig + return_value.zig fixtures.
 fn writeReturnValueFixtures(dir: std.fs.Dir) !void {
-    try dir.writeFile(.{ .sub_path = "service.zig", .data = fixtures.zig.param_method_call.service_zig });
-    try dir.writeFile(.{ .sub_path = "factory.zig", .data = fixtures.zig.param_method_call.factory_zig });
-    try dir.writeFile(.{ .sub_path = "return_value.zig", .data = fixtures.zig.param_method_call.return_value_zig });
+    try writeFixtureFiles(dir, &.{
+        .{ .sub_path = "service.zig", .data = fixtures.zig.param_method_call.service_zig },
+        .{ .sub_path = "factory.zig", .data = fixtures.zig.param_method_call.factory_zig },
+        .{ .sub_path = "return_value.zig", .data = fixtures.zig.param_method_call.return_value_zig },
+    });
 }
 
-/// Write service.zig + no_calls.zig fixtures (negative test).
 fn writeNoCallsFixtures(dir: std.fs.Dir) !void {
-    try dir.writeFile(.{ .sub_path = "service.zig", .data = fixtures.zig.param_method_call.service_zig });
-    try dir.writeFile(.{ .sub_path = "no_calls.zig", .data = fixtures.zig.param_method_call.no_calls_zig });
+    try writeFixtureFiles(dir, &.{
+        .{ .sub_path = "service.zig", .data = fixtures.zig.param_method_call.service_zig },
+        .{ .sub_path = "no_calls.zig", .data = fixtures.zig.param_method_call.no_calls_zig },
+    });
 }
 
-/// Write dir_imports fixture files into a temporary directory with subdirectories.
 fn writeDirImportsFixtures(dir: std.fs.Dir) !void {
-    try dir.makePath("crypto");
-    try dir.makePath("tar");
-    try dir.makePath("compress/flate");
-    try dir.writeFile(.{ .sub_path = "root.zig", .data = fixtures.zig.dir_imports.root_zig });
-    try dir.writeFile(.{ .sub_path = "crypto/aegis.zig", .data = fixtures.zig.dir_imports.crypto_aegis_zig });
-    try dir.writeFile(.{ .sub_path = "crypto/hmac.zig", .data = fixtures.zig.dir_imports.crypto_hmac_zig });
-    try dir.writeFile(.{ .sub_path = "crypto/helpers.zig", .data = fixtures.zig.dir_imports.crypto_helpers_zig });
-    try dir.writeFile(.{ .sub_path = "tar/reader.zig", .data = fixtures.zig.dir_imports.tar_reader_zig });
-    try dir.writeFile(.{ .sub_path = "tar/helpers.zig", .data = fixtures.zig.dir_imports.tar_helpers_zig });
-    try dir.writeFile(.{ .sub_path = "compress/flate.zig", .data = fixtures.zig.dir_imports.compress_flate_zig });
-    try dir.writeFile(.{ .sub_path = "compress/flate/inner.zig", .data = fixtures.zig.dir_imports.compress_flate_inner_zig });
+    try writeFixtureFiles(dir, &.{
+        .{ .sub_path = "root.zig", .data = fixtures.zig.dir_imports.root_zig },
+        .{ .sub_path = "crypto/aegis.zig", .data = fixtures.zig.dir_imports.crypto_aegis_zig },
+        .{ .sub_path = "crypto/hmac.zig", .data = fixtures.zig.dir_imports.crypto_hmac_zig },
+        .{ .sub_path = "crypto/helpers.zig", .data = fixtures.zig.dir_imports.crypto_helpers_zig },
+        .{ .sub_path = "tar/reader.zig", .data = fixtures.zig.dir_imports.tar_reader_zig },
+        .{ .sub_path = "tar/helpers.zig", .data = fixtures.zig.dir_imports.tar_helpers_zig },
+        .{ .sub_path = "compress/flate.zig", .data = fixtures.zig.dir_imports.compress_flate_zig },
+        .{ .sub_path = "compress/flate/inner.zig", .data = fixtures.zig.dir_imports.compress_flate_inner_zig },
+    });
 }
 
 test "project fixture: file nodes, imports, calls, phantom nodes, metrics" {
@@ -483,13 +496,9 @@ test "test block resolves method call on import-assigned variable" {
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try tmp_dir.dir.writeFile(.{
-        .sub_path = "provider.zig",
-        .data = fixtures.zig.test_import_call.provider_zig,
-    });
-    try tmp_dir.dir.writeFile(.{
-        .sub_path = "consumer.zig",
-        .data = fixtures.zig.test_import_call.consumer_zig,
+    try writeFixtureFiles(tmp_dir.dir, &.{
+        .{ .sub_path = "provider.zig", .data = fixtures.zig.test_import_call.provider_zig },
+        .{ .sub_path = "consumer.zig", .data = fixtures.zig.test_import_call.consumer_zig },
     });
     const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
     defer std.testing.allocator.free(project_root);
@@ -939,22 +948,25 @@ test "dir imports: cross-file call edges resolve to correct targets" {
     try std.testing.expect(!helpers.hasEdge(&g, read_fn, validate_fn, .calls));
 }
 
-/// Write direct_extraction fixture files into a temporary directory.
 fn writeDirectExtractionTypeFixtures(dir: std.fs.Dir) !void {
-    try dir.writeFile(.{ .sub_path = "provider.zig", .data = fixtures.zig.direct_extraction.provider_zig });
-    try dir.writeFile(.{ .sub_path = "type_consumer.zig", .data = fixtures.zig.direct_extraction.type_consumer_zig });
+    try writeFixtureFiles(dir, &.{
+        .{ .sub_path = "provider.zig", .data = fixtures.zig.direct_extraction.provider_zig },
+        .{ .sub_path = "type_consumer.zig", .data = fixtures.zig.direct_extraction.type_consumer_zig },
+    });
 }
 
-/// Write direct_extraction fixture files for bare function call.
 fn writeDirectExtractionFnFixtures(dir: std.fs.Dir) !void {
-    try dir.writeFile(.{ .sub_path = "provider.zig", .data = fixtures.zig.direct_extraction.provider_zig });
-    try dir.writeFile(.{ .sub_path = "fn_consumer.zig", .data = fixtures.zig.direct_extraction.fn_consumer_zig });
+    try writeFixtureFiles(dir, &.{
+        .{ .sub_path = "provider.zig", .data = fixtures.zig.direct_extraction.provider_zig },
+        .{ .sub_path = "fn_consumer.zig", .data = fixtures.zig.direct_extraction.fn_consumer_zig },
+    });
 }
 
-/// Write inner_struct_call fixture files into a temporary directory.
 fn writeInnerStructCallFixtures(dir: std.fs.Dir) !void {
-    try dir.writeFile(.{ .sub_path = "provider.zig", .data = fixtures.zig.inner_struct_call.provider_zig });
-    try dir.writeFile(.{ .sub_path = "consumer.zig", .data = fixtures.zig.inner_struct_call.consumer_zig });
+    try writeFixtureFiles(dir, &.{
+        .{ .sub_path = "provider.zig", .data = fixtures.zig.inner_struct_call.provider_zig },
+        .{ .sub_path = "consumer.zig", .data = fixtures.zig.inner_struct_call.consumer_zig },
+    });
 }
 
 test "inner struct call: cross-file edges from test block inner struct" {

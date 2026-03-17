@@ -19,6 +19,7 @@ const Graph = zcodeprism.Graph;
 const NodeKind = zcodeprism.NodeKind;
 const EdgeType = zcodeprism.EdgeType;
 const logging = zcodeprism.logging;
+const EnrichResult = lang_support.EnrichResult;
 
 const version_string = "zcodeprism 0.1.0\n";
 
@@ -833,8 +834,6 @@ fn runStatus(stdout: *std.Io.Writer, stderr: *std.Io.Writer, workspace_arg: ?[]c
     ) catch {};
     stdout.flush() catch {};
 }
-
-const EnrichResult = lang_support.EnrichResult;
 
 fn printEnrichSummary(stdout: *std.Io.Writer, result: EnrichResult) void {
     const fields = .{

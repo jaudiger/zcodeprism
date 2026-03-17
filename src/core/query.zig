@@ -20,6 +20,7 @@ const Language = types.Language;
 const ExternalInfo = lang.ExternalInfo;
 const Regex = regex_mod.Regex;
 const Scope = scope_mod.Scope;
+const testing = std.testing;
 
 /// Controls how phantom/external nodes are included in results.
 pub const ExternalFilter = enum {
@@ -751,8 +752,6 @@ pub fn getEdges(allocator: std.mem.Allocator, g: *const Graph, node_ids: []const
 // ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
-
-const testing = std.testing;
 
 /// Builds a frozen test graph with known structure:
 ///   0: "test-project" directory (root, no parent)
