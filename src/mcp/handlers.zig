@@ -1177,9 +1177,7 @@ fn handleCursorExpand(allocator: std.mem.Allocator, gen: *GraphGeneration, curso
         // Collect edges based on direction, respecting cursor filter state.
         if (direction == .out or direction == .both) {
             for (g.outEdges(current.id)) |eid| {
-                const idx = @intFromEnum(eid);
-                if (idx >= g.edges.items.len) continue;
-                const e = g.edges.items[idx];
+                const e = g.edges.items[@intFromEnum(eid)];
                 if (g.getNode(e.target_id)) |tn| {
                     if (tn.kind == .test_def and !cursor.include_tests) continue;
                     if (tn.external != .none and !cursor.include_external_nodes) continue;
@@ -1193,9 +1191,7 @@ fn handleCursorExpand(allocator: std.mem.Allocator, gen: *GraphGeneration, curso
         }
         if (direction == .in or direction == .both) {
             for (g.inEdges(current.id)) |eid| {
-                const idx = @intFromEnum(eid);
-                if (idx >= g.edges.items.len) continue;
-                const e = g.edges.items[idx];
+                const e = g.edges.items[@intFromEnum(eid)];
                 if (g.getNode(e.source_id)) |sn| {
                     if (sn.kind == .test_def and !cursor.include_tests) continue;
                     if (sn.external != .none and !cursor.include_external_nodes) continue;
