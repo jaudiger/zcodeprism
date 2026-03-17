@@ -130,6 +130,12 @@ pub const Stats = struct {
     edge_counts: [edge_type_count]u32 = [_]u32{0} ** edge_type_count,
     /// Total source lines across matched nodes.
     total_lines: u64 = 0,
+    /// Whether any matched node has a given language.
+    has_zig: bool = false,
+    has_rust: bool = false,
+    /// External node counts among matched nodes.
+    stdlib_count: u32 = 0,
+    dep_count: u32 = 0,
 };
 
 const node_kind_count = @typeInfo(NodeKind).@"enum".fields.len;
@@ -512,6 +518,15 @@ pub fn computeStats(allocator: std.mem.Allocator, g: *const Graph, options: Stat
         stats.node_counts[@intFromEnum(n.kind)] += 1;
         if (n.metrics) |m| {
             stats.total_lines += m.lines;
+        }
+        if (n.language) |l| switch (l) {
+            .zig => stats.has_zig = true,
+            .rust => stats.has_rust = true,
+        };
+        switch (n.external) {
+            .none => {},
+            .stdlib => stats.stdlib_count += 1,
+            .dependency => stats.dep_count += 1,
         }
     }
 

@@ -585,29 +585,10 @@ fn handleStats(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?std
     stream.objectField("project_root") catch return error.OutOfMemory;
     stream.write(g.project_root) catch return error.OutOfMemory;
 
-    // Collect languages from node scan
     stream.objectField("languages") catch return error.OutOfMemory;
     stream.beginArray() catch return error.OutOfMemory;
-    var has_zig = false;
-    var has_rust = false;
-    for (g.nodes.items) |n| {
-        if (n.language) |l| {
-            switch (l) {
-                .zig => {
-                    if (!has_zig) {
-                        has_zig = true;
-                        stream.write("zig") catch return error.OutOfMemory;
-                    }
-                },
-                .rust => {
-                    if (!has_rust) {
-                        has_rust = true;
-                        stream.write("rust") catch return error.OutOfMemory;
-                    }
-                },
-            }
-        }
-    }
+    if (stats.has_zig) stream.write("zig") catch return error.OutOfMemory;
+    if (stats.has_rust) stream.write("rust") catch return error.OutOfMemory;
     stream.endArray() catch return error.OutOfMemory;
 
     stream.objectField("total_files") catch return error.OutOfMemory;
@@ -652,22 +633,12 @@ fn handleStats(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?std
     }
     stream.endObject() catch return error.OutOfMemory;
 
-    // External node counts
     stream.objectField("externals") catch return error.OutOfMemory;
     stream.beginObject() catch return error.OutOfMemory;
-    var stdlib_count: u32 = 0;
-    var dep_count: u32 = 0;
-    for (g.nodes.items) |n| {
-        switch (n.external) {
-            .none => {},
-            .stdlib => stdlib_count += 1,
-            .dependency => dep_count += 1,
-        }
-    }
     stream.objectField("stdlib_symbols") catch return error.OutOfMemory;
-    stream.write(stdlib_count) catch return error.OutOfMemory;
+    stream.write(stats.stdlib_count) catch return error.OutOfMemory;
     stream.objectField("dependency_symbols") catch return error.OutOfMemory;
-    stream.write(dep_count) catch return error.OutOfMemory;
+    stream.write(stats.dep_count) catch return error.OutOfMemory;
     stream.endObject() catch return error.OutOfMemory;
 
     stream.endObject() catch return error.OutOfMemory;

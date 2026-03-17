@@ -103,7 +103,7 @@ test "stats returns file count, function count, languages, and externals" {
     defer srv.deinit();
 
     const input =
-        \\{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"graph.stats","arguments":{}}}
+        \\{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"graph.stats","arguments":{"include_external_nodes":true}}}
     ;
 
     // Act
