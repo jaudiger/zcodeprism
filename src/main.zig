@@ -448,20 +448,19 @@ fn runExport(
         },
         .jsonl_fmt => {
             if (output_arg) |path| {
-                const file = std.fs.cwd().createFile(path, .{}) catch |err| {
+                var write_buf: [8192]u8 = undefined;
+                var af = std.fs.cwd().atomicFile(path, .{ .write_buffer = &write_buf }) catch |err| {
                     stderr.print("cannot create output file: {s}\n", .{@errorName(err)}) catch {};
                     stderr.flush() catch {};
                     std.process.exit(1);
                 };
-                defer file.close();
-                var buf: [8192]u8 = undefined;
-                var writer = file.writer(&buf);
-                storage.jsonl.exportJsonl(allocator, &graph, &writer.interface) catch |err| {
+                defer af.deinit();
+                storage.jsonl.exportJsonl(allocator, &graph, &af.file_writer.interface) catch |err| {
                     stderr.print("export failed: {s}\n", .{@errorName(err)}) catch {};
                     stderr.flush() catch {};
                     std.process.exit(1);
                 };
-                writer.interface.flush() catch {};
+                atomicFinishWithSync(&af, stderr);
             } else {
                 var buf: [8192]u8 = undefined;
                 var writer = std.fs.File.stdout().writer(&buf);
@@ -478,21 +477,41 @@ fn runExport(
 
 fn writeOutput(stdout: *std.Io.Writer, stderr: *std.Io.Writer, output_arg: ?[]const u8, data: []const u8) void {
     if (output_arg) |path| {
-        const file = std.fs.cwd().createFile(path, .{}) catch |err| {
+        var write_buf: [8192]u8 = undefined;
+        var af = std.fs.cwd().atomicFile(path, .{ .write_buffer = &write_buf }) catch |err| {
             stderr.print("cannot create output file: {s}\n", .{@errorName(err)}) catch {};
             stderr.flush() catch {};
             std.process.exit(1);
         };
-        defer file.close();
-        file.writeAll(data) catch |err| {
+        defer af.deinit();
+        af.file_writer.interface.writeAll(data) catch |err| {
             stderr.print("write failed: {s}\n", .{@errorName(err)}) catch {};
             stderr.flush() catch {};
             std.process.exit(1);
         };
+        atomicFinishWithSync(&af, stderr);
     } else {
         stdout.writeAll(data) catch {};
         stdout.flush() catch {};
     }
+}
+
+fn atomicFinishWithSync(af: *std.fs.AtomicFile, stderr: *std.Io.Writer) void {
+    af.flush() catch |err| {
+        stderr.print("write failed: {s}\n", .{@errorName(err)}) catch {};
+        stderr.flush() catch {};
+        std.process.exit(1);
+    };
+    af.file_writer.file.sync() catch |err| {
+        stderr.print("sync failed: {s}\n", .{@errorName(err)}) catch {};
+        stderr.flush() catch {};
+        std.process.exit(1);
+    };
+    af.renameIntoPlace() catch |err| {
+        stderr.print("rename failed: {s}\n", .{@errorName(err)}) catch {};
+        stderr.flush() catch {};
+        std.process.exit(1);
+    };
 }
 
 fn runSnapshot(stdout: *std.Io.Writer, stderr: *std.Io.Writer, name_arg: ?[]const u8) void {

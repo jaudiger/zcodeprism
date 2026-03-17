@@ -396,10 +396,14 @@ pub fn save(allocator: std.mem.Allocator, g: *const Graph, path: []const u8) !vo
         @memcpy(buf[string_table_offset..][0..string_table_size], stb.bytes.items);
     }
 
-    // Write to file
-    const file = try std.fs.cwd().createFile(path, .{});
-    defer file.close();
-    try file.writeAll(buf);
+    // Atomic write: temp file, sync, rename
+    var write_buf: [8192]u8 = undefined;
+    var af = try std.fs.cwd().atomicFile(path, .{ .write_buffer = &write_buf });
+    defer af.deinit();
+    try af.file_writer.interface.writeAll(buf);
+    try af.flush();
+    try af.file_writer.file.sync();
+    try af.renameIntoPlace();
 }
 
 /// Deserialize a graph from a binary file at `path`.

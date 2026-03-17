@@ -87,6 +87,7 @@ pub fn writeDefaultConfig(dir: std.fs.Dir) !void {
     const file = try dir.createFile(".zcodeprism.zon", .{ .exclusive = true });
     defer file.close();
     try file.writeAll(default_config_content);
+    try file.sync();
 }
 
 /// Write the default `zcodeprism-workspace.zon` workspace config into `dir`.
@@ -94,6 +95,7 @@ pub fn writeDefaultWorkspaceConfig(dir: std.fs.Dir) !void {
     const file = try dir.createFile("zcodeprism-workspace.zon", .{ .exclusive = true });
     defer file.close();
     try file.writeAll(default_workspace_content);
+    try file.sync();
 }
 
 /// Create the `.zcodeprism/` data directory inside `dir`.
