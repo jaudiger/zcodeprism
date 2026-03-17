@@ -72,19 +72,43 @@ pub const Server = struct {
             return try buildErrorResponse(allocator, req.id, jsonrpc.invalid_params, "Missing tool name");
         }
 
-        const result_json = handlers.handleToolCall(allocator, self.generation, &self.cursor_manager, tool_name.?, req.params) catch
+        const content_json = handlers.handleToolCall(allocator, self.generation, &self.cursor_manager, tool_name.?, req.params) catch
             return try buildErrorResponse(allocator, req.id, jsonrpc.internal_error, "Handler error");
 
-        if (result_json) |json| {
+        if (content_json) |json| {
             defer allocator.free(json);
-            // Parse the result JSON and embed it in the response
-            var result_parsed = std.json.parseFromSlice(std.json.Value, allocator, json, .{}) catch
-                return try buildErrorResponse(allocator, req.id, jsonrpc.internal_error, "JSON parse error");
-            defer result_parsed.deinit();
-            return try buildSuccessResponse(allocator, req.id, result_parsed.value);
+            return try buildToolCallResponse(allocator, req.id, json);
         }
 
         return try buildErrorResponse(allocator, req.id, jsonrpc.method_not_found, "Unknown tool");
+    }
+
+    /// Wraps raw handler JSON into the full JSON-RPC + MCP content envelope.
+    fn buildToolCallResponse(allocator: std.mem.Allocator, id: jsonrpc.RequestId, raw_content_json: []const u8) ServerError![]const u8 {
+        var aw: std.io.Writer.Allocating = .init(allocator);
+        errdefer aw.deinit();
+        var stream: std.json.Stringify = .{ .writer = &aw.writer };
+
+        stream.beginObject() catch return error.OutOfMemory;
+        stream.objectField("jsonrpc") catch return error.OutOfMemory;
+        stream.write(protocol.jsonrpc_version) catch return error.OutOfMemory;
+        stream.objectField("id") catch return error.OutOfMemory;
+        try writeId(&stream, id);
+        stream.objectField("result") catch return error.OutOfMemory;
+        stream.beginObject() catch return error.OutOfMemory;
+        stream.objectField("content") catch return error.OutOfMemory;
+        stream.beginArray() catch return error.OutOfMemory;
+        stream.beginObject() catch return error.OutOfMemory;
+        stream.objectField("type") catch return error.OutOfMemory;
+        stream.write("text") catch return error.OutOfMemory;
+        stream.objectField("text") catch return error.OutOfMemory;
+        stream.write(raw_content_json) catch return error.OutOfMemory;
+        stream.endObject() catch return error.OutOfMemory;
+        stream.endArray() catch return error.OutOfMemory;
+        stream.endObject() catch return error.OutOfMemory;
+        stream.endObject() catch return error.OutOfMemory;
+
+        return aw.toOwnedSlice() catch return error.OutOfMemory;
     }
 
     fn writeId(stream: *std.json.Stringify, id: jsonrpc.RequestId) ServerError!void {

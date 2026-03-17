@@ -57,8 +57,9 @@ fn isErrorResponse(parsed: std.json.Value) bool {
     return parsed.object.get("error") != null;
 }
 
-/// Send a tools/call request and parse the inner JSON result.
-/// Returns null if the server returned an error (expected for Session 1).
+/// Send a tools/call request, then double-parse: outer JSON-RPC envelope
+/// and inner domain JSON from the MCP text field.
+/// Returns null on server error.
 fn callToolAndParseInner(
     allocator: std.mem.Allocator,
     srv: *Server,

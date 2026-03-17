@@ -643,7 +643,7 @@ fn handleStats(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?std
 
     stream.endObject() catch return error.OutOfMemory;
 
-    return wrapToolResult(allocator, &aw);
+    return aw.toOwnedSlice() catch return error.OutOfMemory;
 }
 
 // -- graph.search --
@@ -700,7 +700,7 @@ fn handleSearch(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?st
 
     stream.endObject() catch return error.OutOfMemory;
 
-    return wrapToolResult(allocator, &aw);
+    return aw.toOwnedSlice() catch return error.OutOfMemory;
 }
 
 // -- graph.get_nodes --
@@ -746,7 +746,7 @@ fn handleGetNodes(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?
     stream.endArray() catch return error.OutOfMemory;
     stream.endObject() catch return error.OutOfMemory;
 
-    return wrapToolResult(allocator, &aw);
+    return aw.toOwnedSlice() catch return error.OutOfMemory;
 }
 
 // -- graph.get_source --
@@ -798,7 +798,7 @@ fn handleGetSource(allocator: std.mem.Allocator, gen: *GraphGeneration, params: 
     stream.endArray() catch return error.OutOfMemory;
     stream.endObject() catch return error.OutOfMemory;
 
-    return wrapToolResult(allocator, &aw);
+    return aw.toOwnedSlice() catch return error.OutOfMemory;
 }
 
 // -- graph.get_edges --
@@ -881,7 +881,7 @@ fn handleGetEdges(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?
     stream.endArray() catch return error.OutOfMemory;
     stream.endObject() catch return error.OutOfMemory;
 
-    return wrapToolResult(allocator, &aw);
+    return aw.toOwnedSlice() catch return error.OutOfMemory;
 }
 
 // -- graph.path --
@@ -966,7 +966,7 @@ fn handlePath(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?std.
     stream.endArray() catch return error.OutOfMemory;
     stream.endObject() catch return error.OutOfMemory;
 
-    return wrapToolResult(allocator, &aw);
+    return aw.toOwnedSlice() catch return error.OutOfMemory;
 }
 
 fn emptyPathsResult(allocator: std.mem.Allocator) HandlerError![]const u8 {
@@ -978,7 +978,7 @@ fn emptyPathsResult(allocator: std.mem.Allocator) HandlerError![]const u8 {
     stream.beginArray() catch return error.OutOfMemory;
     stream.endArray() catch return error.OutOfMemory;
     stream.endObject() catch return error.OutOfMemory;
-    return wrapToolResult(allocator, &aw);
+    return aw.toOwnedSlice() catch return error.OutOfMemory;
 }
 
 // -- explorer.cursor_create --
@@ -1062,7 +1062,7 @@ fn handleCursorCreate(allocator: std.mem.Allocator, gen: *GraphGeneration, curso
 
     try writeCursorResponse(&stream, cursor_id, position, g);
 
-    return wrapToolResult(allocator, &aw);
+    return aw.toOwnedSlice() catch return error.OutOfMemory;
 }
 
 // -- explorer.cursor_move --
@@ -1087,7 +1087,7 @@ fn handleCursorMove(allocator: std.mem.Allocator, gen: *GraphGeneration, cursor_
 
     try writeCursorResponse(&stream, cursor_id, node_id, g);
 
-    return wrapToolResult(allocator, &aw);
+    return aw.toOwnedSlice() catch return error.OutOfMemory;
 }
 
 // -- explorer.cursor_close --
@@ -1107,7 +1107,7 @@ fn handleCursorClose(allocator: std.mem.Allocator, cursor_mgr: *CursorManager, p
     stream.write(removed) catch return error.OutOfMemory;
     stream.endObject() catch return error.OutOfMemory;
 
-    return wrapToolResult(allocator, &aw);
+    return aw.toOwnedSlice() catch return error.OutOfMemory;
 }
 
 // -- explorer.cursor_expand --
@@ -1228,7 +1228,7 @@ fn handleCursorExpand(allocator: std.mem.Allocator, gen: *GraphGeneration, curso
 
     stream.endObject() catch return error.OutOfMemory;
 
-    return wrapToolResult(allocator, &aw);
+    return aw.toOwnedSlice() catch return error.OutOfMemory;
 }
 
 // -- explorer.cursor_query --
@@ -1288,7 +1288,7 @@ fn handleCursorQuery(allocator: std.mem.Allocator, gen: *GraphGeneration, cursor
     stream.endArray() catch return error.OutOfMemory;
     stream.endObject() catch return error.OutOfMemory;
 
-    return wrapToolResult(allocator, &aw);
+    return aw.toOwnedSlice() catch return error.OutOfMemory;
 }
 
 // -- explorer.diff --
@@ -1451,7 +1451,7 @@ fn handleDiff(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?std.
 
     stream.endObject() catch return error.OutOfMemory;
 
-    return wrapToolResult(allocator, &aw);
+    return aw.toOwnedSlice() catch return error.OutOfMemory;
 }
 
 // -- explorer.annotate --
@@ -1488,7 +1488,7 @@ fn handleAnnotate(allocator: std.mem.Allocator, cursor_mgr: *CursorManager, para
     stream.write(node_ids.len) catch return error.OutOfMemory;
     stream.endObject() catch return error.OutOfMemory;
 
-    return wrapToolResult(allocator, &aw);
+    return aw.toOwnedSlice() catch return error.OutOfMemory;
 }
 
 // -- explorer.annotations --
@@ -1528,7 +1528,7 @@ fn handleAnnotations(allocator: std.mem.Allocator, cursor_mgr: *CursorManager, p
     stream.endArray() catch return error.OutOfMemory;
     stream.endObject() catch return error.OutOfMemory;
 
-    return wrapToolResult(allocator, &aw);
+    return aw.toOwnedSlice() catch return error.OutOfMemory;
 }
 
 // -- analysis.duplicates --
@@ -1719,7 +1719,7 @@ fn handleDuplicates(allocator: std.mem.Allocator, gen: *GraphGeneration, params:
 
     stream.endObject() catch return error.OutOfMemory;
 
-    return wrapToolResult(allocator, &aw);
+    return aw.toOwnedSlice() catch return error.OutOfMemory;
 }
 
 // -- analysis.complexity --
@@ -1764,7 +1764,7 @@ fn handleComplexity(allocator: std.mem.Allocator, gen: *GraphGeneration, params:
     stream.endArray() catch return error.OutOfMemory;
     stream.endObject() catch return error.OutOfMemory;
 
-    return wrapToolResult(allocator, &aw);
+    return aw.toOwnedSlice() catch return error.OutOfMemory;
 }
 
 // -- analysis.dead_code --
@@ -1819,7 +1819,7 @@ fn handleDeadCode(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?
     stream.endArray() catch return error.OutOfMemory;
     stream.endObject() catch return error.OutOfMemory;
 
-    return wrapToolResult(allocator, &aw);
+    return aw.toOwnedSlice() catch return error.OutOfMemory;
 }
 
 // -- analysis.dependency_cycles --
@@ -1869,7 +1869,7 @@ fn handleDependencyCycles(allocator: std.mem.Allocator, gen: *GraphGeneration, p
     stream.endArray() catch return error.OutOfMemory;
     stream.endObject() catch return error.OutOfMemory;
 
-    return wrapToolResult(allocator, &aw);
+    return aw.toOwnedSlice() catch return error.OutOfMemory;
 }
 
 // -- analysis.coupling --
@@ -1919,7 +1919,7 @@ fn handleCoupling(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?
     stream.endArray() catch return error.OutOfMemory;
     stream.endObject() catch return error.OutOfMemory;
 
-    return wrapToolResult(allocator, &aw);
+    return aw.toOwnedSlice() catch return error.OutOfMemory;
 }
 
 // -- analysis.impact --
@@ -1994,7 +1994,7 @@ fn handleImpact(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?st
     stream.endArray() catch return error.OutOfMemory;
     stream.endObject() catch return error.OutOfMemory;
 
-    return wrapToolResult(allocator, &aw);
+    return aw.toOwnedSlice() catch return error.OutOfMemory;
 }
 
 // -- Error result helper --
@@ -2007,30 +2007,5 @@ fn errorResult(allocator: std.mem.Allocator, message: []const u8) HandlerError![
     stream.objectField("error") catch return error.OutOfMemory;
     stream.write(message) catch return error.OutOfMemory;
     stream.endObject() catch return error.OutOfMemory;
-    return wrapToolResult(allocator, &aw);
-}
-
-// -- MCP result wrapper --
-
-fn wrapToolResult(allocator: std.mem.Allocator, inner_aw: *std.io.Writer.Allocating) HandlerError![]const u8 {
-    const inner_json = inner_aw.toOwnedSlice() catch return error.OutOfMemory;
-    defer allocator.free(inner_json);
-
-    var aw: std.io.Writer.Allocating = .init(allocator);
-    errdefer aw.deinit();
-    var stream: std.json.Stringify = .{ .writer = &aw.writer };
-
-    stream.beginObject() catch return error.OutOfMemory;
-    stream.objectField("content") catch return error.OutOfMemory;
-    stream.beginArray() catch return error.OutOfMemory;
-    stream.beginObject() catch return error.OutOfMemory;
-    stream.objectField("type") catch return error.OutOfMemory;
-    stream.write("text") catch return error.OutOfMemory;
-    stream.objectField("text") catch return error.OutOfMemory;
-    stream.write(inner_json) catch return error.OutOfMemory;
-    stream.endObject() catch return error.OutOfMemory;
-    stream.endArray() catch return error.OutOfMemory;
-    stream.endObject() catch return error.OutOfMemory;
-
     return aw.toOwnedSlice() catch return error.OutOfMemory;
 }
