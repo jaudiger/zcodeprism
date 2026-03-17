@@ -37,9 +37,10 @@ pub const BinaryHeader = struct {
     metrics_table_offset: u64 = 0,
     string_table_offset: u64 = 0,
     string_table_size: u64 = 0,
+    project_root: StringRef = .{ .offset = 0, .len = 0 },
 };
 
-const HEADER_SIZE: usize = 72;
+const HEADER_SIZE: usize = 80;
 const NODE_RECORD_SIZE: usize = 120;
 const EDGE_RECORD_SIZE: usize = 32;
 const METRICS_RECORD_SIZE: usize = 24;
@@ -132,6 +133,7 @@ fn writeHeader(buf: []u8, h: BinaryHeader) void {
     std.mem.writeInt(u64, buf[48..56], h.metrics_table_offset, .little);
     std.mem.writeInt(u64, buf[56..64], h.string_table_offset, .little);
     std.mem.writeInt(u64, buf[64..72], h.string_table_size, .little);
+    writeStringRef(buf, 72, h.project_root);
 }
 
 fn readHeader(buf: []const u8) !BinaryHeader {
@@ -149,6 +151,7 @@ fn readHeader(buf: []const u8) !BinaryHeader {
         .metrics_table_offset = std.mem.readInt(u64, buf[48..56], .little),
         .string_table_offset = std.mem.readInt(u64, buf[56..64], .little),
         .string_table_size = std.mem.readInt(u64, buf[64..72], .little),
+        .project_root = readStringRef(buf, 72),
     };
 }
 
@@ -248,7 +251,13 @@ pub fn save(allocator: std.mem.Allocator, g: *const Graph, path: []const u8) !vo
         total_string_bytes += @tagName(e.edge_type).len;
         total_string_bytes += @tagName(e.source).len;
     }
+    total_string_bytes += g.project_root.len;
     try stb.ensureBytesCapacity(allocator, total_string_bytes);
+
+    const project_root_ref = if (g.project_root.len > 0)
+        try stb.intern(allocator, g.project_root)
+    else
+        StringRef{ .offset = 0, .len = 0 };
 
     for (g.nodes.items, 0..) |n, i| {
         const ext_version: ?[]const u8 = switch (n.external) {
@@ -312,6 +321,7 @@ pub fn save(allocator: std.mem.Allocator, g: *const Graph, path: []const u8) !vo
         .metrics_table_offset = @intCast(metrics_table_offset),
         .string_table_offset = @intCast(string_table_offset),
         .string_table_size = @intCast(string_table_size),
+        .project_root = project_root_ref,
     });
 
     // Node records
@@ -451,6 +461,8 @@ pub fn load(allocator: std.mem.Allocator, path: []const u8) !Graph {
         try g.addOwnedBuffer(allocator, data);
         break :blk data;
     } else "";
+
+    g.project_root = try resolveStr(st_data, h.project_root);
 
     // Parse nodes
     for (0..nc) |i| {
