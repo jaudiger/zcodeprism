@@ -87,35 +87,35 @@ pub const Server = struct {
     fn buildToolCallResponse(allocator: std.mem.Allocator, id: jsonrpc.RequestId, raw_content_json: []const u8) ServerError![]const u8 {
         var aw: std.io.Writer.Allocating = .init(allocator);
         errdefer aw.deinit();
-        var stream: std.json.Stringify = .{ .writer = &aw.writer };
+        var s: std.json.Stringify = .{ .writer = &aw.writer };
 
-        stream.beginObject() catch return error.OutOfMemory;
-        stream.objectField("jsonrpc") catch return error.OutOfMemory;
-        stream.write(protocol.jsonrpc_version) catch return error.OutOfMemory;
-        stream.objectField("id") catch return error.OutOfMemory;
-        try writeId(&stream, id);
-        stream.objectField("result") catch return error.OutOfMemory;
-        stream.beginObject() catch return error.OutOfMemory;
-        stream.objectField("content") catch return error.OutOfMemory;
-        stream.beginArray() catch return error.OutOfMemory;
-        stream.beginObject() catch return error.OutOfMemory;
-        stream.objectField("type") catch return error.OutOfMemory;
-        stream.write("text") catch return error.OutOfMemory;
-        stream.objectField("text") catch return error.OutOfMemory;
-        stream.write(raw_content_json) catch return error.OutOfMemory;
-        stream.endObject() catch return error.OutOfMemory;
-        stream.endArray() catch return error.OutOfMemory;
-        stream.endObject() catch return error.OutOfMemory;
-        stream.endObject() catch return error.OutOfMemory;
+        s.beginObject() catch return error.OutOfMemory;
+        s.objectField("jsonrpc") catch return error.OutOfMemory;
+        s.write(protocol.jsonrpc_version) catch return error.OutOfMemory;
+        s.objectField("id") catch return error.OutOfMemory;
+        writeId(&s, id) catch return error.OutOfMemory;
+        s.objectField("result") catch return error.OutOfMemory;
+        s.beginObject() catch return error.OutOfMemory;
+        s.objectField("content") catch return error.OutOfMemory;
+        s.beginArray() catch return error.OutOfMemory;
+        s.beginObject() catch return error.OutOfMemory;
+        s.objectField("type") catch return error.OutOfMemory;
+        s.write("text") catch return error.OutOfMemory;
+        s.objectField("text") catch return error.OutOfMemory;
+        s.write(raw_content_json) catch return error.OutOfMemory;
+        s.endObject() catch return error.OutOfMemory;
+        s.endArray() catch return error.OutOfMemory;
+        s.endObject() catch return error.OutOfMemory;
+        s.endObject() catch return error.OutOfMemory;
 
         return aw.toOwnedSlice() catch return error.OutOfMemory;
     }
 
-    fn writeId(stream: *std.json.Stringify, id: jsonrpc.RequestId) ServerError!void {
+    fn writeId(s: *std.json.Stringify, id: jsonrpc.RequestId) !void {
         switch (id) {
-            .integer => |n| stream.write(n) catch return error.OutOfMemory,
-            .string => |s| stream.write(s) catch return error.OutOfMemory,
-            .none => stream.write(null) catch return error.OutOfMemory,
+            .integer => |n| try s.write(n),
+            .string => |str| try s.write(str),
+            .none => try s.write(null),
         }
     }
 
@@ -123,15 +123,15 @@ pub const Server = struct {
         var aw: std.io.Writer.Allocating = .init(allocator);
         errdefer aw.deinit();
 
-        var stream: std.json.Stringify = .{ .writer = &aw.writer };
-        stream.beginObject() catch return error.OutOfMemory;
-        stream.objectField("jsonrpc") catch return error.OutOfMemory;
-        stream.write(protocol.jsonrpc_version) catch return error.OutOfMemory;
-        stream.objectField("id") catch return error.OutOfMemory;
-        try writeId(&stream, id);
-        stream.objectField("result") catch return error.OutOfMemory;
-        stream.write(result) catch return error.OutOfMemory;
-        stream.endObject() catch return error.OutOfMemory;
+        var s: std.json.Stringify = .{ .writer = &aw.writer };
+        s.beginObject() catch return error.OutOfMemory;
+        s.objectField("jsonrpc") catch return error.OutOfMemory;
+        s.write(protocol.jsonrpc_version) catch return error.OutOfMemory;
+        s.objectField("id") catch return error.OutOfMemory;
+        writeId(&s, id) catch return error.OutOfMemory;
+        s.objectField("result") catch return error.OutOfMemory;
+        s.write(result) catch return error.OutOfMemory;
+        s.endObject() catch return error.OutOfMemory;
 
         return aw.toOwnedSlice() catch return error.OutOfMemory;
     }
@@ -140,20 +140,20 @@ pub const Server = struct {
         var aw: std.io.Writer.Allocating = .init(allocator);
         errdefer aw.deinit();
 
-        var stream: std.json.Stringify = .{ .writer = &aw.writer };
-        stream.beginObject() catch return error.OutOfMemory;
-        stream.objectField("jsonrpc") catch return error.OutOfMemory;
-        stream.write(protocol.jsonrpc_version) catch return error.OutOfMemory;
-        stream.objectField("id") catch return error.OutOfMemory;
-        try writeId(&stream, id);
-        stream.objectField("error") catch return error.OutOfMemory;
-        stream.beginObject() catch return error.OutOfMemory;
-        stream.objectField("code") catch return error.OutOfMemory;
-        stream.write(code) catch return error.OutOfMemory;
-        stream.objectField("message") catch return error.OutOfMemory;
-        stream.write(message) catch return error.OutOfMemory;
-        stream.endObject() catch return error.OutOfMemory;
-        stream.endObject() catch return error.OutOfMemory;
+        var s: std.json.Stringify = .{ .writer = &aw.writer };
+        s.beginObject() catch return error.OutOfMemory;
+        s.objectField("jsonrpc") catch return error.OutOfMemory;
+        s.write(protocol.jsonrpc_version) catch return error.OutOfMemory;
+        s.objectField("id") catch return error.OutOfMemory;
+        writeId(&s, id) catch return error.OutOfMemory;
+        s.objectField("error") catch return error.OutOfMemory;
+        s.beginObject() catch return error.OutOfMemory;
+        s.objectField("code") catch return error.OutOfMemory;
+        s.write(code) catch return error.OutOfMemory;
+        s.objectField("message") catch return error.OutOfMemory;
+        s.write(message) catch return error.OutOfMemory;
+        s.endObject() catch return error.OutOfMemory;
+        s.endObject() catch return error.OutOfMemory;
 
         return aw.toOwnedSlice() catch return error.OutOfMemory;
     }
@@ -168,7 +168,7 @@ pub const Server = struct {
         s.objectField("jsonrpc") catch return error.OutOfMemory;
         s.write(protocol.jsonrpc_version) catch return error.OutOfMemory;
         s.objectField("id") catch return error.OutOfMemory;
-        try writeId(&s, id);
+        writeId(&s, id) catch return error.OutOfMemory;
         s.objectField("result") catch return error.OutOfMemory;
         s.beginObject() catch return error.OutOfMemory;
         s.objectField("tools") catch return error.OutOfMemory;
@@ -188,12 +188,12 @@ pub const Server = struct {
 
             // inputSchema
             s.objectField("inputSchema") catch return error.OutOfMemory;
-            try writeSchemaObject(&s, tool.properties, tool.required);
+            writeSchemaObject(&s, tool.properties, tool.required) catch return error.OutOfMemory;
 
             // outputSchema (only if output_properties is non-empty)
             if (tool.output_properties.len > 0) {
                 s.objectField("outputSchema") catch return error.OutOfMemory;
-                try writeSchemaObject(&s, tool.output_properties, tool.output_required);
+                writeSchemaObject(&s, tool.output_properties, tool.output_required) catch return error.OutOfMemory;
             }
 
             s.endObject() catch return error.OutOfMemory;
@@ -207,145 +207,138 @@ pub const Server = struct {
     }
 
     /// Writes a JSON Schema object with properties and required fields.
-    fn writeSchemaObject(s: *std.json.Stringify, properties: []const protocol.SchemaProperty, required: []const []const u8) ServerError!void {
-        s.beginObject() catch return error.OutOfMemory;
-        s.objectField("type") catch return error.OutOfMemory;
-        s.write("object") catch return error.OutOfMemory;
+    fn writeSchemaObject(s: *std.json.Stringify, properties: []const protocol.SchemaProperty, required: []const []const u8) !void {
+        try s.beginObject();
+        try s.objectField("type");
+        try s.write("object");
 
-        s.objectField("properties") catch return error.OutOfMemory;
-        s.beginObject() catch return error.OutOfMemory;
+        try s.objectField("properties");
+        try s.beginObject();
 
         for (properties) |prop| {
-            s.objectField(prop.name) catch return error.OutOfMemory;
+            try s.objectField(prop.name);
             try writePropertySchema(s, prop);
         }
 
-        s.endObject() catch return error.OutOfMemory;
+        try s.endObject();
 
         if (required.len > 0) {
-            s.objectField("required") catch return error.OutOfMemory;
-            s.beginArray() catch return error.OutOfMemory;
+            try s.objectField("required");
+            try s.beginArray();
             for (required) |r| {
-                s.write(r) catch return error.OutOfMemory;
+                try s.write(r);
             }
-            s.endArray() catch return error.OutOfMemory;
+            try s.endArray();
         }
 
-        s.endObject() catch return error.OutOfMemory;
+        try s.endObject();
     }
 
     /// Writes the JSON Schema for a single property.
-    fn writePropertySchema(s: *std.json.Stringify, prop: protocol.SchemaProperty) ServerError!void {
-        s.beginObject() catch return error.OutOfMemory;
+    fn writePropertySchema(s: *std.json.Stringify, prop: protocol.SchemaProperty) !void {
+        try s.beginObject();
 
         if (prop.one_of_string_or_array) {
-            s.objectField("oneOf") catch return error.OutOfMemory;
-            s.beginArray() catch return error.OutOfMemory;
+            try s.objectField("oneOf");
+            try s.beginArray();
             // { "type": "string" }
-            s.beginObject() catch return error.OutOfMemory;
-            s.objectField("type") catch return error.OutOfMemory;
-            s.write("string") catch return error.OutOfMemory;
-            s.endObject() catch return error.OutOfMemory;
+            try s.beginObject();
+            try s.objectField("type");
+            try s.write("string");
+            try s.endObject();
             // { "type": "array", "items": { "type": "string" }, ... }
-            s.beginObject() catch return error.OutOfMemory;
-            s.objectField("type") catch return error.OutOfMemory;
-            s.write("array") catch return error.OutOfMemory;
-            s.objectField("items") catch return error.OutOfMemory;
-            s.beginObject() catch return error.OutOfMemory;
-            s.objectField("type") catch return error.OutOfMemory;
-            s.write("string") catch return error.OutOfMemory;
-            s.endObject() catch return error.OutOfMemory;
+            try s.beginObject();
+            try s.objectField("type");
+            try s.write("array");
+            try s.objectField("items");
+            try s.beginObject();
+            try s.objectField("type");
+            try s.write("string");
+            try s.endObject();
             if (prop.max_items) |mi| {
-                s.objectField("maxItems") catch return error.OutOfMemory;
-                s.write(mi) catch return error.OutOfMemory;
+                try s.objectField("maxItems");
+                try s.write(mi);
             }
             if (prop.min_items) |mi| {
-                s.objectField("minItems") catch return error.OutOfMemory;
-                s.write(mi) catch return error.OutOfMemory;
+                try s.objectField("minItems");
+                try s.write(mi);
             }
-            s.endObject() catch return error.OutOfMemory;
-            s.endArray() catch return error.OutOfMemory;
+            try s.endObject();
+            try s.endArray();
         } else {
-            s.objectField("type") catch return error.OutOfMemory;
-            s.write(prop.type) catch return error.OutOfMemory;
+            try s.objectField("type");
+            try s.write(prop.type);
 
             // Array items
             if (std.mem.eql(u8, prop.type, "array")) {
-                s.objectField("items") catch return error.OutOfMemory;
-                s.beginObject() catch return error.OutOfMemory;
-                s.objectField("type") catch return error.OutOfMemory;
-                s.write(prop.items_type orelse "string") catch return error.OutOfMemory;
+                try s.objectField("items");
+                try s.beginObject();
+                try s.objectField("type");
+                try s.write(prop.items_type orelse "string");
                 if (prop.items_enum) |ie| {
-                    s.objectField("enum") catch return error.OutOfMemory;
-                    s.beginArray() catch return error.OutOfMemory;
+                    try s.objectField("enum");
+                    try s.beginArray();
                     for (ie) |v| {
-                        s.write(v) catch return error.OutOfMemory;
+                        try s.write(v);
                     }
-                    s.endArray() catch return error.OutOfMemory;
+                    try s.endArray();
                 }
-                s.endObject() catch return error.OutOfMemory;
+                try s.endObject();
             }
         }
 
         if (prop.description) |d| {
-            s.objectField("description") catch return error.OutOfMemory;
-            s.write(d) catch return error.OutOfMemory;
+            try s.objectField("description");
+            try s.write(d);
         }
 
         if (prop.enum_values) |ev| {
-            s.objectField("enum") catch return error.OutOfMemory;
-            s.beginArray() catch return error.OutOfMemory;
+            try s.objectField("enum");
+            try s.beginArray();
             for (ev) |v| {
-                s.write(v) catch return error.OutOfMemory;
+                try s.write(v);
             }
-            s.endArray() catch return error.OutOfMemory;
+            try s.endArray();
         }
 
-        if (prop.default_bool) |db| {
-            s.objectField("default") catch return error.OutOfMemory;
-            s.write(db) catch return error.OutOfMemory;
-        }
-        if (prop.default_int) |di| {
-            s.objectField("default") catch return error.OutOfMemory;
-            s.write(di) catch return error.OutOfMemory;
-        }
-        if (prop.default_float) |df| {
-            s.objectField("default") catch return error.OutOfMemory;
-            s.write(df) catch return error.OutOfMemory;
-        }
-        if (prop.default_str) |ds| {
-            s.objectField("default") catch return error.OutOfMemory;
-            s.write(ds) catch return error.OutOfMemory;
-        }
-        if (prop.default_str_array) |dsa| {
-            s.objectField("default") catch return error.OutOfMemory;
-            s.beginArray() catch return error.OutOfMemory;
-            for (dsa) |v| {
-                s.write(v) catch return error.OutOfMemory;
+        if (prop.default) |default| {
+            try s.objectField("default");
+            switch (default) {
+                .bool => |v| try s.write(v),
+                .int => |v| try s.write(v),
+                .float => |v| try s.write(v),
+                .str => |v| try s.write(v),
+                .str_array => |arr| {
+                    try s.beginArray();
+                    for (arr) |v| {
+                        try s.write(v);
+                    }
+                    try s.endArray();
+                },
             }
-            s.endArray() catch return error.OutOfMemory;
         }
+
         if (prop.minimum) |m| {
-            s.objectField("minimum") catch return error.OutOfMemory;
-            s.write(m) catch return error.OutOfMemory;
+            try s.objectField("minimum");
+            try s.write(m);
         }
         if (prop.maximum) |m| {
-            s.objectField("maximum") catch return error.OutOfMemory;
-            s.write(m) catch return error.OutOfMemory;
+            try s.objectField("maximum");
+            try s.write(m);
         }
         if (prop.max_items) |mi| {
             if (!prop.one_of_string_or_array) {
-                s.objectField("maxItems") catch return error.OutOfMemory;
-                s.write(mi) catch return error.OutOfMemory;
+                try s.objectField("maxItems");
+                try s.write(mi);
             }
         }
         if (prop.min_items) |mi| {
             if (!prop.one_of_string_or_array) {
-                s.objectField("minItems") catch return error.OutOfMemory;
-                s.write(mi) catch return error.OutOfMemory;
+                try s.objectField("minItems");
+                try s.write(mi);
             }
         }
 
-        s.endObject() catch return error.OutOfMemory;
+        try s.endObject();
     }
 };

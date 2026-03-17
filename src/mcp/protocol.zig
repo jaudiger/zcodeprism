@@ -10,16 +10,22 @@ pub const mcp_protocol_version = "2025-11-25";
 pub const server_name = "zcodeprism";
 pub const server_version = "0.1.0";
 
+/// A default value for a schema property, tagged by JSON type.
+pub const DefaultValue = union(enum) {
+    bool: bool,
+    int: i32,
+    float: f64,
+    str: []const u8,
+    str_array: []const []const u8,
+};
+
 /// Describes a single property in a JSON Schema object.
 pub const SchemaProperty = struct {
     name: []const u8,
     type: []const u8 = "string",
     description: ?[]const u8 = null,
     enum_values: ?[]const []const u8 = null,
-    default_bool: ?bool = null,
-    default_int: ?i32 = null,
-    default_float: ?f64 = null,
-    default_str: ?[]const u8 = null,
+    default: ?DefaultValue = null,
     minimum: ?f64 = null,
     maximum: ?f64 = null,
     /// Emits a oneOf [string, array-of-strings] schema instead of a plain type.
@@ -30,8 +36,6 @@ pub const SchemaProperty = struct {
     items_type: ?[]const u8 = null,
     /// For array items with enum constraints.
     items_enum: ?[]const []const u8 = null,
-    /// Default array of strings (serialized as JSON array).
-    default_str_array: ?[]const []const u8 = null,
 };
 
 /// An MCP tool descriptor with name, description, and structured schema info.
