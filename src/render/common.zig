@@ -367,7 +367,7 @@ pub fn assignChildrenIds(
                 ids[child_idx] = .{ .prefix = "m:", .num = state.m_counter };
                 try assignChildrenIds(allocator, g, child_idx, ids, filter, children_index, state, next_depth);
             },
-            .field, .import_decl, .file, .directory => {},
+            .field, .import_decl, .file, .directory, .parameter => {},
         }
     }
 }

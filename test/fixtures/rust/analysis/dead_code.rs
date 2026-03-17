@@ -3,9 +3,14 @@ pub fn referenced_pub(x: u32) -> u32 {
     x.wrapping_add(1)
 }
 
-// Never called by any non-test code.
-fn unreferenced_private(x: u32) -> u32 {
+// Called only by the test below, not by production code.
+fn tested_private(x: u32) -> u32 {
     x.wrapping_mul(2)
+}
+
+// Never called by anything.
+fn truly_dead(x: u32) -> u32 {
+    x.wrapping_add(3)
 }
 
 // Public but never called anywhere.
@@ -48,7 +53,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_unreferenced_private() {
-        assert_eq!(unreferenced_private(10), 20);
+    fn test_tested_private() {
+        assert_eq!(tested_private(10), 20);
     }
 }

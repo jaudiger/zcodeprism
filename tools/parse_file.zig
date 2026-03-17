@@ -120,7 +120,9 @@ pub fn main() !void {
         defer phantom_mgr.deinit(allocator);
         var wl = zcodeprism.lsp.worklist.LspWorklist{};
         defer wl.deinit(allocator);
-        build_edges(allocator, source, &graph, 0, graph.nodeCount(), null, &graph_index, &phantom_mgr, &wl, log) catch |err| {
+        var node_type_map = zcodeprism.language_support.NodeTypeMap{};
+        defer node_type_map.deinit(allocator);
+        build_edges(allocator, source, &graph, 0, graph.nodeCount(), null, &graph_index, &phantom_mgr, &node_type_map, &wl, log) catch |err| {
             try stdout.print("Edge building error: {}\n", .{err});
             try stdout.flush();
             std.process.exit(1);

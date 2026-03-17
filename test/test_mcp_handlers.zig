@@ -2199,18 +2199,21 @@ test "dead_code finds unreferenced private function" {
 
     // Assert
     const nodes = v.get("nodes").?.array;
-    var found_unreferenced = false;
+    var found_truly_dead = false;
+    var found_tested_private = false;
     var found_counter = false;
     var found_orphaned = false;
     var found_value = false;
     for (nodes.items) |n| {
         const name = n.object.get("name").?.string;
-        if (std.mem.eql(u8, name, "unreferencedPrivate")) found_unreferenced = true;
+        if (std.mem.eql(u8, name, "trulyDead")) found_truly_dead = true;
+        if (std.mem.eql(u8, name, "testedPrivate")) found_tested_private = true;
         if (std.mem.eql(u8, name, "Counter")) found_counter = true;
         if (std.mem.eql(u8, name, "orphaned")) found_orphaned = true;
         if (std.mem.eql(u8, name, "value")) found_value = true;
     }
-    try std.testing.expect(found_unreferenced);
+    try std.testing.expect(found_truly_dead);
+    try std.testing.expect(!found_tested_private);
     try std.testing.expect(!found_counter);
     try std.testing.expect(found_orphaned);
     try std.testing.expect(!found_value);
@@ -2246,20 +2249,25 @@ test "dead_code rust finds unreferenced private function, not Counter fields" {
 
     // Assert
     const nodes = v.get("nodes").?.array;
-    var found_unreferenced = false;
+    var found_truly_dead = false;
+    var found_tested_private = false;
     var found_counter = false;
     var found_value = false;
     var found_limit = false;
     var found_label = false;
     for (nodes.items) |n| {
         const name = n.object.get("name").?.string;
-        if (std.mem.eql(u8, name, "unreferenced_private")) found_unreferenced = true;
+        if (std.mem.eql(u8, name, "truly_dead")) found_truly_dead = true;
+        if (std.mem.eql(u8, name, "tested_private")) found_tested_private = true;
         if (std.mem.eql(u8, name, "Counter")) found_counter = true;
         if (std.mem.eql(u8, name, "value")) found_value = true;
         if (std.mem.eql(u8, name, "limit")) found_limit = true;
         if (std.mem.eql(u8, name, "label")) found_label = true;
     }
-    try std.testing.expect(found_unreferenced);
+    try std.testing.expect(found_truly_dead);
+    // tested_private is also dead: assert_eq! is a macro invocation
+    // opaque to tree-sitter, so the call inside it is invisible.
+    try std.testing.expect(found_tested_private);
     try std.testing.expect(!found_counter);
     try std.testing.expect(!found_value);
     try std.testing.expect(!found_limit);

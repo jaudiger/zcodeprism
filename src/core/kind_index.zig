@@ -136,6 +136,7 @@ test "every NodeKind variant is indexed" {
         .{ .id = @enumFromInt(9), .name = "i", .kind = .import_decl, .language = .zig },
         .{ .id = @enumFromInt(10), .name = "u", .kind = .union_def, .language = .zig },
         .{ .id = @enumFromInt(11), .name = "d", .kind = .directory, .language = .zig },
+        .{ .id = @enumFromInt(12), .name = "p", .kind = .parameter, .language = .zig },
     };
 
     // Act

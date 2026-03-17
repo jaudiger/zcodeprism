@@ -30,6 +30,12 @@ const GraphIndex = @import("../../core/graph_index.zig").GraphIndex;
 const ScopeIndex = @import("../../core/scope_index.zig").ScopeIndex;
 const TypeEnv = type_env_mod.TypeEnv;
 
+/// Maps node IDs (fields and parameters) to their resolved type node IDs.
+/// Populated by processContainerFieldEdges and processParameterTypeEdges,
+/// then read by inferExpectedType to resolve field_expression operands
+/// and by inferTypeFromCallArg to resolve function argument types.
+pub const NodeTypeMap = std.AutoHashMapUnmanaged(NodeId, NodeId);
+
 /// Bundles all state needed to scan a single function or test body for edges.
 const ScanContext = struct {
     g: *Graph,
@@ -42,6 +48,7 @@ const ScanContext = struct {
     type_env: *const TypeEnv,
     graph_index: *const GraphIndex,
     phantom_mgr: *const PhantomManager,
+    field_types: *const NodeTypeMap,
     wl: *LspWorklist,
     log: Logger,
 };
@@ -57,6 +64,7 @@ fn processDeclarationEdges(
     k: *const KindIds,
     graph_index: *const GraphIndex,
     phantom_mgr: *const PhantomManager,
+    field_types: *const NodeTypeMap,
     wl: *LspWorklist,
     log: Logger,
 ) !void {
@@ -77,6 +85,7 @@ fn processDeclarationEdges(
         .type_env = &type_env,
         .graph_index = graph_index,
         .phantom_mgr = phantom_mgr,
+        .field_types = field_types,
         .wl = wl,
         .log = log,
     };
@@ -288,19 +297,96 @@ fn buildTypeEnvFromBlock(
     }
 }
 
+/// For each `.parameter` child of a function, resolve the type annotation
+/// from the AST, emit a `uses_type` edge from the parameter node to the
+/// type node, and record the mapping in the shared NodeTypeMap.
+fn processParameterTypeEdges(
+    allocator: std.mem.Allocator,
+    g: *Graph,
+    source: []const u8,
+    fn_decl_node: ts.Node,
+    fn_id: NodeId,
+    ctx: *const EdgeContext,
+    k: *const KindIds,
+    graph_index: *const GraphIndex,
+    phantom_mgr: *const PhantomManager,
+    node_type_map: *NodeTypeMap,
+    wl: *LspWorklist,
+    log: Logger,
+) !void {
+    _ = wl;
+    _ = log;
+    _ = phantom_mgr;
+
+    // Find parameter graph nodes (children of fn_id with kind .parameter).
+    const param_children = graph_index.scope.childrenOf(fn_id);
+
+    // Walk the AST parameters list in parallel with graph parameter nodes.
+    var pi: u32 = 0;
+    while (pi < fn_decl_node.childCount()) : (pi += 1) {
+        const params_node = fn_decl_node.child(pi) orelse continue;
+        if (params_node.kindId() != k.parameters) continue;
+
+        var param_graph_idx: usize = 0;
+        var j: u32 = 0;
+        while (j < params_node.namedChildCount()) : (j += 1) {
+            const param_ast = params_node.namedChild(j) orelse continue;
+            if (param_ast.kindId() != k.parameter) continue;
+            const type_node = param_ast.namedChild(1) orelse {
+                param_graph_idx += 1;
+                continue;
+            };
+
+            // Find the corresponding graph parameter node.
+            const param_node_id: ?NodeId = blk: {
+                while (param_graph_idx < param_children.len) {
+                    const ci = param_children[param_graph_idx];
+                    const n = g.nodes.items[ci];
+                    if (n.kind == .parameter) {
+                        param_graph_idx += 1;
+                        break :blk @enumFromInt(ci);
+                    }
+                    param_graph_idx += 1;
+                }
+                break :blk null;
+            };
+            const param_id = param_node_id orelse continue;
+
+            // Resolve the type annotation to a graph type node.
+            const base = unwrapTypeNode(type_node, k);
+            if (base.kindId() == k.identifier) {
+                const type_name = ts_api.nodeText(source, base);
+                const owner_node = g.getNode(fn_id);
+                const owner_parent_id: ?NodeId = if (owner_node) |n| n.parent_id else null;
+                const type_id =
+                    findTypeByNameScoped(g, type_name, ctx.scope_start, ctx.scope_end, owner_parent_id, &graph_index.scope) orelse
+                    continue;
+                _ = try g.addEdgeIfNew(allocator, .{ .source_id = param_id, .target_id = type_id, .edge_type = .uses_type });
+                try node_type_map.put(allocator, param_id, type_id);
+            }
+        }
+        break;
+    }
+}
+
 /// Recursively walk a tree-sitter AST and create edges in the graph.
 ///
 /// For each function or test declaration, matches it to a graph node then
 /// delegates to processDeclarationEdges for env building and edge emission.
 /// Recurses into named children to find nested declarations.
-pub fn walkForEdges(allocator: std.mem.Allocator, g: *Graph, source: []const u8, ts_node: ts.Node, ctx: *const EdgeContext, k: *const KindIds, graph_index: *const GraphIndex, phantom_mgr: *const PhantomManager, wl: *LspWorklist, log: Logger) !void {
+pub fn walkForEdges(allocator: std.mem.Allocator, g: *Graph, source: []const u8, ts_node: ts.Node, ctx: *const EdgeContext, k: *const KindIds, graph_index: *const GraphIndex, phantom_mgr: *const PhantomManager, node_type_map: *NodeTypeMap, wl: *LspWorklist, log: Logger) !void {
+    try walkForEdgesInner(allocator, g, source, ts_node, ctx, k, graph_index, phantom_mgr, node_type_map, wl, log);
+}
+
+fn walkForEdgesInner(allocator: std.mem.Allocator, g: *Graph, source: []const u8, ts_node: ts.Node, ctx: *const EdgeContext, k: *const KindIds, graph_index: *const GraphIndex, phantom_mgr: *const PhantomManager, field_types: *NodeTypeMap, wl: *LspWorklist, log: Logger) !void {
     const kid = ts_node.kindId();
 
     if (kid == k.function_declaration) {
         if (ast.getIdentifierName(source, ts_node, k)) |name| {
             const decl_line = ts_node.startPoint().row + 1;
             if (findFunctionByNameAndLine(g, name, decl_line, ctx.scope_start, ctx.scope_end)) |fn_id| {
-                try processDeclarationEdges(allocator, g, source, ts_node, fn_id, ctx, k, graph_index, phantom_mgr, wl, log);
+                try processDeclarationEdges(allocator, g, source, ts_node, fn_id, ctx, k, graph_index, phantom_mgr, field_types, wl, log);
+                try processParameterTypeEdges(allocator, g, source, ts_node, fn_id, ctx, k, graph_index, phantom_mgr, field_types, wl, log);
             } else {
                 log.trace("function not found in graph", &.{
                     Field.string("name", name),
@@ -311,12 +397,11 @@ pub fn walkForEdges(allocator: std.mem.Allocator, g: *Graph, source: []const u8,
     } else if (kid == k.test_declaration) {
         const test_name = ast.getTestName(source, ts_node, k);
         if (findTestByName(g, test_name, ctx.scope_start, ctx.scope_end)) |test_id| {
-            try processDeclarationEdges(allocator, g, source, ts_node, test_id, ctx, k, graph_index, phantom_mgr, wl, log);
+            try processDeclarationEdges(allocator, g, source, ts_node, test_id, ctx, k, graph_index, phantom_mgr, field_types, wl, log);
         } else {
             log.trace("test not found in graph", &.{Field.string("name", test_name)});
         }
     } else if (kid == k.struct_declaration or kid == k.enum_declaration or kid == k.union_declaration) {
-        // The name lives on the parent variable_declaration, not on the declaration node itself.
         const parent = ts_node.parent();
         const name: ?[]const u8 = if (parent) |p|
             if (p.kindId() == k.variable_declaration) ast.getIdentifierName(source, p, k) else null
@@ -325,7 +410,7 @@ pub fn walkForEdges(allocator: std.mem.Allocator, g: *Graph, source: []const u8,
         if (name) |n| {
             const decl_line = ts_node.startPoint().row + 1;
             if (findFunctionByNameAndLine(g, n, decl_line, ctx.scope_start, ctx.scope_end)) |container_id| {
-                try processContainerFieldEdges(allocator, g, source, ts_node, container_id, ctx, k, graph_index, phantom_mgr, wl, log);
+                try processContainerFieldEdges(allocator, g, source, ts_node, container_id, ctx, k, graph_index, phantom_mgr, field_types, wl, log);
             } else {
                 log.trace("container not found in graph", &.{
                     Field.string("name", n),
@@ -338,7 +423,7 @@ pub fn walkForEdges(allocator: std.mem.Allocator, g: *Graph, source: []const u8,
     var i: u32 = 0;
     while (i < ts_node.namedChildCount()) : (i += 1) {
         const child = ts_node.namedChild(i) orelse continue;
-        try walkForEdges(allocator, g, source, child, ctx, k, graph_index, phantom_mgr, wl, log);
+        try walkForEdgesInner(allocator, g, source, child, ctx, k, graph_index, phantom_mgr, field_types, wl, log);
     }
 }
 
@@ -395,7 +480,11 @@ fn scanBodyForEdges(allocator: std.mem.Allocator, sctx: *const ScanContext, ts_n
                 false;
         } else false;
         if (!is_call_fn_ref) {
-            try handleFieldAccess(allocator, sctx, ts_node);
+            if (ts_node.namedChildCount() < 2) {
+                try handleBareEnumLiteral(allocator, sctx, ts_node);
+            } else {
+                try handleFieldAccess(allocator, sctx, ts_node);
+            }
         }
     } else if (kid == sctx.k.identifier or kid == sctx.k.property_identifier) {
         try handleTypeRef(allocator, sctx, ts_node);
@@ -542,6 +631,168 @@ fn handleFieldAccess(allocator: std.mem.Allocator, sctx: *const ScanContext, fie
     if (findFieldByName(sctx.g, type_id, field_name, &sctx.graph_index.scope)) |field_id| {
         _ = try sctx.g.addEdgeIfNew(allocator, .{ .source_id = sctx.caller_id, .target_id = field_id, .edge_type = .accesses_field });
     }
+}
+
+/// Resolve a bare enum literal (`.variant`) to its parent enum type and emit
+/// accesses_field. Infers the expected type from the AST context and emits a
+/// worklist entry when the type cannot be determined statically.
+fn handleBareEnumLiteral(allocator: std.mem.Allocator, sctx: *const ScanContext, field_expr: ts.Node) !void {
+    const name_node = field_expr.namedChild(0) orelse return;
+    const nk = name_node.kindId();
+    if (nk != sctx.k.identifier and nk != sctx.k.property_identifier) return;
+    const variant_name = ts_api.nodeText(sctx.source, name_node);
+
+    if (inferExpectedType(sctx, field_expr)) |type_id| {
+        if (findFieldByName(sctx.g, type_id, variant_name, &sctx.graph_index.scope)) |field_id| {
+            _ = try sctx.g.addEdgeIfNew(allocator, .{ .source_id = sctx.caller_id, .target_id = field_id, .edge_type = .accesses_field });
+            return;
+        }
+    }
+
+    const pos = field_expr.startPoint();
+    try sctx.wl.append(allocator, .{
+        .source_node_id = sctx.caller_id,
+        .file_path = if (sctx.g.getNode(sctx.caller_id)) |n| n.file_path orelse "" else "",
+        .line = pos.row,
+        .col = pos.column,
+        .query_kind = .type_definition,
+        .hint_name = variant_name,
+    });
+}
+
+/// Walk up from a bare enum literal to determine the expected type from context.
+/// Returns the type node ID when the AST position provides enough information.
+fn inferExpectedType(sctx: *const ScanContext, field_expr: ts.Node) ?NodeId {
+    const parent = field_expr.parent() orelse return null;
+    const pk = parent.kindId();
+
+    if (pk == sctx.k.binary_expression) {
+        return inferTypeFromBinaryPeer(sctx, parent, field_expr);
+    }
+    if (pk == sctx.k.switch_case) {
+        return inferTypeFromSwitchOperand(sctx, parent);
+    }
+    if (pk == sctx.k.return_expression) {
+        return sctx.type_env.local.get("_return");
+    }
+    if (pk == sctx.k.variable_declaration) {
+        const var_name = ast.getIdentifierName(sctx.source, parent, sctx.k) orelse return null;
+        return sctx.type_env.local.get(var_name);
+    }
+    if (pk == sctx.k.expression_statement) {
+        const lhs = parent.child(0) orelse return null;
+        if (lhs.kindId() != sctx.k.identifier) return null;
+        return sctx.type_env.local.get(ts_api.nodeText(sctx.source, lhs));
+    }
+    if (pk == sctx.k.arguments) {
+        return inferTypeFromCallArg(sctx, parent, field_expr);
+    }
+    return null;
+}
+
+/// Find the type of the other operand in a binary_expression.
+fn inferTypeFromBinaryPeer(sctx: *const ScanContext, binary_node: ts.Node, enum_literal: ts.Node) ?NodeId {
+    var i: u32 = 0;
+    while (i < binary_node.namedChildCount()) : (i += 1) {
+        const child = binary_node.namedChild(i) orelse continue;
+        if (child.startByte() == enum_literal.startByte()) continue;
+        return resolveExprType(sctx, child);
+    }
+    return null;
+}
+
+/// Walk from a switch_case up to the switch_expression and resolve the operand type.
+fn inferTypeFromSwitchOperand(sctx: *const ScanContext, switch_case_node: ts.Node) ?NodeId {
+    const switch_expr = switch_case_node.parent() orelse return null;
+    if (switch_expr.kindId() != sctx.k.switch_expression) return null;
+    const operand = switch_expr.namedChild(0) orelse return null;
+    return resolveExprType(sctx, operand);
+}
+
+/// Find the callee's parameter type at the argument position of the literal.
+fn inferTypeFromCallArg(sctx: *const ScanContext, args_node: ts.Node, enum_literal: ts.Node) ?NodeId {
+    var arg_index: ?u32 = null;
+    var ai: u32 = 0;
+    while (ai < args_node.namedChildCount()) : (ai += 1) {
+        const arg = args_node.namedChild(ai) orelse continue;
+        if (arg.startByte() == enum_literal.startByte()) {
+            arg_index = ai;
+            break;
+        }
+    }
+    const idx = arg_index orelse return null;
+
+    const call_node = args_node.parent() orelse return null;
+    if (call_node.kindId() != sctx.k.call_expression) return null;
+    const fn_ref = call_node.namedChild(0) orelse return null;
+
+    // Determine if this is a method call (field_expression) to offset for implicit self.
+    const is_method = fn_ref.kindId() == sctx.k.field_expression;
+    const callee_id = resolveCalleeNodeId(sctx, fn_ref) orelse return null;
+    const param_offset: u32 = if (is_method) 1 else 0;
+    return resolveParamType(sctx, callee_id, idx + param_offset);
+}
+
+/// Resolve an expression AST node to its type node ID.
+/// Handles identifiers (type_env lookup) and field_expression chains
+/// (resolve root via type_env, find field, look up field type).
+fn resolveExprType(sctx: *const ScanContext, expr: ts.Node) ?NodeId {
+    if (expr.kindId() == sctx.k.identifier) {
+        return sctx.type_env.local.get(ts_api.nodeText(sctx.source, expr));
+    }
+    if (expr.kindId() == sctx.k.field_expression) {
+        var chain: [cf.max_chain_depth][]const u8 = undefined;
+        const chain_len = cf.collectFieldExprChain(sctx.source, expr, &chain, sctx.k);
+        if (chain_len >= 2) {
+            const root_type_id = sctx.type_env.local.get(chain[0]) orelse return null;
+            const field_id = findFieldByName(sctx.g, root_type_id, chain[chain_len - 1], &sctx.graph_index.scope) orelse return null;
+            return sctx.field_types.get(field_id);
+        }
+    }
+    return null;
+}
+
+/// Resolve a call_expression's fn_ref to the callee's graph node ID.
+fn resolveCalleeNodeId(sctx: *const ScanContext, fn_ref: ts.Node) ?NodeId {
+    const ref = extractCallFnRef(sctx.source, fn_ref, sctx.k) orelse return null;
+    switch (ref) {
+        .bare => |callee_name| {
+            return findFunctionByNameScoped(sctx.g, callee_name, sctx.edge_ctx.scope_start, sctx.edge_ctx.scope_end, sctx.caller_parent_id, &sctx.graph_index.scope);
+        },
+        .qualified => |field_expr| {
+            var chain: [cf.max_chain_depth][]const u8 = undefined;
+            const chain_len = cf.collectFieldExprChain(sctx.source, field_expr, &chain, sctx.k);
+            if (chain_len >= 2) {
+                const root_name = chain[0];
+                const leaf_name = chain[chain_len - 1];
+                if (sctx.type_env.local.get(root_name)) |type_id| {
+                    for (sctx.graph_index.scope.childrenOf(type_id)) |child_idx| {
+                        const n = sctx.g.nodes.items[child_idx];
+                        if (n.kind == .function and std.mem.eql(u8, n.name, leaf_name)) {
+                            return @enumFromInt(child_idx);
+                        }
+                    }
+                }
+            }
+            return null;
+        },
+    }
+}
+
+/// Resolve the Nth parameter's type via graph traversal. Walks the callee's
+/// `.parameter` children (via ScopeIndex) and looks up the type in NodeTypeMap.
+fn resolveParamType(sctx: *const ScanContext, callee_id: NodeId, param_index: u32) ?NodeId {
+    const children = sctx.graph_index.scope.childrenOf(callee_id);
+    var pi: u32 = 0;
+    for (children) |ci| {
+        const n = sctx.g.nodes.items[ci];
+        if (n.kind != .parameter) continue;
+        if (pi == param_index) {
+            return sctx.field_types.get(@enumFromInt(ci));
+        }
+        pi += 1;
+    }
+    return null;
 }
 
 /// Emit uses_type for an identifier that resolves to a type in scope or cross-file.
@@ -887,16 +1138,19 @@ const FieldScanContext = struct {
     g: *Graph,
     source: []const u8,
     owner_id: NodeId,
+    field_id: ?NodeId = null,
     edge_ctx: *const EdgeContext,
     k: *const KindIds,
     graph_index: *const GraphIndex,
     phantom_mgr: *const PhantomManager,
+    field_types: *NodeTypeMap,
     wl: *LspWorklist,
     log: Logger,
 };
 
 /// Scan a struct/enum/union node's container_field children for type references.
-/// Emits uses_type edges from the container node to each resolved type.
+/// Emits uses_type edges from the container node and from each field node to the
+/// resolved type.
 fn processContainerFieldEdges(
     allocator: std.mem.Allocator,
     g: *Graph,
@@ -907,10 +1161,11 @@ fn processContainerFieldEdges(
     k: *const KindIds,
     graph_index: *const GraphIndex,
     phantom_mgr: *const PhantomManager,
+    field_types: *NodeTypeMap,
     wl: *LspWorklist,
     log: Logger,
 ) !void {
-    const fctx = FieldScanContext{
+    var fctx = FieldScanContext{
         .g = g,
         .source = source,
         .owner_id = owner_id,
@@ -918,6 +1173,7 @@ fn processContainerFieldEdges(
         .k = k,
         .graph_index = graph_index,
         .phantom_mgr = phantom_mgr,
+        .field_types = field_types,
         .wl = wl,
         .log = log,
     };
@@ -925,6 +1181,11 @@ fn processContainerFieldEdges(
     while (i < container_node.namedChildCount()) : (i += 1) {
         const child = container_node.namedChild(i) orelse continue;
         if (child.kindId() == k.container_field) {
+            const field_name = ast.getIdentifierName(source, child, k);
+            fctx.field_id = if (field_name) |fn_name|
+                findFieldByName(g, owner_id, fn_name, &graph_index.scope)
+            else
+                null;
             try scanContainerField(allocator, &fctx, child);
         }
     }
@@ -982,9 +1243,12 @@ fn emitFieldTypeRef(allocator: std.mem.Allocator, fctx: *const FieldScanContext,
         if (!is_own_child) {
             _ = try fctx.g.addEdgeIfNew(allocator, .{ .source_id = fctx.owner_id, .target_id = tid, .edge_type = .uses_type });
         }
+        if (fctx.field_id) |fid| {
+            _ = try fctx.g.addEdgeIfNew(allocator, .{ .source_id = fid, .target_id = tid, .edge_type = .uses_type });
+            try fctx.field_types.put(allocator, fid, tid);
+        }
         return;
     }
-    // Only PascalCase names are type references in Zig conventions.
     if (name.len > 0 and name[0] >= 'A' and name[0] <= 'Z') {
         const pos = id_node.startPoint();
         try fctx.wl.append(allocator, .{
@@ -1010,11 +1274,16 @@ fn handleFieldQualifiedType(allocator: std.mem.Allocator, fctx: *const FieldScan
         for (fctx.graph_index.scope.childrenOf(target_file_id)) |child_idx| {
             const n = fctx.g.nodes.items[child_idx];
             if (isTypeReference(n, type_name)) {
+                const tid: NodeId = @enumFromInt(child_idx);
                 _ = try fctx.g.addEdgeIfNew(allocator, .{
                     .source_id = fctx.owner_id,
-                    .target_id = @enumFromInt(child_idx),
+                    .target_id = tid,
                     .edge_type = .uses_type,
                 });
+                if (fctx.field_id) |fid| {
+                    _ = try fctx.g.addEdgeIfNew(allocator, .{ .source_id = fid, .target_id = tid, .edge_type = .uses_type });
+                    try fctx.field_types.put(allocator, fid, tid);
+                }
                 return;
             }
         }

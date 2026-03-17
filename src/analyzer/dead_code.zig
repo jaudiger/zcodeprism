@@ -44,19 +44,7 @@ pub const DeadCodeOptions = struct {
     limit: u32 = 50,
 };
 
-/// Walk up the parent chain to check whether a node lives inside a test block.
-fn isTestLocal(g: *const Graph, node_id: NodeId) bool {
-    var current_opt = g.getNode(node_id).?.parent_id;
-    while (current_opt) |pid| {
-        const parent = g.getNode(pid) orelse return false;
-        if (parent.kind == .test_def) return true;
-        if (parent.kind == .file or parent.kind == .directory) return false;
-        current_opt = parent.parent_id;
-    }
-    return false;
-}
-
-/// Find declaration nodes with zero non-test incoming edges.
+/// Find declaration nodes with zero incoming edges.
 pub fn findDeadCode(allocator: std.mem.Allocator, g: *const Graph, options: DeadCodeOptions) !DeadCodeResult {
     const scope_filter: ?Scope = if (options.scope) |s| Scope.parse(s) else null;
 
@@ -65,7 +53,7 @@ pub fn findDeadCode(allocator: std.mem.Allocator, g: *const Graph, options: Dead
 
     for (g.nodes.items, 0..) |n, i| {
         switch (n.kind) {
-            .file, .module, .import_decl, .directory => continue,
+            .file, .module, .import_decl, .directory, .parameter => continue,
             .test_def => if (!options.include_test_only) continue,
             else => {},
         }
@@ -90,35 +78,21 @@ pub fn findDeadCode(allocator: std.mem.Allocator, g: *const Graph, options: Dead
 
         const node_id: NodeId = @enumFromInt(i);
         const in_edges = g.inEdges(node_id);
-        var has_non_test_ref = false;
+        var has_ref = false;
 
-        if (isTestLocal(g, node_id)) {
-            if (n.kind == .field) {
-                // test-local field: live if any accesses_field edge reaches it
-                for (in_edges) |eid| {
-                    if (g.edges.items[@intFromEnum(eid)].edge_type == .accesses_field) {
-                        has_non_test_ref = true;
-                        break;
-                    }
-                }
-            } else {
-                // A test-local node can only be referenced from within its test block,
-                // so any incoming edge is a valid reference.
-                has_non_test_ref = in_edges.len > 0;
-            }
-        } else {
+        if (n.kind == .field) {
+            // Fields are only live via accesses_field edges.
             for (in_edges) |eid| {
-                const edge = g.edges.items[@intFromEnum(eid)];
-                if (n.kind == .field and edge.edge_type != .accesses_field) continue;
-                const source_node = g.getNode(edge.source_id) orelse continue;
-                if (source_node.kind != .test_def) {
-                    has_non_test_ref = true;
+                if (g.edges.items[@intFromEnum(eid)].edge_type == .accesses_field) {
+                    has_ref = true;
                     break;
                 }
             }
+        } else {
+            has_ref = in_edges.len > 0;
         }
 
-        if (!has_non_test_ref) {
+        if (!has_ref) {
             try candidates.append(allocator, .{
                 .node_id = node_id,
                 .name = n.name,

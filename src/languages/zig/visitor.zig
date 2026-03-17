@@ -107,7 +107,7 @@ pub fn parse(allocator: std.mem.Allocator, source: []const u8, g: *Graph, file_p
 
 /// Re-parse source and emit cross-file edges for the Zig file at file_idx.
 /// Unresolved references are appended to `wl`.
-pub fn buildEdges(allocator: std.mem.Allocator, source: []const u8, g: *Graph, file_idx: usize, scope_end: usize, file_path: ?[]const u8, graph_index: *const GraphIndex, phantom_mgr: *const phantom_mod.PhantomManager, wl: *@import("../../lsp/worklist.zig").LspWorklist, logger: Logger) error{OutOfMemory}!void {
+pub fn buildEdges(allocator: std.mem.Allocator, source: []const u8, g: *Graph, file_idx: usize, scope_end: usize, file_path: ?[]const u8, graph_index: *const GraphIndex, phantom_mgr: *const phantom_mod.PhantomManager, node_type_map: *eb.NodeTypeMap, wl: *@import("../../lsp/worklist.zig").LspWorklist, logger: Logger) error{OutOfMemory}!void {
     const log = logger.withScope("zig-edges");
 
     const ts_lang = ts_api.tree_sitter_zig();
@@ -128,7 +128,7 @@ pub fn buildEdges(allocator: std.mem.Allocator, source: []const u8, g: *Graph, f
     try cf.buildImportMap(allocator, g, source, root, &ctx, &graph_index.files, file_path, &k, log);
 
     log.debug("building edges", &.{});
-    try eb.walkForEdges(allocator, g, source, root, &ctx, &k, graph_index, phantom_mgr, wl, log);
+    try eb.walkForEdges(allocator, g, source, root, &ctx, &k, graph_index, phantom_mgr, node_type_map, wl, log);
 }
 
 /// Dispatch a single top-level or nested declaration to the appropriate
@@ -477,8 +477,40 @@ fn processFunctionDecl(allocator: std.mem.Allocator, ctx: *const VisitorContext,
         .col_end = if (ast.getIdentifierNode(ts_node, ctx.k)) |id_node| id_node.endPoint().column else null,
     });
 
+    try emitParameterNodes(allocator, ctx, ts_node, fn_id);
+
     if (block_body) |body| {
         try discoverInnerTypes(allocator, ctx, body, fn_id);
+    }
+}
+
+/// Iterate the `parameters` child of a function declaration and emit a
+/// `.parameter` node for each named parameter.
+fn emitParameterNodes(allocator: std.mem.Allocator, ctx: *const VisitorContext, fn_decl: ts.Node, fn_id: NodeId) error{OutOfMemory}!void {
+    var i: u32 = 0;
+    while (i < fn_decl.childCount()) : (i += 1) {
+        const child = fn_decl.child(i) orelse continue;
+        if (child.kindId() != ctx.k.parameters) continue;
+
+        var j: u32 = 0;
+        while (j < child.namedChildCount()) : (j += 1) {
+            const param = child.namedChild(j) orelse continue;
+            if (param.kindId() != ctx.k.parameter) continue;
+            const name_node = param.namedChild(0) orelse continue;
+            if (name_node.kindId() != ctx.k.identifier) continue;
+            const param_name = ts_api.nodeText(ctx.source, name_node);
+            _ = try ctx.g.addNode(allocator, .{
+                .id = .root,
+                .name = param_name,
+                .kind = .parameter,
+                .language = .zig,
+                .parent_id = fn_id,
+                .visibility = .private,
+                .line_start = param.startPoint().row + 1,
+                .line_end = param.endPoint().row + 1,
+            });
+        }
+        break;
     }
 }
 

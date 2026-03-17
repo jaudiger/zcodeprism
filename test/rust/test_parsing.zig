@@ -26,7 +26,9 @@ fn parseWithEdges(allocator: std.mem.Allocator, source: []const u8, g: *Graph) !
     defer phantom_mgr.deinit(allocator);
     var wl = zcodeprism.lsp.worklist.LspWorklist{};
     defer wl.deinit(allocator);
-    try buildEdges(allocator, source, g, 0, g.nodeCount(), null, &gi, &phantom_mgr, &wl, Logger.noop);
+    var ntm = zcodeprism.language_support.NodeTypeMap{};
+    defer ntm.deinit(allocator);
+    try buildEdges(allocator, source, g, 0, g.nodeCount(), null, &gi, &phantom_mgr, &ntm, &wl, Logger.noop);
 }
 
 // --- Nominal tests (simple.rs) ---

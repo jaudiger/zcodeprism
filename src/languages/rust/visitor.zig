@@ -109,7 +109,8 @@ pub fn parse(allocator: std.mem.Allocator, source: []const u8, g: *Graph, file_p
 
 /// Re-parse source and emit cross-file edges for the Rust file at file_idx.
 /// Unresolved references are appended to `wl`.
-pub fn buildEdges(allocator: std.mem.Allocator, source: []const u8, g: *Graph, file_idx: usize, scope_end: usize, file_path: ?[]const u8, graph_index: *const GraphIndex, phantom_mgr: *const PhantomManager, wl: *@import("../../lsp/worklist.zig").LspWorklist, logger: Logger) error{OutOfMemory}!void {
+pub fn buildEdges(allocator: std.mem.Allocator, source: []const u8, g: *Graph, file_idx: usize, scope_end: usize, file_path: ?[]const u8, graph_index: *const GraphIndex, phantom_mgr: *const PhantomManager, node_type_map: *@import("../language_support.zig").NodeTypeMap, wl: *@import("../../lsp/worklist.zig").LspWorklist, logger: Logger) error{OutOfMemory}!void {
+    _ = node_type_map;
     const log = logger.withScope("rust-edges");
 
     const ts_lang = ts_api.tree_sitter_rust();
@@ -285,7 +286,7 @@ fn processFunctionItem(allocator: std.mem.Allocator, ctx: *const VisitorContext,
     else
         null;
 
-    _ = try ctx.g.addNode(allocator, .{
+    const fn_id = try ctx.g.addNode(allocator, .{
         .id = .root,
         .name = name,
         .kind = kind,
@@ -309,6 +310,8 @@ fn processFunctionItem(allocator: std.mem.Allocator, ctx: *const VisitorContext,
             .visibility_scope = vis_info.scope,
         } },
     });
+
+    try emitParameterNodes(allocator, ctx, ts_node, fn_id);
 }
 
 /// Process a function_signature_item (in trait bodies).
@@ -323,7 +326,7 @@ fn processFunctionSignatureItem(allocator: std.mem.Allocator, ctx: *const Visito
     const signature = ast.extractFunctionSignature(ctx.source, ts_node, ctx.k);
     const attributes = try extractAndRegisterAttributes(allocator, ctx.g, ctx.source, ts_node, ctx.k);
 
-    _ = try ctx.g.addNode(allocator, .{
+    const fn_id = try ctx.g.addNode(allocator, .{
         .id = .root,
         .name = name,
         .kind = .function,
@@ -338,6 +341,40 @@ fn processFunctionSignatureItem(allocator: std.mem.Allocator, ctx: *const Visito
         .signature = signature,
         .lang_meta = .{ .rust = .{ .sub_kind = .fn_signature, .attributes = attributes, .visibility_scope = vis_info.scope } },
     });
+
+    try emitParameterNodes(allocator, ctx, ts_node, fn_id);
+}
+
+/// Iterate the `parameters` child of a function and emit a `.parameter`
+/// node for each named parameter. Self parameters are skipped.
+fn emitParameterNodes(allocator: std.mem.Allocator, ctx: *const VisitorContext, fn_node: ts.Node, fn_id: NodeId) error{OutOfMemory}!void {
+    var i: u32 = 0;
+    while (i < fn_node.childCount()) : (i += 1) {
+        const child = fn_node.child(i) orelse continue;
+        if (child.kindId() != ctx.k.parameters) continue;
+
+        var j: u32 = 0;
+        while (j < child.namedChildCount()) : (j += 1) {
+            const param = child.namedChild(j) orelse continue;
+            const pk = param.kindId();
+            if (pk == ctx.k.self_parameter) continue;
+            if (pk != ctx.k.parameter) continue;
+            const name_node = param.namedChild(0) orelse continue;
+            if (name_node.kindId() != ctx.k.identifier) continue;
+            const param_name = ts_api.nodeText(ctx.source, name_node);
+            _ = try ctx.g.addNode(allocator, .{
+                .id = .root,
+                .name = param_name,
+                .kind = .parameter,
+                .language = .rust,
+                .parent_id = fn_id,
+                .visibility = .private,
+                .line_start = param.startPoint().row + 1,
+                .line_end = param.endPoint().row + 1,
+            });
+        }
+        break;
+    }
 }
 
 /// Process a struct_item.

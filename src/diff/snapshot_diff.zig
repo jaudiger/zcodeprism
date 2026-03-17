@@ -263,7 +263,7 @@ fn toEntityKind(kind: NodeKind) ?EntityKind {
         .constant => .constant,
         .error_def => .error_def,
         .test_def => .test_def,
-        .module, .field, .import_decl, .directory => null,
+        .module, .field, .import_decl, .directory, .parameter => null,
     };
 }
 

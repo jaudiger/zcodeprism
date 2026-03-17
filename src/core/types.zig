@@ -31,6 +31,8 @@ pub const NodeKind = enum {
     enum_def,
     /// A struct/union/enum field.
     field,
+    /// A function or method parameter.
+    parameter,
     /// A compile-time or runtime constant (`const` declaration).
     constant,
     /// A `test` block declaration.
@@ -141,10 +143,10 @@ test "EdgeId is 8 bytes" {
     }
 }
 
-test "NodeKind has exactly 12 variants" {
+test "NodeKind has exactly 13 variants" {
     comptime {
         const fields = @typeInfo(NodeKind).@"enum".fields;
-        std.debug.assert(fields.len == 12);
+        std.debug.assert(fields.len == 13);
     }
 }
 
@@ -161,6 +163,7 @@ test "isTypeContainer returns true for type_def, enum_def, union_def" {
     try std.testing.expect(!NodeKind.error_def.isTypeContainer());
     try std.testing.expect(!NodeKind.import_decl.isTypeContainer());
     try std.testing.expect(!NodeKind.directory.isTypeContainer());
+    try std.testing.expect(!NodeKind.parameter.isTypeContainer());
 }
 
 test "EdgeType has exactly 8 variants" {

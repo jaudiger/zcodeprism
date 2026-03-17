@@ -581,10 +581,13 @@ fn buildCrossFileEdges(
     wl: *LspWorklist,
     log: Logger,
 ) void {
+    var node_type_map = lang_support.NodeTypeMap{};
+    defer node_type_map.deinit(allocator);
+
     for (infos) |fi| {
         const build_edges = fi.lang_support.buildEdgesFn orelse continue;
         const file_node = graph.nodes.items[fi.node_idx];
-        build_edges(allocator, fi.source, graph, fi.node_idx, fi.scope_end, file_node.file_path, graph_index, phantom, wl, log) catch |err| {
+        build_edges(allocator, fi.source, graph, fi.node_idx, fi.scope_end, file_node.file_path, graph_index, phantom, &node_type_map, wl, log) catch |err| {
             log.warn("edge building failed", &.{
                 Field.string("path", file_node.file_path orelse "?"),
                 Field.string("error", @errorName(err)),

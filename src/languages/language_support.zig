@@ -18,6 +18,12 @@ pub const GraphIndex = graph_index_mod.GraphIndex;
 pub const ScopeIndex = graph_index_mod.ScopeIndex;
 pub const NameIndex = graph_index_mod.NameIndex;
 
+const NodeId = types.NodeId;
+
+/// Shared map from node IDs (fields and parameters) to their resolved
+/// type node IDs. Created by the indexer, populated across all files.
+pub const NodeTypeMap = std.AutoHashMapUnmanaged(NodeId, NodeId);
+
 // Re-export data types from language.zig for convenience.
 
 /// Discriminates between package-level and file-level imports.
@@ -70,7 +76,9 @@ pub const ResolvePhantomsFn = *const fn (
 
 /// Re-parses source with tree-sitter to emit cross-file edges for a single
 /// file's node range. `phantom_mgr` is the shared phantom registry for
-/// external symbol lookups. `wl` collects unresolved references.
+/// external symbol lookups. `node_type_map` is shared across all files and
+/// accumulates field/parameter-to-type mappings. `wl` collects unresolved
+/// references.
 pub const BuildEdgesFn = *const fn (
     allocator: std.mem.Allocator,
     source: []const u8,
@@ -80,6 +88,7 @@ pub const BuildEdgesFn = *const fn (
     file_path: ?[]const u8,
     graph_index: *const GraphIndex,
     phantom_mgr: *const PhantomManager,
+    node_type_map: *NodeTypeMap,
     wl: *LspWorklist,
     logger: Logger,
 ) error{OutOfMemory}!void;

@@ -91,7 +91,7 @@ fn collectDescendants(
     for (children_index.childrenOf(parent_idx)) |ci| {
         const n = g.nodes.items[ci];
         if (!isInternal(n)) continue;
-        if (n.kind == .file or n.kind == .field or n.kind == .import_decl or n.kind == .directory) continue;
+        if (n.kind == .file or n.kind == .field or n.kind == .import_decl or n.kind == .directory or n.kind == .parameter) continue;
         if (ids[ci]) |id_entry| {
             try result.append(allocator, .{ .node_idx = ci, .id = id_entry });
         }
@@ -177,7 +177,7 @@ fn renderNodeShape(
             try appendEscaped(out, allocator, n.name);
             try out.appendSlice(allocator, "\")");
         },
-        .file, .field, .import_decl, .directory => {},
+        .file, .field, .import_decl, .directory, .parameter => {},
     }
 }
 
@@ -258,7 +258,7 @@ pub fn buildGhostNodes(
             const tgt = g_inner.nodes.items[tgt_idx];
             if (!isInternal(tgt)) return;
             if (inScope(tgt.file_path, scope_inner)) return;
-            if (tgt.kind == .field or tgt.kind == .import_decl or tgt.kind == .directory) return;
+            if (tgt.kind == .field or tgt.kind == .import_decl or tgt.kind == .directory or tgt.kind == .parameter) return;
             _ = ids_inner;
             if (!map.contains(tgt_idx)) {
                 counter.* += 1;
@@ -352,6 +352,7 @@ fn nodeKindPrefix(kind: NodeKind) []const u8 {
         .field => "field",
         .import_decl => "import",
         .directory => "dir",
+        .parameter => "param",
     };
 }
 
@@ -585,7 +586,7 @@ fn collectClassEntries(
     // Internal nodes with IDs.
     for (g.nodes.items, 0..) |n, i| {
         const id_entry = ids[i] orelse continue;
-        if (n.kind == .file or n.kind == .field or n.kind == .import_decl) continue;
+        if (n.kind == .file or n.kind == .field or n.kind == .import_decl or n.kind == .parameter) continue;
 
         const style: StyleClass = switch (n.kind) {
             .function => .fn_style,
