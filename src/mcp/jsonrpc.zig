@@ -1,5 +1,8 @@
 const std = @import("std");
 const protocol = @import("protocol.zig");
+const json_writer_mod = @import("json_writer.zig");
+
+const JsonWriter = json_writer_mod.JsonWriter;
 
 /// JSON-RPC 2.0 standard error codes.
 pub const parse_error: i32 = -32700;
@@ -111,36 +114,32 @@ pub fn parseRequest(allocator: std.mem.Allocator, input: []const u8) ParseError!
 pub fn serializeResponse(allocator: std.mem.Allocator, response: Response) error{OutOfMemory}![]const u8 {
     var aw: std.io.Writer.Allocating = .init(allocator);
     errdefer aw.deinit();
-
     var stream: std.json.Stringify = .{ .writer = &aw.writer };
+    const w: JsonWriter = .{ .s = &stream };
 
-    stream.beginObject() catch return error.OutOfMemory;
-    stream.objectField("jsonrpc") catch return error.OutOfMemory;
-    stream.write(protocol.jsonrpc_version) catch return error.OutOfMemory;
+    try w.beginObject();
+    try w.fieldValue("jsonrpc", protocol.jsonrpc_version);
 
-    stream.objectField("id") catch return error.OutOfMemory;
+    try w.field("id");
     switch (response.id) {
-        .integer => |n| stream.write(n) catch return error.OutOfMemory,
-        .string => |s| stream.write(s) catch return error.OutOfMemory,
-        .none => stream.write(null) catch return error.OutOfMemory,
+        .integer => |n| try w.write(n),
+        .string => |s| try w.write(s),
+        .none => try w.write(null),
     }
 
     if (response.result) |result| {
-        stream.objectField("result") catch return error.OutOfMemory;
-        stream.write(result) catch return error.OutOfMemory;
+        try w.fieldValue("result", result);
     }
 
     if (response.@"error") |err| {
-        stream.objectField("error") catch return error.OutOfMemory;
-        stream.beginObject() catch return error.OutOfMemory;
-        stream.objectField("code") catch return error.OutOfMemory;
-        stream.write(err.code) catch return error.OutOfMemory;
-        stream.objectField("message") catch return error.OutOfMemory;
-        stream.write(err.message) catch return error.OutOfMemory;
-        stream.endObject() catch return error.OutOfMemory;
+        try w.field("error");
+        try w.beginObject();
+        try w.fieldValue("code", err.code);
+        try w.fieldValue("message", err.message);
+        try w.endObject();
     }
 
-    stream.endObject() catch return error.OutOfMemory;
+    try w.endObject();
 
     return aw.toOwnedSlice() catch return error.OutOfMemory;
 }

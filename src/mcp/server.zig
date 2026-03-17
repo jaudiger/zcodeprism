@@ -5,10 +5,12 @@ const dispatcher_mod = @import("dispatcher.zig");
 const handlers = @import("handlers.zig");
 const jsonrpc = @import("jsonrpc.zig");
 const protocol = @import("protocol.zig");
+const json_writer_mod = @import("json_writer.zig");
 
 const GraphGeneration = generation_mod.GraphGeneration;
 const CursorManager = cursor_manager_mod.CursorManager;
 const Dispatcher = dispatcher_mod.Dispatcher;
+const JsonWriter = json_writer_mod.JsonWriter;
 
 /// Errors that the MCP server can surface to callers.
 pub const ServerError = error{
@@ -88,50 +90,47 @@ pub const Server = struct {
         var aw: std.io.Writer.Allocating = .init(allocator);
         errdefer aw.deinit();
         var s: std.json.Stringify = .{ .writer = &aw.writer };
+        const w: JsonWriter = .{ .s = &s };
 
-        s.beginObject() catch return error.OutOfMemory;
-        s.objectField("jsonrpc") catch return error.OutOfMemory;
-        s.write(protocol.jsonrpc_version) catch return error.OutOfMemory;
-        s.objectField("id") catch return error.OutOfMemory;
-        writeId(&s, id) catch return error.OutOfMemory;
-        s.objectField("result") catch return error.OutOfMemory;
-        s.beginObject() catch return error.OutOfMemory;
-        s.objectField("content") catch return error.OutOfMemory;
-        s.beginArray() catch return error.OutOfMemory;
-        s.beginObject() catch return error.OutOfMemory;
-        s.objectField("type") catch return error.OutOfMemory;
-        s.write("text") catch return error.OutOfMemory;
-        s.objectField("text") catch return error.OutOfMemory;
-        s.write(raw_content_json) catch return error.OutOfMemory;
-        s.endObject() catch return error.OutOfMemory;
-        s.endArray() catch return error.OutOfMemory;
-        s.endObject() catch return error.OutOfMemory;
-        s.endObject() catch return error.OutOfMemory;
+        try w.beginObject();
+        try w.fieldValue("jsonrpc", protocol.jsonrpc_version);
+        try w.field("id");
+        try writeId(w, id);
+        try w.field("result");
+        try w.beginObject();
+        try w.field("content");
+        try w.beginArray();
+        try w.beginObject();
+        try w.fieldValue("type", "text");
+        try w.fieldValue("text", raw_content_json);
+        try w.endObject();
+        try w.endArray();
+        try w.endObject();
+        try w.endObject();
 
         return aw.toOwnedSlice() catch return error.OutOfMemory;
     }
 
-    fn writeId(s: *std.json.Stringify, id: jsonrpc.RequestId) !void {
+    fn writeId(w: JsonWriter, id: jsonrpc.RequestId) error{OutOfMemory}!void {
         switch (id) {
-            .integer => |n| try s.write(n),
-            .string => |str| try s.write(str),
-            .none => try s.write(null),
+            .integer => |n| try w.write(n),
+            .string => |str| try w.write(str),
+            .none => try w.write(null),
         }
     }
 
     fn buildSuccessResponse(allocator: std.mem.Allocator, id: jsonrpc.RequestId, result: anytype) ServerError![]const u8 {
         var aw: std.io.Writer.Allocating = .init(allocator);
         errdefer aw.deinit();
-
         var s: std.json.Stringify = .{ .writer = &aw.writer };
-        s.beginObject() catch return error.OutOfMemory;
-        s.objectField("jsonrpc") catch return error.OutOfMemory;
-        s.write(protocol.jsonrpc_version) catch return error.OutOfMemory;
-        s.objectField("id") catch return error.OutOfMemory;
-        writeId(&s, id) catch return error.OutOfMemory;
-        s.objectField("result") catch return error.OutOfMemory;
-        s.write(result) catch return error.OutOfMemory;
-        s.endObject() catch return error.OutOfMemory;
+        const w: JsonWriter = .{ .s = &s };
+
+        try w.beginObject();
+        try w.fieldValue("jsonrpc", protocol.jsonrpc_version);
+        try w.field("id");
+        try writeId(w, id);
+        try w.fieldValue("result", result);
+        try w.endObject();
 
         return aw.toOwnedSlice() catch return error.OutOfMemory;
     }
@@ -139,21 +138,19 @@ pub const Server = struct {
     fn buildErrorResponse(allocator: std.mem.Allocator, id: jsonrpc.RequestId, code: i32, message: []const u8) ServerError![]const u8 {
         var aw: std.io.Writer.Allocating = .init(allocator);
         errdefer aw.deinit();
-
         var s: std.json.Stringify = .{ .writer = &aw.writer };
-        s.beginObject() catch return error.OutOfMemory;
-        s.objectField("jsonrpc") catch return error.OutOfMemory;
-        s.write(protocol.jsonrpc_version) catch return error.OutOfMemory;
-        s.objectField("id") catch return error.OutOfMemory;
-        writeId(&s, id) catch return error.OutOfMemory;
-        s.objectField("error") catch return error.OutOfMemory;
-        s.beginObject() catch return error.OutOfMemory;
-        s.objectField("code") catch return error.OutOfMemory;
-        s.write(code) catch return error.OutOfMemory;
-        s.objectField("message") catch return error.OutOfMemory;
-        s.write(message) catch return error.OutOfMemory;
-        s.endObject() catch return error.OutOfMemory;
-        s.endObject() catch return error.OutOfMemory;
+        const w: JsonWriter = .{ .s = &s };
+
+        try w.beginObject();
+        try w.fieldValue("jsonrpc", protocol.jsonrpc_version);
+        try w.field("id");
+        try writeId(w, id);
+        try w.field("error");
+        try w.beginObject();
+        try w.fieldValue("code", code);
+        try w.fieldValue("message", message);
+        try w.endObject();
+        try w.endObject();
 
         return aw.toOwnedSlice() catch return error.OutOfMemory;
     }
@@ -162,46 +159,40 @@ pub const Server = struct {
     fn buildToolsListResponse(allocator: std.mem.Allocator, id: jsonrpc.RequestId, tools: []const protocol.Tool) ServerError![]const u8 {
         var aw: std.io.Writer.Allocating = .init(allocator);
         errdefer aw.deinit();
-
         var s: std.json.Stringify = .{ .writer = &aw.writer };
-        s.beginObject() catch return error.OutOfMemory;
-        s.objectField("jsonrpc") catch return error.OutOfMemory;
-        s.write(protocol.jsonrpc_version) catch return error.OutOfMemory;
-        s.objectField("id") catch return error.OutOfMemory;
-        writeId(&s, id) catch return error.OutOfMemory;
-        s.objectField("result") catch return error.OutOfMemory;
-        s.beginObject() catch return error.OutOfMemory;
-        s.objectField("tools") catch return error.OutOfMemory;
-        s.beginArray() catch return error.OutOfMemory;
+        const w: JsonWriter = .{ .s = &s };
+
+        try w.beginObject();
+        try w.fieldValue("jsonrpc", protocol.jsonrpc_version);
+        try w.field("id");
+        try writeId(w, id);
+        try w.field("result");
+        try w.beginObject();
+        try w.field("tools");
+        try w.beginArray();
 
         for (tools) |tool| {
-            s.beginObject() catch return error.OutOfMemory;
-
-            s.objectField("name") catch return error.OutOfMemory;
-            s.write(tool.name) catch return error.OutOfMemory;
-
-            s.objectField("title") catch return error.OutOfMemory;
-            s.write(tool.title) catch return error.OutOfMemory;
-
-            s.objectField("description") catch return error.OutOfMemory;
-            s.write(tool.description) catch return error.OutOfMemory;
+            try w.beginObject();
+            try w.fieldValue("name", tool.name);
+            try w.fieldValue("title", tool.title);
+            try w.fieldValue("description", tool.description);
 
             // inputSchema
-            s.objectField("inputSchema") catch return error.OutOfMemory;
-            writeSchemaObject(&s, tool.properties, tool.required) catch return error.OutOfMemory;
+            try w.field("inputSchema");
+            writeSchemaObject(w.s, tool.properties, tool.required) catch return error.OutOfMemory;
 
             // outputSchema (only if output_properties is non-empty)
             if (tool.output_properties.len > 0) {
-                s.objectField("outputSchema") catch return error.OutOfMemory;
-                writeSchemaObject(&s, tool.output_properties, tool.output_required) catch return error.OutOfMemory;
+                try w.field("outputSchema");
+                writeSchemaObject(w.s, tool.output_properties, tool.output_required) catch return error.OutOfMemory;
             }
 
-            s.endObject() catch return error.OutOfMemory;
+            try w.endObject();
         }
 
-        s.endArray() catch return error.OutOfMemory;
-        s.endObject() catch return error.OutOfMemory;
-        s.endObject() catch return error.OutOfMemory;
+        try w.endArray();
+        try w.endObject();
+        try w.endObject();
 
         return aw.toOwnedSlice() catch return error.OutOfMemory;
     }

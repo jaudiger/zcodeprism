@@ -17,6 +17,7 @@ const duplicates_mod = @import("../analyzer/duplicates.zig");
 const impact_mod = @import("../analyzer/impact.zig");
 const coupling_mod = @import("../analyzer/coupling.zig");
 const cycles_mod = @import("../analyzer/cycles.zig");
+const json_writer_mod = @import("json_writer.zig");
 
 const Graph = graph_mod.Graph;
 const Direction = types.Direction;
@@ -34,6 +35,7 @@ const CursorManager = cursor_manager_mod.CursorManager;
 const CursorOptions = cursor_manager_mod.CursorOptions;
 const ExternalInfo = lang_mod.ExternalInfo;
 const LangMeta = lang_mod.LangMeta;
+const JsonWriter = json_writer_mod.JsonWriter;
 
 /// Errors returned by MCP tool handlers.
 pub const HandlerError = error{OutOfMemory};
@@ -215,12 +217,6 @@ fn collectReachable(
 
 // -- JSON writing helpers --
 
-fn writeNodeIdHex(stream: *std.json.Stringify, id: NodeId) HandlerError!void {
-    var buf: [20]u8 = undefined;
-    const s = std.fmt.bufPrint(&buf, "{x}", .{@intFromEnum(id)}) catch return error.OutOfMemory;
-    stream.write(s) catch return error.OutOfMemory;
-}
-
 /// Format a nanoTimestamp as ISO 8601 UTC into the provided buffer.
 fn formatIso8601(nanos: i128, buf: *[30]u8) usize {
     const epoch = std.time.epoch.EpochSeconds{
@@ -249,191 +245,71 @@ fn relativePath(file_path: ?[]const u8, project_root: []const u8) ?[]const u8 {
     return fp;
 }
 
-fn writeNodeSummary(stream: *std.json.Stringify, n: *const Node, id: NodeId, project_root: []const u8) HandlerError!void {
-    stream.beginObject() catch return error.OutOfMemory;
-
-    stream.objectField("id") catch return error.OutOfMemory;
-    try writeNodeIdHex(stream, id);
-
-    stream.objectField("name") catch return error.OutOfMemory;
-    stream.write(n.name) catch return error.OutOfMemory;
-
-    stream.objectField("kind") catch return error.OutOfMemory;
-    stream.write(@tagName(n.kind)) catch return error.OutOfMemory;
-
-    stream.objectField("language") catch return error.OutOfMemory;
-    if (n.language) |l| {
-        stream.write(@tagName(l)) catch return error.OutOfMemory;
-    } else {
-        stream.write(null) catch return error.OutOfMemory;
-    }
-
-    stream.objectField("file") catch return error.OutOfMemory;
-    stream.write(relativePath(n.file_path, project_root)) catch return error.OutOfMemory;
-
-    stream.objectField("line_start") catch return error.OutOfMemory;
-    if (n.line_start) |ls| {
-        stream.write(ls) catch return error.OutOfMemory;
-    } else {
-        stream.write(null) catch return error.OutOfMemory;
-    }
-
-    stream.objectField("line_end") catch return error.OutOfMemory;
-    if (n.line_end) |le| {
-        stream.write(le) catch return error.OutOfMemory;
-    } else {
-        stream.write(null) catch return error.OutOfMemory;
-    }
-
-    stream.objectField("col_start") catch return error.OutOfMemory;
-    if (n.col_start) |cs| {
-        stream.write(cs) catch return error.OutOfMemory;
-    } else {
-        stream.write(null) catch return error.OutOfMemory;
-    }
-
-    stream.objectField("col_end") catch return error.OutOfMemory;
-    if (n.col_end) |ce| {
-        stream.write(ce) catch return error.OutOfMemory;
-    } else {
-        stream.write(null) catch return error.OutOfMemory;
-    }
-
-    stream.objectField("visibility") catch return error.OutOfMemory;
-    stream.write(@tagName(n.visibility)) catch return error.OutOfMemory;
-
-    stream.objectField("external") catch return error.OutOfMemory;
-    switch (n.external) {
-        .none => stream.write(null) catch return error.OutOfMemory,
-        .stdlib => stream.write("stdlib") catch return error.OutOfMemory,
+/// Write the external field value (none -> null, stdlib -> "stdlib",
+/// dependency -> version string or "dependency").
+fn writeExternalValue(w: JsonWriter, external: ExternalInfo) HandlerError!void {
+    try w.field("external");
+    switch (external) {
+        .none => try w.write(null),
+        .stdlib => try w.write("stdlib"),
         .dependency => |d| {
             if (d.version) |v| {
-                stream.write(v) catch return error.OutOfMemory;
+                try w.write(v);
             } else {
-                stream.write("dependency") catch return error.OutOfMemory;
+                try w.write("dependency");
             }
         },
     }
-
-    stream.objectField("signature") catch return error.OutOfMemory;
-    stream.write(n.signature) catch return error.OutOfMemory;
-
-    stream.objectField("metrics") catch return error.OutOfMemory;
-    if (n.metrics) |m| {
-        m.writeJson(stream) catch return error.OutOfMemory;
-    } else {
-        stream.write(null) catch return error.OutOfMemory;
-    }
-
-    stream.endObject() catch return error.OutOfMemory;
 }
 
-fn writeFullNode(stream: *std.json.Stringify, n: *const Node, id: NodeId, project_root: []const u8, source_text: ?[]const u8) HandlerError!void {
-    stream.beginObject() catch return error.OutOfMemory;
+/// Fields shared by both summary and full node representations:
+/// id, name, kind, language, file, line_start, line_end, col_start, col_end, visibility.
+fn writeNodeCoreFields(w: JsonWriter, n: *const Node, id: NodeId, project_root: []const u8) HandlerError!void {
+    try w.fieldNodeIdHex("id", id);
+    try w.fieldValue("name", n.name);
+    try w.tagFieldValue("kind", n.kind);
+    try w.optionalTagFieldValue("language", n.language);
+    try w.fieldValue("file", relativePath(n.file_path, project_root));
+    try w.optionalFieldValue("line_start", n.line_start);
+    try w.optionalFieldValue("line_end", n.line_end);
+    try w.optionalFieldValue("col_start", n.col_start);
+    try w.optionalFieldValue("col_end", n.col_end);
+    try w.tagFieldValue("visibility", n.visibility);
+}
 
-    stream.objectField("id") catch return error.OutOfMemory;
-    try writeNodeIdHex(stream, id);
-
-    stream.objectField("name") catch return error.OutOfMemory;
-    stream.write(n.name) catch return error.OutOfMemory;
-
-    stream.objectField("kind") catch return error.OutOfMemory;
-    stream.write(@tagName(n.kind)) catch return error.OutOfMemory;
-
-    stream.objectField("language") catch return error.OutOfMemory;
-    if (n.language) |l| {
-        stream.write(@tagName(l)) catch return error.OutOfMemory;
+fn writeOptionalMetrics(w: JsonWriter, metrics: ?metrics_mod.Metrics) HandlerError!void {
+    try w.field("metrics");
+    if (metrics) |m| {
+        m.writeJson(w.s) catch return error.OutOfMemory;
     } else {
-        stream.write(null) catch return error.OutOfMemory;
+        try w.write(null);
     }
+}
 
-    stream.objectField("file") catch return error.OutOfMemory;
-    stream.write(relativePath(n.file_path, project_root)) catch return error.OutOfMemory;
+fn writeNodeSummary(w: JsonWriter, n: *const Node, id: NodeId, project_root: []const u8) HandlerError!void {
+    try w.beginObject();
+    try writeNodeCoreFields(w, n, id, project_root);
+    try writeExternalValue(w, n.external);
+    try w.optionalFieldValue("signature", n.signature);
+    try writeOptionalMetrics(w, n.metrics);
+    try w.endObject();
+}
 
-    stream.objectField("line_start") catch return error.OutOfMemory;
-    if (n.line_start) |ls| {
-        stream.write(ls) catch return error.OutOfMemory;
-    } else {
-        stream.write(null) catch return error.OutOfMemory;
-    }
-
-    stream.objectField("line_end") catch return error.OutOfMemory;
-    if (n.line_end) |le| {
-        stream.write(le) catch return error.OutOfMemory;
-    } else {
-        stream.write(null) catch return error.OutOfMemory;
-    }
-
-    stream.objectField("col_start") catch return error.OutOfMemory;
-    if (n.col_start) |cs| {
-        stream.write(cs) catch return error.OutOfMemory;
-    } else {
-        stream.write(null) catch return error.OutOfMemory;
-    }
-
-    stream.objectField("col_end") catch return error.OutOfMemory;
-    if (n.col_end) |ce| {
-        stream.write(ce) catch return error.OutOfMemory;
-    } else {
-        stream.write(null) catch return error.OutOfMemory;
-    }
-
-    stream.objectField("visibility") catch return error.OutOfMemory;
-    stream.write(@tagName(n.visibility)) catch return error.OutOfMemory;
-
-    stream.objectField("parent_id") catch return error.OutOfMemory;
-    if (n.parent_id) |pid| {
-        try writeNodeIdHex(stream, pid);
-    } else {
-        stream.write(null) catch return error.OutOfMemory;
-    }
-
-    stream.objectField("doc") catch return error.OutOfMemory;
-    stream.write(n.doc) catch return error.OutOfMemory;
-
-    stream.objectField("signature") catch return error.OutOfMemory;
-    stream.write(n.signature) catch return error.OutOfMemory;
-
-    stream.objectField("external") catch return error.OutOfMemory;
-    switch (n.external) {
-        .none => stream.write(null) catch return error.OutOfMemory,
-        .stdlib => stream.write("stdlib") catch return error.OutOfMemory,
-        .dependency => |d| {
-            if (d.version) |v| {
-                stream.write(v) catch return error.OutOfMemory;
-            } else {
-                stream.write("dependency") catch return error.OutOfMemory;
-            }
-        },
-    }
-
-    stream.objectField("content_hash") catch return error.OutOfMemory;
-    if (n.content_hash) |ch| {
-        var hex_buf: [24]u8 = undefined;
-        for (ch, 0..) |byte, bi| {
-            _ = std.fmt.bufPrint(hex_buf[bi * 2 ..][0..2], "{x:0>2}", .{byte}) catch unreachable;
-        }
-        stream.write(@as([]const u8, &hex_buf)) catch return error.OutOfMemory;
-    } else {
-        stream.write(null) catch return error.OutOfMemory;
-    }
-
-    stream.objectField("metrics") catch return error.OutOfMemory;
-    if (n.metrics) |m| {
-        m.writeJson(stream) catch return error.OutOfMemory;
-    } else {
-        stream.write(null) catch return error.OutOfMemory;
-    }
-
-    stream.objectField("lang_meta") catch return error.OutOfMemory;
-    n.lang_meta.writeJson(stream) catch return error.OutOfMemory;
-
+fn writeFullNode(w: JsonWriter, n: *const Node, id: NodeId, project_root: []const u8, source_text: ?[]const u8) HandlerError!void {
+    try w.beginObject();
+    try writeNodeCoreFields(w, n, id, project_root);
+    try w.optionalFieldNodeIdHex("parent_id", n.parent_id);
+    try w.optionalFieldValue("doc", n.doc);
+    try w.optionalFieldValue("signature", n.signature);
+    try writeExternalValue(w, n.external);
+    try w.optionalFieldHashHex("content_hash", n.content_hash);
+    try writeOptionalMetrics(w, n.metrics);
+    try w.field("lang_meta");
+    n.lang_meta.writeJson(w.s) catch return error.OutOfMemory;
     if (source_text) |src| {
-        stream.objectField("source") catch return error.OutOfMemory;
-        stream.write(src) catch return error.OutOfMemory;
+        try w.fieldValue("source", src);
     }
-
-    stream.endObject() catch return error.OutOfMemory;
+    try w.endObject();
 }
 
 // -- Source extraction --
@@ -500,7 +376,6 @@ fn extractSource(allocator: std.mem.Allocator, project_root: []const u8, file_pa
 
 /// Dispatch a named MCP tool call to the appropriate handler.
 /// Returns JSON response bytes, or null if the tool is unknown.
-/// Caller owns the returned slice.
 pub fn handleToolCall(
     allocator: std.mem.Allocator,
     gen: *GraphGeneration,
@@ -573,69 +448,58 @@ fn handleStats(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?std
     var aw: std.io.Writer.Allocating = .init(allocator);
     errdefer aw.deinit();
     var stream: std.json.Stringify = .{ .writer = &aw.writer };
+    const w: JsonWriter = .{ .s = &stream };
 
-    stream.beginObject() catch return error.OutOfMemory;
+    try w.beginObject();
 
-    stream.objectField("project_root") catch return error.OutOfMemory;
-    stream.write(g.project_root) catch return error.OutOfMemory;
+    try w.fieldValue("project_root", g.project_root);
 
-    stream.objectField("languages") catch return error.OutOfMemory;
-    stream.beginArray() catch return error.OutOfMemory;
-    if (stats.has_zig) stream.write("zig") catch return error.OutOfMemory;
-    if (stats.has_rust) stream.write("rust") catch return error.OutOfMemory;
-    stream.endArray() catch return error.OutOfMemory;
+    try w.field("languages");
+    try w.beginArray();
+    if (stats.has_zig) try w.write("zig");
+    if (stats.has_rust) try w.write("rust");
+    try w.endArray();
 
-    stream.objectField("total_files") catch return error.OutOfMemory;
-    stream.write(stats.node_counts[@intFromEnum(NodeKind.file)]) catch return error.OutOfMemory;
+    try w.fieldValue("total_files", stats.node_counts[@intFromEnum(NodeKind.file)]);
+    try w.fieldValue("total_lines", stats.total_lines);
 
-    stream.objectField("total_lines") catch return error.OutOfMemory;
-    stream.write(stats.total_lines) catch return error.OutOfMemory;
+    try w.field("source_hash");
+    try w.hashHex(gen.source_hash);
 
-    stream.objectField("source_hash") catch return error.OutOfMemory;
-    var hash_hex: [24]u8 = undefined;
-    for (gen.source_hash, 0..) |byte, bi| {
-        _ = std.fmt.bufPrint(hash_hex[bi * 2 ..][0..2], "{x:0>2}", .{byte}) catch unreachable;
-    }
-    stream.write(@as([]const u8, &hash_hex)) catch return error.OutOfMemory;
-
-    stream.objectField("last_indexed") catch return error.OutOfMemory;
+    try w.field("last_indexed");
     var ts_buf: [30]u8 = undefined;
     const ts_len = formatIso8601(gen.indexed_at, &ts_buf);
-    stream.write(@as([]const u8, ts_buf[0..ts_len])) catch return error.OutOfMemory;
+    try w.write(@as([]const u8, ts_buf[0..ts_len]));
 
     // Node counts by kind
-    stream.objectField("nodes") catch return error.OutOfMemory;
-    stream.beginObject() catch return error.OutOfMemory;
+    try w.field("nodes");
+    try w.beginObject();
     inline for (@typeInfo(NodeKind).@"enum".fields) |f| {
         const count = stats.node_counts[f.value];
         if (count > 0) {
-            stream.objectField(f.name) catch return error.OutOfMemory;
-            stream.write(count) catch return error.OutOfMemory;
+            try w.fieldValue(f.name, count);
         }
     }
-    stream.endObject() catch return error.OutOfMemory;
+    try w.endObject();
 
     // Edge counts by type
-    stream.objectField("edges") catch return error.OutOfMemory;
-    stream.beginObject() catch return error.OutOfMemory;
+    try w.field("edges");
+    try w.beginObject();
     inline for (@typeInfo(EdgeType).@"enum".fields) |f| {
         const count = stats.edge_counts[f.value];
         if (count > 0) {
-            stream.objectField(f.name) catch return error.OutOfMemory;
-            stream.write(count) catch return error.OutOfMemory;
+            try w.fieldValue(f.name, count);
         }
     }
-    stream.endObject() catch return error.OutOfMemory;
+    try w.endObject();
 
-    stream.objectField("externals") catch return error.OutOfMemory;
-    stream.beginObject() catch return error.OutOfMemory;
-    stream.objectField("stdlib_symbols") catch return error.OutOfMemory;
-    stream.write(stats.stdlib_count) catch return error.OutOfMemory;
-    stream.objectField("dependency_symbols") catch return error.OutOfMemory;
-    stream.write(stats.dep_count) catch return error.OutOfMemory;
-    stream.endObject() catch return error.OutOfMemory;
+    try w.field("externals");
+    try w.beginObject();
+    try w.fieldValue("stdlib_symbols", stats.stdlib_count);
+    try w.fieldValue("dependency_symbols", stats.dep_count);
+    try w.endObject();
 
-    stream.endObject() catch return error.OutOfMemory;
+    try w.endObject();
 
     return aw.toOwnedSlice() catch return error.OutOfMemory;
 }
@@ -678,21 +542,20 @@ fn handleSearch(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?st
     var aw: std.io.Writer.Allocating = .init(allocator);
     errdefer aw.deinit();
     var stream: std.json.Stringify = .{ .writer = &aw.writer };
+    const w: JsonWriter = .{ .s = &stream };
 
-    stream.beginObject() catch return error.OutOfMemory;
+    try w.beginObject();
+    try w.fieldValue("total_matches", result.total_matches);
 
-    stream.objectField("total_matches") catch return error.OutOfMemory;
-    stream.write(result.total_matches) catch return error.OutOfMemory;
-
-    stream.objectField("nodes") catch return error.OutOfMemory;
-    stream.beginArray() catch return error.OutOfMemory;
+    try w.field("nodes");
+    try w.beginArray();
     for (result.nodes) |nid| {
         const n = g.getNode(nid) orelse continue;
-        try writeNodeSummary(&stream, n, nid, g.project_root);
+        try writeNodeSummary(w, n, nid, g.project_root);
     }
-    stream.endArray() catch return error.OutOfMemory;
+    try w.endArray();
 
-    stream.endObject() catch return error.OutOfMemory;
+    try w.endObject();
 
     return aw.toOwnedSlice() catch return error.OutOfMemory;
 }
@@ -714,10 +577,11 @@ fn handleGetNodes(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?
     var aw: std.io.Writer.Allocating = .init(allocator);
     errdefer aw.deinit();
     var stream: std.json.Stringify = .{ .writer = &aw.writer };
+    const w: JsonWriter = .{ .s = &stream };
 
-    stream.beginObject() catch return error.OutOfMemory;
-    stream.objectField("nodes") catch return error.OutOfMemory;
-    stream.beginArray() catch return error.OutOfMemory;
+    try w.beginObject();
+    try w.field("nodes");
+    try w.beginArray();
 
     for (result.nodes) |detail| {
         const n = detail.node;
@@ -734,11 +598,11 @@ fn handleGetNodes(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?
             }
         }
 
-        try writeFullNode(&stream, n, detail.id, g.project_root, if (include_source) source_text orelse @as(?[]const u8, null) else null);
+        try writeFullNode(w, n, detail.id, g.project_root, if (include_source) source_text orelse @as(?[]const u8, null) else null);
     }
 
-    stream.endArray() catch return error.OutOfMemory;
-    stream.endObject() catch return error.OutOfMemory;
+    try w.endArray();
+    try w.endObject();
 
     return aw.toOwnedSlice() catch return error.OutOfMemory;
 }
@@ -758,39 +622,39 @@ fn handleGetSource(allocator: std.mem.Allocator, gen: *GraphGeneration, params: 
     var aw: std.io.Writer.Allocating = .init(allocator);
     errdefer aw.deinit();
     var stream: std.json.Stringify = .{ .writer = &aw.writer };
+    const w: JsonWriter = .{ .s = &stream };
 
-    stream.beginObject() catch return error.OutOfMemory;
-    stream.objectField("sources") catch return error.OutOfMemory;
-    stream.beginArray() catch return error.OutOfMemory;
+    try w.beginObject();
+    try w.field("sources");
+    try w.beginArray();
 
     for (node_ids) |nid| {
         const n = g.getNode(nid) orelse continue;
 
-        stream.beginObject() catch return error.OutOfMemory;
-        stream.objectField("id") catch return error.OutOfMemory;
-        try writeNodeIdHex(&stream, nid);
+        try w.beginObject();
+        try w.fieldNodeIdHex("id", nid);
 
-        stream.objectField("source") catch return error.OutOfMemory;
+        try w.field("source");
         if (n.external != .none) {
-            stream.write(null) catch return error.OutOfMemory;
+            try w.write(null);
         } else if (n.file_path) |fp| {
             const ls = n.line_start orelse 1;
             const le = n.line_end orelse ls;
             const src = extractSource(allocator, g.project_root, fp, ls, le, context_lines, part);
             defer if (src) |s| allocator.free(s);
             if (src) |s| {
-                stream.write(s) catch return error.OutOfMemory;
+                try w.write(s);
             } else {
-                stream.write(null) catch return error.OutOfMemory;
+                try w.write(null);
             }
         } else {
-            stream.write(null) catch return error.OutOfMemory;
+            try w.write(null);
         }
-        stream.endObject() catch return error.OutOfMemory;
+        try w.endObject();
     }
 
-    stream.endArray() catch return error.OutOfMemory;
-    stream.endObject() catch return error.OutOfMemory;
+    try w.endArray();
+    try w.endObject();
 
     return aw.toOwnedSlice() catch return error.OutOfMemory;
 }
@@ -822,60 +686,47 @@ fn handleGetEdges(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?
     var aw: std.io.Writer.Allocating = .init(allocator);
     errdefer aw.deinit();
     var stream: std.json.Stringify = .{ .writer = &aw.writer };
+    const w: JsonWriter = .{ .s = &stream };
 
-    stream.beginObject() catch return error.OutOfMemory;
-    stream.objectField("total_count") catch return error.OutOfMemory;
-    stream.write(result.total_count) catch return error.OutOfMemory;
+    try w.beginObject();
+    try w.fieldValue("total_count", result.total_count);
 
-    stream.objectField("edges") catch return error.OutOfMemory;
-    stream.beginArray() catch return error.OutOfMemory;
+    try w.field("edges");
+    try w.beginArray();
 
     for (result.edges) |e| {
-        stream.beginObject() catch return error.OutOfMemory;
-
-        stream.objectField("from") catch return error.OutOfMemory;
-        try writeNodeIdHex(&stream, e.source_id);
-
-        stream.objectField("to") catch return error.OutOfMemory;
-        try writeNodeIdHex(&stream, e.target_id);
-
-        stream.objectField("type") catch return error.OutOfMemory;
-        stream.write(@tagName(e.edge_type)) catch return error.OutOfMemory;
-
-        stream.objectField("source") catch return error.OutOfMemory;
-        stream.write(@tagName(e.source)) catch return error.OutOfMemory;
+        try w.beginObject();
+        try w.fieldNodeIdHex("from", e.source_id);
+        try w.fieldNodeIdHex("to", e.target_id);
+        try w.tagFieldValue("type", e.edge_type);
+        try w.tagFieldValue("source", e.source);
 
         // Connected node info
         if (g.getNode(e.target_id)) |tn| {
-            stream.objectField("to_node") catch return error.OutOfMemory;
-            stream.beginObject() catch return error.OutOfMemory;
-            stream.objectField("id") catch return error.OutOfMemory;
-            try writeNodeIdHex(&stream, e.target_id);
-            stream.objectField("name") catch return error.OutOfMemory;
-            stream.write(tn.name) catch return error.OutOfMemory;
-            stream.objectField("kind") catch return error.OutOfMemory;
-            stream.write(@tagName(tn.kind)) catch return error.OutOfMemory;
-            stream.endObject() catch return error.OutOfMemory;
+            try w.field("to_node");
+            try writeNodeRef(w, e.target_id, tn);
         }
         if (g.getNode(e.source_id)) |sn| {
-            stream.objectField("from_node") catch return error.OutOfMemory;
-            stream.beginObject() catch return error.OutOfMemory;
-            stream.objectField("id") catch return error.OutOfMemory;
-            try writeNodeIdHex(&stream, e.source_id);
-            stream.objectField("name") catch return error.OutOfMemory;
-            stream.write(sn.name) catch return error.OutOfMemory;
-            stream.objectField("kind") catch return error.OutOfMemory;
-            stream.write(@tagName(sn.kind)) catch return error.OutOfMemory;
-            stream.endObject() catch return error.OutOfMemory;
+            try w.field("from_node");
+            try writeNodeRef(w, e.source_id, sn);
         }
 
-        stream.endObject() catch return error.OutOfMemory;
+        try w.endObject();
     }
 
-    stream.endArray() catch return error.OutOfMemory;
-    stream.endObject() catch return error.OutOfMemory;
+    try w.endArray();
+    try w.endObject();
 
     return aw.toOwnedSlice() catch return error.OutOfMemory;
+}
+
+/// Minimal node reference: id, name, kind.
+fn writeNodeRef(w: JsonWriter, id: NodeId, n: *const Node) HandlerError!void {
+    try w.beginObject();
+    try w.fieldNodeIdHex("id", id);
+    try w.fieldValue("name", n.name);
+    try w.tagFieldValue("kind", n.kind);
+    try w.endObject();
 }
 
 // -- graph.path --
@@ -923,42 +774,39 @@ fn handlePath(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?std.
     var aw: std.io.Writer.Allocating = .init(allocator);
     errdefer aw.deinit();
     var stream: std.json.Stringify = .{ .writer = &aw.writer };
+    const w: JsonWriter = .{ .s = &stream };
 
-    stream.beginObject() catch return error.OutOfMemory;
-    stream.objectField("paths") catch return error.OutOfMemory;
-    stream.beginArray() catch return error.OutOfMemory;
+    try w.beginObject();
+    try w.field("paths");
+    try w.beginArray();
 
     for (result.paths) |path| {
-        stream.beginObject() catch return error.OutOfMemory;
-        stream.objectField("length") catch return error.OutOfMemory;
-        stream.write(path.edge_types.len) catch return error.OutOfMemory;
+        try w.beginObject();
+        try w.fieldValue("length", path.edge_types.len);
 
-        stream.objectField("nodes") catch return error.OutOfMemory;
-        stream.beginArray() catch return error.OutOfMemory;
+        try w.field("nodes");
+        try w.beginArray();
         for (path.node_ids) |nid| {
-            try writeNodeIdHex(&stream, nid);
+            try w.nodeIdHex(nid);
         }
-        stream.endArray() catch return error.OutOfMemory;
+        try w.endArray();
 
-        stream.objectField("edges") catch return error.OutOfMemory;
-        stream.beginArray() catch return error.OutOfMemory;
+        try w.field("edges");
+        try w.beginArray();
         for (path.edge_types, 0..) |et, idx| {
-            stream.beginObject() catch return error.OutOfMemory;
-            stream.objectField("from") catch return error.OutOfMemory;
-            try writeNodeIdHex(&stream, path.node_ids[idx]);
-            stream.objectField("to") catch return error.OutOfMemory;
-            try writeNodeIdHex(&stream, path.node_ids[idx + 1]);
-            stream.objectField("type") catch return error.OutOfMemory;
-            stream.write(@tagName(et)) catch return error.OutOfMemory;
-            stream.endObject() catch return error.OutOfMemory;
+            try w.beginObject();
+            try w.fieldNodeIdHex("from", path.node_ids[idx]);
+            try w.fieldNodeIdHex("to", path.node_ids[idx + 1]);
+            try w.tagFieldValue("type", et);
+            try w.endObject();
         }
-        stream.endArray() catch return error.OutOfMemory;
+        try w.endArray();
 
-        stream.endObject() catch return error.OutOfMemory;
+        try w.endObject();
     }
 
-    stream.endArray() catch return error.OutOfMemory;
-    stream.endObject() catch return error.OutOfMemory;
+    try w.endArray();
+    try w.endObject();
 
     return aw.toOwnedSlice() catch return error.OutOfMemory;
 }
@@ -967,74 +815,53 @@ fn emptyPathsResult(allocator: std.mem.Allocator) HandlerError![]const u8 {
     var aw: std.io.Writer.Allocating = .init(allocator);
     errdefer aw.deinit();
     var stream: std.json.Stringify = .{ .writer = &aw.writer };
-    stream.beginObject() catch return error.OutOfMemory;
-    stream.objectField("paths") catch return error.OutOfMemory;
-    stream.beginArray() catch return error.OutOfMemory;
-    stream.endArray() catch return error.OutOfMemory;
-    stream.endObject() catch return error.OutOfMemory;
+    const w: JsonWriter = .{ .s = &stream };
+    try w.beginObject();
+    try w.field("paths");
+    try w.beginArray();
+    try w.endArray();
+    try w.endObject();
     return aw.toOwnedSlice() catch return error.OutOfMemory;
 }
 
 // -- explorer.cursor_create --
 
-fn writeCursorResponse(stream: *std.json.Stringify, cursor_id: []const u8, position: NodeId, g: *const Graph) HandlerError!void {
-    stream.beginObject() catch return error.OutOfMemory;
+fn writeCursorResponse(w: JsonWriter, cursor_id: []const u8, position: NodeId, g: *const Graph) HandlerError!void {
+    try w.beginObject();
+    try w.fieldValue("cursor_id", cursor_id);
 
-    stream.objectField("cursor_id") catch return error.OutOfMemory;
-    stream.write(cursor_id) catch return error.OutOfMemory;
-
-    stream.objectField("position") catch return error.OutOfMemory;
+    try w.field("position");
     if (g.getNode(position)) |n| {
-        stream.beginObject() catch return error.OutOfMemory;
-        stream.objectField("id") catch return error.OutOfMemory;
-        try writeNodeIdHex(stream, position);
-        stream.objectField("kind") catch return error.OutOfMemory;
-        stream.write(@tagName(n.kind)) catch return error.OutOfMemory;
-        stream.objectField("name") catch return error.OutOfMemory;
-        stream.write(n.name) catch return error.OutOfMemory;
-        stream.endObject() catch return error.OutOfMemory;
+        try writeNodeRef(w, position, n);
     } else {
-        stream.beginObject() catch return error.OutOfMemory;
-        stream.objectField("id") catch return error.OutOfMemory;
-        try writeNodeIdHex(stream, position);
-        stream.objectField("kind") catch return error.OutOfMemory;
-        stream.write("root") catch return error.OutOfMemory;
-        stream.objectField("name") catch return error.OutOfMemory;
-        stream.write("root") catch return error.OutOfMemory;
-        stream.endObject() catch return error.OutOfMemory;
+        try w.beginObject();
+        try w.fieldNodeIdHex("id", position);
+        try w.fieldValue("kind", "root");
+        try w.fieldValue("name", "root");
+        try w.endObject();
     }
 
-    stream.objectField("neighborhood") catch return error.OutOfMemory;
-    stream.beginObject() catch return error.OutOfMemory;
-    stream.objectField("children") catch return error.OutOfMemory;
-    stream.beginArray() catch return error.OutOfMemory;
+    try w.field("neighborhood");
+    try w.beginObject();
+    try w.field("children");
+    try w.beginArray();
     const children = g.getChildren(position);
     for (children) |child_id| {
         if (g.getNode(child_id)) |cn| {
-            stream.beginObject() catch return error.OutOfMemory;
-            stream.objectField("id") catch return error.OutOfMemory;
-            try writeNodeIdHex(stream, child_id);
-            stream.objectField("kind") catch return error.OutOfMemory;
-            stream.write(@tagName(cn.kind)) catch return error.OutOfMemory;
-            stream.objectField("name") catch return error.OutOfMemory;
-            stream.write(cn.name) catch return error.OutOfMemory;
-            stream.endObject() catch return error.OutOfMemory;
+            try writeNodeRef(w, child_id, cn);
         }
     }
-    stream.endArray() catch return error.OutOfMemory;
-    stream.objectField("stats") catch return error.OutOfMemory;
-    stream.beginObject() catch return error.OutOfMemory;
-    stream.objectField("visible_nodes") catch return error.OutOfMemory;
-    stream.write(g.nodes.items.len) catch return error.OutOfMemory;
-    stream.objectField("visible_edges") catch return error.OutOfMemory;
-    stream.write(g.edges.items.len) catch return error.OutOfMemory;
-    stream.endObject() catch return error.OutOfMemory;
-    stream.endObject() catch return error.OutOfMemory;
+    try w.endArray();
+    try w.field("stats");
+    try w.beginObject();
+    try w.fieldValue("visible_nodes", g.nodes.items.len);
+    try w.fieldValue("visible_edges", g.edges.items.len);
+    try w.endObject();
+    try w.endObject();
 
-    stream.objectField("expires_in_seconds") catch return error.OutOfMemory;
-    stream.write(@as(u32, 600)) catch return error.OutOfMemory;
+    try w.fieldValue("expires_in_seconds", @as(u32, 600));
 
-    stream.endObject() catch return error.OutOfMemory;
+    try w.endObject();
 }
 
 fn handleCursorCreate(allocator: std.mem.Allocator, gen: *GraphGeneration, cursor_mgr: *CursorManager, params: ?std.json.Value) HandlerError![]const u8 {
@@ -1053,8 +880,9 @@ fn handleCursorCreate(allocator: std.mem.Allocator, gen: *GraphGeneration, curso
     var aw: std.io.Writer.Allocating = .init(allocator);
     errdefer aw.deinit();
     var stream: std.json.Stringify = .{ .writer = &aw.writer };
+    const w: JsonWriter = .{ .s = &stream };
 
-    try writeCursorResponse(&stream, cursor_id, position, g);
+    try writeCursorResponse(w, cursor_id, position, g);
 
     return aw.toOwnedSlice() catch return error.OutOfMemory;
 }
@@ -1078,8 +906,9 @@ fn handleCursorMove(allocator: std.mem.Allocator, gen: *GraphGeneration, cursor_
     var aw: std.io.Writer.Allocating = .init(allocator);
     errdefer aw.deinit();
     var stream: std.json.Stringify = .{ .writer = &aw.writer };
+    const w: JsonWriter = .{ .s = &stream };
 
-    try writeCursorResponse(&stream, cursor_id, node_id, g);
+    try writeCursorResponse(w, cursor_id, node_id, g);
 
     return aw.toOwnedSlice() catch return error.OutOfMemory;
 }
@@ -1095,11 +924,11 @@ fn handleCursorClose(allocator: std.mem.Allocator, cursor_mgr: *CursorManager, p
     var aw: std.io.Writer.Allocating = .init(allocator);
     errdefer aw.deinit();
     var stream: std.json.Stringify = .{ .writer = &aw.writer };
+    const w: JsonWriter = .{ .s = &stream };
 
-    stream.beginObject() catch return error.OutOfMemory;
-    stream.objectField("success") catch return error.OutOfMemory;
-    stream.write(removed) catch return error.OutOfMemory;
-    stream.endObject() catch return error.OutOfMemory;
+    try w.beginObject();
+    try w.fieldValue("success", removed);
+    try w.endObject();
 
     return aw.toOwnedSlice() catch return error.OutOfMemory;
 }
@@ -1178,54 +1007,45 @@ fn handleCursorExpand(allocator: std.mem.Allocator, gen: *GraphGeneration, curso
     var aw: std.io.Writer.Allocating = .init(allocator);
     errdefer aw.deinit();
     var stream: std.json.Stringify = .{ .writer = &aw.writer };
+    const w: JsonWriter = .{ .s = &stream };
 
-    stream.beginObject() catch return error.OutOfMemory;
+    try w.beginObject();
+    try w.fieldValue("cursor_id", cursor_id);
+    try w.field("position");
+    try w.nodeIdHex(start);
 
-    stream.objectField("cursor_id") catch return error.OutOfMemory;
-    stream.write(cursor_id) catch return error.OutOfMemory;
+    try w.field("subgraph");
+    try w.beginObject();
 
-    stream.objectField("position") catch return error.OutOfMemory;
-    try writeNodeIdHex(&stream, start);
-
-    stream.objectField("subgraph") catch return error.OutOfMemory;
-    stream.beginObject() catch return error.OutOfMemory;
-
-    stream.objectField("nodes") catch return error.OutOfMemory;
-    stream.beginArray() catch return error.OutOfMemory;
+    try w.field("nodes");
+    try w.beginArray();
     var it = visited.keyIterator();
     while (it.next()) |nid_ptr| {
         const nid = nid_ptr.*;
         if (g.getNode(nid)) |n| {
-            try writeNodeSummary(&stream, n, nid, g.project_root);
+            try writeNodeSummary(w, n, nid, g.project_root);
         }
     }
-    stream.endArray() catch return error.OutOfMemory;
+    try w.endArray();
 
-    stream.objectField("edges") catch return error.OutOfMemory;
-    stream.beginArray() catch return error.OutOfMemory;
+    try w.field("edges");
+    try w.beginArray();
     for (collected_edges.items) |e| {
-        stream.beginObject() catch return error.OutOfMemory;
-        stream.objectField("from") catch return error.OutOfMemory;
-        try writeNodeIdHex(&stream, e.from);
-        stream.objectField("to") catch return error.OutOfMemory;
-        try writeNodeIdHex(&stream, e.to);
-        stream.objectField("type") catch return error.OutOfMemory;
-        stream.write(@tagName(e.edge_type)) catch return error.OutOfMemory;
-        stream.objectField("source") catch return error.OutOfMemory;
-        stream.write(@tagName(e.source)) catch return error.OutOfMemory;
-        stream.endObject() catch return error.OutOfMemory;
+        try w.beginObject();
+        try w.fieldNodeIdHex("from", e.from);
+        try w.fieldNodeIdHex("to", e.to);
+        try w.tagFieldValue("type", e.edge_type);
+        try w.tagFieldValue("source", e.source);
+        try w.endObject();
     }
-    stream.endArray() catch return error.OutOfMemory;
+    try w.endArray();
 
-    stream.endObject() catch return error.OutOfMemory;
+    try w.endObject();
 
-    stream.objectField("truncated") catch return error.OutOfMemory;
-    stream.write(truncated) catch return error.OutOfMemory;
+    try w.fieldValue("truncated", truncated);
+    try w.fieldValue("total_nodes_in_expansion", visited.count());
 
-    stream.objectField("total_nodes_in_expansion") catch return error.OutOfMemory;
-    stream.write(visited.count()) catch return error.OutOfMemory;
-
-    stream.endObject() catch return error.OutOfMemory;
+    try w.endObject();
 
     return aw.toOwnedSlice() catch return error.OutOfMemory;
 }
@@ -1276,16 +1096,17 @@ fn handleCursorQuery(allocator: std.mem.Allocator, gen: *GraphGeneration, cursor
     var aw: std.io.Writer.Allocating = .init(allocator);
     errdefer aw.deinit();
     var stream: std.json.Stringify = .{ .writer = &aw.writer };
+    const w: JsonWriter = .{ .s = &stream };
 
-    stream.beginObject() catch return error.OutOfMemory;
-    stream.objectField("nodes") catch return error.OutOfMemory;
-    stream.beginArray() catch return error.OutOfMemory;
+    try w.beginObject();
+    try w.field("nodes");
+    try w.beginArray();
     for (filtered.nodes) |nid| {
         const n = g.getNode(nid) orelse continue;
-        try writeNodeSummary(&stream, n, nid, g.project_root);
+        try writeNodeSummary(w, n, nid, g.project_root);
     }
-    stream.endArray() catch return error.OutOfMemory;
-    stream.endObject() catch return error.OutOfMemory;
+    try w.endArray();
+    try w.endObject();
 
     return aw.toOwnedSlice() catch return error.OutOfMemory;
 }
@@ -1403,52 +1224,50 @@ fn handleDiff(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?std.
     var aw: std.io.Writer.Allocating = .init(allocator);
     errdefer aw.deinit();
     var stream: std.json.Stringify = .{ .writer = &aw.writer };
+    const w: JsonWriter = .{ .s = &stream };
 
-    stream.beginObject() catch return error.OutOfMemory;
+    try w.beginObject();
 
     if (node_ids.len > 2) {
         // NxN matrix
-        stream.objectField("matrix") catch return error.OutOfMemory;
-        stream.beginObject() catch return error.OutOfMemory;
-        stream.objectField("node_ids") catch return error.OutOfMemory;
-        stream.beginArray() catch return error.OutOfMemory;
+        try w.field("matrix");
+        try w.beginObject();
+        try w.field("node_ids");
+        try w.beginArray();
         for (node_ids) |nid| {
-            try writeNodeIdHex(&stream, nid);
+            try w.nodeIdHex(nid);
         }
-        stream.endArray() catch return error.OutOfMemory;
-        stream.objectField("similarities") catch return error.OutOfMemory;
-        stream.beginArray() catch return error.OutOfMemory;
+        try w.endArray();
+        try w.field("similarities");
+        try w.beginArray();
         for (node_ids) |nid_a| {
-            stream.beginArray() catch return error.OutOfMemory;
+            try w.beginArray();
             for (node_ids) |nid_b| {
                 const sim = computeNodeSimilarity(allocator, g, nid_a, nid_b);
-                stream.write(sim) catch return error.OutOfMemory;
+                try w.write(sim);
             }
-            stream.endArray() catch return error.OutOfMemory;
+            try w.endArray();
         }
-        stream.endArray() catch return error.OutOfMemory;
-        stream.endObject() catch return error.OutOfMemory;
+        try w.endArray();
+        try w.endObject();
     }
 
     // Pairwise pairs
-    stream.objectField("pairs") catch return error.OutOfMemory;
-    stream.beginArray() catch return error.OutOfMemory;
+    try w.field("pairs");
+    try w.beginArray();
     for (node_ids, 0..) |nid_a, i| {
         for (node_ids[i + 1 ..]) |nid_b| {
             const sim = computeNodeSimilarity(allocator, g, nid_a, nid_b);
-            stream.beginObject() catch return error.OutOfMemory;
-            stream.objectField("a") catch return error.OutOfMemory;
-            try writeNodeIdHex(&stream, nid_a);
-            stream.objectField("b") catch return error.OutOfMemory;
-            try writeNodeIdHex(&stream, nid_b);
-            stream.objectField("similarity") catch return error.OutOfMemory;
-            stream.write(sim) catch return error.OutOfMemory;
-            stream.endObject() catch return error.OutOfMemory;
+            try w.beginObject();
+            try w.fieldNodeIdHex("a", nid_a);
+            try w.fieldNodeIdHex("b", nid_b);
+            try w.fieldValue("similarity", sim);
+            try w.endObject();
         }
     }
-    stream.endArray() catch return error.OutOfMemory;
+    try w.endArray();
 
-    stream.endObject() catch return error.OutOfMemory;
+    try w.endObject();
 
     return aw.toOwnedSlice() catch return error.OutOfMemory;
 }
@@ -1479,13 +1298,12 @@ fn handleAnnotate(allocator: std.mem.Allocator, cursor_mgr: *CursorManager, para
     var aw: std.io.Writer.Allocating = .init(allocator);
     errdefer aw.deinit();
     var stream: std.json.Stringify = .{ .writer = &aw.writer };
+    const w: JsonWriter = .{ .s = &stream };
 
-    stream.beginObject() catch return error.OutOfMemory;
-    stream.objectField("success") catch return error.OutOfMemory;
-    stream.write(true) catch return error.OutOfMemory;
-    stream.objectField("count") catch return error.OutOfMemory;
-    stream.write(node_ids.len) catch return error.OutOfMemory;
-    stream.endObject() catch return error.OutOfMemory;
+    try w.beginObject();
+    try w.fieldValue("success", true);
+    try w.fieldValue("count", node_ids.len);
+    try w.endObject();
 
     return aw.toOwnedSlice() catch return error.OutOfMemory;
 }
@@ -1505,27 +1323,25 @@ fn handleAnnotations(allocator: std.mem.Allocator, cursor_mgr: *CursorManager, p
     var aw: std.io.Writer.Allocating = .init(allocator);
     errdefer aw.deinit();
     var stream: std.json.Stringify = .{ .writer = &aw.writer };
+    const w: JsonWriter = .{ .s = &stream };
 
-    stream.beginObject() catch return error.OutOfMemory;
-    stream.objectField("annotations") catch return error.OutOfMemory;
-    stream.beginArray() catch return error.OutOfMemory;
+    try w.beginObject();
+    try w.field("annotations");
+    try w.beginArray();
 
     for (all_annotations) |ann| {
         if (tag_filter) |tf| {
             if (!std.mem.eql(u8, ann.tag, tf)) continue;
         }
-        stream.beginObject() catch return error.OutOfMemory;
-        stream.objectField("node_id") catch return error.OutOfMemory;
-        try writeNodeIdHex(&stream, ann.node_id);
-        stream.objectField("tag") catch return error.OutOfMemory;
-        stream.write(ann.tag) catch return error.OutOfMemory;
-        stream.objectField("note") catch return error.OutOfMemory;
-        stream.write(ann.note) catch return error.OutOfMemory;
-        stream.endObject() catch return error.OutOfMemory;
+        try w.beginObject();
+        try w.fieldNodeIdHex("node_id", ann.node_id);
+        try w.fieldValue("tag", ann.tag);
+        try w.fieldValue("note", ann.note);
+        try w.endObject();
     }
 
-    stream.endArray() catch return error.OutOfMemory;
-    stream.endObject() catch return error.OutOfMemory;
+    try w.endArray();
+    try w.endObject();
 
     return aw.toOwnedSlice() catch return error.OutOfMemory;
 }
@@ -1534,50 +1350,44 @@ fn handleAnnotations(allocator: std.mem.Allocator, cursor_mgr: *CursorManager, p
 
 /// Emit total_groups + groups array into stream, optionally including source text.
 fn writeDuplicateGroups(
-    stream: *std.json.Stringify,
+    w: JsonWriter,
     g: *const Graph,
     allocator: std.mem.Allocator,
     groups_slice: []const duplicates_mod.DuplicateGroup,
     total_groups: u32,
     include_source: bool,
 ) HandlerError!void {
-    stream.objectField("total_groups") catch return error.OutOfMemory;
-    stream.write(total_groups) catch return error.OutOfMemory;
-    stream.objectField("groups") catch return error.OutOfMemory;
-    stream.beginArray() catch return error.OutOfMemory;
+    try w.fieldValue("total_groups", total_groups);
+    try w.field("groups");
+    try w.beginArray();
     for (groups_slice) |group| {
-        stream.beginObject() catch return error.OutOfMemory;
-        stream.objectField("structural_hash") catch return error.OutOfMemory;
-        stream.write(group.structural_hash) catch return error.OutOfMemory;
-        stream.objectField("similarity") catch return error.OutOfMemory;
-        stream.write(group.similarity) catch return error.OutOfMemory;
-        stream.objectField("members") catch return error.OutOfMemory;
-        stream.beginArray() catch return error.OutOfMemory;
+        try w.beginObject();
+        try w.fieldValue("structural_hash", group.structural_hash);
+        try w.fieldValue("similarity", group.similarity);
+        try w.field("members");
+        try w.beginArray();
         for (group.members) |member| {
             const n = g.getNode(member.node_id);
-            stream.beginObject() catch return error.OutOfMemory;
-            stream.objectField("node_id") catch return error.OutOfMemory;
-            try writeNodeIdHex(stream, member.node_id);
-            stream.objectField("name") catch return error.OutOfMemory;
-            stream.write(member.name) catch return error.OutOfMemory;
-            stream.objectField("file") catch return error.OutOfMemory;
-            stream.write(relativePath(member.file_path, g.project_root)) catch return error.OutOfMemory;
+            try w.beginObject();
+            try w.fieldNodeIdHex("node_id", member.node_id);
+            try w.fieldValue("name", member.name);
+            try w.fieldValue("file", relativePath(member.file_path, g.project_root));
             if (include_source) {
-                stream.objectField("source") catch return error.OutOfMemory;
+                try w.field("source");
                 if (n) |node| {
                     const src = extractNodeSource(allocator, g, node);
                     defer if (src) |s| allocator.free(s);
-                    stream.write(src) catch return error.OutOfMemory;
+                    try w.write(src);
                 } else {
-                    stream.write(null) catch return error.OutOfMemory;
+                    try w.write(null);
                 }
             }
-            stream.endObject() catch return error.OutOfMemory;
+            try w.endObject();
         }
-        stream.endArray() catch return error.OutOfMemory;
-        stream.endObject() catch return error.OutOfMemory;
+        try w.endArray();
+        try w.endObject();
     }
-    stream.endArray() catch return error.OutOfMemory;
+    try w.endArray();
 }
 
 /// Extract source, parse the AST, and build a frequency fingerprint for one node.
@@ -1621,8 +1431,9 @@ fn handleDuplicates(allocator: std.mem.Allocator, gen: *GraphGeneration, params:
     var aw: std.io.Writer.Allocating = .init(allocator);
     errdefer aw.deinit();
     var stream: std.json.Stringify = .{ .writer = &aw.writer };
+    const w: JsonWriter = .{ .s = &stream };
 
-    stream.beginObject() catch return error.OutOfMemory;
+    try w.beginObject();
 
     if (threshold >= 1.0) {
         const result = duplicates_mod.findDuplicates(allocator, g, .{
@@ -1633,7 +1444,7 @@ fn handleDuplicates(allocator: std.mem.Allocator, gen: *GraphGeneration, params:
             .limit = limit,
         }) catch return error.OutOfMemory;
         defer result.deinit(allocator);
-        try writeDuplicateGroups(&stream, g, allocator, result.groups, result.total_groups, include_source);
+        try writeDuplicateGroups(w, g, allocator, result.groups, result.total_groups, include_source);
     } else {
         // Fuzzy mode: build fingerprinted candidates, delegate clustering to analyzer.
         const lang_filter = if (language_str) |ls| parseLanguage(ls) else null;
@@ -1667,10 +1478,10 @@ fn handleDuplicates(allocator: std.mem.Allocator, gen: *GraphGeneration, params:
             .limit = limit,
         }) catch return error.OutOfMemory;
         defer result.deinit(allocator);
-        try writeDuplicateGroups(&stream, g, allocator, result.groups, result.total_groups, include_source);
+        try writeDuplicateGroups(w, g, allocator, result.groups, result.total_groups, include_source);
     }
 
-    stream.endObject() catch return error.OutOfMemory;
+    try w.endObject();
 
     return aw.toOwnedSlice() catch return error.OutOfMemory;
 }
@@ -1698,24 +1509,21 @@ fn handleComplexity(allocator: std.mem.Allocator, gen: *GraphGeneration, params:
     var aw: std.io.Writer.Allocating = .init(allocator);
     errdefer aw.deinit();
     var stream: std.json.Stringify = .{ .writer = &aw.writer };
+    const w: JsonWriter = .{ .s = &stream };
 
-    stream.beginObject() catch return error.OutOfMemory;
-    stream.objectField("nodes") catch return error.OutOfMemory;
-    stream.beginArray() catch return error.OutOfMemory;
+    try w.beginObject();
+    try w.field("nodes");
+    try w.beginArray();
     for (result.nodes) |entry| {
-        stream.beginObject() catch return error.OutOfMemory;
-        stream.objectField("node_id") catch return error.OutOfMemory;
-        try writeNodeIdHex(&stream, entry.node_id);
-        stream.objectField("name") catch return error.OutOfMemory;
-        stream.write(entry.name) catch return error.OutOfMemory;
-        stream.objectField("file") catch return error.OutOfMemory;
-        stream.write(relativePath(entry.file_path, g.project_root)) catch return error.OutOfMemory;
-        stream.objectField("complexity") catch return error.OutOfMemory;
-        stream.write(entry.complexity) catch return error.OutOfMemory;
-        stream.endObject() catch return error.OutOfMemory;
+        try w.beginObject();
+        try w.fieldNodeIdHex("node_id", entry.node_id);
+        try w.fieldValue("name", entry.name);
+        try w.fieldValue("file", relativePath(entry.file_path, g.project_root));
+        try w.fieldValue("complexity", entry.complexity);
+        try w.endObject();
     }
-    stream.endArray() catch return error.OutOfMemory;
-    stream.endObject() catch return error.OutOfMemory;
+    try w.endArray();
+    try w.endObject();
 
     return aw.toOwnedSlice() catch return error.OutOfMemory;
 }
@@ -1749,28 +1557,23 @@ fn handleDeadCode(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?
     var aw: std.io.Writer.Allocating = .init(allocator);
     errdefer aw.deinit();
     var stream: std.json.Stringify = .{ .writer = &aw.writer };
+    const w: JsonWriter = .{ .s = &stream };
 
-    stream.beginObject() catch return error.OutOfMemory;
-    stream.objectField("total_count") catch return error.OutOfMemory;
-    stream.write(result.total_count) catch return error.OutOfMemory;
-    stream.objectField("nodes") catch return error.OutOfMemory;
-    stream.beginArray() catch return error.OutOfMemory;
+    try w.beginObject();
+    try w.fieldValue("total_count", result.total_count);
+    try w.field("nodes");
+    try w.beginArray();
     for (result.nodes) |entry| {
-        stream.beginObject() catch return error.OutOfMemory;
-        stream.objectField("node_id") catch return error.OutOfMemory;
-        try writeNodeIdHex(&stream, entry.node_id);
-        stream.objectField("name") catch return error.OutOfMemory;
-        stream.write(entry.name) catch return error.OutOfMemory;
-        stream.objectField("kind") catch return error.OutOfMemory;
-        stream.write(@tagName(entry.kind)) catch return error.OutOfMemory;
-        stream.objectField("file") catch return error.OutOfMemory;
-        stream.write(relativePath(entry.file_path, g.project_root)) catch return error.OutOfMemory;
-        stream.objectField("visibility") catch return error.OutOfMemory;
-        stream.write(@tagName(entry.visibility)) catch return error.OutOfMemory;
-        stream.endObject() catch return error.OutOfMemory;
+        try w.beginObject();
+        try w.fieldNodeIdHex("node_id", entry.node_id);
+        try w.fieldValue("name", entry.name);
+        try w.tagFieldValue("kind", entry.kind);
+        try w.fieldValue("file", relativePath(entry.file_path, g.project_root));
+        try w.tagFieldValue("visibility", entry.visibility);
+        try w.endObject();
     }
-    stream.endArray() catch return error.OutOfMemory;
-    stream.endObject() catch return error.OutOfMemory;
+    try w.endArray();
+    try w.endObject();
 
     return aw.toOwnedSlice() catch return error.OutOfMemory;
 }
@@ -1798,29 +1601,27 @@ fn handleDependencyCycles(allocator: std.mem.Allocator, gen: *GraphGeneration, p
     var aw: std.io.Writer.Allocating = .init(allocator);
     errdefer aw.deinit();
     var stream: std.json.Stringify = .{ .writer = &aw.writer };
+    const w: JsonWriter = .{ .s = &stream };
 
-    stream.beginObject() catch return error.OutOfMemory;
-    stream.objectField("cycles") catch return error.OutOfMemory;
-    stream.beginArray() catch return error.OutOfMemory;
+    try w.beginObject();
+    try w.field("cycles");
+    try w.beginArray();
     for (result.cycles) |cycle| {
-        stream.beginObject() catch return error.OutOfMemory;
-        stream.objectField("nodes") catch return error.OutOfMemory;
-        stream.beginArray() catch return error.OutOfMemory;
+        try w.beginObject();
+        try w.field("nodes");
+        try w.beginArray();
         for (cycle.nodes) |cn| {
-            stream.beginObject() catch return error.OutOfMemory;
-            stream.objectField("node_id") catch return error.OutOfMemory;
-            try writeNodeIdHex(&stream, cn.node_id);
-            stream.objectField("name") catch return error.OutOfMemory;
-            stream.write(cn.name) catch return error.OutOfMemory;
-            stream.objectField("file") catch return error.OutOfMemory;
-            stream.write(relativePath(cn.file_path, g.project_root)) catch return error.OutOfMemory;
-            stream.endObject() catch return error.OutOfMemory;
+            try w.beginObject();
+            try w.fieldNodeIdHex("node_id", cn.node_id);
+            try w.fieldValue("name", cn.name);
+            try w.fieldValue("file", relativePath(cn.file_path, g.project_root));
+            try w.endObject();
         }
-        stream.endArray() catch return error.OutOfMemory;
-        stream.endObject() catch return error.OutOfMemory;
+        try w.endArray();
+        try w.endObject();
     }
-    stream.endArray() catch return error.OutOfMemory;
-    stream.endObject() catch return error.OutOfMemory;
+    try w.endArray();
+    try w.endObject();
 
     return aw.toOwnedSlice() catch return error.OutOfMemory;
 }
@@ -1853,24 +1654,21 @@ fn handleCoupling(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?
     var aw: std.io.Writer.Allocating = .init(allocator);
     errdefer aw.deinit();
     var stream: std.json.Stringify = .{ .writer = &aw.writer };
+    const w: JsonWriter = .{ .s = &stream };
 
-    stream.beginObject() catch return error.OutOfMemory;
-    stream.objectField("pairs") catch return error.OutOfMemory;
-    stream.beginArray() catch return error.OutOfMemory;
+    try w.beginObject();
+    try w.field("pairs");
+    try w.beginArray();
     for (result.pairs) |pair| {
-        stream.beginObject() catch return error.OutOfMemory;
-        stream.objectField("module_a") catch return error.OutOfMemory;
-        stream.write(relativePath(pair.module_a, g.project_root)) catch return error.OutOfMemory;
-        stream.objectField("module_b") catch return error.OutOfMemory;
-        stream.write(relativePath(pair.module_b, g.project_root)) catch return error.OutOfMemory;
-        stream.objectField("shared_edges") catch return error.OutOfMemory;
-        stream.write(pair.shared_edges) catch return error.OutOfMemory;
-        stream.objectField("score") catch return error.OutOfMemory;
-        stream.write(pair.score) catch return error.OutOfMemory;
-        stream.endObject() catch return error.OutOfMemory;
+        try w.beginObject();
+        try w.fieldValue("module_a", relativePath(pair.module_a, g.project_root));
+        try w.fieldValue("module_b", relativePath(pair.module_b, g.project_root));
+        try w.fieldValue("shared_edges", pair.shared_edges);
+        try w.fieldValue("score", pair.score);
+        try w.endObject();
     }
-    stream.endArray() catch return error.OutOfMemory;
-    stream.endObject() catch return error.OutOfMemory;
+    try w.endArray();
+    try w.endObject();
 
     return aw.toOwnedSlice() catch return error.OutOfMemory;
 }
@@ -1903,49 +1701,43 @@ fn handleImpact(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?st
     var aw: std.io.Writer.Allocating = .init(allocator);
     errdefer aw.deinit();
     var stream: std.json.Stringify = .{ .writer = &aw.writer };
+    const w: JsonWriter = .{ .s = &stream };
 
-    stream.beginObject() catch return error.OutOfMemory;
+    try w.beginObject();
 
     // Emit source context so clients know what the analysis started from.
-    stream.objectField("source_nodes") catch return error.OutOfMemory;
-    stream.beginArray() catch return error.OutOfMemory;
+    try w.field("source_nodes");
+    try w.beginArray();
     for (node_ids) |nid| {
-        try writeNodeIdHex(&stream, nid);
+        try w.nodeIdHex(nid);
     }
-    stream.endArray() catch return error.OutOfMemory;
+    try w.endArray();
 
     if (node_ids.len == 1) {
         if (g.getNode(node_ids[0])) |src_node| {
-            stream.objectField("source_name") catch return error.OutOfMemory;
-            stream.write(src_node.name) catch return error.OutOfMemory;
+            try w.fieldValue("source_name", src_node.name);
             const ext_val: ?[]const u8 = switch (src_node.external) {
                 .none => null,
                 .stdlib => "stdlib",
                 .dependency => "dependency",
             };
-            stream.objectField("source_external") catch return error.OutOfMemory;
-            stream.write(ext_val) catch return error.OutOfMemory;
+            try w.fieldValue("source_external", ext_val);
         }
     }
 
-    stream.objectField("total_impacted") catch return error.OutOfMemory;
-    stream.write(result.total_impacted) catch return error.OutOfMemory;
-    stream.objectField("impacted") catch return error.OutOfMemory;
-    stream.beginArray() catch return error.OutOfMemory;
+    try w.fieldValue("total_impacted", result.total_impacted);
+    try w.field("impacted");
+    try w.beginArray();
     for (result.dependents) |dep| {
-        stream.beginObject() catch return error.OutOfMemory;
-        stream.objectField("node_id") catch return error.OutOfMemory;
-        try writeNodeIdHex(&stream, dep.node_id);
-        stream.objectField("name") catch return error.OutOfMemory;
-        stream.write(dep.name) catch return error.OutOfMemory;
-        stream.objectField("kind") catch return error.OutOfMemory;
-        stream.write(@tagName(dep.kind)) catch return error.OutOfMemory;
-        stream.objectField("file") catch return error.OutOfMemory;
-        stream.write(relativePath(dep.file_path, g.project_root)) catch return error.OutOfMemory;
-        stream.endObject() catch return error.OutOfMemory;
+        try w.beginObject();
+        try w.fieldNodeIdHex("node_id", dep.node_id);
+        try w.fieldValue("name", dep.name);
+        try w.tagFieldValue("kind", dep.kind);
+        try w.fieldValue("file", relativePath(dep.file_path, g.project_root));
+        try w.endObject();
     }
-    stream.endArray() catch return error.OutOfMemory;
-    stream.endObject() catch return error.OutOfMemory;
+    try w.endArray();
+    try w.endObject();
 
     return aw.toOwnedSlice() catch return error.OutOfMemory;
 }
@@ -1956,9 +1748,9 @@ fn errorResult(allocator: std.mem.Allocator, message: []const u8) HandlerError![
     var aw: std.io.Writer.Allocating = .init(allocator);
     errdefer aw.deinit();
     var stream: std.json.Stringify = .{ .writer = &aw.writer };
-    stream.beginObject() catch return error.OutOfMemory;
-    stream.objectField("error") catch return error.OutOfMemory;
-    stream.write(message) catch return error.OutOfMemory;
-    stream.endObject() catch return error.OutOfMemory;
+    const w: JsonWriter = .{ .s = &stream };
+    try w.beginObject();
+    try w.fieldValue("error", message);
+    try w.endObject();
     return aw.toOwnedSlice() catch return error.OutOfMemory;
 }
