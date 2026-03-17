@@ -174,6 +174,13 @@ fn parseDirection(name: []const u8) Direction {
     return .both;
 }
 
+fn edgeTypeInSlice(et: EdgeType, slice: []const EdgeType) bool {
+    for (slice) |s| {
+        if (s == et) return true;
+    }
+    return false;
+}
+
 /// BFS from start, following edges in both directions and the parent-child
 /// hierarchy, up to max_depth hops.
 fn collectReachable(
@@ -1113,18 +1120,24 @@ fn handleCursorClose(allocator: std.mem.Allocator, cursor_mgr: *CursorManager, p
 // -- explorer.cursor_expand --
 
 fn handleCursorExpand(allocator: std.mem.Allocator, gen: *GraphGeneration, cursor_mgr: *CursorManager, params: ?std.json.Value) HandlerError![]const u8 {
+    const max_depth: u32 = 5;
+
     const args = getArgs(params);
     const g = &gen.graph;
 
     const cursor_id = getOptionalString(args, "cursor_id") orelse return try errorResult(allocator, "invalid_cursor");
-    const depth = getOptionalInt(args, "depth", 2);
+    const requested_depth = getOptionalInt(args, "depth", 2);
+    const effective_depth = @min(requested_depth, max_depth);
+    const truncated = requested_depth > max_depth;
     const direction_str = getOptionalString(args, "direction") orelse "out";
     const direction = parseDirection(direction_str);
+
+    var edge_types_buf: [16]EdgeType = undefined;
+    const edge_types = parseEdgeTypesArray(args, &edge_types_buf);
 
     const cursor = cursor_mgr.getCursor(cursor_id) orelse return try errorResult(allocator, "invalid_cursor");
     const start = cursor.position;
 
-    // BFS expansion from start position
     var visited = std.AutoHashMapUnmanaged(NodeId, void){};
     defer visited.deinit(allocator);
     try visited.put(allocator, start, {});
@@ -1132,23 +1145,21 @@ fn handleCursorExpand(allocator: std.mem.Allocator, gen: *GraphGeneration, curso
     const ExpandEdge = struct { from: NodeId, to: NodeId, edge_type: EdgeType, source: EdgeSource };
     const FrontierEntry = struct { id: NodeId, remaining: u32 };
 
-    // Collect edges in the expansion
     var collected_edges: std.ArrayList(ExpandEdge) = .{};
     defer collected_edges.deinit(allocator);
 
-    // BFS frontier: store node + remaining depth
     var frontier: std.ArrayList(FrontierEntry) = .{};
     defer frontier.deinit(allocator);
-    try frontier.append(allocator, .{ .id = start, .remaining = depth });
+    try frontier.append(allocator, .{ .id = start, .remaining = effective_depth });
 
     while (frontier.items.len > 0) {
         const current = frontier.orderedRemove(0);
         if (current.remaining == 0) continue;
 
-        // Collect edges based on direction, respecting cursor filter state.
         if (direction == .out or direction == .both) {
             for (g.outEdges(current.id)) |eid| {
                 const e = g.edges.items[@intFromEnum(eid)];
+                if (edge_types.len > 0 and !edgeTypeInSlice(e.edge_type, edge_types)) continue;
                 if (g.getNode(e.target_id)) |tn| {
                     if (tn.kind == .test_def and !cursor.include_tests) continue;
                     if (tn.external != .none and !cursor.include_external_nodes) continue;
@@ -1163,6 +1174,7 @@ fn handleCursorExpand(allocator: std.mem.Allocator, gen: *GraphGeneration, curso
         if (direction == .in or direction == .both) {
             for (g.inEdges(current.id)) |eid| {
                 const e = g.edges.items[@intFromEnum(eid)];
+                if (edge_types.len > 0 and !edgeTypeInSlice(e.edge_type, edge_types)) continue;
                 if (g.getNode(e.source_id)) |sn| {
                     if (sn.kind == .test_def and !cursor.include_tests) continue;
                     if (sn.external != .none and !cursor.include_external_nodes) continue;
@@ -1221,7 +1233,7 @@ fn handleCursorExpand(allocator: std.mem.Allocator, gen: *GraphGeneration, curso
     stream.endObject() catch return error.OutOfMemory;
 
     stream.objectField("truncated") catch return error.OutOfMemory;
-    stream.write(false) catch return error.OutOfMemory;
+    stream.write(truncated) catch return error.OutOfMemory;
 
     stream.objectField("total_nodes_in_expansion") catch return error.OutOfMemory;
     stream.write(visited.count()) catch return error.OutOfMemory;
