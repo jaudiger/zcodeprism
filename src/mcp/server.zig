@@ -48,8 +48,8 @@ pub const Server = struct {
 
         if (req.id == .none) return null;
 
-        self.generation.acquire();
-        defer self.generation.release();
+        const guard = self.generation.acquire();
+        defer guard.deinit();
 
         if (std.mem.eql(u8, req.method, "initialize")) {
             return try buildSuccessResponse(allocator, req.id, protocol.InitializeResult{});

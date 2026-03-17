@@ -98,8 +98,8 @@ test "stats returns file count, function count, languages, and externals" {
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), project_root, &gen.graph, null, .{});
-    gen.acquire();
-    defer gen.release();
+    const guard = gen.acquire();
+    defer guard.deinit();
     var srv = Server.init(&gen);
     defer srv.deinit();
 
@@ -142,8 +142,8 @@ test "stats with scope restricts to one file" {
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), project_root, &gen.graph, null, .{});
-    gen.acquire();
-    defer gen.release();
+    const guard = gen.acquire();
+    defer guard.deinit();
     var srv = Server.init(&gen);
     defer srv.deinit();
 
@@ -166,8 +166,8 @@ test "stats on empty graph" {
     const allocator = std.testing.allocator;
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
     try gen.graph.freeze(gen.arena.allocator());
-    gen.acquire();
-    defer gen.release();
+    const guard = gen.acquire();
+    defer guard.deinit();
     var srv = Server.init(&gen);
     defer srv.deinit();
 
@@ -200,8 +200,8 @@ test "search returns matching nodes with metadata" {
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), project_root, &gen.graph, null, .{});
-    gen.acquire();
-    defer gen.release();
+    const guard = gen.acquire();
+    defer guard.deinit();
     var srv = Server.init(&gen);
     defer srv.deinit();
 
@@ -238,8 +238,8 @@ test "search with kind filter returns only that kind" {
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), project_root, &gen.graph, null, .{});
-    gen.acquire();
-    defer gen.release();
+    const guard = gen.acquire();
+    defer guard.deinit();
     var srv = Server.init(&gen);
     defer srv.deinit();
 
@@ -271,8 +271,8 @@ test "search with no results returns zero matches" {
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), project_root, &gen.graph, null, .{});
-    gen.acquire();
-    defer gen.release();
+    const guard = gen.acquire();
+    defer guard.deinit();
     var srv = Server.init(&gen);
     defer srv.deinit();
 
@@ -305,8 +305,8 @@ test "get_nodes returns all fields for a single id" {
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), project_root, &gen.graph, null, .{});
-    gen.acquire();
-    defer gen.release();
+    const guard = gen.acquire();
+    defer guard.deinit();
     var srv = Server.init(&gen);
     defer srv.deinit();
 
@@ -350,8 +350,8 @@ test "get_nodes with array of ids" {
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), project_root, &gen.graph, null, .{});
-    gen.acquire();
-    defer gen.release();
+    const guard = gen.acquire();
+    defer guard.deinit();
     var srv = Server.init(&gen);
     defer srv.deinit();
 
@@ -389,8 +389,8 @@ test "get_nodes with include_source true" {
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), project_root, &gen.graph, null, .{});
-    gen.acquire();
-    defer gen.release();
+    const guard = gen.acquire();
+    defer guard.deinit();
     var srv = Server.init(&gen);
     defer srv.deinit();
 
@@ -426,8 +426,8 @@ test "get_nodes for phantom node has external and null source" {
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), project_root, &gen.graph, null, .{});
-    gen.acquire();
-    defer gen.release();
+    const guard = gen.acquire();
+    defer guard.deinit();
     var srv = Server.init(&gen);
     defer srv.deinit();
 
@@ -472,8 +472,8 @@ test "get_nodes with non-existent id" {
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), project_root, &gen.graph, null, .{});
-    gen.acquire();
-    defer gen.release();
+    const guard = gen.acquire();
+    defer guard.deinit();
     var srv = Server.init(&gen);
     defer srv.deinit();
 
@@ -508,8 +508,8 @@ test "get_nodes string id equals single-element array" {
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), project_root, &gen.graph, null, .{});
-    gen.acquire();
-    defer gen.release();
+    const guard = gen.acquire();
+    defer guard.deinit();
     var srv = Server.init(&gen);
     defer srv.deinit();
 
@@ -558,8 +558,8 @@ test "get_source full returns non-empty source" {
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), project_root, &gen.graph, null, .{});
-    gen.acquire();
-    defer gen.release();
+    const guard = gen.acquire();
+    defer guard.deinit();
     var srv = Server.init(&gen);
     defer srv.deinit();
 
@@ -597,8 +597,8 @@ test "get_source signature is shorter than full" {
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), project_root, &gen.graph, null, .{});
-    gen.acquire();
-    defer gen.release();
+    const guard = gen.acquire();
+    defer guard.deinit();
     var srv = Server.init(&gen);
     defer srv.deinit();
 
@@ -643,8 +643,8 @@ test "get_source body does not start with function keyword" {
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), project_root, &gen.graph, null, .{});
-    gen.acquire();
-    defer gen.release();
+    const guard = gen.acquire();
+    defer guard.deinit();
     var srv = Server.init(&gen);
     defer srv.deinit();
 
@@ -682,8 +682,8 @@ test "get_source with context_lines is at least as long as without" {
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), project_root, &gen.graph, null, .{});
-    gen.acquire();
-    defer gen.release();
+    const guard = gen.acquire();
+    defer guard.deinit();
     var srv = Server.init(&gen);
     defer srv.deinit();
 
@@ -728,8 +728,8 @@ test "get_source for phantom node returns null source" {
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), project_root, &gen.graph, null, .{});
-    gen.acquire();
-    defer gen.release();
+    const guard = gen.acquire();
+    defer guard.deinit();
     var srv = Server.init(&gen);
     defer srv.deinit();
 
@@ -772,8 +772,8 @@ test "get_source for file node returns file content" {
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), project_root, &gen.graph, null, .{});
-    gen.acquire();
-    defer gen.release();
+    const guard = gen.acquire();
+    defer guard.deinit();
     var srv = Server.init(&gen);
     defer srv.deinit();
 
@@ -814,8 +814,8 @@ test "get_edges out direction" {
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), project_root, &gen.graph, null, .{});
-    gen.acquire();
-    defer gen.release();
+    const guard = gen.acquire();
+    defer guard.deinit();
     var srv = Server.init(&gen);
     defer srv.deinit();
 
@@ -854,8 +854,8 @@ test "get_edges in direction" {
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), project_root, &gen.graph, null, .{});
-    gen.acquire();
-    defer gen.release();
+    const guard = gen.acquire();
+    defer guard.deinit();
     var srv = Server.init(&gen);
     defer srv.deinit();
 
@@ -894,8 +894,8 @@ test "get_edges both has at least as many as out only" {
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), project_root, &gen.graph, null, .{});
-    gen.acquire();
-    defer gen.release();
+    const guard = gen.acquire();
+    defer guard.deinit();
     var srv = Server.init(&gen);
     defer srv.deinit();
 
@@ -940,8 +940,8 @@ test "get_edges with type filter and connected node info" {
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), project_root, &gen.graph, null, .{});
-    gen.acquire();
-    defer gen.release();
+    const guard = gen.acquire();
+    defer guard.deinit();
     var srv = Server.init(&gen);
     defer srv.deinit();
 
@@ -986,8 +986,8 @@ test "get_edges for isolated node returns empty" {
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), project_root, &gen.graph, null, .{});
-    gen.acquire();
-    defer gen.release();
+    const guard = gen.acquire();
+    defer guard.deinit();
     var srv = Server.init(&gen);
     defer srv.deinit();
 
@@ -1044,8 +1044,8 @@ test "path between connected nodes returns non-empty" {
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), project_root, &gen.graph, null, .{});
-    gen.acquire();
-    defer gen.release();
+    const guard = gen.acquire();
+    defer guard.deinit();
     var srv = Server.init(&gen);
     defer srv.deinit();
 
@@ -1083,8 +1083,8 @@ test "path between unconnected nodes returns empty" {
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), project_root, &gen.graph, null, .{});
-    gen.acquire();
-    defer gen.release();
+    const guard = gen.acquire();
+    defer guard.deinit();
     var srv = Server.init(&gen);
     defer srv.deinit();
 
@@ -1122,8 +1122,8 @@ test "path with max_depth zero returns empty" {
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), project_root, &gen.graph, null, .{});
-    gen.acquire();
-    defer gen.release();
+    const guard = gen.acquire();
+    defer guard.deinit();
     var srv = Server.init(&gen);
     defer srv.deinit();
 
@@ -1161,8 +1161,8 @@ test "path with edge_types filter returns only matching edges" {
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), project_root, &gen.graph, null, .{});
-    gen.acquire();
-    defer gen.release();
+    const guard = gen.acquire();
+    defer guard.deinit();
     var srv = Server.init(&gen);
     defer srv.deinit();
 
@@ -1205,8 +1205,8 @@ test "path with non-existent node" {
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), project_root, &gen.graph, null, .{});
-    gen.acquire();
-    defer gen.release();
+    const guard = gen.acquire();
+    defer guard.deinit();
     var srv = Server.init(&gen);
     defer srv.deinit();
 
@@ -1250,8 +1250,8 @@ test "cursor_create returns cursor_id and neighborhood" {
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), project_root, &gen.graph, null, .{});
-    gen.acquire();
-    defer gen.release();
+    const guard = gen.acquire();
+    defer guard.deinit();
     var srv = Server.init(&gen);
     defer srv.deinit();
 
@@ -1286,8 +1286,8 @@ test "cursor_create with start_node positions there" {
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), project_root, &gen.graph, null, .{});
-    gen.acquire();
-    defer gen.release();
+    const guard = gen.acquire();
+    defer guard.deinit();
     var srv = Server.init(&gen);
     defer srv.deinit();
 
@@ -1326,8 +1326,8 @@ test "cursor_move updates position" {
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), project_root, &gen.graph, null, .{});
-    gen.acquire();
-    defer gen.release();
+    const guard = gen.acquire();
+    defer guard.deinit();
     var srv = Server.init(&gen);
     defer srv.deinit();
 
@@ -1376,8 +1376,8 @@ test "cursor_close then move fails" {
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), project_root, &gen.graph, null, .{});
-    gen.acquire();
-    defer gen.release();
+    const guard = gen.acquire();
+    defer guard.deinit();
     var srv = Server.init(&gen);
     defer srv.deinit();
 
@@ -1437,8 +1437,8 @@ test "cursor_expand returns subgraph" {
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), project_root, &gen.graph, null, .{});
-    gen.acquire();
-    defer gen.release();
+    const guard = gen.acquire();
+    defer guard.deinit();
     var srv = Server.init(&gen);
     defer srv.deinit();
 
@@ -1492,8 +1492,8 @@ test "cursor_query with kind filter" {
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), project_root, &gen.graph, null, .{});
-    gen.acquire();
-    defer gen.release();
+    const guard = gen.acquire();
+    defer guard.deinit();
     var srv = Server.init(&gen);
     defer srv.deinit();
 
@@ -1541,8 +1541,8 @@ test "diff identical function with itself" {
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), project_root, &gen.graph, null, .{});
-    gen.acquire();
-    defer gen.release();
+    const guard = gen.acquire();
+    defer guard.deinit();
     var srv = Server.init(&gen);
     defer srv.deinit();
 
@@ -1579,8 +1579,8 @@ test "diff two different functions" {
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), project_root, &gen.graph, null, .{});
-    gen.acquire();
-    defer gen.release();
+    const guard = gen.acquire();
+    defer guard.deinit();
     var srv = Server.init(&gen);
     defer srv.deinit();
 
@@ -1621,8 +1621,8 @@ test "diff N nodes returns NxN matrix" {
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), project_root, &gen.graph, null, .{});
-    gen.acquire();
-    defer gen.release();
+    const guard = gen.acquire();
+    defer guard.deinit();
     var srv = Server.init(&gen);
     defer srv.deinit();
 
@@ -1676,8 +1676,8 @@ test "annotate sets tag and annotations returns it" {
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), project_root, &gen.graph, null, .{});
-    gen.acquire();
-    defer gen.release();
+    const guard = gen.acquire();
+    defer guard.deinit();
     var srv = Server.init(&gen);
     defer srv.deinit();
 
@@ -1736,8 +1736,8 @@ test "annotate with note" {
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), project_root, &gen.graph, null, .{});
-    gen.acquire();
-    defer gen.release();
+    const guard = gen.acquire();
+    defer guard.deinit();
     var srv = Server.init(&gen);
     defer srv.deinit();
 
@@ -1800,8 +1800,8 @@ test "annotate multiple nodes" {
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), project_root, &gen.graph, null, .{});
-    gen.acquire();
-    defer gen.release();
+    const guard = gen.acquire();
+    defer guard.deinit();
     var srv = Server.init(&gen);
     defer srv.deinit();
 
@@ -1866,8 +1866,8 @@ test "annotations filter by tag" {
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), project_root, &gen.graph, null, .{});
-    gen.acquire();
-    defer gen.release();
+    const guard = gen.acquire();
+    defer guard.deinit();
     var srv = Server.init(&gen);
     defer srv.deinit();
 
@@ -1936,8 +1936,8 @@ test "annotations on wrong cursor returns empty" {
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), project_root, &gen.graph, null, .{});
-    gen.acquire();
-    defer gen.release();
+    const guard = gen.acquire();
+    defer guard.deinit();
     var srv = Server.init(&gen);
     defer srv.deinit();
 
@@ -2030,8 +2030,8 @@ test "duplicates finds near-identical functions" {
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), project_root, &gen.graph, null, .{});
-    gen.acquire();
-    defer gen.release();
+    const guard = gen.acquire();
+    defer guard.deinit();
     var srv = Server.init(&gen);
     defer srv.deinit();
 
@@ -2067,8 +2067,8 @@ test "duplicates empty graph" {
     const allocator = std.testing.allocator;
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
     try gen.graph.freeze(gen.arena.allocator());
-    gen.acquire();
-    defer gen.release();
+    const guard = gen.acquire();
+    defer guard.deinit();
     var srv = Server.init(&gen);
     defer srv.deinit();
 
@@ -2102,8 +2102,8 @@ test "complexity returns top N sorted descending" {
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), project_root, &gen.graph, null, .{});
-    gen.acquire();
-    defer gen.release();
+    const guard = gen.acquire();
+    defer guard.deinit();
     var srv = Server.init(&gen);
     defer srv.deinit();
 
@@ -2135,8 +2135,8 @@ test "complexity empty graph" {
     const allocator = std.testing.allocator;
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
     try gen.graph.freeze(gen.arena.allocator());
-    gen.acquire();
-    defer gen.release();
+    const guard = gen.acquire();
+    defer guard.deinit();
     var srv = Server.init(&gen);
     defer srv.deinit();
 
@@ -2170,8 +2170,8 @@ test "dead_code finds unreferenced private function" {
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), project_root, &gen.graph, null, .{});
-    gen.acquire();
-    defer gen.release();
+    const guard = gen.acquire();
+    defer guard.deinit();
     var srv = Server.init(&gen);
     defer srv.deinit();
 
@@ -2217,8 +2217,8 @@ test "dead_code rust finds unreferenced private function, not Counter fields" {
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), project_root, &gen.graph, null, .{});
-    gen.acquire();
-    defer gen.release();
+    const guard = gen.acquire();
+    defer guard.deinit();
     var srv = Server.init(&gen);
     defer srv.deinit();
 
@@ -2260,8 +2260,8 @@ test "dead_code empty graph" {
     const allocator = std.testing.allocator;
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
     try gen.graph.freeze(gen.arena.allocator());
-    gen.acquire();
-    defer gen.release();
+    const guard = gen.acquire();
+    defer guard.deinit();
     var srv = Server.init(&gen);
     defer srv.deinit();
 
@@ -2295,8 +2295,8 @@ test "dependency_cycles detects import cycle" {
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), project_root, &gen.graph, null, .{});
-    gen.acquire();
-    defer gen.release();
+    const guard = gen.acquire();
+    defer guard.deinit();
     var srv = Server.init(&gen);
     defer srv.deinit();
 
@@ -2337,8 +2337,8 @@ test "dependency_cycles empty graph" {
     const allocator = std.testing.allocator;
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
     try gen.graph.freeze(gen.arena.allocator());
-    gen.acquire();
-    defer gen.release();
+    const guard = gen.acquire();
+    defer guard.deinit();
     var srv = Server.init(&gen);
     defer srv.deinit();
 
@@ -2372,8 +2372,8 @@ test "coupling coupled modules have score > 0" {
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), project_root, &gen.graph, null, .{});
-    gen.acquire();
-    defer gen.release();
+    const guard = gen.acquire();
+    defer guard.deinit();
     var srv = Server.init(&gen);
     defer srv.deinit();
 
@@ -2400,8 +2400,8 @@ test "coupling empty graph" {
     const allocator = std.testing.allocator;
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
     try gen.graph.freeze(gen.arena.allocator());
-    gen.acquire();
-    defer gen.release();
+    const guard = gen.acquire();
+    defer guard.deinit();
     var srv = Server.init(&gen);
     defer srv.deinit();
 
@@ -2435,8 +2435,8 @@ test "impact core function has dependents" {
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), project_root, &gen.graph, null, .{});
-    gen.acquire();
-    defer gen.release();
+    const guard = gen.acquire();
+    defer guard.deinit();
     var srv = Server.init(&gen);
     defer srv.deinit();
 
@@ -2466,8 +2466,8 @@ test "impact empty graph" {
     const allocator = std.testing.allocator;
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
     try gen.graph.freeze(gen.arena.allocator());
-    gen.acquire();
-    defer gen.release();
+    const guard = gen.acquire();
+    defer guard.deinit();
     var srv = Server.init(&gen);
     defer srv.deinit();
 
@@ -2522,8 +2522,8 @@ test "no analysis tool returns opinions" {
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), project_root, &gen.graph, null, .{});
-    gen.acquire();
-    defer gen.release();
+    const guard = gen.acquire();
+    defer guard.deinit();
     var srv = Server.init(&gen);
     defer srv.deinit();
 

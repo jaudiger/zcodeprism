@@ -27,19 +27,25 @@ pub const GraphGeneration = struct {
         };
     }
 
-    /// Increment the reference count (a reader has acquired this generation).
-    pub fn acquire(self: *GraphGeneration) void {
-        _ = self.ref_count.fetchAdd(1, .monotonic);
-    }
+    /// RAII guard that decrements the reference count on deinit.
+    pub const Guard = struct {
+        gen: *GraphGeneration,
 
-    /// Decrement the reference count. When it reaches zero, frees the arena.
-    pub fn release(self: *GraphGeneration) void {
-        const prev = self.ref_count.fetchSub(1, .monotonic);
-        if (prev == 1) {
-            // Last reference released, free the arena
-            self.graph.deinit(self.arena.allocator());
-            self.arena.deinit();
+        /// Decrement the reference count. When it reaches zero, frees the arena.
+        pub fn deinit(self: Guard) void {
+            const prev = self.gen.ref_count.fetchSub(1, .monotonic);
+            if (prev == 1) {
+                self.gen.graph.deinit(self.gen.arena.allocator());
+                self.gen.arena.deinit();
+            }
         }
+    };
+
+    /// Increment the reference count and return a guard that will release it.
+    pub fn acquire(self: *GraphGeneration) Guard {
+        const prev = self.ref_count.fetchAdd(1, .monotonic);
+        std.debug.assert(prev != std.math.maxInt(u32));
+        return .{ .gen = self };
     }
 };
 
@@ -48,70 +54,68 @@ test "acquire increments refcount" {
     var gen = GraphGeneration.init(std.testing.allocator, 1, "abcdef123456".*);
 
     // Act
-    gen.acquire();
+    const guard = gen.acquire();
 
     // Assert
     try std.testing.expectEqual(@as(u32, 1), gen.ref_count.load(.monotonic));
 
     // Cleanup
-    gen.release();
+    guard.deinit();
 }
 
-test "release decrements refcount" {
+test "guard deinit decrements refcount" {
     // Arrange
     var gen = GraphGeneration.init(std.testing.allocator, 1, "abcdef123456".*);
-    gen.acquire();
-    gen.acquire();
+    const g1 = gen.acquire();
+    const g2 = gen.acquire();
 
     // Act
-    gen.release();
+    g2.deinit();
 
     // Assert
     try std.testing.expectEqual(@as(u32, 1), gen.ref_count.load(.monotonic));
 
     // Cleanup
-    gen.release();
+    g1.deinit();
 }
 
-test "release on last ref frees arena" {
+test "last guard deinit frees arena" {
     // Arrange
     var gen = GraphGeneration.init(std.testing.allocator, 1, "abcdef123456".*);
-    gen.acquire();
+    const guard = gen.acquire();
 
-    // Act: release the last reference, arena should be freed
-    gen.release();
+    // Act
+    guard.deinit();
 
-    // Assert: ref_count is 0 (arena freed, but the struct itself is on the stack)
+    // Assert
     try std.testing.expectEqual(@as(u32, 0), gen.ref_count.load(.monotonic));
-    // No leak detected by std.testing.allocator confirms arena was freed
 }
 
-test "multiple acquires" {
+test "multiple acquires and releases" {
     // Arrange
     var gen = GraphGeneration.init(std.testing.allocator, 1, "abcdef123456".*);
 
-    // Act: acquire 3 times
-    gen.acquire();
-    gen.acquire();
-    gen.acquire();
+    // Act
+    const g1 = gen.acquire();
+    const g2 = gen.acquire();
+    const g3 = gen.acquire();
 
     // Assert
     try std.testing.expectEqual(@as(u32, 3), gen.ref_count.load(.monotonic));
 
-    // Release all 3
-    gen.release();
+    g3.deinit();
     try std.testing.expectEqual(@as(u32, 2), gen.ref_count.load(.monotonic));
-    gen.release();
+    g2.deinit();
     try std.testing.expectEqual(@as(u32, 1), gen.ref_count.load(.monotonic));
-    gen.release();
+    g1.deinit();
     try std.testing.expectEqual(@as(u32, 0), gen.ref_count.load(.monotonic));
 }
 
 test "generation_id is set" {
     // Arrange
     var gen = GraphGeneration.init(std.testing.allocator, 42, "abcdef123456".*);
-    gen.acquire();
-    defer gen.release();
+    const guard = gen.acquire();
+    defer guard.deinit();
 
     // Assert
     try std.testing.expectEqual(@as(u64, 42), gen.generation_id);

@@ -639,8 +639,8 @@ fn runServe(stderr: *std.Io.Writer, workspace_arg: ?[]const u8) void {
     const hash_u64 = hasher.final();
     @memcpy(gen.source_hash[0..8], std.mem.asBytes(&hash_u64));
 
-    gen.acquire();
-    defer gen.release();
+    const guard = gen.acquire();
+    defer guard.deinit();
 
     var server = mcp.server.Server.init(&gen);
     defer server.deinit();
