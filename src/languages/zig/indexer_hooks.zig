@@ -267,7 +267,7 @@ pub fn resolvePhantoms(
 
         // Record this import_decl's position as the canonical usage site for the module phantom.
         // graph nodes store 1-based line numbers; LSP positions are 0-based.
-        const decl_node = graph.nodes.items[@intFromEnum(entry.import_decl_id)];
+        const decl_node = graph.getNode(entry.import_decl_id) orelse continue;
         if (decl_node.line_start) |ls| {
             try phantom.recordUsageSite(allocator, phantom_id, .{
                 .file_path = file_path,
@@ -341,9 +341,10 @@ fn dispatchWorklist(
                         result.edges_promoted += 1;
                         result.definition_successes += 1;
                         result.worklist_resolved += 1;
+                        const target_name = if (graph.getNode(target_id)) |n| n.name else "?";
                         logger.debug("promoted call edge via definition", &.{
                             logging.Field.string("hint", entry.hint_name orelse "?"),
-                            logging.Field.string("target", graph.nodes.items[@intFromEnum(target_id)].name),
+                            logging.Field.string("target", target_name),
                         });
                     }
                     break;

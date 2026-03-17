@@ -434,7 +434,7 @@ fn handleCall(allocator: std.mem.Allocator, sctx: *const ScanContext, call_node:
                 const pos = call_node.startPoint();
                 try sctx.wl.append(allocator, .{
                     .source_node_id = sctx.caller_id,
-                    .file_path = sctx.g.nodes.items[@intFromEnum(sctx.caller_id)].file_path orelse "",
+                    .file_path = if (sctx.g.getNode(sctx.caller_id)) |n| n.file_path orelse "" else "",
                     .line = pos.row,
                     .col = pos.column,
                     .query_kind = .definition,
@@ -472,7 +472,7 @@ fn handleCall(allocator: std.mem.Allocator, sctx: *const ScanContext, call_node:
                             const pos = call_node.startPoint();
                             try sctx.wl.append(allocator, .{
                                 .source_node_id = sctx.caller_id,
-                                .file_path = sctx.g.nodes.items[@intFromEnum(sctx.caller_id)].file_path orelse "",
+                                .file_path = if (sctx.g.getNode(sctx.caller_id)) |n| n.file_path orelse "" else "",
                                 .line = pos.row,
                                 .col = pos.column,
                                 .query_kind = .definition,
@@ -501,7 +501,7 @@ fn handleCall(allocator: std.mem.Allocator, sctx: *const ScanContext, call_node:
                         const pos = call_node.startPoint();
                         try sctx.wl.append(allocator, .{
                             .source_node_id = sctx.caller_id,
-                            .file_path = sctx.g.nodes.items[@intFromEnum(sctx.caller_id)].file_path orelse "",
+                            .file_path = if (sctx.g.getNode(sctx.caller_id)) |n| n.file_path orelse "" else "",
                             .line = pos.row,
                             .col = pos.column,
                             .query_kind = .definition,
@@ -531,7 +531,7 @@ fn handleFieldAccess(allocator: std.mem.Allocator, sctx: *const ScanContext, fie
         const pos = field_expr.startPoint();
         try sctx.wl.append(allocator, .{
             .source_node_id = sctx.caller_id,
-            .file_path = sctx.g.nodes.items[@intFromEnum(sctx.caller_id)].file_path orelse "",
+            .file_path = if (sctx.g.getNode(sctx.caller_id)) |n| n.file_path orelse "" else "",
             .line = pos.row,
             .col = pos.column,
             .query_kind = .type_definition,
@@ -989,7 +989,7 @@ fn emitFieldTypeRef(allocator: std.mem.Allocator, fctx: *const FieldScanContext,
         const pos = id_node.startPoint();
         try fctx.wl.append(allocator, .{
             .source_node_id = fctx.owner_id,
-            .file_path = fctx.g.nodes.items[@intFromEnum(fctx.owner_id)].file_path orelse "",
+            .file_path = if (fctx.g.getNode(fctx.owner_id)) |n| n.file_path orelse "" else "",
             .line = pos.row,
             .col = pos.column,
             .query_kind = .definition,
@@ -1022,7 +1022,7 @@ fn handleFieldQualifiedType(allocator: std.mem.Allocator, fctx: *const FieldScan
     const pos = field_expr.startPoint();
     try fctx.wl.append(allocator, .{
         .source_node_id = fctx.owner_id,
-        .file_path = fctx.g.nodes.items[@intFromEnum(fctx.owner_id)].file_path orelse "",
+        .file_path = if (fctx.g.getNode(fctx.owner_id)) |n| n.file_path orelse "" else "",
         .line = pos.row,
         .col = pos.column,
         .query_kind = .definition,
