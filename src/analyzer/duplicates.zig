@@ -44,6 +44,21 @@ pub const DuplicateOptions = struct {
     limit: u32 = 10,
 };
 
+pub const Fingerprint = [512]u16;
+
+pub const FuzzyCandidate = struct {
+    node_id: NodeId,
+    structural_hash: u32,
+    fingerprint: Fingerprint,
+    valid: bool,
+};
+
+pub const FuzzyDuplicateOptions = struct {
+    threshold: f64 = 0.75,
+    offset: u32 = 0,
+    limit: u32 = 10,
+};
+
 /// Find groups of functions with identical structural hashes.
 pub fn findDuplicates(allocator: std.mem.Allocator, g: *const Graph, options: DuplicateOptions) !DuplicateResult {
     const scope_filter: ?Scope = if (options.scope) |s| Scope.parse(s) else null;
@@ -156,4 +171,130 @@ pub fn findDuplicates(allocator: std.mem.Allocator, g: *const Graph, options: Du
     for (groups[end..total]) |gr| allocator.free(gr.members);
     allocator.free(groups);
     return .{ .total_groups = total, .groups = page };
+}
+
+/// Cluster pre-fingerprinted candidates by Jaccard similarity using union-find.
+pub fn findFuzzyDuplicates(allocator: std.mem.Allocator, g: *const Graph, candidates: []const FuzzyCandidate, options: FuzzyDuplicateOptions) !DuplicateResult {
+    const nc = candidates.len;
+    if (nc == 0) return .{ .total_groups = 0, .groups = &.{} };
+
+    const parents = try allocator.alloc(usize, nc);
+    defer allocator.free(parents);
+    for (0..nc) |i| parents[i] = i;
+
+    const min_sim_arr = try allocator.alloc(f64, nc);
+    defer allocator.free(min_sim_arr);
+    @memset(min_sim_arr, 1.0);
+
+    // Pre-merge candidates with identical structural hashes (exact duplicates).
+    var hash_rep = std.AutoHashMapUnmanaged(u32, usize){};
+    defer hash_rep.deinit(allocator);
+    for (0..nc) |i| {
+        const h = candidates[i].structural_hash;
+        if (h == 0) continue;
+        const gop = try hash_rep.getOrPut(allocator, h);
+        if (gop.found_existing) {
+            const ri = unionFindRoot(parents, gop.value_ptr.*);
+            const rj = unionFindRoot(parents, i);
+            if (ri != rj) parents[ri] = rj;
+        } else {
+            gop.value_ptr.* = i;
+        }
+    }
+
+    // Pairwise Jaccard on precomputed fingerprints.
+    for (0..nc) |i| {
+        if (!candidates[i].valid) continue;
+        for (i + 1..nc) |j| {
+            if (!candidates[j].valid) continue;
+            const sim = countsJaccard(&candidates[i].fingerprint, &candidates[j].fingerprint);
+            if (sim >= options.threshold) {
+                const ri = unionFindRoot(parents, i);
+                const rj = unionFindRoot(parents, j);
+                if (ri != rj) {
+                    parents[ri] = rj;
+                    min_sim_arr[rj] = @min(@min(min_sim_arr[ri], min_sim_arr[rj]), sim);
+                } else {
+                    min_sim_arr[rj] = @min(min_sim_arr[rj], sim);
+                }
+            }
+        }
+    }
+
+    // Collect groups: map root -> list of member indices.
+    var group_map = std.AutoHashMapUnmanaged(usize, std.ArrayList(NodeId)){};
+    defer {
+        var it = group_map.iterator();
+        while (it.next()) |entry| entry.value_ptr.deinit(allocator);
+        group_map.deinit(allocator);
+    }
+    for (0..nc) |i| {
+        const root = unionFindRoot(parents, i);
+        const gop = try group_map.getOrPut(allocator, root);
+        if (!gop.found_existing) gop.value_ptr.* = .{};
+        try gop.value_ptr.append(allocator, candidates[i].node_id);
+    }
+
+    // Build sorted group list (only multi-member groups).
+    var fuzzy_groups = std.ArrayList(DuplicateGroup){};
+    defer fuzzy_groups.deinit(allocator);
+    var gmap_it = group_map.iterator();
+    while (gmap_it.next()) |entry| {
+        const members_list = entry.value_ptr;
+        if (members_list.items.len < 2) continue;
+        const root = entry.key_ptr.*;
+        const members = try allocator.alloc(DuplicateMember, members_list.items.len);
+        for (members_list.items, 0..) |nid, mi| {
+            const n = g.getNode(nid) orelse continue;
+            members[mi] = .{ .node_id = nid, .name = n.name, .file_path = n.file_path };
+        }
+        try fuzzy_groups.append(allocator, .{
+            .structural_hash = 0,
+            .similarity = min_sim_arr[root],
+            .members = members,
+        });
+    }
+    std.mem.sort(DuplicateGroup, fuzzy_groups.items, {}, struct {
+        fn lt(_: void, a: DuplicateGroup, b: DuplicateGroup) bool {
+            return a.members.len > b.members.len;
+        }
+    }.lt);
+
+    const total: u32 = @intCast(fuzzy_groups.items.len);
+    const off = @min(options.offset, total);
+    const end = @min(off + options.limit, total);
+    const page_len = end - off;
+
+    if (page_len == 0) {
+        for (fuzzy_groups.items) |gr| allocator.free(gr.members);
+        return .{ .total_groups = total, .groups = &.{} };
+    }
+
+    const page = try allocator.alloc(DuplicateGroup, page_len);
+    @memcpy(page, fuzzy_groups.items[off..end]);
+    for (fuzzy_groups.items[0..off]) |gr| allocator.free(gr.members);
+    for (fuzzy_groups.items[end..total]) |gr| allocator.free(gr.members);
+    return .{ .total_groups = total, .groups = page };
+}
+
+/// Multiset Jaccard similarity over two pre-computed frequency arrays.
+fn countsJaccard(a: *const Fingerprint, b: *const Fingerprint) f64 {
+    var intersection: u64 = 0;
+    var union_sum: u64 = 0;
+    for (0..512) |i| {
+        intersection += @min(a[i], b[i]);
+        union_sum += @max(a[i], b[i]);
+    }
+    if (union_sum == 0) return 1.0;
+    return @as(f64, @floatFromInt(intersection)) / @as(f64, @floatFromInt(union_sum));
+}
+
+/// Path-compressing union-find root lookup.
+fn unionFindRoot(parents: []usize, i: usize) usize {
+    var x = i;
+    while (parents[x] != x) {
+        parents[x] = parents[parents[x]];
+        x = parents[x];
+    }
+    return x;
 }

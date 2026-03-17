@@ -1533,16 +1533,6 @@ fn handleAnnotations(allocator: std.mem.Allocator, cursor_mgr: *CursorManager, p
 
 // -- analysis.duplicates --
 
-/// Path-compressing union-find root lookup.
-fn unionFindRoot(parents: []usize, i: usize) usize {
-    var x = i;
-    while (parents[x] != x) {
-        parents[x] = parents[parents[x]];
-        x = parents[x];
-    }
-    return x;
-}
-
 /// Emit total_groups + groups array into stream, optionally including source text.
 fn writeDuplicateGroups(
     stream: *std.json.Stringify,
@@ -1591,6 +1581,33 @@ fn writeDuplicateGroups(
     stream.endArray() catch return error.OutOfMemory;
 }
 
+/// Extract source, parse the AST, and build a frequency fingerprint for one node.
+fn buildFuzzyCandidate(allocator: std.mem.Allocator, g: *const Graph, nid: NodeId, node: Node, structural_hash: u32) duplicates_mod.FuzzyCandidate {
+    const src = extractNodeSource(allocator, g, &node) orelse
+        return .{ .node_id = nid, .structural_hash = structural_hash, .fingerprint = .{0} ** 512, .valid = false };
+    defer allocator.free(src);
+
+    const lang = node.language orelse
+        return .{ .node_id = nid, .structural_hash = structural_hash, .fingerprint = .{0} ** 512, .valid = false };
+
+    const ts_lang = switch (lang) {
+        .zig => tree_sitter_api.tree_sitter_zig(),
+        .rust => tree_sitter_api.tree_sitter_rust(),
+    };
+    const tree = tree_sitter_api.parseSource(ts_lang, src) orelse
+        return .{ .node_id = nid, .structural_hash = structural_hash, .fingerprint = .{0} ** 512, .valid = false };
+    defer tree.destroy();
+
+    var kind_buf: [4096]u16 = undefined;
+    const kinds = flattenKindIds(tree.rootNode(), &kind_buf);
+
+    var fp: duplicates_mod.Fingerprint = .{0} ** 512;
+    for (kinds) |k| {
+        fp[k % 512] +|= 1;
+    }
+    return .{ .node_id = nid, .structural_hash = structural_hash, .fingerprint = fp, .valid = true };
+}
+
 fn handleDuplicates(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?std.json.Value) HandlerError![]const u8 {
     const args = getArgs(params);
     const g = &gen.graph;
@@ -1619,17 +1636,16 @@ fn handleDuplicates(allocator: std.mem.Allocator, gen: *GraphGeneration, params:
         defer result.deinit(allocator);
         try writeDuplicateGroups(&stream, g, allocator, result.groups, result.total_groups, include_source);
     } else {
-        // Fuzzy mode: pairwise Jaccard similarity with union-find clustering.
+        // Fuzzy mode: build fingerprinted candidates, delegate clustering to analyzer.
         const lang_filter = if (language_str) |ls| parseLanguage(ls) else null;
         const scope_str = scope;
-
         const fuzzy_candidate_cap: usize = 300;
 
-        var candidates = std.ArrayList(NodeId){};
-        defer candidates.deinit(allocator);
+        var fuzzy_candidates = std.ArrayList(duplicates_mod.FuzzyCandidate){};
+        defer fuzzy_candidates.deinit(allocator);
 
         for (g.nodes.items, 0..) |n, i| {
-            if (candidates.items.len >= fuzzy_candidate_cap) break;
+            if (fuzzy_candidates.items.len >= fuzzy_candidate_cap) break;
             if (n.kind != .function) continue;
             if (n.external != .none) continue;
             if (lang_filter) |lf| {
@@ -1641,80 +1657,18 @@ fn handleDuplicates(allocator: std.mem.Allocator, gen: *GraphGeneration, params:
             }
             const m = n.metrics orelse continue;
             if (m.lines < min_lines) continue;
-            try candidates.append(allocator, @enumFromInt(i));
+
+            const nid: NodeId = @enumFromInt(i);
+            try fuzzy_candidates.append(allocator, buildFuzzyCandidate(allocator, g, nid, n, m.structural_hash));
         }
 
-        const nc = candidates.items.len;
-        const parents = try allocator.alloc(usize, nc);
-        defer allocator.free(parents);
-        for (0..nc) |i| parents[i] = i;
-
-        const min_sim_arr = try allocator.alloc(f64, nc);
-        defer allocator.free(min_sim_arr);
-        @memset(min_sim_arr, 1.0);
-
-        for (0..nc) |i| {
-            for (i + 1..nc) |j| {
-                const sim = computeNodeSimilarity(allocator, g, candidates.items[i], candidates.items[j]);
-                if (sim >= threshold) {
-                    const ri = unionFindRoot(parents, i);
-                    const rj = unionFindRoot(parents, j);
-                    if (ri != rj) {
-                        parents[ri] = rj;
-                        min_sim_arr[rj] = @min(@min(min_sim_arr[ri], min_sim_arr[rj]), sim);
-                    } else {
-                        min_sim_arr[rj] = @min(min_sim_arr[rj], sim);
-                    }
-                }
-            }
-        }
-
-        // Collect groups: map root -> list of member indices.
-        var group_map = std.AutoHashMapUnmanaged(usize, std.ArrayList(NodeId)){};
-        defer {
-            var it = group_map.iterator();
-            while (it.next()) |entry| entry.value_ptr.deinit(allocator);
-            group_map.deinit(allocator);
-        }
-        for (0..nc) |i| {
-            const root = unionFindRoot(parents, i);
-            const gop = try group_map.getOrPut(allocator, root);
-            if (!gop.found_existing) gop.value_ptr.* = .{};
-            try gop.value_ptr.append(allocator, candidates.items[i]);
-        }
-
-        // Build sorted group list (only multi-member groups).
-        var fuzzy_groups = std.ArrayList(duplicates_mod.DuplicateGroup){};
-        defer {
-            for (fuzzy_groups.items) |gr| allocator.free(gr.members);
-            fuzzy_groups.deinit(allocator);
-        }
-        var gmap_it = group_map.iterator();
-        while (gmap_it.next()) |entry| {
-            const members_list = entry.value_ptr;
-            if (members_list.items.len < 2) continue;
-            const root = entry.key_ptr.*;
-            const members = try allocator.alloc(duplicates_mod.DuplicateMember, members_list.items.len);
-            for (members_list.items, 0..) |nid, mi| {
-                const n = g.getNode(nid) orelse continue;
-                members[mi] = .{ .node_id = nid, .name = n.name, .file_path = n.file_path };
-            }
-            try fuzzy_groups.append(allocator, .{
-                .structural_hash = 0,
-                .similarity = min_sim_arr[root],
-                .members = members,
-            });
-        }
-        std.mem.sort(duplicates_mod.DuplicateGroup, fuzzy_groups.items, {}, struct {
-            fn lt(_: void, a: duplicates_mod.DuplicateGroup, b: duplicates_mod.DuplicateGroup) bool {
-                return a.members.len > b.members.len;
-            }
-        }.lt);
-
-        const total: u32 = @intCast(fuzzy_groups.items.len);
-        const off = @min(offset, total);
-        const end = @min(off + limit, total);
-        try writeDuplicateGroups(&stream, g, allocator, fuzzy_groups.items[off..end], total, include_source);
+        const result = duplicates_mod.findFuzzyDuplicates(allocator, g, fuzzy_candidates.items, .{
+            .threshold = threshold,
+            .offset = offset,
+            .limit = limit,
+        }) catch return error.OutOfMemory;
+        defer result.deinit(allocator);
+        try writeDuplicateGroups(&stream, g, allocator, result.groups, result.total_groups, include_source);
     }
 
     stream.endObject() catch return error.OutOfMemory;
