@@ -4,7 +4,7 @@ const phantom_mod = @import("../../core/phantom.zig");
 const source_scan = @import("../../parser/source_scan.zig");
 const source_utils = @import("source_utils.zig");
 const types = @import("../../core/types.zig");
-const eb = @import("edge_builder.zig");
+const node_utils = @import("node_utils.zig");
 
 const Graph = graph_mod.Graph;
 const PhantomManager = phantom_mod.PhantomManager;
@@ -88,7 +88,7 @@ fn findTraitInGraph(graph: *const Graph, name: []const u8, file_idx: usize, scop
 
     // Same-file scope.
     for (items[file_idx..clamped_end], file_idx..) |n, idx| {
-        if (eb.isTraitNode(n) and std.mem.eql(u8, n.name, bare)) {
+        if (node_utils.isTraitNode(n) and std.mem.eql(u8, n.name, bare)) {
             return @enumFromInt(idx);
         }
     }
@@ -101,7 +101,7 @@ fn findTraitInGraph(graph: *const Graph, name: []const u8, file_idx: usize, scop
         for (graph_index.imports.targetsOf(file_id)) |target_id| {
             for (scope_index.childrenOf(target_id)) |child_idx| {
                 const n = items[child_idx];
-                if (!eb.isTraitNode(n)) continue;
+                if (!node_utils.isTraitNode(n)) continue;
                 if (!std.mem.eql(u8, n.name, bare)) continue;
                 import_match = @enumFromInt(child_idx);
                 import_match_count += 1;
@@ -116,7 +116,7 @@ fn findTraitInGraph(graph: *const Graph, name: []const u8, file_idx: usize, scop
     var match_count: usize = 0;
     for (name_index.findByName(bare)) |idx| {
         const n = items[idx];
-        if (!eb.isTraitNode(n)) continue;
+        if (!node_utils.isTraitNode(n)) continue;
         match = @enumFromInt(idx);
         match_count += 1;
         if (match_count > 1) return null;
@@ -133,7 +133,7 @@ fn findTypeInGraph(graph: *const Graph, name: []const u8, file_idx: usize, scope
 
     // Same-file scope.
     for (items[file_idx..clamped_end], file_idx..) |n, idx| {
-        if (eb.isTypeOrAliasNode(n) and std.mem.eql(u8, n.name, name)) {
+        if (node_utils.isTypeOrAliasNode(n) and std.mem.eql(u8, n.name, name)) {
             return @enumFromInt(idx);
         }
     }
@@ -143,7 +143,7 @@ fn findTypeInGraph(graph: *const Graph, name: []const u8, file_idx: usize, scope
     var match_count: usize = 0;
     for (name_index.findByName(name)) |idx| {
         const n = items[idx];
-        if (!eb.isTypeOrAliasNode(n)) continue;
+        if (!node_utils.isTypeOrAliasNode(n)) continue;
         match = @enumFromInt(idx);
         match_count += 1;
         if (match_count > 1) return null;
