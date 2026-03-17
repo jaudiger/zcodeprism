@@ -51,24 +51,24 @@ const ScanContext = struct {
     self_type_id: ?NodeId = null,
 };
 
-fn addResolvedEdges(allocator: std.mem.Allocator, sctx: *const ScanContext, target_file_id: NodeId, chain: []const []const u8, is_call: bool) !void {
+fn addResolvedEdges(allocator: std.mem.Allocator, sctx: *const ScanContext, target_file_id: NodeId, chain: []const []const u8, is_call: bool) !bool {
     const rctx = shared_resolve.ResolveContext{
         .graph_index = sctx.graph_index,
         .log = sctx.log,
         .resolve_return_type = cf.resolveReturnTypeScope,
         .find_in_type_scope = findMethodInImplBlocks,
     };
-    try shared_resolve.addResolvedEdges(allocator, sctx.graph, sctx.caller_id, target_file_id, chain, is_call, &rctx);
+    return try shared_resolve.addResolvedEdges(allocator, sctx.graph, sctx.caller_id, target_file_id, chain, is_call, &rctx);
 }
 
-fn resolveOriginCall(allocator: std.mem.Allocator, sctx: *const ScanContext, origin: cf.SymbolOrigin, call_chain: []const []const u8, is_call: bool) !void {
+fn resolveOriginCall(allocator: std.mem.Allocator, sctx: *const ScanContext, origin: cf.SymbolOrigin, call_chain: []const []const u8, is_call: bool) !bool {
     const rctx = shared_resolve.ResolveContext{
         .graph_index = sctx.graph_index,
         .log = sctx.log,
         .resolve_return_type = cf.resolveReturnTypeScope,
         .find_in_type_scope = findMethodInImplBlocks,
     };
-    try shared_resolve.resolveOriginCall(allocator, sctx.graph, sctx.caller_id, origin, call_chain, is_call, &rctx);
+    return try shared_resolve.resolveOriginCall(allocator, sctx.graph, sctx.caller_id, origin, call_chain, is_call, &rctx);
 }
 
 /// Walk the AST to discover edges (calls, uses_type, implements).
@@ -462,7 +462,7 @@ fn scanFieldTypesRecursive(
                 }
             }
         } else if (kid == k.scoped_type_identifier) {
-            try resolveScopedFieldType(allocator, graph, source, child, owner_id, k, edge_ctx, graph_index, log);
+            try resolveScopedFieldType(allocator, graph, source, child, owner_id, k, edge_ctx, graph_index, wl, log);
         } else if (kid != k.attribute_item) {
             try scanFieldTypesRecursive(allocator, graph, source, child, owner_id, k, edge_ctx, graph_index, phantom_mgr, wl, log);
         }
@@ -478,6 +478,7 @@ fn resolveScopedFieldType(
     k: *const KindIds,
     edge_ctx: *const EdgeContext,
     graph_index: *const GraphIndex,
+    wl: *LspWorklist,
     log: Logger,
 ) !void {
     var segments: [cf.max_chain_depth][]const u8 = undefined;
@@ -491,7 +492,18 @@ fn resolveScopedFieldType(
     if (findTypeDefByNameScoped(graph, qualifier, edge_ctx.scope_start, edge_ctx.scope_end, &graph_index.scope) != null) return;
 
     // Resolve through import map for cross-file types.
-    const origin = edge_ctx.findImportOrigin(qualifier) orelse return;
+    const origin = edge_ctx.findImportOrigin(qualifier) orelse {
+        const pos = leafIdentifierPos(scoped_node, k);
+        try wl.append(allocator, .{
+            .source_node_id = owner_id,
+            .file_path = graph.nodes.items[@intFromEnum(owner_id)].file_path orelse "",
+            .line = pos.row,
+            .col = pos.column,
+            .query_kind = .type_definition,
+            .hint_name = segments[seg_count - 1],
+        });
+        return;
+    };
 
     var resolve_chain: [cf.max_chain_depth][]const u8 = undefined;
     var len: usize = 0;
@@ -522,11 +534,23 @@ fn resolveScopedFieldType(
         &rctx,
         &edge_buf,
     );
-    for (edge_buf[0..edge_count]) |edge| {
-        _ = try graph.addEdgeIfNew(allocator, .{
-            .source_id = owner_id,
-            .target_id = edge.target_id,
-            .edge_type = edge.edge_type,
+    if (edge_count > 0) {
+        for (edge_buf[0..edge_count]) |edge| {
+            _ = try graph.addEdgeIfNew(allocator, .{
+                .source_id = owner_id,
+                .target_id = edge.target_id,
+                .edge_type = edge.edge_type,
+            });
+        }
+    } else {
+        const pos = leafIdentifierPos(scoped_node, k);
+        try wl.append(allocator, .{
+            .source_node_id = owner_id,
+            .file_path = graph.nodes.items[@intFromEnum(owner_id)].file_path orelse "",
+            .line = pos.row,
+            .col = pos.column,
+            .query_kind = .type_definition,
+            .hint_name = segments[seg_count - 1],
         });
     }
 }
@@ -582,9 +606,18 @@ fn handleCall(allocator: std.mem.Allocator, sctx: *const ScanContext, call_node:
         if (findFunctionByNameScoped(sctx.graph, name, sctx.edge_ctx.scope_start, sctx.edge_ctx.scope_end, sctx.caller_parent_id, &sctx.graph_index.scope)) |target_id| {
             _ = try sctx.graph.addEdgeIfNew(allocator, .{ .source_id = sctx.caller_id, .target_id = target_id, .edge_type = .calls });
         } else if (sctx.edge_ctx.findImportOrigin(name)) |origin| {
-            try addResolvedEdges(allocator, sctx, origin.file_id, origin.chain, true);
+            if (!try addResolvedEdges(allocator, sctx, origin.file_id, origin.chain, true)) {
+                const pos = call_node.startPoint();
+                try sctx.wl.append(allocator, .{
+                    .source_node_id = sctx.caller_id,
+                    .file_path = sctx.graph.nodes.items[@intFromEnum(sctx.caller_id)].file_path orelse "",
+                    .line = pos.row,
+                    .col = pos.column,
+                    .query_kind = .definition,
+                    .hint_name = name,
+                });
+            }
         } else {
-            // Append unresolved bare call to the worklist.
             const pos = call_node.startPoint();
             try sctx.wl.append(allocator, .{
                 .source_node_id = sctx.caller_id,
@@ -630,6 +663,16 @@ fn resolveScopedCall(allocator: std.mem.Allocator, sctx: *const ScanContext, sco
             _ = try sctx.graph.addEdgeIfNew(allocator, .{ .source_id = sctx.caller_id, .target_id = target_id, .edge_type = .calls });
             return;
         }
+        const pos = leafIdentifierPos(scoped_node, sctx.k);
+        try sctx.wl.append(allocator, .{
+            .source_node_id = sctx.caller_id,
+            .file_path = sctx.graph.nodes.items[@intFromEnum(sctx.caller_id)].file_path orelse "",
+            .line = pos.row,
+            .col = pos.column,
+            .query_kind = .definition,
+            .hint_name = method_name,
+        });
+        return;
     }
 
     if (sctx.edge_ctx.findImportOrigin(qualifier)) |origin| {
@@ -646,9 +689,19 @@ fn resolveScopedCall(allocator: std.mem.Allocator, sctx: *const ScanContext, sco
             len += 1;
         }
         if (len > 0) {
-            try addResolvedEdges(allocator, sctx, origin.file_id, resolve_chain[0..len], true);
+            if (try addResolvedEdges(allocator, sctx, origin.file_id, resolve_chain[0..len], true)) return;
         }
     }
+
+    const pos = leafIdentifierPos(scoped_node, sctx.k);
+    try sctx.wl.append(allocator, .{
+        .source_node_id = sctx.caller_id,
+        .file_path = sctx.graph.nodes.items[@intFromEnum(sctx.caller_id)].file_path orelse "",
+        .line = pos.row,
+        .col = pos.column,
+        .query_kind = .definition,
+        .hint_name = method_name,
+    });
 }
 
 /// Resolve obj.method() field expression calls using TypeEnv lookups.
@@ -679,17 +732,47 @@ fn resolveFieldCall(allocator: std.mem.Allocator, sctx: *const ScanContext, fiel
             }
             if (findFunctionByNameScoped(sctx.graph, name, scope_start, scope_end, sctx.caller_parent_id, &sctx.graph_index.scope)) |target_id| {
                 _ = try sctx.graph.addEdgeIfNew(allocator, .{ .source_id = sctx.caller_id, .target_id = target_id, .edge_type = .calls });
+                return;
             }
+            const pos = leafIdentifierPos(field_node, sctx.k);
+            try sctx.wl.append(allocator, .{
+                .source_node_id = sctx.caller_id,
+                .file_path = sctx.graph.nodes.items[@intFromEnum(sctx.caller_id)].file_path orelse "",
+                .line = pos.row,
+                .col = pos.column,
+                .query_kind = .definition,
+                .hint_name = name,
+            });
             return;
         }
 
         if (sctx.type_env.cross_file.get(root_name)) |target_file_id| {
-            try addResolvedEdges(allocator, sctx, target_file_id, &.{name}, true);
+            if (!try addResolvedEdges(allocator, sctx, target_file_id, &.{name}, true)) {
+                const pos = leafIdentifierPos(field_node, sctx.k);
+                try sctx.wl.append(allocator, .{
+                    .source_node_id = sctx.caller_id,
+                    .file_path = sctx.graph.nodes.items[@intFromEnum(sctx.caller_id)].file_path orelse "",
+                    .line = pos.row,
+                    .col = pos.column,
+                    .query_kind = .definition,
+                    .hint_name = name,
+                });
+            }
             return;
         }
 
         if (sctx.type_env.findParamOrigin(root_name)) |origin| {
-            try resolveOriginCall(allocator, sctx, origin, &.{name}, true);
+            if (!try resolveOriginCall(allocator, sctx, origin, &.{name}, true)) {
+                const pos = leafIdentifierPos(field_node, sctx.k);
+                try sctx.wl.append(allocator, .{
+                    .source_node_id = sctx.caller_id,
+                    .file_path = sctx.graph.nodes.items[@intFromEnum(sctx.caller_id)].file_path orelse "",
+                    .line = pos.row,
+                    .col = pos.column,
+                    .query_kind = .definition,
+                    .hint_name = name,
+                });
+            }
             return;
         }
     }
@@ -728,6 +811,16 @@ fn resolveGenericFunctionCall(allocator: std.mem.Allocator, sctx: *const ScanCon
         const name = ts_api.nodeText(sctx.source, inner_ref);
         if (findFunctionByNameScoped(sctx.graph, name, sctx.edge_ctx.scope_start, sctx.edge_ctx.scope_end, sctx.caller_parent_id, &sctx.graph_index.scope)) |target_id| {
             _ = try sctx.graph.addEdgeIfNew(allocator, .{ .source_id = sctx.caller_id, .target_id = target_id, .edge_type = .calls });
+        } else {
+            const pos = inner_ref.startPoint();
+            try sctx.wl.append(allocator, .{
+                .source_node_id = sctx.caller_id,
+                .file_path = sctx.graph.nodes.items[@intFromEnum(sctx.caller_id)].file_path orelse "",
+                .line = pos.row,
+                .col = pos.column,
+                .query_kind = .definition,
+                .hint_name = name,
+            });
         }
     } else if (inner_kid == sctx.k.scoped_identifier) {
         try resolveScopedCall(allocator, sctx, inner_ref);
@@ -783,7 +876,20 @@ fn handleStructExpr(allocator: std.mem.Allocator, sctx: *const ScanContext, stru
         }
     }
 
-    const type_id = type_id_opt orelse return;
+    const type_id = type_id_opt orelse {
+        if (type_name) |tname| {
+            const pos = struct_node.startPoint();
+            try sctx.wl.append(allocator, .{
+                .source_node_id = sctx.caller_id,
+                .file_path = sctx.graph.nodes.items[@intFromEnum(sctx.caller_id)].file_path orelse "",
+                .line = pos.row,
+                .col = pos.column,
+                .query_kind = .type_definition,
+                .hint_name = tname,
+            });
+        }
+        return;
+    };
     _ = try sctx.graph.addEdgeIfNew(allocator, .{ .source_id = sctx.caller_id, .target_id = type_id, .edge_type = .uses_type });
 
     // Collect explicit field names so we know which are inherited from `..base`.
@@ -873,9 +979,20 @@ fn handleTypeRef(allocator: std.mem.Allocator, sctx: *const ScanContext, id_node
     const type_name = ts_api.nodeText(sctx.source, id_node);
     if (isPrimitiveOrSelf(type_name)) return;
     const target_id = findTypeByNameScoped(sctx.graph, type_name, sctx.edge_ctx.scope_start, sctx.edge_ctx.scope_end, sctx.caller_parent_id, &sctx.graph_index.scope) orelse
-        findTypeCrossFile(sctx.graph, type_name, sctx.edge_ctx, &sctx.graph_index.scope, sctx.phantom_mgr) orelse
-        return;
-    _ = try sctx.graph.addEdgeIfNew(allocator, .{ .source_id = sctx.caller_id, .target_id = target_id, .edge_type = .uses_type });
+        findTypeCrossFile(sctx.graph, type_name, sctx.edge_ctx, &sctx.graph_index.scope, sctx.phantom_mgr);
+    if (target_id) |tid| {
+        _ = try sctx.graph.addEdgeIfNew(allocator, .{ .source_id = sctx.caller_id, .target_id = tid, .edge_type = .uses_type });
+    } else {
+        const pos = id_node.startPoint();
+        try sctx.wl.append(allocator, .{
+            .source_node_id = sctx.caller_id,
+            .file_path = sctx.graph.nodes.items[@intFromEnum(sctx.caller_id)].file_path orelse "",
+            .line = pos.row,
+            .col = pos.column,
+            .query_kind = .type_definition,
+            .hint_name = type_name,
+        });
+    }
 }
 
 /// Scan function parameter types and return type for type references.
@@ -943,6 +1060,27 @@ fn isPrimitiveOrSelf(name: []const u8) bool {
         if (std.mem.eql(u8, name, s)) return true;
     }
     return false;
+}
+
+/// Walk to the leaf identifier of a scoped or field expression for LSP position.
+fn leafIdentifierPos(node: ts.Node, k: *const KindIds) ts.Point {
+    const kid = node.kindId();
+    if (kid == k.field_expression) {
+        const count = node.namedChildCount();
+        if (count >= 2) {
+            if (node.namedChild(count - 1)) |last| {
+                if (last.kindId() == k.field_identifier) return last.startPoint();
+            }
+        }
+    } else if (kid == k.scoped_identifier) {
+        const count = node.namedChildCount();
+        if (count >= 1) {
+            if (node.namedChild(count - 1)) |last| {
+                if (last.kindId() == k.identifier or last.kindId() == k.type_identifier) return last.startPoint();
+            }
+        }
+    }
+    return node.startPoint();
 }
 
 fn findTypeCrossFile(graph: *const Graph, name: []const u8, edge_ctx: *const EdgeContext, scope_index: *const ScopeIndex, phantom_mgr: *const PhantomManager) ?NodeId {

@@ -72,7 +72,7 @@ fn processDeclarationEdges(
 
     var type_env = TypeEnv{};
     defer type_env.deinit(allocator);
-    try buildTypeEnv(allocator, g, source, ts_node, caller_id, caller_parent_id, ctx, k, graph_index, &type_env);
+    try buildTypeEnv(allocator, g, source, ts_node, caller_id, caller_parent_id, ctx, k, graph_index, field_types, &type_env);
 
     const sctx = ScanContext{
         .g = g,
@@ -114,6 +114,7 @@ fn buildTypeEnv(
     ctx: *const EdgeContext,
     k: *const KindIds,
     graph_index: *const GraphIndex,
+    field_types: *const NodeTypeMap,
     type_env: *TypeEnv,
 ) !void {
     // Bind "self" and any @This() aliases to the enclosing type node.
@@ -154,7 +155,7 @@ fn buildTypeEnv(
     while (ci < fn_decl_node.childCount()) : (ci += 1) {
         const child = fn_decl_node.child(ci) orelse continue;
         if (child.kindId() == k.block) {
-            try buildTypeEnvFromBlock(allocator, g, source, child, caller_parent_id, ctx, k, graph_index, type_env);
+            try buildTypeEnvFromBlock(allocator, g, source, child, caller_parent_id, ctx, k, graph_index, field_types, type_env);
             break;
         }
     }
@@ -221,6 +222,7 @@ fn buildTypeEnvFromBlock(
     ctx: *const EdgeContext,
     k: *const KindIds,
     graph_index: *const GraphIndex,
+    field_types: *const NodeTypeMap,
     type_env: *TypeEnv,
 ) !void {
     var i: u32 = 0;
@@ -268,16 +270,22 @@ fn buildTypeEnvFromBlock(
         // Stop at nested function/test declaration boundaries.
         if (kid == k.function_declaration or kid == k.test_declaration) continue;
 
-        // If-capture: propagate cross-file origin from condition identifier to capture name.
+        // If-capture: propagate type bindings from condition to capture name.
+        // Handles bare identifiers (if (opt) |val|) and field expressions
+        // (if (self.field) |val|) by traversing through the field_types map.
         if (kid == k.if_statement or kid == k.if_expression) {
             var cond_ident: ?[]const u8 = null;
+            var cond_chain: [cf.max_chain_depth][]const u8 = undefined;
+            var cond_chain_len: usize = 0;
             var capture_name: ?[]const u8 = null;
             var j: u32 = 0;
             while (j < child.childCount()) : (j += 1) {
                 const ic = child.child(j) orelse continue;
                 const ic_kid = ic.kindId();
-                if (ic_kid == k.identifier and cond_ident == null) {
+                if (ic_kid == k.identifier and cond_ident == null and cond_chain_len == 0) {
                     cond_ident = ts_api.nodeText(source, ic);
+                } else if (ic_kid == k.field_expression and cond_ident == null and cond_chain_len == 0) {
+                    cond_chain_len = cf.collectFieldExprChain(source, ic, &cond_chain, k);
                 } else if (ic_kid == k.payload or ic_kid == k.payload_identifier) {
                     if (ic.namedChild(0)) |inner| {
                         if (inner.kindId() == k.identifier) {
@@ -286,14 +294,27 @@ fn buildTypeEnvFromBlock(
                     }
                 }
             }
-            if (cond_ident != null and capture_name != null) {
-                if (type_env.findParamOrigin(cond_ident.?)) |origin| {
-                    try type_env.addParamOrigin(allocator, capture_name.?, origin.file_id, origin.chain);
+            if (capture_name) |cap| {
+                if (cond_ident) |ci| {
+                    if (type_env.findParamOrigin(ci)) |origin| {
+                        try type_env.addParamOrigin(allocator, cap, origin.file_id, origin.chain);
+                    }
+                    if (type_env.local.get(ci)) |tid| {
+                        try type_env.bindLocal(allocator, cap, tid);
+                    }
+                }
+                if (cond_chain_len >= 2) {
+                    const root = cond_chain[0];
+                    if (type_env.local.get(root)) |root_tid| {
+                        if (resolveChainToType(g, root_tid, cond_chain[1..cond_chain_len], field_types, &graph_index.scope)) |resolved_tid| {
+                            try type_env.bindLocal(allocator, cap, resolved_tid);
+                        }
+                    }
                 }
             }
         }
 
-        try buildTypeEnvFromBlock(allocator, g, source, child, caller_parent_id, ctx, k, graph_index, type_env);
+        try buildTypeEnvFromBlock(allocator, g, source, child, caller_parent_id, ctx, k, graph_index, field_types, type_env);
     }
 }
 
@@ -514,12 +535,19 @@ fn handleCall(allocator: std.mem.Allocator, sctx: *const ScanContext, call_node:
             if (findFunctionByNameScoped(sctx.g, callee_name, sctx.edge_ctx.scope_start, sctx.edge_ctx.scope_end, sctx.caller_parent_id, &sctx.graph_index.scope)) |callee_id| {
                 _ = try sctx.g.addEdgeIfNew(allocator, .{ .source_id = sctx.caller_id, .target_id = callee_id, .edge_type = .calls });
             } else if (sctx.edge_ctx.findImportOrigin(callee_name)) |origin| {
-                if (origin.chain.len > 0) {
-                    try resolveOriginCall(allocator, sctx, origin, &.{}, true);
+                if (origin.chain.len == 0 or !try resolveOriginCall(allocator, sctx, origin, &.{}, true)) {
+                    const pos = call_node.startPoint();
+                    try sctx.wl.append(allocator, .{
+                        .source_node_id = sctx.caller_id,
+                        .file_path = if (sctx.g.getNode(sctx.caller_id)) |n| n.file_path orelse "" else "",
+                        .line = pos.row,
+                        .col = pos.column,
+                        .query_kind = .definition,
+                        .hint_name = callee_name,
+                    });
                 }
             } else {
                 sctx.log.trace("bare call unresolved", &.{Field.string("callee", callee_name)});
-                // Append unresolved reference to the worklist.
                 const pos = call_node.startPoint();
                 try sctx.wl.append(allocator, .{
                     .source_node_id = sctx.caller_id,
@@ -539,26 +567,24 @@ fn handleCall(allocator: std.mem.Allocator, sctx: *const ScanContext, call_node:
                 const root_name = chain[0];
                 const leaf_name = chain[chain_len - 1];
 
-                if (sctx.edge_ctx.findImportOrigin(root_name)) |origin| {
-                    try resolveOriginCall(allocator, sctx, origin, chain[1..chain_len], true);
-                } else if (sctx.type_env.cross_file.get(root_name)) |target_file_id| {
-                    try addResolvedEdges(allocator, sctx, target_file_id, chain[1..chain_len], true);
+                const resolved_via_origin = if (sctx.edge_ctx.findImportOrigin(root_name)) |origin|
+                    try resolveOriginCall(allocator, sctx, origin, chain[1..chain_len], true)
+                else
+                    false;
+
+                const resolved_via_cross = !resolved_via_origin and if (sctx.type_env.cross_file.get(root_name)) |target_file_id|
+                    try addResolvedEdges(allocator, sctx, target_file_id, chain[1..chain_len], true)
+                else
+                    false;
+
+                if (resolved_via_origin or resolved_via_cross) {
+                    // Resolved, nothing more to do.
                 } else if (sctx.type_env.local.get(root_name)) |type_id| {
-                    var found = false;
-                    for (sctx.graph_index.scope.childrenOf(type_id)) |child_idx| {
-                        const n = sctx.g.nodes.items[child_idx];
-                        if (n.kind == .function and std.mem.eql(u8, n.name, leaf_name)) {
-                            _ = try sctx.g.addEdgeIfNew(allocator, .{ .source_id = sctx.caller_id, .target_id = @enumFromInt(child_idx), .edge_type = .calls });
-                            found = true;
-                            break;
-                        }
-                    }
-                    if (!found) {
+                    if (!try resolveLocalChain(allocator, sctx, type_id, chain[1..chain_len])) {
                         if (findFunctionByNameScoped(sctx.g, leaf_name, sctx.edge_ctx.scope_start, sctx.edge_ctx.scope_end, sctx.caller_parent_id, &sctx.graph_index.scope)) |callee_id| {
                             _ = try sctx.g.addEdgeIfNew(allocator, .{ .source_id = sctx.caller_id, .target_id = callee_id, .edge_type = .calls });
                         } else {
-                            // Append unresolved method call to the worklist.
-                            const pos = call_node.startPoint();
+                            const pos = leafIdentifierPos(field_expr, call_node, sctx.k);
                             try sctx.wl.append(allocator, .{
                                 .source_node_id = sctx.caller_id,
                                 .file_path = if (sctx.g.getNode(sctx.caller_id)) |n| n.file_path orelse "" else "",
@@ -570,24 +596,36 @@ fn handleCall(allocator: std.mem.Allocator, sctx: *const ScanContext, call_node:
                         }
                     }
                 } else if (sctx.type_env.findParamOrigin(root_name)) |origin| {
-                    try resolveOriginCall(allocator, sctx, origin, chain[1..chain_len], true);
+                    if (!try resolveOriginCall(allocator, sctx, origin, chain[1..chain_len], true)) {
+                        const pos = leafIdentifierPos(field_expr, call_node, sctx.k);
+                        try sctx.wl.append(allocator, .{
+                            .source_node_id = sctx.caller_id,
+                            .file_path = if (sctx.g.getNode(sctx.caller_id)) |n| n.file_path orelse "" else "",
+                            .line = pos.row,
+                            .col = pos.column,
+                            .query_kind = .definition,
+                            .hint_name = leaf_name,
+                        });
+                    }
                 } else {
-                    // Fall back to a direct type name in the current scope.
                     if (findTypeByNameScoped(sctx.g, root_name, sctx.edge_ctx.scope_start, sctx.edge_ctx.scope_end, sctx.caller_parent_id, &sctx.graph_index.scope)) |type_id| {
-                        for (sctx.graph_index.scope.childrenOf(type_id)) |child_idx| {
-                            const n = sctx.g.nodes.items[child_idx];
-                            if (n.kind == .function and std.mem.eql(u8, n.name, leaf_name)) {
-                                _ = try sctx.g.addEdgeIfNew(allocator, .{ .source_id = sctx.caller_id, .target_id = @enumFromInt(child_idx), .edge_type = .calls });
-                                break;
-                            }
+                        if (!try resolveLocalChain(allocator, sctx, type_id, chain[1..chain_len])) {
+                            const pos = leafIdentifierPos(field_expr, call_node, sctx.k);
+                            try sctx.wl.append(allocator, .{
+                                .source_node_id = sctx.caller_id,
+                                .file_path = if (sctx.g.getNode(sctx.caller_id)) |n| n.file_path orelse "" else "",
+                                .line = pos.row,
+                                .col = pos.column,
+                                .query_kind = .definition,
+                                .hint_name = leaf_name,
+                            });
                         }
                     } else {
                         sctx.log.trace("qualified call unresolved", &.{
                             Field.string("root", root_name),
                             Field.string("leaf", leaf_name),
                         });
-                        // Append unresolved reference to the worklist.
-                        const pos = call_node.startPoint();
+                        const pos = leafIdentifierPos(field_expr, call_node, sctx.k);
                         try sctx.wl.append(allocator, .{
                             .source_node_id = sctx.caller_id,
                             .file_path = if (sctx.g.getNode(sctx.caller_id)) |n| n.file_path orelse "" else "",
@@ -628,7 +666,12 @@ fn handleFieldAccess(allocator: std.mem.Allocator, sctx: *const ScanContext, fie
         });
         return;
     };
-    if (findFieldByName(sctx.g, type_id, field_name, &sctx.graph_index.scope)) |field_id| {
+    // For multi-level chains like self.settings.timeout, traverse intermediates.
+    const target_type_id = if (chain_len > 2)
+        resolveChainToType(sctx.g, type_id, chain[1 .. chain_len - 1], sctx.field_types, &sctx.graph_index.scope) orelse return
+    else
+        type_id;
+    if (findFieldByName(sctx.g, target_type_id, field_name, &sctx.graph_index.scope)) |field_id| {
         _ = try sctx.g.addEdgeIfNew(allocator, .{ .source_id = sctx.caller_id, .target_id = field_id, .edge_type = .accesses_field });
     }
 }
@@ -842,24 +885,125 @@ fn handleReturnStructLiteral(allocator: std.mem.Allocator, sctx: *const ScanCont
     }
 }
 
-fn resolveOriginCall(allocator: std.mem.Allocator, sctx: *const ScanContext, origin: cf.SymbolOrigin, call_chain: []const []const u8, is_call: bool) !void {
+fn resolveOriginCall(allocator: std.mem.Allocator, sctx: *const ScanContext, origin: cf.SymbolOrigin, call_chain: []const []const u8, is_call: bool) !bool {
     const rctx = shared_resolve.ResolveContext{
         .graph_index = sctx.graph_index,
         .log = sctx.log,
         .resolve_return_type = cf.resolveReturnTypeScope,
         .find_in_type_scope = null,
     };
-    try shared_resolve.resolveOriginCall(allocator, sctx.g, sctx.caller_id, origin, call_chain, is_call, &rctx);
+    return try shared_resolve.resolveOriginCall(allocator, sctx.g, sctx.caller_id, origin, call_chain, is_call, &rctx);
 }
 
-fn addResolvedEdges(allocator: std.mem.Allocator, sctx: *const ScanContext, target_file_id: NodeId, chain: []const []const u8, is_call: bool) !void {
+fn addResolvedEdges(allocator: std.mem.Allocator, sctx: *const ScanContext, target_file_id: NodeId, chain: []const []const u8, is_call: bool) !bool {
     const rctx = shared_resolve.ResolveContext{
         .graph_index = sctx.graph_index,
         .log = sctx.log,
         .resolve_return_type = cf.resolveReturnTypeScope,
         .find_in_type_scope = null,
     };
-    try shared_resolve.addResolvedEdges(allocator, sctx.g, sctx.caller_id, target_file_id, chain, is_call, &rctx);
+    return try shared_resolve.addResolvedEdges(allocator, sctx.g, sctx.caller_id, target_file_id, chain, is_call, &rctx);
+}
+
+/// Traverse a chain starting from a known type scope, following field -> type
+/// transitions via the field_types map. Returns true if the leaf function was
+/// found and a calls edge was emitted.
+fn resolveLocalChain(
+    allocator: std.mem.Allocator,
+    sctx: *const ScanContext,
+    start_type_id: NodeId,
+    chain: []const []const u8,
+) !bool {
+    var current_scope = start_type_id;
+    for (chain, 0..) |segment, seg_idx| {
+        const is_last = seg_idx == chain.len - 1;
+        const matched_id = findChildByName(sctx.g, &sctx.graph_index.scope, current_scope, segment) orelse return false;
+        const matched_node = sctx.g.nodes.items[@intFromEnum(matched_id)];
+
+        if (is_last and matched_node.kind == .function) {
+            _ = try sctx.g.addEdgeIfNew(allocator, .{
+                .source_id = sctx.caller_id,
+                .target_id = matched_id,
+                .edge_type = .calls,
+            });
+            return true;
+        }
+
+        if (matched_node.kind.isTypeContainer()) {
+            current_scope = matched_id;
+        } else if (matched_node.kind == .field) {
+            current_scope = sctx.field_types.get(matched_id) orelse return false;
+        } else if (matched_node.kind == .function) {
+            // Mid-chain function call: follow its return type.
+            _ = try sctx.g.addEdgeIfNew(allocator, .{
+                .source_id = sctx.caller_id,
+                .target_id = matched_id,
+                .edge_type = .calls,
+            });
+            current_scope = cf.resolveReturnTypeScope(sctx.g, matched_id, sctx.graph_index) orelse return false;
+        } else if (matched_node.kind == .constant) {
+            current_scope = matched_id;
+        } else {
+            return false;
+        }
+    }
+    return false;
+}
+
+/// Traverse a chain from a known type scope to resolve the final type.
+/// Used by if-capture and field access to determine the type at the end
+/// of a multi-segment field expression.
+fn resolveChainToType(
+    g: *const Graph,
+    start_type_id: NodeId,
+    chain: []const []const u8,
+    field_types: *const NodeTypeMap,
+    scope_index: *const @import("../../core/scope_index.zig").ScopeIndex,
+) ?NodeId {
+    var current = start_type_id;
+    for (chain) |segment| {
+        const child_id = findChildByName(g, scope_index, current, segment) orelse return null;
+        const child_node = g.nodes.items[@intFromEnum(child_id)];
+        if (child_node.kind.isTypeContainer()) {
+            current = child_id;
+        } else if (child_node.kind == .field) {
+            current = field_types.get(child_id) orelse return null;
+        } else if (child_node.kind == .constant) {
+            current = child_id;
+        } else {
+            return null;
+        }
+    }
+    return current;
+}
+
+/// Find a direct child of scope_id with the given name.
+fn findChildByName(
+    g: *const Graph,
+    scope_index: *const @import("../../core/scope_index.zig").ScopeIndex,
+    scope_id: NodeId,
+    name: []const u8,
+) ?NodeId {
+    for (scope_index.childrenOf(scope_id)) |child_idx| {
+        if (std.mem.eql(u8, g.nodes.items[child_idx].name, name)) {
+            return @enumFromInt(child_idx);
+        }
+    }
+    return null;
+}
+
+/// Extract the leaf identifier position from a field_expression for LSP queries.
+/// For `self.field.method`, returns the position of "method".
+fn leafIdentifierPos(field_expr: ts.Node, fallback: ts.Node, k: *const KindIds) ts.Point {
+    const count = field_expr.namedChildCount();
+    if (count >= 2) {
+        if (field_expr.namedChild(count - 1)) |last| {
+            if (last.kindId() == k.property_identifier or last.kindId() == k.identifier) {
+                return last.startPoint();
+            }
+        }
+    }
+    return fallback.startPoint();
 }
 
 /// Normalized form of the function reference extracted from a call_expression's first named child.

@@ -92,4 +92,3 @@ pub fn parseRequest(allocator: std.mem.Allocator, input: []const u8) ParseError!
         .parsed = parsed,
     };
 }
-

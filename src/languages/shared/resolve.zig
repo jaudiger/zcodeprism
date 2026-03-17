@@ -125,7 +125,7 @@ pub fn resolveQualifiedCall(
 }
 
 /// Resolve a qualified chain and add the resulting edges to the graph.
-/// Takes explicit graph/caller params rather than a language-specific ScanContext.
+/// Returns true if at least one edge was resolved.
 pub fn addResolvedEdges(
     allocator: std.mem.Allocator,
     graph: *Graph,
@@ -134,7 +134,7 @@ pub fn addResolvedEdges(
     chain: []const []const u8,
     is_call: bool,
     rctx: *const ResolveContext,
-) !void {
+) !bool {
     var edge_buf: [max_chain_depth]ResolvedEdge = undefined;
     const edge_count = resolveQualifiedCall(
         graph,
@@ -151,9 +151,11 @@ pub fn addResolvedEdges(
             .edge_type = edge.edge_type,
         });
     }
+    return edge_count > 0;
 }
 
 /// Merge origin chain with call chain, then call addResolvedEdges.
+/// Returns true if at least one edge was resolved.
 pub fn resolveOriginCall(
     allocator: std.mem.Allocator,
     graph: *Graph,
@@ -162,7 +164,7 @@ pub fn resolveOriginCall(
     call_chain: []const []const u8,
     is_call: bool,
     rctx: *const ResolveContext,
-) !void {
+) !bool {
     var merged: [max_chain_depth][]const u8 = undefined;
     var len: usize = 0;
     for (origin.chain) |seg| {
@@ -175,6 +177,6 @@ pub fn resolveOriginCall(
         merged[len] = seg;
         len += 1;
     }
-    if (len == 0) return;
-    try addResolvedEdges(allocator, graph, caller_id, origin.file_id, merged[0..len], is_call, rctx);
+    if (len == 0) return false;
+    return try addResolvedEdges(allocator, graph, caller_id, origin.file_id, merged[0..len], is_call, rctx);
 }

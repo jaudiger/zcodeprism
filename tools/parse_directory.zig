@@ -100,14 +100,17 @@ pub fn main() !void {
     var graph = Graph.init(dir_path);
     defer graph.deinit(allocator);
 
-    const result = indexer.indexDirectory(allocator, dir_path, &graph, null, options) catch |err| {
+    var wl = zcodeprism.lsp.worklist.LspWorklist{};
+    defer wl.deinit(allocator);
+
+    const result = indexer.indexDirectory(allocator, dir_path, &graph, &wl, options) catch |err| {
         try stdout.print("Index error: {}\n", .{err});
         try stdout.flush();
         std.process.exit(1);
     };
 
     if (common_flags.lsp) {
-        try tool_utils.runLspEnrichment(allocator, &graph, log, stdout);
+        try tool_utils.runLspEnrichment(allocator, &graph, &wl, log, stdout);
     }
 
     // Summary.

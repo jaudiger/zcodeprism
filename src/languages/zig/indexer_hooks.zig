@@ -428,10 +428,9 @@ fn dispatchWorklist(
     }
 }
 
-/// Query textDocument/references for every private function, constant, and
-/// type node with no inbound fan edges. Adds a calls or uses_type edge for
-/// each reference site that maps to a known graph node. Counts queries and
-/// successes in result.
+/// Query textDocument/references for every function, constant, and type node
+/// with no inbound edges (regardless of visibility). Adds a calls or uses_type
+/// edge for each reference site that maps to a known graph node.
 fn runDeadCodeReferencesPass(
     allocator: std.mem.Allocator,
     graph: *Graph,
@@ -440,11 +439,11 @@ fn runDeadCodeReferencesPass(
     result: *EnrichResult,
     logger: Logger,
 ) error{OutOfMemory}!void {
-    // Build inbound fan-edge counts from the full edge list.
+    // Build inbound edge counts from the full edge list, counting all edge types
+    // to match what findDeadCode considers as "has reference".
     var inbound: std.AutoHashMapUnmanaged(NodeId, u32) = .{};
     defer inbound.deinit(allocator);
     for (graph.edges.items) |e| {
-        if (e.edge_type != .calls and e.edge_type != .uses_type) continue;
         const gop = try inbound.getOrPut(allocator, e.target_id);
         if (!gop.found_existing) gop.value_ptr.* = 0;
         gop.value_ptr.* += 1;
@@ -455,7 +454,6 @@ fn runDeadCodeReferencesPass(
             .function, .constant, .type_def, .enum_def, .union_def => {},
             else => continue,
         }
-        if (node.visibility != .private) continue;
         if (node.external != .none) continue;
         const line_start = node.line_start orelse continue;
         const col_start = node.col_start orelse 0;
@@ -550,6 +548,13 @@ fn findDeclarationAtLine(graph: *const Graph, file_node_id: NodeId, def_line: u3
         }
     }
 
+    // When the best match is a parameter, prefer its parent function.
+    // LSP definition for a call lands on the function signature line,
+    // where parameters also start, but the caller wants the function.
+    const best_node = graph.getNode(best) orelse return best;
+    if (best_node.kind == .parameter) {
+        return best_node.parent_id orelse best;
+    }
     return best;
 }
 

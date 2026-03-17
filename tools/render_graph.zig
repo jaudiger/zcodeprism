@@ -226,7 +226,10 @@ pub fn main() !void {
         try graph.freeze(allocator);
     } else {
         // Directory path: full multi-file indexation.
-        _ = indexer.indexDirectory(allocator, input_path, &graph, null, .{
+        var wl = zcodeprism.lsp.worklist.LspWorklist{};
+        defer wl.deinit(allocator);
+
+        _ = indexer.indexDirectory(allocator, input_path, &graph, &wl, .{
             .exclude_paths = common_flags.exclude.items,
             .logger = log,
         }) catch |err| {
@@ -236,7 +239,7 @@ pub fn main() !void {
         };
 
         if (common_flags.lsp) {
-            try tool_utils.runLspEnrichment(allocator, &graph, log, stdout);
+            try tool_utils.runLspEnrichment(allocator, &graph, &wl, log, stdout);
         }
     }
 

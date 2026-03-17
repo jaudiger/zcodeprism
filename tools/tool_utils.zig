@@ -96,6 +96,7 @@ pub fn parseCommonFlag(
 pub fn runLspEnrichment(
     allocator: std.mem.Allocator,
     graph: *zcodeprism.Graph,
+    wl: *zcodeprism.lsp.worklist.LspWorklist,
     log: logging.Logger,
     stdout: *std.Io.Writer,
 ) !void {
@@ -104,9 +105,7 @@ pub fn runLspEnrichment(
     var result = EnrichResult{};
 
     for (Registry.allLanguages()) |ls| {
-        var empty_wl = zcodeprism.lsp.worklist.LspWorklist{};
-        defer empty_wl.deinit(allocator);
-        const r = try zcodeprism.lsp.enricher.enrich(allocator, graph, ls, &empty_wl, .{ .logger = log });
+        const r = try zcodeprism.lsp.enricher.enrich(allocator, graph, ls, wl, .{ .logger = log });
         result.accumulate(r);
     }
 

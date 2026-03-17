@@ -299,7 +299,10 @@ pub fn main() !void {
     var graph = Graph.init(dir_path);
     defer graph.deinit(allocator);
 
-    const idx_result = indexer.indexDirectory(allocator, dir_path, &graph, null, .{
+    var wl = zcodeprism.lsp.worklist.LspWorklist{};
+    defer wl.deinit(allocator);
+
+    const idx_result = indexer.indexDirectory(allocator, dir_path, &graph, &wl, .{
         .exclude_paths = flags.common.exclude.items,
         .logger = log,
     }) catch |err| {
@@ -309,7 +312,7 @@ pub fn main() !void {
     };
 
     if (flags.common.lsp) {
-        try tool_utils.runLspEnrichment(allocator, &graph, log, stdout);
+        try tool_utils.runLspEnrichment(allocator, &graph, &wl, log, stdout);
     }
 
     try stdout.print("Indexed {d} files ({d} nodes, {d} edges)\n\n", .{
