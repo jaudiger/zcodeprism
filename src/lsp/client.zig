@@ -384,33 +384,6 @@ pub const LspClient = struct {
         return protocol.parseLocationArray(allocator, raw) catch null;
     }
 
-    /// Request the symbol tree for a document.
-    /// Returns the raw JSON result string so callers can parse it as either
-    /// DocumentSymbol[] or SymbolInformation[] depending on what the server sends.
-    /// Caller owns the returned string; free with allocator.free.
-    pub fn textDocumentDocumentSymbol(self: *LspClient, allocator: std.mem.Allocator, uri: []const u8) !?[]const u8 {
-        var arena = std.heap.ArenaAllocator.init(allocator);
-        defer arena.deinit();
-        const a = arena.allocator();
-
-        var td = ObjectMap.init(a);
-        try td.put("uri", .{ .string = uri });
-        var params = ObjectMap.init(a);
-        try params.put("textDocument", .{ .object = td });
-
-        const req = try self.buildRequest(allocator, a, "textDocument/documentSymbol", .{ .object = params });
-        defer allocator.free(req);
-        try self.sendFramed(req);
-
-        const resp = try self.readResponse(allocator);
-        defer resp.deinit(allocator);
-
-        if (resp.@"error" != null) return null;
-        const raw = resp.result_raw orelse return null;
-
-        return try allocator.dupe(u8, raw);
-    }
-
     /// Build TextDocumentPositionParams as an ObjectMap.
     fn buildPositionParams(arena: std.mem.Allocator, uri: []const u8, line: u32, character: u32) !ObjectMap {
         var td = ObjectMap.init(arena);
@@ -507,29 +480,22 @@ test "parseContentLength parses headers" {
     try std.testing.expectError(HeaderError.InvalidHeader, LspClient.parseContentLength("Bad-Header: 52\r\n\r\n"));
 }
 
-test "request method names for new LSP methods" {
+test "request method names for typeDefinition" {
     // Arrange
     var client = LspClient.init(Logger.noop);
     defer client.deinit();
     const allocator = std.testing.allocator;
 
-    // Act: typeDefinition
     var arena_td = std.heap.ArenaAllocator.init(allocator);
     defer arena_td.deinit();
     const empty_td = ObjectMap.init(arena_td.allocator());
+
+    // Act
     const req_td = try client.buildRequest(allocator, arena_td.allocator(), "textDocument/typeDefinition", .{ .object = empty_td });
     defer allocator.free(req_td);
 
-    // Act: documentSymbol
-    var arena_ds = std.heap.ArenaAllocator.init(allocator);
-    defer arena_ds.deinit();
-    const empty_ds = ObjectMap.init(arena_ds.allocator());
-    const req_ds = try client.buildRequest(allocator, arena_ds.allocator(), "textDocument/documentSymbol", .{ .object = empty_ds });
-    defer allocator.free(req_ds);
-
     // Assert
     try std.testing.expect(std.mem.indexOf(u8, req_td, "textDocument/typeDefinition") != null);
-    try std.testing.expect(std.mem.indexOf(u8, req_ds, "textDocument/documentSymbol") != null);
 }
 
 test "references request includes context with includeDeclaration" {

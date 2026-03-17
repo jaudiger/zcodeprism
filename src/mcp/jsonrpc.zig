@@ -1,8 +1,5 @@
 const std = @import("std");
 const protocol = @import("protocol.zig");
-const json_writer_mod = @import("json_writer.zig");
-
-const JsonWriter = json_writer_mod.JsonWriter;
 
 /// JSON-RPC 2.0 standard error codes.
 pub const parse_error: i32 = -32700;
@@ -33,20 +30,6 @@ pub const ParsedRequest = struct {
     pub fn deinit(self: *ParsedRequest) void {
         self.parsed.deinit();
     }
-};
-
-/// A structured JSON-RPC error object.
-pub const ErrorObject = struct {
-    code: i32,
-    message: []const u8,
-    data: ?std.json.Value,
-};
-
-/// A JSON-RPC 2.0 response (either result or error).
-pub const Response = struct {
-    id: RequestId,
-    result: ?std.json.Value,
-    @"error": ?ErrorObject,
 };
 
 /// Errors returned when parsing a JSON-RPC 2.0 request fails.
@@ -110,36 +93,3 @@ pub fn parseRequest(allocator: std.mem.Allocator, input: []const u8) ParseError!
     };
 }
 
-/// Serialize a Response to JSON bytes. Caller owns returned slice.
-pub fn serializeResponse(allocator: std.mem.Allocator, response: Response) error{OutOfMemory}![]const u8 {
-    var aw: std.io.Writer.Allocating = .init(allocator);
-    errdefer aw.deinit();
-    var stream: std.json.Stringify = .{ .writer = &aw.writer };
-    const w: JsonWriter = .{ .s = &stream };
-
-    try w.beginObject();
-    try w.fieldValue("jsonrpc", protocol.jsonrpc_version);
-
-    try w.field("id");
-    switch (response.id) {
-        .integer => |n| try w.write(n),
-        .string => |s| try w.write(s),
-        .none => try w.write(null),
-    }
-
-    if (response.result) |result| {
-        try w.fieldValue("result", result);
-    }
-
-    if (response.@"error") |err| {
-        try w.field("error");
-        try w.beginObject();
-        try w.fieldValue("code", err.code);
-        try w.fieldValue("message", err.message);
-        try w.endObject();
-    }
-
-    try w.endObject();
-
-    return aw.toOwnedSlice() catch return error.OutOfMemory;
-}
