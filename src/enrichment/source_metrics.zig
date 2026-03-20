@@ -17,6 +17,7 @@ pub fn computeAllSourceMetrics(graph: *Graph, source: []const u8, file_idx: usiz
         if (n.kind != .function) continue;
         const ls = n.line_start orelse continue;
         const le = n.line_end orelse continue;
+        if (le < ls) continue;
 
         const lines: u32 = le - ls + 1;
         const fn_source = source_scan.extractLineRange(source, ls, le);

@@ -331,7 +331,7 @@ pub fn renderTestsSection(
             try out.append(allocator, ':');
             try appendNum(out, allocator, n.line_start orelse 0, ctx.num_buf);
         }
-        const lines = if (n.line_end != null and n.line_start != null)
+        const lines = if (n.line_end != null and n.line_start != null and n.line_end.? >= n.line_start.?)
             n.line_end.? - n.line_start.? + 1
         else
             0;
