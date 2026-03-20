@@ -11,10 +11,10 @@ pub const Metrics = struct {
     loops: u16 = 0,
     error_paths: u16 = 0,
     nesting_depth_max: u8 = 0,
-    structural_hash: u32 = 0,
+    structural_hash: u64 = 0,
 
     /// Binary record size: matches METRICS_RECORD_SIZE in binary.zig.
-    pub const BINARY_SIZE: usize = 24;
+    pub const BINARY_SIZE: usize = 28;
 
     /// Write this metrics value as a JSON object to `stream`.
     pub fn writeJson(self: Metrics, stream: *std.json.Stringify) !void {
@@ -36,7 +36,9 @@ pub const Metrics = struct {
         try stream.objectField("nesting_depth_max");
         try stream.write(self.nesting_depth_max);
         try stream.objectField("structural_hash");
-        try stream.write(self.structural_hash);
+        var hex_buf: [16]u8 = undefined;
+        const hex = std.fmt.bufPrint(&hex_buf, "{x:0>16}", .{self.structural_hash}) catch unreachable;
+        try stream.write(hex);
         try stream.endObject();
     }
 
@@ -54,14 +56,14 @@ pub const Metrics = struct {
                     .loops = jsonField(u16, obj, "loops"),
                     .error_paths = jsonField(u16, obj, "error_paths"),
                     .nesting_depth_max = jsonField(u8, obj, "nesting_depth_max"),
-                    .structural_hash = jsonField(u32, obj, "structural_hash"),
+                    .structural_hash = jsonHashField(obj, "structural_hash"),
                 };
             },
             else => return null,
         }
     }
 
-    /// Encode into a fixed-size 24-byte binary record (little-endian).
+    /// Encode into a fixed-size 28-byte binary record (little-endian).
     pub fn encodeBinary(self: Metrics, buf: *[BINARY_SIZE]u8) void {
         std.mem.writeInt(u16, buf[0..2], self.complexity, .little);
         std.mem.writeInt(u32, buf[2..6], self.lines, .little);
@@ -72,12 +74,12 @@ pub const Metrics = struct {
         std.mem.writeInt(u16, buf[14..16], self.error_paths, .little);
         buf[16] = self.nesting_depth_max;
         buf[17] = 0; // padding
-        std.mem.writeInt(u32, buf[18..22], self.structural_hash, .little);
-        buf[22] = 0; // padding
-        buf[23] = 0;
+        std.mem.writeInt(u64, buf[18..26], self.structural_hash, .little);
+        buf[26] = 0; // padding
+        buf[27] = 0;
     }
 
-    /// Decode from a fixed-size 24-byte binary record (little-endian).
+    /// Decode from a fixed-size 28-byte binary record (little-endian).
     pub fn decodeBinary(buf: *const [BINARY_SIZE]u8) Metrics {
         return .{
             .complexity = std.mem.readInt(u16, buf[0..2], .little),
@@ -88,7 +90,7 @@ pub const Metrics = struct {
             .loops = std.mem.readInt(u16, buf[12..14], .little),
             .error_paths = std.mem.readInt(u16, buf[14..16], .little),
             .nesting_depth_max = buf[16],
-            .structural_hash = std.mem.readInt(u32, buf[18..22], .little),
+            .structural_hash = std.mem.readInt(u64, buf[18..26], .little),
         };
     }
 };
@@ -96,6 +98,16 @@ pub const Metrics = struct {
 fn jsonField(comptime T: type, obj: std.json.ObjectMap, key: []const u8) T {
     const val = obj.get(key) orelse return 0;
     return switch (val) {
+        .integer => |i| @intCast(i),
+        else => 0,
+    };
+}
+
+/// Parse structural_hash from either a hex string or an integer.
+fn jsonHashField(obj: std.json.ObjectMap, key: []const u8) u64 {
+    const val = obj.get(key) orelse return 0;
+    return switch (val) {
+        .string => |s| std.fmt.parseInt(u64, s, 16) catch 0,
         .integer => |i| @intCast(i),
         else => 0,
     };
@@ -114,7 +126,7 @@ test "metrics default values are all zero" {
     try std.testing.expectEqual(@as(u16, 0), m.loops);
     try std.testing.expectEqual(@as(u16, 0), m.error_paths);
     try std.testing.expectEqual(@as(u8, 0), m.nesting_depth_max);
-    try std.testing.expectEqual(@as(u32, 0), m.structural_hash);
+    try std.testing.expectEqual(@as(u64, 0), m.structural_hash);
 }
 
 test "metrics stores values" {
@@ -128,7 +140,7 @@ test "metrics stores values" {
         .loops = 2,
         .error_paths = 1,
         .nesting_depth_max = 6,
-        .structural_hash = 0xDEADBEEF,
+        .structural_hash = 0xDEADBEEFCAFEBABE,
     };
 
     // Assert
@@ -140,5 +152,5 @@ test "metrics stores values" {
     try std.testing.expectEqual(@as(u16, 2), m.loops);
     try std.testing.expectEqual(@as(u16, 1), m.error_paths);
     try std.testing.expectEqual(@as(u8, 6), m.nesting_depth_max);
-    try std.testing.expectEqual(@as(u32, 0xDEADBEEF), m.structural_hash);
+    try std.testing.expectEqual(@as(u64, 0xDEADBEEFCAFEBABE), m.structural_hash);
 }

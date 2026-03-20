@@ -112,7 +112,7 @@ pub fn isDescendantOf(graph: *const Graph, node_id: NodeId, ancestor_id: NodeId)
 /// Hash the structural skeleton of a source fragment. Identifiers become
 /// a fixed placeholder, numeric literals another, comments are stripped
 /// according to `syntax`, and whitespace runs collapse to a single space.
-pub fn computeStructuralHash(fn_source: []const u8, syntax: CommentSyntax) u32 {
+pub fn computeStructuralHash(fn_source: []const u8, syntax: CommentSyntax) u64 {
     var h = std.hash.Wyhash.init(0);
     var in_ident = false;
     var in_number = false;
@@ -248,7 +248,7 @@ pub fn computeStructuralHash(fn_source: []const u8, syntax: CommentSyntax) u32 {
 
         i += 1;
     }
-    const raw: u32 = @truncate(h.final());
+    const raw = h.final();
     // Zero is reserved as "no hash computed" sentinel.
     return if (raw == 0) 1 else raw;
 }

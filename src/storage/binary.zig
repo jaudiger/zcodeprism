@@ -43,7 +43,7 @@ pub const BinaryHeader = struct {
 const HEADER_SIZE: usize = 80;
 const NODE_RECORD_SIZE: usize = 120;
 const EDGE_RECORD_SIZE: usize = 32;
-const METRICS_RECORD_SIZE: usize = 24;
+const METRICS_RECORD_SIZE: usize = 28;
 
 // Node record layout (120 bytes):
 //   [0..8]   id (u64)
@@ -635,7 +635,7 @@ fn createTestGraph(allocator: std.mem.Allocator) !Graph {
             .loops = 1,
             .error_paths = 2,
             .nesting_depth_max = 3,
-            .structural_hash = 0xCAFEBABE,
+            .structural_hash = 0xCAFEBABE12345678,
         },
         .lang_meta = .{ .zig = .{ .is_comptime = false, .is_inline = true } },
     });

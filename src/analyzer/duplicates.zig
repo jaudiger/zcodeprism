@@ -20,7 +20,7 @@ pub const DuplicateMember = struct {
 };
 
 pub const DuplicateGroup = struct {
-    structural_hash: u32,
+    structural_hash: u64,
     similarity: f64,
     members: []const DuplicateMember,
 };
@@ -49,7 +49,7 @@ pub const Fingerprint = [512]u16;
 
 pub const FuzzyCandidate = struct {
     node_id: NodeId,
-    structural_hash: u32,
+    structural_hash: u64,
     fingerprint: Fingerprint,
     valid: bool,
 };
@@ -65,7 +65,7 @@ pub fn findDuplicates(allocator: std.mem.Allocator, g: *const Graph, options: Du
     const scope_filter: ?Scope = if (options.scope) |s| Scope.parse(s) else null;
 
     // Count how many qualifying functions share each hash.
-    var counts = std.AutoHashMapUnmanaged(u32, u32){};
+    var counts = std.AutoHashMapUnmanaged(u64, u32){};
     defer counts.deinit(allocator);
 
     for (g.nodes.items) |n| {
@@ -118,7 +118,7 @@ pub fn findDuplicates(allocator: std.mem.Allocator, g: *const Graph, options: Du
     std.debug.assert(gi == group_count);
 
     // Map each qualifying hash to its group index.
-    var hash_to_group = std.AutoHashMapUnmanaged(u32, usize){};
+    var hash_to_group = std.AutoHashMapUnmanaged(u64, usize){};
     defer hash_to_group.deinit(allocator);
     try hash_to_group.ensureTotalCapacity(allocator, @intCast(group_count));
     for (groups, 0..) |gr, idx| {
@@ -186,7 +186,7 @@ pub fn findFuzzyDuplicates(allocator: std.mem.Allocator, g: *const Graph, candid
     @memset(min_sim_arr, 1.0);
 
     // Pre-merge candidates with identical structural hashes (exact duplicates).
-    var hash_rep = std.AutoHashMapUnmanaged(u32, usize){};
+    var hash_rep = std.AutoHashMapUnmanaged(u64, usize){};
     defer hash_rep.deinit(allocator);
     for (0..nc) |i| {
         const h = candidates[i].structural_hash;

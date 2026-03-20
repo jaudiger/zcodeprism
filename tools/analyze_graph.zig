@@ -115,7 +115,7 @@ fn cmdDuplicates(allocator: std.mem.Allocator, g: *const Graph, flags: ParsedFla
 
     try stdout.print("Duplicate function groups ({d}):\n", .{result.total_groups});
     for (result.groups, 0..) |group, gi| {
-        try stdout.print("\n  Group {d} (hash={x:0>8}, {d} members):\n", .{
+        try stdout.print("\n  Group {d} (hash={x:0>16}, {d} members):\n", .{
             gi + 1,
             group.structural_hash,
             group.members.len,

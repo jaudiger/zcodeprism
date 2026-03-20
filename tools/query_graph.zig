@@ -121,7 +121,7 @@ fn printNodeDetail(stdout: *std.Io.Writer, nd: query.NodeDetail) !void {
         if (m.loops > 0) try stdout.print(" loops={d}", .{m.loops});
         if (m.error_paths > 0) try stdout.print(" error_paths={d}", .{m.error_paths});
         if (m.nesting_depth_max > 0) try stdout.print(" nesting={d}", .{m.nesting_depth_max});
-        if (m.structural_hash != 0) try stdout.print(" hash={x:0>8}", .{m.structural_hash});
+        if (m.structural_hash != 0) try stdout.print(" hash={x:0>16}", .{m.structural_hash});
         try stdout.print("\n", .{});
     }
     switch (n.external) {

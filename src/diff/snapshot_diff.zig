@@ -249,7 +249,7 @@ const CollectedEntity = struct {
     name: []const u8,
     file_path: ?[]const u8,
     line: ?u32,
-    structural_hash: u32,
+    structural_hash: u64,
 };
 
 /// Map NodeKind to EntityKind, returning null for structural nodes not diffed.
@@ -275,7 +275,7 @@ fn collectEntities(allocator: std.mem.Allocator, g: *const Graph) !std.ArrayList
     for (g.nodes.items) |n| {
         if (n.external != .none) continue;
         const ek = toEntityKind(n.kind) orelse continue;
-        const sh: u32 = if (n.metrics) |m| m.structural_hash else 0;
+        const sh: u64 = if (n.metrics) |m| m.structural_hash else 0;
         try list.append(allocator, .{
             .entity_kind = ek,
             .name = n.name,

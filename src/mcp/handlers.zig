@@ -1362,7 +1362,7 @@ fn writeDuplicateGroups(
     try w.beginArray();
     for (groups_slice) |group| {
         try w.beginObject();
-        try w.fieldValue("structural_hash", group.structural_hash);
+        try w.fieldHashHex("structural_hash", group.structural_hash);
         try w.fieldValue("similarity", group.similarity);
         try w.field("members");
         try w.beginArray();
@@ -1391,7 +1391,7 @@ fn writeDuplicateGroups(
 }
 
 /// Extract source, parse the AST, and build a frequency fingerprint for one node.
-fn buildFuzzyCandidate(allocator: std.mem.Allocator, g: *const Graph, nid: NodeId, node: Node, structural_hash: u32) duplicates_mod.FuzzyCandidate {
+fn buildFuzzyCandidate(allocator: std.mem.Allocator, g: *const Graph, nid: NodeId, node: Node, structural_hash: u64) duplicates_mod.FuzzyCandidate {
     const src = extractNodeSource(allocator, g, &node) orelse
         return .{ .node_id = nid, .structural_hash = structural_hash, .fingerprint = .{0} ** 512, .valid = false };
     defer allocator.free(src);

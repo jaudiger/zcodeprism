@@ -90,6 +90,14 @@ pub const JsonWriter = struct {
         }
     }
 
+    /// objectField + u64 as a zero-padded 16-char hex string.
+    pub fn fieldHashHex(self: JsonWriter, name: []const u8, value: u64) OomError!void {
+        self.s.objectField(name) catch return error.OutOfMemory;
+        var buf: [16]u8 = undefined;
+        const hex = std.fmt.bufPrint(&buf, "{x:0>16}", .{value}) catch unreachable;
+        self.s.write(hex) catch return error.OutOfMemory;
+    }
+
     /// Write a 12-byte hash as a 24-char hex string value.
     pub fn hashHex(self: JsonWriter, hash: [12]u8) OomError!void {
         var hex_buf: [24]u8 = undefined;
