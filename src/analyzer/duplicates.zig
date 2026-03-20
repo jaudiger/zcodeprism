@@ -3,6 +3,7 @@ const graph_mod = @import("../core/graph.zig");
 const types = @import("../core/types.zig");
 const node_mod = @import("../core/node.zig");
 const scope_mod = @import("../core/scope.zig");
+const pagination = @import("pagination.zig");
 
 const Graph = graph_mod.Graph;
 const Node = node_mod.Node;
@@ -157,18 +158,16 @@ pub fn findDuplicates(allocator: std.mem.Allocator, g: *const Graph, options: Du
     }.lessThan);
 
     const total: u32 = @intCast(group_count);
-    const offset = @min(options.offset, total);
-    const end = @min(offset + options.limit, total);
-    const page_len = end - offset;
+    const pg = pagination.paginate(total, options.offset, options.limit);
 
-    if (page_len == 0) return .{ .total_groups = total, .groups = &.{} };
-    if (offset == 0 and end == total) return .{ .total_groups = total, .groups = groups };
+    if (pg.len == 0) return .{ .total_groups = total, .groups = &.{} };
+    if (pg.start == 0 and pg.len == total) return .{ .total_groups = total, .groups = groups };
 
-    const page = try allocator.alloc(DuplicateGroup, page_len);
-    @memcpy(page, groups[offset..end]);
+    const page = try allocator.alloc(DuplicateGroup, pg.len);
+    @memcpy(page, groups[pg.start .. pg.start + pg.len]);
     // Free the non-page groups' member slices; page entries borrow the same slices.
-    for (groups[0..offset]) |gr| allocator.free(gr.members);
-    for (groups[end..total]) |gr| allocator.free(gr.members);
+    for (groups[0..pg.start]) |gr| allocator.free(gr.members);
+    for (groups[pg.start + pg.len .. total]) |gr| allocator.free(gr.members);
     allocator.free(groups);
     return .{ .total_groups = total, .groups = page };
 }
@@ -261,19 +260,17 @@ pub fn findFuzzyDuplicates(allocator: std.mem.Allocator, g: *const Graph, candid
     }.lt);
 
     const total: u32 = @intCast(fuzzy_groups.items.len);
-    const off = @min(options.offset, total);
-    const end = @min(off + options.limit, total);
-    const page_len = end - off;
+    const pg = pagination.paginate(total, options.offset, options.limit);
 
-    if (page_len == 0) {
+    if (pg.len == 0) {
         for (fuzzy_groups.items) |gr| allocator.free(gr.members);
         return .{ .total_groups = total, .groups = &.{} };
     }
 
-    const page = try allocator.alloc(DuplicateGroup, page_len);
-    @memcpy(page, fuzzy_groups.items[off..end]);
-    for (fuzzy_groups.items[0..off]) |gr| allocator.free(gr.members);
-    for (fuzzy_groups.items[end..total]) |gr| allocator.free(gr.members);
+    const page = try allocator.alloc(DuplicateGroup, pg.len);
+    @memcpy(page, fuzzy_groups.items[pg.start .. pg.start + pg.len]);
+    for (fuzzy_groups.items[0..pg.start]) |gr| allocator.free(gr.members);
+    for (fuzzy_groups.items[pg.start + pg.len .. total]) |gr| allocator.free(gr.members);
     return .{ .total_groups = total, .groups = page };
 }
 

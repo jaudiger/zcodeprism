@@ -8,6 +8,7 @@ pub const duplicates = @import("duplicates.zig");
 pub const impact = @import("impact.zig");
 pub const coupling = @import("coupling.zig");
 pub const cycles = @import("cycles.zig");
+pub const pagination = @import("pagination.zig");
 
 test {
     _ = complexity;
@@ -16,4 +17,5 @@ test {
     _ = impact;
     _ = coupling;
     _ = cycles;
+    _ = pagination;
 }

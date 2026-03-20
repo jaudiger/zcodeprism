@@ -4,6 +4,7 @@ const types = @import("../core/types.zig");
 const node_mod = @import("../core/node.zig");
 const scope_mod = @import("../core/scope.zig");
 const lang = @import("../languages/language.zig");
+const pagination = @import("pagination.zig");
 
 const Graph = graph_mod.Graph;
 const Node = node_mod.Node;
@@ -106,12 +107,10 @@ pub fn findDeadCode(allocator: std.mem.Allocator, g: *const Graph, options: Dead
     const total_count: u32 = @intCast(candidates.items.len);
     if (total_count == 0) return .{ .total_count = 0, .nodes = &.{} };
 
-    const offset = @min(options.offset, total_count);
-    const end = @min(offset + options.limit, total_count);
-    const page_len = end - offset;
-    if (page_len == 0) return .{ .total_count = total_count, .nodes = &.{} };
+    const page = pagination.paginate(total_count, options.offset, options.limit);
+    if (page.len == 0) return .{ .total_count = total_count, .nodes = &.{} };
 
-    const result = try allocator.alloc(DeadCodeEntry, page_len);
-    @memcpy(result, candidates.items[offset..end]);
+    const result = try allocator.alloc(DeadCodeEntry, page.len);
+    @memcpy(result, candidates.items[page.start .. page.start + page.len]);
     return .{ .total_count = total_count, .nodes = result };
 }
