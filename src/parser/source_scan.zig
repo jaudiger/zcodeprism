@@ -6,7 +6,46 @@ const types = @import("../core/types.zig");
 const KindIndex = kind_index_mod.KindIndex;
 
 const Graph = graph_mod.Graph;
+const Language = types.Language;
 const NodeId = types.NodeId;
+
+/// Describes comment and string literal delimiters for a language, so
+/// computeStructuralHash can strip comments without hardcoding syntax.
+pub const CommentSyntax = struct {
+    line_comment: ?[]const u8 = null,
+    block_comment_open: ?[]const u8 = null,
+    block_comment_close: ?[]const u8 = null,
+    /// Whether block comments can nest (Rust allows `/* /* */ */`).
+    block_comment_nests: bool = false,
+
+    pub fn forLanguage(lang: ?Language) CommentSyntax {
+        const l = lang orelse return c_like;
+        return switch (l) {
+            .zig => zig,
+            .rust => rust,
+        };
+    }
+
+    /// Zig uses only line comments.
+    pub const zig = CommentSyntax{
+        .line_comment = "//",
+    };
+
+    /// Rust uses line and nestable block comments.
+    pub const rust = CommentSyntax{
+        .line_comment = "//",
+        .block_comment_open = "/*",
+        .block_comment_close = "*/",
+        .block_comment_nests = true,
+    };
+
+    /// Fallback for unknown languages: C-style non-nesting comments.
+    pub const c_like = CommentSyntax{
+        .line_comment = "//",
+        .block_comment_open = "/*",
+        .block_comment_close = "*/",
+    };
+};
 
 /// Return true if `c` is an ASCII identifier character (letter, digit, or underscore).
 pub fn isIdentChar(c: u8) bool {
@@ -70,18 +109,131 @@ pub fn isDescendantOf(graph: *const Graph, node_id: NodeId, ancestor_id: NodeId)
     return false;
 }
 
-/// Hash the structural skeleton of a function: identifiers and numeric
-/// literals are replaced by fixed placeholders so that renaming variables
-/// or changing magic numbers does not change the result.
-pub fn computeStructuralHash(fn_source: []const u8) u32 {
+/// Hash the structural skeleton of a source fragment. Identifiers become
+/// a fixed placeholder, numeric literals another, comments are stripped
+/// according to `syntax`, and whitespace runs collapse to a single space.
+pub fn computeStructuralHash(fn_source: []const u8, syntax: CommentSyntax) u32 {
     var h = std.hash.Wyhash.init(0);
     var in_ident = false;
     var in_number = false;
-    for (fn_source) |c| {
+    var in_whitespace = false;
+    var in_line_comment = false;
+    var block_comment_depth: u32 = 0;
+    var in_string = false;
+    var in_char = false;
+    var prev_was_backslash = false;
+
+    var i: usize = 0;
+    while (i < fn_source.len) {
+        const c = fn_source[i];
+
+        if (in_line_comment) {
+            if (c == '\n') in_line_comment = false;
+            i += 1;
+            continue;
+        }
+
+        if (block_comment_depth > 0) {
+            if (syntax.block_comment_nests) {
+                if (startsWithAt(fn_source, i, syntax.block_comment_open.?)) {
+                    block_comment_depth += 1;
+                    i += syntax.block_comment_open.?.len;
+                    continue;
+                }
+            }
+            if (startsWithAt(fn_source, i, syntax.block_comment_close.?)) {
+                block_comment_depth -= 1;
+                i += syntax.block_comment_close.?.len;
+            } else {
+                i += 1;
+            }
+            continue;
+        }
+
+        if (in_string) {
+            if (c == '\\' and !prev_was_backslash) {
+                prev_was_backslash = true;
+                i += 1;
+                continue;
+            }
+            if (c == '"' and !prev_was_backslash) in_string = false;
+            prev_was_backslash = false;
+            h.update(&[_]u8{c});
+            i += 1;
+            continue;
+        }
+
+        if (in_char) {
+            if (c == '\\' and !prev_was_backslash) {
+                prev_was_backslash = true;
+                i += 1;
+                continue;
+            }
+            if (c == '\'' and !prev_was_backslash) in_char = false;
+            prev_was_backslash = false;
+            h.update(&[_]u8{c});
+            i += 1;
+            continue;
+        }
+
+        // Detect comment starts.
+        if (syntax.line_comment) |lc| {
+            if (startsWithAt(fn_source, i, lc)) {
+                in_line_comment = true;
+                in_ident = false;
+                in_number = false;
+                i += lc.len;
+                continue;
+            }
+        }
+        if (syntax.block_comment_open) |bco| {
+            if (startsWithAt(fn_source, i, bco)) {
+                block_comment_depth = 1;
+                in_ident = false;
+                in_number = false;
+                i += bco.len;
+                continue;
+            }
+        }
+
+        // Detect string and char literal starts.
+        if (c == '"') {
+            in_string = true;
+            in_ident = false;
+            in_number = false;
+            in_whitespace = false;
+            prev_was_backslash = false;
+            h.update("\"");
+            i += 1;
+            continue;
+        }
+        if (c == '\'') {
+            in_char = true;
+            in_ident = false;
+            in_number = false;
+            in_whitespace = false;
+            prev_was_backslash = false;
+            h.update("'");
+            i += 1;
+            continue;
+        }
+
+        if (isWhitespace(c)) {
+            if (!in_whitespace) {
+                in_whitespace = true;
+                in_ident = false;
+                in_number = false;
+                h.update(" ");
+            }
+            i += 1;
+            continue;
+        }
+
+        in_whitespace = false;
+
         const is_digit = c >= '0' and c <= '9';
         if (isIdentChar(c)) {
             if (is_digit and !in_ident and !in_number) {
-                // Bare numeric literal starting with a digit.
                 h.update("#");
                 in_number = true;
             } else if (!in_ident and !in_number) {
@@ -93,8 +245,15 @@ pub fn computeStructuralHash(fn_source: []const u8) u32 {
             in_number = false;
             h.update(&[_]u8{c});
         }
+
+        i += 1;
     }
     return @truncate(h.final());
+}
+
+fn startsWithAt(text: []const u8, pos: usize, prefix: []const u8) bool {
+    if (pos + prefix.len > text.len) return false;
+    return std.mem.eql(u8, text[pos..][0..prefix.len], prefix);
 }
 
 /// Find the function node that contains the given source `line` within the
@@ -120,4 +279,159 @@ pub fn findContainingFunction(graph: *const Graph, file_id: NodeId, line: u32, k
         }
     }
     return null;
+}
+
+test "computeStructuralHash: identical structure with different names" {
+    // Arrange
+    const a = "fn foo(x: u32) void { if (x) {} }";
+    const b = "fn bar(y: u32) void { if (y) {} }";
+
+    // Act / Assert
+    try std.testing.expectEqual(computeStructuralHash(a, CommentSyntax.c_like), computeStructuralHash(b, CommentSyntax.c_like));
+}
+
+test "computeStructuralHash: different structure produces different hash" {
+    // Arrange
+    const a = "fn foo() void { if (x) {} }";
+    const b = "fn foo() void { if (x) {} if (y) {} }";
+
+    // Act / Assert
+    try std.testing.expect(computeStructuralHash(a, CommentSyntax.c_like) != computeStructuralHash(b, CommentSyntax.c_like));
+}
+
+test "computeStructuralHash: line comments are ignored" {
+    // Arrange
+    const a = "fn foo() void { if (x) {} }";
+    const b = "fn foo() void { // a comment\nif (x) {} }";
+
+    // Act / Assert
+    try std.testing.expectEqual(computeStructuralHash(a, CommentSyntax.c_like), computeStructuralHash(b, CommentSyntax.c_like));
+}
+
+test "computeStructuralHash: block comments are ignored" {
+    // Arrange
+    const a = "fn foo() void { if (x) {} }";
+    const b = "fn foo() void { /* block comment */ if (x) {} }";
+
+    // Act / Assert
+    try std.testing.expectEqual(computeStructuralHash(a, CommentSyntax.c_like), computeStructuralHash(b, CommentSyntax.c_like));
+}
+
+test "computeStructuralHash: nested block comment text is ignored" {
+    // Arrange
+    const a = "fn f() void { x(); }";
+    const b = "fn f() void { /* multi\nline\ncomment */ x(); }";
+
+    // Act / Assert
+    try std.testing.expectEqual(computeStructuralHash(a, CommentSyntax.c_like), computeStructuralHash(b, CommentSyntax.c_like));
+}
+
+test "computeStructuralHash: whitespace differences are normalized" {
+    // Arrange
+    const a = "fn foo() void { if (x) {} }";
+    const b = "fn  foo()  void  {\n    if  (x)  {}\n}";
+
+    // Act / Assert
+    try std.testing.expectEqual(computeStructuralHash(a, CommentSyntax.c_like), computeStructuralHash(b, CommentSyntax.c_like));
+}
+
+test "computeStructuralHash: tabs vs spaces produce same hash" {
+    // Arrange
+    const a = "fn foo() void {\n    x();\n}";
+    const b = "fn foo() void {\n\tx();\n}";
+
+    // Act / Assert
+    try std.testing.expectEqual(computeStructuralHash(a, CommentSyntax.c_like), computeStructuralHash(b, CommentSyntax.c_like));
+}
+
+test "computeStructuralHash: CRLF vs LF produce same hash" {
+    // Arrange
+    const a = "fn foo() void {\n    x();\n}";
+    const b = "fn foo() void {\r\n    x();\r\n}";
+
+    // Act / Assert
+    try std.testing.expectEqual(computeStructuralHash(a, CommentSyntax.c_like), computeStructuralHash(b, CommentSyntax.c_like));
+}
+
+test "computeStructuralHash: comment-like sequences inside strings are preserved" {
+    // Arrange
+    const a = "fn f() void { print(\"// not a comment\"); }";
+    const b = "fn f() void { print(\"// different text\"); }";
+
+    // Act / Assert: different string content should produce different hashes
+    try std.testing.expect(computeStructuralHash(a, CommentSyntax.c_like) != computeStructuralHash(b, CommentSyntax.c_like));
+}
+
+test "computeStructuralHash: block comment syntax inside string is preserved" {
+    // Arrange
+    const a = "fn f() void { print(\"/* not a comment */\"); }";
+    const b = "fn f() void { print(\"/* other */\"); }";
+
+    // Act / Assert
+    try std.testing.expect(computeStructuralHash(a, CommentSyntax.c_like) != computeStructuralHash(b, CommentSyntax.c_like));
+}
+
+test "computeStructuralHash: empty input returns consistent hash" {
+    // Arrange / Act / Assert
+    try std.testing.expectEqual(computeStructuralHash("", CommentSyntax.c_like), computeStructuralHash("", CommentSyntax.c_like));
+}
+
+test "computeStructuralHash: numeric literals are normalized" {
+    // Arrange
+    const a = "fn f() void { return 42; }";
+    const b = "fn f() void { return 99; }";
+
+    // Act / Assert
+    try std.testing.expectEqual(computeStructuralHash(a, CommentSyntax.c_like), computeStructuralHash(b, CommentSyntax.c_like));
+}
+
+test "computeStructuralHash: escaped quote inside string does not end string" {
+    // Arrange
+    const a = "fn f() void { x(\"hello \\\" world\"); }";
+    const b = "fn f() void { x(\"hello \\\" world\"); }";
+
+    // Act / Assert
+    try std.testing.expectEqual(computeStructuralHash(a, CommentSyntax.c_like), computeStructuralHash(b, CommentSyntax.c_like));
+}
+
+test "computeStructuralHash: char literals with comment-like content" {
+    // Arrange
+    const a = "fn f() void { const c = '/'; }";
+    const b = "fn f() void { const c = '*'; }";
+
+    // Act / Assert: different char literal content produces different hash
+    try std.testing.expect(computeStructuralHash(a, CommentSyntax.c_like) != computeStructuralHash(b, CommentSyntax.c_like));
+}
+
+test "computeStructuralHash: Rust nested block comments are fully stripped" {
+    // Arrange
+    const a = "fn f() { x(); }";
+    const b = "fn f() { /* outer /* inner */ still comment */ x(); }";
+
+    // Act / Assert
+    try std.testing.expectEqual(computeStructuralHash(a, CommentSyntax.rust), computeStructuralHash(b, CommentSyntax.rust));
+}
+
+test "computeStructuralHash: Zig syntax does not strip block comments" {
+    // Arrange: Zig has no block comments, so /* */ are structural punctuation.
+    const a = "fn f() void { x(); }";
+    const b = "fn f() void { /* stuff */ x(); }";
+
+    // Act / Assert: with Zig syntax these are different structures
+    try std.testing.expect(computeStructuralHash(a, CommentSyntax.zig) != computeStructuralHash(b, CommentSyntax.zig));
+}
+
+test "computeStructuralHash: forLanguage maps correctly" {
+    // Arrange
+    const src = "fn f() void { // comment\nx(); }";
+
+    // Act / Assert: all known languages strip line comments
+    const hash_zig = computeStructuralHash(src, CommentSyntax.forLanguage(.zig));
+    const hash_rust = computeStructuralHash(src, CommentSyntax.forLanguage(.rust));
+    const hash_null = computeStructuralHash(src, CommentSyntax.forLanguage(null));
+    const hash_no_comment = computeStructuralHash("fn f() void { x(); }", CommentSyntax.c_like);
+
+    try std.testing.expectEqual(hash_no_comment, hash_zig);
+    try std.testing.expectEqual(hash_no_comment, hash_rust);
+    try std.testing.expectEqual(hash_no_comment, hash_null);
 }
