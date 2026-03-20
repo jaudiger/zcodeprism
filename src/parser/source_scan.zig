@@ -121,7 +121,8 @@ pub fn computeStructuralHash(fn_source: []const u8, syntax: CommentSyntax) u64 {
     var block_comment_depth: u32 = 0;
     var in_string = false;
     var in_char = false;
-    var prev_was_backslash = false;
+    var punct_run_start: usize = 0;
+    var punct_run_len: usize = 0;
 
     var i: usize = 0;
     while (i < fn_source.len) {
@@ -151,34 +152,47 @@ pub fn computeStructuralHash(fn_source: []const u8, syntax: CommentSyntax) u64 {
         }
 
         if (in_string) {
-            if (c == '\\' and !prev_was_backslash) {
-                prev_was_backslash = true;
+            const run_start = i;
+            while (i < fn_source.len and fn_source[i] != '\\' and fn_source[i] != '"') : (i += 1) {}
+            if (i > run_start) h.update(fn_source[run_start..i]);
+            if (i >= fn_source.len) continue;
+            if (fn_source[i] == '\\') {
                 i += 1;
-                continue;
+                if (i < fn_source.len) {
+                    h.update(fn_source[i..][0..1]);
+                    i += 1;
+                }
+            } else {
+                h.update(fn_source[i..][0..1]);
+                in_string = false;
+                i += 1;
             }
-            if (c == '"' and !prev_was_backslash) in_string = false;
-            prev_was_backslash = false;
-            h.update(&[_]u8{c});
-            i += 1;
             continue;
         }
 
         if (in_char) {
-            if (c == '\\' and !prev_was_backslash) {
-                prev_was_backslash = true;
+            const run_start = i;
+            while (i < fn_source.len and fn_source[i] != '\\' and fn_source[i] != '\'') : (i += 1) {}
+            if (i > run_start) h.update(fn_source[run_start..i]);
+            if (i >= fn_source.len) continue;
+            if (fn_source[i] == '\\') {
                 i += 1;
-                continue;
+                if (i < fn_source.len) {
+                    h.update(fn_source[i..][0..1]);
+                    i += 1;
+                }
+            } else {
+                h.update(fn_source[i..][0..1]);
+                in_char = false;
+                i += 1;
             }
-            if (c == '\'' and !prev_was_backslash) in_char = false;
-            prev_was_backslash = false;
-            h.update(&[_]u8{c});
-            i += 1;
             continue;
         }
 
         // Detect comment starts.
         if (syntax.line_comment) |lc| {
             if (startsWithAt(fn_source, i, lc)) {
+                flushPunctRun(&h, fn_source, punct_run_start, &punct_run_len);
                 in_line_comment = true;
                 in_ident = false;
                 in_number = false;
@@ -188,6 +202,7 @@ pub fn computeStructuralHash(fn_source: []const u8, syntax: CommentSyntax) u64 {
         }
         if (syntax.block_comment_open) |bco| {
             if (startsWithAt(fn_source, i, bco)) {
+                flushPunctRun(&h, fn_source, punct_run_start, &punct_run_len);
                 block_comment_depth = 1;
                 in_ident = false;
                 in_number = false;
@@ -198,21 +213,21 @@ pub fn computeStructuralHash(fn_source: []const u8, syntax: CommentSyntax) u64 {
 
         // Detect string and char literal starts.
         if (c == '"') {
+            flushPunctRun(&h, fn_source, punct_run_start, &punct_run_len);
             in_string = true;
             in_ident = false;
             in_number = false;
             in_whitespace = false;
-            prev_was_backslash = false;
             h.update("\"");
             i += 1;
             continue;
         }
         if (c == '\'') {
+            flushPunctRun(&h, fn_source, punct_run_start, &punct_run_len);
             in_char = true;
             in_ident = false;
             in_number = false;
             in_whitespace = false;
-            prev_was_backslash = false;
             h.update("'");
             i += 1;
             continue;
@@ -220,6 +235,7 @@ pub fn computeStructuralHash(fn_source: []const u8, syntax: CommentSyntax) u64 {
 
         if (isWhitespace(c)) {
             if (!in_whitespace) {
+                flushPunctRun(&h, fn_source, punct_run_start, &punct_run_len);
                 in_whitespace = true;
                 in_ident = false;
                 in_number = false;
@@ -234,23 +250,34 @@ pub fn computeStructuralHash(fn_source: []const u8, syntax: CommentSyntax) u64 {
         const is_digit = c >= '0' and c <= '9';
         if (isIdentChar(c)) {
             if (is_digit and !in_ident and !in_number) {
+                flushPunctRun(&h, fn_source, punct_run_start, &punct_run_len);
                 h.update("#");
                 in_number = true;
             } else if (!in_ident and !in_number) {
+                flushPunctRun(&h, fn_source, punct_run_start, &punct_run_len);
                 h.update("_");
                 in_ident = true;
             }
         } else {
             in_ident = false;
             in_number = false;
-            h.update(&[_]u8{c});
+            if (punct_run_len == 0) punct_run_start = i;
+            punct_run_len += 1;
         }
 
         i += 1;
     }
+    flushPunctRun(&h, fn_source, punct_run_start, &punct_run_len);
     const raw = h.final();
     // Zero is reserved as "no hash computed" sentinel.
     return if (raw == 0) 1 else raw;
+}
+
+fn flushPunctRun(h: *std.hash.Wyhash, source: []const u8, start: usize, len: *usize) void {
+    if (len.* > 0) {
+        h.update(source[start..][0..len.*]);
+        len.* = 0;
+    }
 }
 
 fn startsWithAt(text: []const u8, pos: usize, prefix: []const u8) bool {
