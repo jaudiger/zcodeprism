@@ -30,9 +30,9 @@ pub const CycleResult = struct {
 
     pub fn deinit(self: CycleResult, allocator: std.mem.Allocator) void {
         for (self.cycles) |cycle| {
-            if (cycle.nodes.len > 0) allocator.free(cycle.nodes);
+            allocator.free(cycle.nodes);
         }
-        if (self.cycles.len > 0) allocator.free(self.cycles);
+        allocator.free(self.cycles);
     }
 };
 

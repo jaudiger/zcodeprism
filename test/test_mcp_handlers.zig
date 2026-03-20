@@ -2198,7 +2198,9 @@ test "dead_code finds unreferenced private function" {
     const v = result.inner.value.object;
 
     // Assert
+    const total_count = v.get("total_count").?.integer;
     const nodes = v.get("nodes").?.array;
+    try std.testing.expectEqual(total_count, @as(i64, @intCast(nodes.items.len)));
     var found_truly_dead = false;
     var found_tested_private = false;
     var found_counter = false;
@@ -2248,7 +2250,9 @@ test "dead_code rust finds unreferenced private function, not Counter fields" {
     const v = result.inner.value.object;
 
     // Assert
+    const total_count = v.get("total_count").?.integer;
     const nodes = v.get("nodes").?.array;
+    try std.testing.expectEqual(total_count, @as(i64, @intCast(nodes.items.len)));
     var found_truly_dead = false;
     var found_tested_private = false;
     var found_counter = false;
@@ -2295,7 +2299,9 @@ test "dead_code empty graph" {
     defer result.inner.deinit();
 
     // Assert
-    const nodes = result.inner.value.object.get("nodes").?.array;
+    const v = result.inner.value.object;
+    try std.testing.expectEqual(@as(i64, 0), v.get("total_count").?.integer);
+    const nodes = v.get("nodes").?.array;
     try std.testing.expectEqual(@as(usize, 0), nodes.items.len);
 }
 

@@ -24,7 +24,7 @@ pub const ComplexityResult = struct {
     nodes: []const ComplexityEntry,
 
     pub fn deinit(self: ComplexityResult, allocator: std.mem.Allocator) void {
-        if (self.nodes.len > 0) allocator.free(self.nodes);
+        allocator.free(self.nodes);
     }
 };
 

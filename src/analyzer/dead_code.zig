@@ -31,7 +31,7 @@ pub const DeadCodeResult = struct {
     nodes: []const DeadCodeEntry,
 
     pub fn deinit(self: DeadCodeResult, allocator: std.mem.Allocator) void {
-        if (self.nodes.len > 0) allocator.free(self.nodes);
+        allocator.free(self.nodes);
     }
 };
 

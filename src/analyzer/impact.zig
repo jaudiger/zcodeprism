@@ -22,7 +22,7 @@ pub const ImpactAnalysis = struct {
     dependents: []const ImpactDependent,
 
     pub fn deinit(self: ImpactAnalysis, allocator: std.mem.Allocator) void {
-        if (self.dependents.len > 0) allocator.free(self.dependents);
+        allocator.free(self.dependents);
     }
 };
 

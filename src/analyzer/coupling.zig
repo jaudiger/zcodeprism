@@ -27,7 +27,7 @@ pub const CouplingResult = struct {
     pairs: []const CouplingPair,
 
     pub fn deinit(self: CouplingResult, allocator: std.mem.Allocator) void {
-        if (self.pairs.len > 0) allocator.free(self.pairs);
+        allocator.free(self.pairs);
     }
 };
 

@@ -32,9 +32,9 @@ pub const DuplicateResult = struct {
 
     pub fn deinit(self: DuplicateResult, allocator: std.mem.Allocator) void {
         for (self.groups) |group| {
-            if (group.members.len > 0) allocator.free(group.members);
+            allocator.free(group.members);
         }
-        if (self.groups.len > 0) allocator.free(self.groups);
+        allocator.free(self.groups);
     }
 };
 
@@ -101,7 +101,7 @@ pub fn findDuplicates(allocator: std.mem.Allocator, fg: FrozenGraph, options: Du
     const groups = try allocator.alloc(DuplicateGroup, group_count);
     errdefer {
         for (groups[0..group_count]) |gr| {
-            if (gr.members.len > 0) allocator.free(gr.members);
+            allocator.free(gr.members);
         }
         allocator.free(groups);
     }
