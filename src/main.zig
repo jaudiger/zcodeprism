@@ -15,6 +15,7 @@ const lsp_enricher = zcodeprism.lsp.enricher;
 const registry = zcodeprism.registry;
 const storage = zcodeprism.storage;
 const workspace_mod = zcodeprism.workspace;
+const FrozenGraph = zcodeprism.FrozenGraph;
 const Graph = zcodeprism.Graph;
 const NodeKind = zcodeprism.NodeKind;
 const EdgeType = zcodeprism.EdgeType;
@@ -314,17 +315,18 @@ fn runIndex(stdout: *std.Io.Writer, stderr: *std.Io.Writer, verbosity: u8) void 
         lsp_result.accumulate(result);
     }
 
+    const frozen = FrozenGraph{ .graph = &graph };
     const fmt = if (full.storage) |s| s.format orelse .binary else .binary;
     switch (fmt) {
         .binary => {
-            storage.binary.save(allocator, &graph, ".zcodeprism/graph.bin") catch |err| {
+            storage.binary.save(allocator, frozen, ".zcodeprism/graph.bin") catch |err| {
                 stderr.print("failed to save binary graph: {s}\n", .{@errorName(err)}) catch {};
                 stderr.flush() catch {};
                 std.process.exit(1);
             };
         },
         .jsonl => {
-            saveJsonl(allocator, &graph) catch |err| {
+            saveJsonl(allocator, frozen) catch |err| {
                 stderr.print("failed to save JSONL graph: {s}\n", .{@errorName(err)}) catch {};
                 stderr.flush() catch {};
                 std.process.exit(1);
@@ -387,12 +389,13 @@ fn runExport(
         break :blk std.fs.path.basename(cwd);
     };
 
+    const export_frozen = FrozenGraph{ .graph = &graph };
     switch (format) {
         .ctg_fmt => {
             var out: std.ArrayList(u8) = .{};
             defer out.deinit(allocator);
 
-            ctg.renderCtg(allocator, &graph, .{
+            ctg.renderCtg(allocator, export_frozen, .{
                 .project_name = project_name,
                 .scope = scope_arg,
                 .filter = .{
@@ -411,7 +414,7 @@ fn runExport(
             var out: std.ArrayList(u8) = .{};
             defer out.deinit(allocator);
 
-            mermaid.renderMermaid(allocator, &graph, .{
+            mermaid.renderMermaid(allocator, export_frozen, .{
                 .project_name = project_name,
                 .scope = scope_arg,
                 .filter = .{
@@ -435,7 +438,8 @@ fn runExport(
                     std.process.exit(1);
                 };
                 defer af.deinit();
-                storage.jsonl.exportJsonl(allocator, &graph, &af.file_writer.interface) catch |err| {
+                const export_fg = FrozenGraph{ .graph = &graph };
+                storage.jsonl.exportJsonl(allocator, export_fg, &af.file_writer.interface) catch |err| {
                     stderr.print("export failed: {s}\n", .{@errorName(err)}) catch {};
                     stderr.flush() catch {};
                     std.process.exit(1);
@@ -444,7 +448,8 @@ fn runExport(
             } else {
                 var buf: [8192]u8 = undefined;
                 var writer = std.fs.File.stdout().writer(&buf);
-                storage.jsonl.exportJsonl(allocator, &graph, &writer.interface) catch |err| {
+                const stdout_fg = FrozenGraph{ .graph = &graph };
+                storage.jsonl.exportJsonl(allocator, stdout_fg, &writer.interface) catch |err| {
                     stderr.print("export failed: {s}\n", .{@errorName(err)}) catch {};
                     stderr.flush() catch {};
                     std.process.exit(1);
@@ -512,7 +517,8 @@ fn runSnapshot(stdout: *std.Io.Writer, stderr: *std.Io.Writer, name_arg: ?[]cons
     };
     defer graph.deinit(allocator);
 
-    snapshot.saveSnapshot(allocator, &graph, tag, ".zcodeprism") catch |err| {
+    const snap_fg = FrozenGraph{ .graph = &graph };
+    snapshot.saveSnapshot(allocator, snap_fg, tag, ".zcodeprism") catch |err| {
         switch (err) {
             error.InvalidTagName => stderr.print("invalid snapshot tag: {s}\n", .{tag}) catch {},
             error.TagTooLong => stderr.print("snapshot tag too long (max {d}): {s}\n", .{ snapshot.MAX_TAG_LENGTH, tag }) catch {},
@@ -564,7 +570,9 @@ fn runDiff(stdout: *std.Io.Writer, stderr: *std.Io.Writer, tag_a_arg: ?[]const u
     };
     defer graph_b.deinit(allocator);
 
-    var report = snapshot_diff.diffGraphs(allocator, &graph_a, &graph_b) catch |err| {
+    const diff_fg_a = FrozenGraph{ .graph = &graph_a };
+    const diff_fg_b = FrozenGraph{ .graph = &graph_b };
+    var report = snapshot_diff.diffGraphs(allocator, diff_fg_a, diff_fg_b) catch |err| {
         stderr.print("diff failed: {s}\n", .{@errorName(err)}) catch {};
         stderr.flush() catch {};
         std.process.exit(1);
@@ -670,12 +678,12 @@ fn readLine(reader: *std.Io.Reader, line_buf: *std.ArrayList(u8), allocator: std
     }
 }
 
-fn saveJsonl(allocator: std.mem.Allocator, graph: *const Graph) !void {
+fn saveJsonl(allocator: std.mem.Allocator, fg: FrozenGraph) !void {
     const file = try std.fs.cwd().createFile(".zcodeprism/graph.jsonl", .{});
     defer file.close();
     var buf: [8192]u8 = undefined;
     var writer = file.writer(&buf);
-    try storage.jsonl.exportJsonl(allocator, graph, &writer.interface);
+    try storage.jsonl.exportJsonl(allocator, fg, &writer.interface);
     try writer.interface.flush();
 }
 

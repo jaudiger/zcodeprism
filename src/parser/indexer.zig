@@ -110,7 +110,7 @@ pub fn indexDirectory(
 
     if (file_entries.items.len == 0) {
         log.debug("no files to index", &.{});
-        try graph.freeze(allocator);
+        _ = try graph.freeze(allocator);
         return result;
     }
 
@@ -238,7 +238,7 @@ pub fn indexDirectory(
         Field.uint("edges", graph.edgeCount()),
     });
 
-    try graph.freeze(allocator);
+    _ = try graph.freeze(allocator);
 
     try enrichment.enrichPostFreeze(allocator, graph, .{ .logger = log });
 

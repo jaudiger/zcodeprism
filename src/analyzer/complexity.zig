@@ -5,6 +5,7 @@ const node_mod = @import("../core/node.zig");
 const scope_mod = @import("../core/scope.zig");
 
 const Graph = graph_mod.Graph;
+const FrozenGraph = graph_mod.FrozenGraph;
 const Node = node_mod.Node;
 const NodeId = types.NodeId;
 const NodeKind = types.NodeKind;
@@ -35,7 +36,8 @@ pub const ComplexityOptions = struct {
 };
 
 /// Return the top-N most complex functions, sorted descending.
-pub fn findComplex(allocator: std.mem.Allocator, g: *const Graph, options: ComplexityOptions) !ComplexityResult {
+pub fn findComplex(allocator: std.mem.Allocator, fg: FrozenGraph, options: ComplexityOptions) !ComplexityResult {
+    const g = fg.graph;
     const scope_filter: ?Scope = if (options.scope) |s| Scope.parse(s) else null;
     const cap = options.top_n;
     if (cap == 0) return .{ .nodes = &.{} };

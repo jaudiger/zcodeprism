@@ -2,6 +2,7 @@ const std = @import("std");
 const zcodeprism = @import("zcodeprism");
 const test_helpers = @import("test-helpers");
 
+const FrozenGraph = zcodeprism.FrozenGraph;
 const Graph = zcodeprism.graph.Graph;
 const Node = zcodeprism.node.Node;
 const Edge = zcodeprism.edge.Edge;
@@ -259,7 +260,7 @@ test "assembled graph has virtual root, project children, all nodes, and preserv
     // Act
     var assembled = try assembleWorkspace(allocator, &ws, &graphs);
     defer assembled.deinit(allocator);
-    try assembled.graph.freeze(allocator);
+    _ = try assembled.graph.freeze(allocator);
 
     // Assert -- virtual root
     const root_node = assembled.graph.getNode(.root);
@@ -346,16 +347,17 @@ test "scope filters by project, no scope returns all, non-existent scope returns
 
     var assembled = try assembleWorkspace(allocator, &ws, &graphs);
     defer assembled.deinit(allocator);
-    try assembled.graph.freeze(allocator);
+    _ = try assembled.graph.freeze(allocator);
 
     // Act
-    const all = try zcodeprism.query.search(allocator, &assembled.graph, .{ .query = "compute", .kind = .function });
+    const ws_fg = FrozenGraph{ .graph = &assembled.graph };
+    const all = try zcodeprism.query.search(allocator, ws_fg, .{ .query = "compute", .kind = .function });
     defer all.deinit(allocator);
 
-    const scoped = try zcodeprism.query.search(allocator, &assembled.graph, .{ .query = "compute", .scope = "alpha/", .kind = .function });
+    const scoped = try zcodeprism.query.search(allocator, ws_fg, .{ .query = "compute", .scope = "alpha/", .kind = .function });
     defer scoped.deinit(allocator);
 
-    const empty = try zcodeprism.query.search(allocator, &assembled.graph, .{ .scope = "nonexistent/" });
+    const empty = try zcodeprism.query.search(allocator, ws_fg, .{ .scope = "nonexistent/" });
     defer empty.deinit(allocator);
 
     // Assert
@@ -385,11 +387,12 @@ test "stats counts all projects without scope and one project with scope" {
 
     var assembled = try assembleWorkspace(allocator, &ws, &graphs);
     defer assembled.deinit(allocator);
-    try assembled.graph.freeze(allocator);
+    _ = try assembled.graph.freeze(allocator);
 
     // Act
-    const all_stats = try zcodeprism.query.computeStats(allocator, &assembled.graph, .{});
-    const alpha_stats = try zcodeprism.query.computeStats(allocator, &assembled.graph, .{ .scope = "alpha/" });
+    const ws_fg = FrozenGraph{ .graph = &assembled.graph };
+    const all_stats = try zcodeprism.query.computeStats(allocator, ws_fg, .{});
+    const alpha_stats = try zcodeprism.query.computeStats(allocator, ws_fg, .{ .scope = "alpha/" });
 
     // Assert -- all
     try std.testing.expectEqual(@as(u32, 2), all_stats.node_counts[@intFromEnum(NodeKind.file)]);

@@ -4,6 +4,7 @@ const types = @import("../core/types.zig");
 const node_mod = @import("../core/node.zig");
 
 const Graph = graph_mod.Graph;
+const FrozenGraph = graph_mod.FrozenGraph;
 const Node = node_mod.Node;
 const NodeKind = types.NodeKind;
 
@@ -64,9 +65,11 @@ pub const DiffReport = struct {
 /// Both graphs must outlive the returned report (string fields are borrowed).
 pub fn diffGraphs(
     allocator: std.mem.Allocator,
-    graph_a: *const Graph,
-    graph_b: *const Graph,
+    fg_a: FrozenGraph,
+    fg_b: FrozenGraph,
 ) !DiffReport {
+    const graph_a = fg_a.graph;
+    const graph_b = fg_b.graph;
     var entries: std.ArrayList(DiffEntry) = .{};
     errdefer entries.deinit(allocator);
 

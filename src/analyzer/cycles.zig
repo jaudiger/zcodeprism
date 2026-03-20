@@ -5,6 +5,7 @@ const node_mod = @import("../core/node.zig");
 const scope_mod = @import("../core/scope.zig");
 
 const Graph = graph_mod.Graph;
+const FrozenGraph = graph_mod.FrozenGraph;
 const Node = node_mod.Node;
 const NodeId = types.NodeId;
 const EdgeId = types.EdgeId;
@@ -43,7 +44,8 @@ pub const CycleOptions = struct {
 };
 
 /// Detect dependency cycles among file nodes using Tarjan SCC.
-pub fn findCycles(allocator: std.mem.Allocator, g: *const Graph, options: CycleOptions) !CycleResult {
+pub fn findCycles(allocator: std.mem.Allocator, fg: FrozenGraph, options: CycleOptions) !CycleResult {
+    const g = fg.graph;
     const default_types = [_]EdgeType{.imports};
     const allowed_types: []const EdgeType = options.edge_types orelse &default_types;
     const scope_filter: ?Scope = if (options.scope) |s| Scope.parse(s) else null;

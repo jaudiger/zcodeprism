@@ -223,7 +223,7 @@ pub fn main() !void {
             };
         }
 
-        try graph.freeze(allocator);
+        _ = try graph.freeze(allocator);
     } else {
         // Directory path: full multi-file indexation.
         var wl = zcodeprism.lsp.worklist.LspWorklist{};
@@ -254,9 +254,10 @@ pub fn main() !void {
         .depth = depth_arg,
     };
 
+    const fg = zcodeprism.FrozenGraph{ .graph = &graph };
     switch (format) {
         .ctg => {
-            ctg.renderCtg(allocator, &graph, .{
+            ctg.renderCtg(allocator, fg, .{
                 .project_name = name,
                 .scope = scope_arg,
                 .filter = filter,
@@ -267,7 +268,7 @@ pub fn main() !void {
             };
         },
         .mermaid_fmt => {
-            mermaid.renderMermaid(allocator, &graph, .{
+            mermaid.renderMermaid(allocator, fg, .{
                 .project_name = name,
                 .scope = scope_arg,
                 .filter = filter,

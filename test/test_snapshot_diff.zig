@@ -1,6 +1,7 @@
 const std = @import("std");
 const zcodeprism = @import("zcodeprism");
 
+const FrozenGraph = zcodeprism.FrozenGraph;
 const Graph = zcodeprism.graph.Graph;
 const snapshot_diff = zcodeprism.diff.snapshot_diff;
 const metrics_mod = zcodeprism.metrics_mod;
@@ -44,7 +45,9 @@ test "detects added and removed functions" {
     _ = try gb.addNode(allocator, .{ .id = .root, .name = "d", .kind = .function, .file_path = "main.zig" });
 
     // Act
-    var report = try snapshot_diff.diffGraphs(allocator, &ga, &gb);
+    const fga = FrozenGraph{ .graph = &ga };
+    const fgb = FrozenGraph{ .graph = &gb };
+    var report = try snapshot_diff.diffGraphs(allocator, fga, fgb);
     defer report.deinit(allocator);
 
     // Assert
@@ -97,7 +100,9 @@ test "detects modified and renamed functions" {
     });
 
     // Act
-    var report = try snapshot_diff.diffGraphs(allocator, &ga, &gb);
+    const fga = FrozenGraph{ .graph = &ga };
+    const fgb = FrozenGraph{ .graph = &gb };
+    var report = try snapshot_diff.diffGraphs(allocator, fga, fgb);
     defer report.deinit(allocator);
 
     // Assert
@@ -126,7 +131,9 @@ test "detects added and removed files" {
     _ = try gb.addNode(allocator, .{ .id = .root, .name = "c.zig", .kind = .file, .file_path = "c.zig", .content_hash = "cccccccccccc".* });
 
     // Act
-    var report = try snapshot_diff.diffGraphs(allocator, &ga, &gb);
+    const fga = FrozenGraph{ .graph = &ga };
+    const fgb = FrozenGraph{ .graph = &gb };
+    var report = try snapshot_diff.diffGraphs(allocator, fga, fgb);
     defer report.deinit(allocator);
 
     // Assert
@@ -144,7 +151,8 @@ test "diff identical graphs produces zero changes" {
     _ = try g.addNode(allocator, .{ .id = .root, .name = "foo", .kind = .function, .file_path = "a.zig" });
 
     // Act
-    var report = try snapshot_diff.diffGraphs(allocator, &g, &g);
+    const fg_self = FrozenGraph{ .graph = &g };
+    var report = try snapshot_diff.diffGraphs(allocator, fg_self, fg_self);
     defer report.deinit(allocator);
 
     // Assert
@@ -168,21 +176,23 @@ test "diff empty vs populated and populated vs empty" {
     _ = try populated.addNode(allocator, .{ .id = .root, .name = "foo", .kind = .function, .file_path = "a.zig" });
 
     // Act: empty -> populated = everything added
-    var report1 = try snapshot_diff.diffGraphs(allocator, &empty, &populated);
+    const fg_empty = FrozenGraph{ .graph = &empty };
+    const fg_pop = FrozenGraph{ .graph = &populated };
+    var report1 = try snapshot_diff.diffGraphs(allocator, fg_empty, fg_pop);
     defer report1.deinit(allocator);
 
     try std.testing.expect(report1.summary.added > 0);
     try std.testing.expectEqual(@as(usize, 0), report1.summary.removed);
 
     // Act: populated -> empty = everything removed
-    var report2 = try snapshot_diff.diffGraphs(allocator, &populated, &empty);
+    var report2 = try snapshot_diff.diffGraphs(allocator, fg_pop, fg_empty);
     defer report2.deinit(allocator);
 
     try std.testing.expect(report2.summary.removed > 0);
     try std.testing.expectEqual(@as(usize, 0), report2.summary.added);
 
     // Act: empty -> empty = zero changes
-    var report3 = try snapshot_diff.diffGraphs(allocator, &empty, &empty);
+    var report3 = try snapshot_diff.diffGraphs(allocator, fg_empty, fg_empty);
     defer report3.deinit(allocator);
 
     try std.testing.expectEqual(@as(usize, 0), report3.summary.added);
@@ -204,9 +214,11 @@ test "diff output is deterministic" {
     _ = try gb.addNode(allocator, .{ .id = .root, .name = "bar", .kind = .function, .file_path = "a.zig" });
 
     // Act: diff twice
-    var report1 = try snapshot_diff.diffGraphs(allocator, &ga, &gb);
+    const fga = FrozenGraph{ .graph = &ga };
+    const fgb = FrozenGraph{ .graph = &gb };
+    var report1 = try snapshot_diff.diffGraphs(allocator, fga, fgb);
     defer report1.deinit(allocator);
-    var report2 = try snapshot_diff.diffGraphs(allocator, &ga, &gb);
+    var report2 = try snapshot_diff.diffGraphs(allocator, fga, fgb);
     defer report2.deinit(allocator);
 
     // Render both

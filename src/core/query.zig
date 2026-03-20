@@ -8,6 +8,7 @@ const regex_mod = @import("regex.zig");
 const lang = @import("../languages/language.zig");
 
 const Graph = graph_mod.Graph;
+const FrozenGraph = graph_mod.FrozenGraph;
 const Direction = types.Direction;
 const Node = node_mod.Node;
 const Edge = edge_mod.Edge;
@@ -320,7 +321,8 @@ fn nodePassesStatsFilter(n: Node, scope: ?[]const u8, options: StatsOptions) boo
 /// Search the graph for nodes matching the given filters. When options.node_ids is set,
 /// only those nodes are scanned; otherwise the whole graph is scanned.
 /// Returns a paginated result. Caller owns the returned SearchResult.
-pub fn search(allocator: std.mem.Allocator, g: *const Graph, options: SearchOptions) !SearchResult {
+pub fn search(allocator: std.mem.Allocator, fg: FrozenGraph, options: SearchOptions) !SearchResult {
+    const g = fg.graph;
     const effective_limit = @min(options.limit, SearchOptions.max_limit);
     const effective_scope: ?[]const u8 = if (options.scope) |s| (if (s.len == 0) null else s) else null;
 
@@ -405,7 +407,8 @@ pub fn search(allocator: std.mem.Allocator, g: *const Graph, options: SearchOpti
 
 /// Find shortest path(s) between two nodes in the graph via BFS.
 /// Caller owns the returned PathsResult.
-pub fn findPaths(allocator: std.mem.Allocator, g: *const Graph, from: NodeId, to: NodeId, options: PathOptions) !PathsResult {
+pub fn findPaths(allocator: std.mem.Allocator, fg: FrozenGraph, from: NodeId, to: NodeId, options: PathOptions) !PathsResult {
+    const g = fg.graph;
     if (g.getNode(from) == null or g.getNode(to) == null) return .{ .paths = &.{} };
 
     // Same node: trivial path
@@ -508,7 +511,8 @@ pub fn findPaths(allocator: std.mem.Allocator, g: *const Graph, from: NodeId, to
 }
 
 /// Compute aggregated statistics over the graph (optionally scoped).
-pub fn computeStats(allocator: std.mem.Allocator, g: *const Graph, options: StatsOptions) !Stats {
+pub fn computeStats(allocator: std.mem.Allocator, fg: FrozenGraph, options: StatsOptions) !Stats {
+    const g = fg.graph;
     _ = allocator;
     var stats = Stats{};
 
@@ -548,7 +552,8 @@ pub fn computeStats(allocator: std.mem.Allocator, g: *const Graph, options: Stat
 /// Return the ancestor chain from a node up to the root.
 /// The result is ordered from immediate parent to root.
 /// Caller owns the returned slice.
-pub fn getAncestors(allocator: std.mem.Allocator, g: *const Graph, node_id: NodeId) ![]NodeId {
+pub fn getAncestors(allocator: std.mem.Allocator, fg: FrozenGraph, node_id: NodeId) ![]NodeId {
+    const g = fg.graph;
     // Measure
     var count: usize = 0;
     {
@@ -581,7 +586,8 @@ pub fn getAncestors(allocator: std.mem.Allocator, g: *const Graph, node_id: Node
 /// Compute the transitive reverse-impact set: all nodes that
 /// depend on `node_id` via calls or uses_type edges.
 /// Caller owns the returned ImpactResult.
-pub fn getImpact(allocator: std.mem.Allocator, g: *const Graph, node_id: NodeId, options: ImpactOptions) !ImpactResult {
+pub fn getImpact(allocator: std.mem.Allocator, fg: FrozenGraph, node_id: NodeId, options: ImpactOptions) !ImpactResult {
+    const g = fg.graph;
     if (g.getNode(node_id) == null) return .{ .impacted = &.{}, .total_impacted = 0 };
 
     const default_types = [_]EdgeType{ .calls, .uses_type, .accesses_field };
@@ -649,7 +655,8 @@ pub fn getImpact(allocator: std.mem.Allocator, g: *const Graph, node_id: NodeId,
 /// Batch lookup of nodes by ID. Returns full node details with optional
 /// edge ID slices. Non-existent IDs are silently skipped.
 /// Caller owns the returned GetNodesResult.
-pub fn getNodes(allocator: std.mem.Allocator, g: *const Graph, node_ids: []const NodeId, options: GetNodesOptions) !GetNodesResult {
+pub fn getNodes(allocator: std.mem.Allocator, fg: FrozenGraph, node_ids: []const NodeId, options: GetNodesOptions) !GetNodesResult {
+    const g = fg.graph;
     // Measure: count valid IDs
     var count: usize = 0;
     for (node_ids) |id| {
@@ -682,7 +689,8 @@ pub fn getNodes(allocator: std.mem.Allocator, g: *const Graph, node_ids: []const
 /// Return edges connected to one or more nodes, filtered by direction,
 /// edge type, and external status, with pagination.
 /// Caller owns the returned GetEdgesResult.
-pub fn getEdges(allocator: std.mem.Allocator, g: *const Graph, node_ids: []const NodeId, options: GetEdgesOptions) !GetEdgesResult {
+pub fn getEdges(allocator: std.mem.Allocator, fg: FrozenGraph, node_ids: []const NodeId, options: GetEdgesOptions) !GetEdgesResult {
+    const g = fg.graph;
     const effective_limit = @min(options.limit, GetEdgesOptions.max_limit);
 
     // Measure
@@ -784,7 +792,6 @@ fn buildTestGraph(allocator: std.mem.Allocator) !Graph {
     _ = try g.addEdgeIfNew(allocator, .{ .source_id = @enumFromInt(2), .target_id = @enumFromInt(8), .edge_type = .uses_type, .source = .phantom });
     _ = try g.addEdgeIfNew(allocator, .{ .source_id = @enumFromInt(6), .target_id = @enumFromInt(8), .edge_type = .uses_type, .source = .phantom });
 
-    try g.freeze(allocator);
     return g;
 }
 
@@ -800,15 +807,16 @@ test "search by name regex, kind, visibility, and language individually" {
     // Arrange
     var g = try buildTestGraph(testing.allocator);
     defer g.deinit(testing.allocator);
+    const fg = try g.freeze(testing.allocator);
 
     // Act
-    const by_name = try search(testing.allocator, &g, .{ .query = "parse" });
+    const by_name = try search(testing.allocator, fg, .{ .query = "parse" });
     defer by_name.deinit(testing.allocator);
-    const by_kind = try search(testing.allocator, &g, .{ .kind = .function });
+    const by_kind = try search(testing.allocator, fg, .{ .kind = .function });
     defer by_kind.deinit(testing.allocator);
-    const by_vis = try search(testing.allocator, &g, .{ .visibility = .public });
+    const by_vis = try search(testing.allocator, fg, .{ .visibility = .public });
     defer by_vis.deinit(testing.allocator);
-    const by_lang = try search(testing.allocator, &g, .{ .language = .zig });
+    const by_lang = try search(testing.allocator, fg, .{ .language = .zig });
     defer by_lang.deinit(testing.allocator);
 
     // Assert: name regex finds nodes containing "parse"
@@ -840,9 +848,10 @@ test "search combines filters into intersection" {
     // Arrange
     var g = try buildTestGraph(testing.allocator);
     defer g.deinit(testing.allocator);
+    const fg = try g.freeze(testing.allocator);
 
     // Act: public zig functions matching "parse"
-    const result = try search(testing.allocator, &g, .{
+    const result = try search(testing.allocator, fg, .{
         .query = "parse",
         .kind = .function,
         .visibility = .public,
@@ -862,13 +871,14 @@ test "search external filter: include, exclude, only" {
     // Arrange
     var g = try buildTestGraph(testing.allocator);
     defer g.deinit(testing.allocator);
+    const fg = try g.freeze(testing.allocator);
 
     // Act
-    const incl = try search(testing.allocator, &g, .{ .kind = .type_def, .external = .include });
+    const incl = try search(testing.allocator, fg, .{ .kind = .type_def, .external = .include });
     defer incl.deinit(testing.allocator);
-    const excl = try search(testing.allocator, &g, .{ .kind = .type_def, .external = .exclude });
+    const excl = try search(testing.allocator, fg, .{ .kind = .type_def, .external = .exclude });
     defer excl.deinit(testing.allocator);
-    const only = try search(testing.allocator, &g, .{ .external = .only });
+    const only = try search(testing.allocator, fg, .{ .external = .only });
     defer only.deinit(testing.allocator);
 
     // Assert include: both Token and std.mem.Allocator
@@ -894,13 +904,14 @@ test "search pagination: offset, limit, boundaries" {
     // Arrange
     var g = try buildTestGraph(testing.allocator);
     defer g.deinit(testing.allocator);
+    const fg = try g.freeze(testing.allocator);
 
     // Act
-    const all = try search(testing.allocator, &g, .{ .limit = 200 });
+    const all = try search(testing.allocator, fg, .{ .limit = 200 });
     defer all.deinit(testing.allocator);
-    const beyond = try search(testing.allocator, &g, .{ .offset = 9999 });
+    const beyond = try search(testing.allocator, fg, .{ .offset = 9999 });
     defer beyond.deinit(testing.allocator);
-    const zero_lim = try search(testing.allocator, &g, .{ .limit = 0 });
+    const zero_lim = try search(testing.allocator, fg, .{ .limit = 0 });
     defer zero_lim.deinit(testing.allocator);
 
     // Assert: max limit returns up to 200
@@ -914,7 +925,7 @@ test "search pagination: offset, limit, boundaries" {
 
     // Assert: paginated subset preserves total_matches
     if (all.total_matches > 2) {
-        const page = try search(testing.allocator, &g, .{ .offset = 1, .limit = 2 });
+        const page = try search(testing.allocator, fg, .{ .offset = 1, .limit = 2 });
         defer page.deinit(testing.allocator);
         try testing.expectEqual(all.total_matches, page.total_matches);
         try testing.expect(page.nodes.len <= 2);
@@ -929,9 +940,9 @@ test "search on empty graph and with no matches" {
     // Arrange: empty graph
     var empty = Graph.init("empty");
     defer empty.deinit(testing.allocator);
-    try empty.freeze(testing.allocator);
+    const empty_fg = try empty.freeze(testing.allocator);
 
-    const empty_result = try search(testing.allocator, &empty, .{});
+    const empty_result = try search(testing.allocator, empty_fg, .{});
     defer empty_result.deinit(testing.allocator);
 
     try testing.expectEqual(@as(u32, 0), empty_result.total_matches);
@@ -940,24 +951,25 @@ test "search on empty graph and with no matches" {
     // Arrange: populated graph, impossible query
     var g = try buildTestGraph(testing.allocator);
     defer g.deinit(testing.allocator);
+    const fg = try g.freeze(testing.allocator);
 
-    const no_match = try search(testing.allocator, &g, .{ .query = "nonexistent_xyz_42" });
+    const no_match = try search(testing.allocator, fg, .{ .query = "nonexistent_xyz_42" });
     defer no_match.deinit(testing.allocator);
 
     try testing.expectEqual(@as(u32, 0), no_match.total_matches);
 
     // Escaped dot matches literal dot via regex
-    const regex = try search(testing.allocator, &g, .{ .query = "std\\.mem" });
+    const regex = try search(testing.allocator, fg, .{ .query = "std\\.mem" });
     defer regex.deinit(testing.allocator);
     try testing.expect(regex.total_matches >= 1);
 
     // Regex with invalid pattern returns zero results
-    const invalid = try search(testing.allocator, &g, .{ .query = "*invalid" });
+    const invalid = try search(testing.allocator, fg, .{ .query = "*invalid" });
     defer invalid.deinit(testing.allocator);
     try testing.expectEqual(@as(u32, 0), invalid.total_matches);
 
     // Regex metacharacters actually work
-    const dot_star = try search(testing.allocator, &g, .{ .query = "p.*se" });
+    const dot_star = try search(testing.allocator, fg, .{ .query = "p.*se" });
     defer dot_star.deinit(testing.allocator);
     try testing.expect(dot_star.total_matches >= 1);
     for (dot_star.nodes) |id| {
@@ -966,7 +978,7 @@ test "search on empty graph and with no matches" {
     }
 
     // Anchored regex for exact match
-    const exact = try search(testing.allocator, &g, .{ .query = "^parse$" });
+    const exact = try search(testing.allocator, fg, .{ .query = "^parse$" });
     defer exact.deinit(testing.allocator);
     try testing.expectEqual(@as(u32, 1), exact.total_matches);
     try testing.expectEqualStrings("parse", g.getNode(exact.nodes[0]).?.name);
@@ -980,15 +992,16 @@ test "search with scope: prefix, empty, no matches" {
     // Arrange
     var g = try buildTestGraph(testing.allocator);
     defer g.deinit(testing.allocator);
+    const fg = try g.freeze(testing.allocator);
 
     // Act
-    const scoped = try search(testing.allocator, &g, .{ .scope = "src/parser" });
+    const scoped = try search(testing.allocator, fg, .{ .scope = "src/parser" });
     defer scoped.deinit(testing.allocator);
-    const empty_scope = try search(testing.allocator, &g, .{ .scope = "" });
+    const empty_scope = try search(testing.allocator, fg, .{ .scope = "" });
     defer empty_scope.deinit(testing.allocator);
-    const unscoped = try search(testing.allocator, &g, .{});
+    const unscoped = try search(testing.allocator, fg, .{});
     defer unscoped.deinit(testing.allocator);
-    const dead_scope = try search(testing.allocator, &g, .{ .scope = "nonexistent/" });
+    const dead_scope = try search(testing.allocator, fg, .{ .scope = "nonexistent/" });
     defer dead_scope.deinit(testing.allocator);
 
     // Assert: prefix scope restricts to matching files
@@ -1014,17 +1027,18 @@ test "findPaths: direct, multi-hop, and unconnected" {
     // Arrange
     var g = try buildTestGraph(testing.allocator);
     defer g.deinit(testing.allocator);
+    const fg = try g.freeze(testing.allocator);
 
     // Act: direct path main(6) -> parse(2)
-    const direct = try findPaths(testing.allocator, &g, nid(6), nid(2), .{});
+    const direct = try findPaths(testing.allocator, fg, nid(6), nid(2), .{});
     defer direct.deinit(testing.allocator);
 
     // Act: multi-hop main(6) -> parse(2) -> Token(3)
-    const multi = try findPaths(testing.allocator, &g, nid(6), nid(3), .{});
+    const multi = try findPaths(testing.allocator, fg, nid(6), nid(3), .{});
     defer multi.deinit(testing.allocator);
 
     // Act: no path helper(4) -> main(6)
-    const none = try findPaths(testing.allocator, &g, nid(4), nid(6), .{});
+    const none = try findPaths(testing.allocator, fg, nid(4), nid(6), .{});
     defer none.deinit(testing.allocator);
 
     // Assert: direct path found with 2 nodes
@@ -1045,14 +1059,15 @@ test "findPaths: max_depth and edge_types restrict results" {
     // Arrange
     var g = try buildTestGraph(testing.allocator);
     defer g.deinit(testing.allocator);
+    const fg = try g.freeze(testing.allocator);
 
     // Act: max_depth=1 cannot reach Token(3) from main(6) (needs 2 hops)
-    const shallow = try findPaths(testing.allocator, &g, nid(6), nid(3), .{ .max_depth = 1 });
+    const shallow = try findPaths(testing.allocator, fg, nid(6), nid(3), .{ .max_depth = 1 });
     defer shallow.deinit(testing.allocator);
 
     // Act: calls-only cannot reach Token(3) since parse->Token is uses_type
     const only_calls = [_]EdgeType{.calls};
-    const filtered = try findPaths(testing.allocator, &g, nid(6), nid(3), .{ .edge_types = &only_calls });
+    const filtered = try findPaths(testing.allocator, fg, nid(6), nid(3), .{ .edge_types = &only_calls });
     defer filtered.deinit(testing.allocator);
 
     // Assert
@@ -1064,11 +1079,12 @@ test "findPaths: same node and non-existent node" {
     // Arrange
     var g = try buildTestGraph(testing.allocator);
     defer g.deinit(testing.allocator);
+    const fg = try g.freeze(testing.allocator);
 
     // Act
-    const self_path = try findPaths(testing.allocator, &g, nid(2), nid(2), .{});
+    const self_path = try findPaths(testing.allocator, fg, nid(2), nid(2), .{});
     defer self_path.deinit(testing.allocator);
-    const bad = try findPaths(testing.allocator, &g, nid(9999), nid(2), .{});
+    const bad = try findPaths(testing.allocator, fg, nid(9999), nid(2), .{});
     defer bad.deinit(testing.allocator);
 
     // Assert: self-path is trivial or empty
@@ -1088,6 +1104,7 @@ test "getChildren returns direct children, leaf returns empty" {
     // Arrange
     var g = try buildTestGraph(testing.allocator);
     defer g.deinit(testing.allocator);
+    _ = try g.freeze(testing.allocator);
 
     // Assert: root(0) has file children
     const root_children = g.getChildren(nid(0));
@@ -1104,9 +1121,10 @@ test "getAncestors returns full chain and empty for root" {
     // Arrange
     var g = try buildTestGraph(testing.allocator);
     defer g.deinit(testing.allocator);
+    const fg = try g.freeze(testing.allocator);
 
     // Act: parse(2) has parent=file(1), grandparent=root(0)
-    const ancestors = try getAncestors(testing.allocator, &g, nid(2));
+    const ancestors = try getAncestors(testing.allocator, fg, nid(2));
     defer if (ancestors.len > 0) testing.allocator.free(ancestors);
 
     // Assert
@@ -1115,7 +1133,7 @@ test "getAncestors returns full chain and empty for root" {
     try testing.expectEqual(nid(0), ancestors[1]);
 
     // Act: root(0) has no parent
-    const root_anc = try getAncestors(testing.allocator, &g, nid(0));
+    const root_anc = try getAncestors(testing.allocator, fg, nid(0));
     defer if (root_anc.len > 0) testing.allocator.free(root_anc);
 
     // Assert
@@ -1130,11 +1148,12 @@ test "impact: leaf has zero, core function includes callers" {
     // Arrange
     var g = try buildTestGraph(testing.allocator);
     defer g.deinit(testing.allocator);
+    const fg = try g.freeze(testing.allocator);
 
     // Act
-    const leaf = try getImpact(testing.allocator, &g, nid(4), .{});
+    const leaf = try getImpact(testing.allocator, fg, nid(4), .{});
     defer leaf.deinit(testing.allocator);
-    const core = try getImpact(testing.allocator, &g, nid(2), .{});
+    const core = try getImpact(testing.allocator, fg, nid(2), .{});
     defer core.deinit(testing.allocator);
 
     // Assert: helper(4) has no dependents
@@ -1153,13 +1172,14 @@ test "impact is transitive and works on phantom nodes" {
     // Arrange
     var g = try buildTestGraph(testing.allocator);
     defer g.deinit(testing.allocator);
+    const fg = try g.freeze(testing.allocator);
 
     // Act: Token(3) used by parse(2), parse called by main(6)
-    const token_impact = try getImpact(testing.allocator, &g, nid(3), .{});
+    const token_impact = try getImpact(testing.allocator, fg, nid(3), .{});
     defer token_impact.deinit(testing.allocator);
 
     // Act: std.mem.Allocator(8) used by parse(2) and main(6)
-    const phantom_impact = try getImpact(testing.allocator, &g, nid(8), .{});
+    const phantom_impact = try getImpact(testing.allocator, fg, nid(8), .{});
     defer phantom_impact.deinit(testing.allocator);
 
     // Assert: Token impacts both parse and main transitively
@@ -1173,10 +1193,11 @@ test "impact respects edge_types filter" {
     // Arrange
     var g = try buildTestGraph(testing.allocator);
     defer g.deinit(testing.allocator);
+    const fg = try g.freeze(testing.allocator);
 
     // Act: Token(3) only has uses_type incoming, not calls
     const only_calls = [_]EdgeType{.calls};
-    const result = try getImpact(testing.allocator, &g, nid(3), .{ .edge_types = &only_calls });
+    const result = try getImpact(testing.allocator, fg, nid(3), .{ .edge_types = &only_calls });
     defer result.deinit(testing.allocator);
 
     // Assert
@@ -1191,9 +1212,10 @@ test "stats on full graph counts nodes, edges, and lines" {
     // Arrange
     var g = try buildTestGraph(testing.allocator);
     defer g.deinit(testing.allocator);
+    const fg = try g.freeze(testing.allocator);
 
     // Act
-    const stats = try computeStats(testing.allocator, &g, .{ .include_tests = true, .include_external = true });
+    const stats = try computeStats(testing.allocator, fg, .{ .include_tests = true, .include_external = true });
 
     // Assert
     try testing.expect(stats.node_counts[@intFromEnum(NodeKind.function)] >= 3);
@@ -1207,9 +1229,10 @@ test "stats with scope restricts counts" {
     // Arrange
     var g = try buildTestGraph(testing.allocator);
     defer g.deinit(testing.allocator);
+    const fg = try g.freeze(testing.allocator);
 
     // Act
-    const stats = try computeStats(testing.allocator, &g, .{ .scope = "src/main" });
+    const stats = try computeStats(testing.allocator, fg, .{ .scope = "src/main" });
 
     // Assert: only main's function
     try testing.expectEqual(@as(u32, 1), stats.node_counts[@intFromEnum(NodeKind.function)]);
@@ -1219,10 +1242,10 @@ test "stats on empty graph returns all zeros" {
     // Arrange
     var g = Graph.init("empty");
     defer g.deinit(testing.allocator);
-    try g.freeze(testing.allocator);
+    const fg = try g.freeze(testing.allocator);
 
     // Act
-    const stats = try computeStats(testing.allocator, &g, .{});
+    const stats = try computeStats(testing.allocator, fg, .{});
 
     // Assert
     for (stats.node_counts) |c| try testing.expectEqual(@as(u32, 0), c);
@@ -1238,10 +1261,11 @@ test "getNodes returns details, skips invalid IDs, respects include_edges" {
     // Arrange
     var g = try buildTestGraph(testing.allocator);
     defer g.deinit(testing.allocator);
+    const fg = try g.freeze(testing.allocator);
 
     // Act: batch lookup with one invalid ID
     const ids = [_]NodeId{ nid(2), nid(9999), nid(6) };
-    const result = try getNodes(testing.allocator, &g, &ids, .{});
+    const result = try getNodes(testing.allocator, fg, &ids, .{});
     defer result.deinit(testing.allocator);
 
     // Assert: only 2 valid nodes returned with edges populated
@@ -1251,7 +1275,7 @@ test "getNodes returns details, skips invalid IDs, respects include_edges" {
     try testing.expect(result.nodes[0].out_edge_ids.len > 0);
 
     // Act: same query with edges disabled
-    const no_edges = try getNodes(testing.allocator, &g, &ids, .{ .include_edges = false });
+    const no_edges = try getNodes(testing.allocator, fg, &ids, .{ .include_edges = false });
     defer no_edges.deinit(testing.allocator);
 
     // Assert: nodes returned but edge slices are empty
@@ -1260,7 +1284,7 @@ test "getNodes returns details, skips invalid IDs, respects include_edges" {
     try testing.expectEqual(@as(usize, 0), no_edges.nodes[0].out_edge_ids.len);
 
     // Act: empty input
-    const empty = try getNodes(testing.allocator, &g, &.{}, .{});
+    const empty = try getNodes(testing.allocator, fg, &.{}, .{});
     defer empty.deinit(testing.allocator);
 
     // Assert
@@ -1275,10 +1299,11 @@ test "getEdges filters by direction, edge_type, and include_external" {
     // Arrange
     var g = try buildTestGraph(testing.allocator);
     defer g.deinit(testing.allocator);
+    const fg = try g.freeze(testing.allocator);
     const ids = [_]NodeId{nid(2)};
 
     // Act: outgoing only
-    const out_only = try getEdges(testing.allocator, &g, &ids, .{ .direction = .out, .include_external = true });
+    const out_only = try getEdges(testing.allocator, fg, &ids, .{ .direction = .out, .include_external = true });
     defer out_only.deinit(testing.allocator);
 
     // Assert: parse(2) has outgoing uses_type edges to Token and Allocator
@@ -1286,7 +1311,7 @@ test "getEdges filters by direction, edge_type, and include_external" {
     for (out_only.edges) |e| try testing.expectEqual(nid(2), e.source_id);
 
     // Act: incoming only
-    const in_only = try getEdges(testing.allocator, &g, &ids, .{ .direction = .in, .include_external = true });
+    const in_only = try getEdges(testing.allocator, fg, &ids, .{ .direction = .in, .include_external = true });
     defer in_only.deinit(testing.allocator);
 
     // Assert: parse(2) has incoming calls from main(6)
@@ -1294,11 +1319,11 @@ test "getEdges filters by direction, edge_type, and include_external" {
     for (in_only.edges) |e| try testing.expectEqual(nid(2), e.target_id);
 
     // Act: uses_type out, exclude external
-    const uses_no_ext = try getEdges(testing.allocator, &g, &ids, .{ .direction = .out, .edge_type = .uses_type, .include_external = false });
+    const uses_no_ext = try getEdges(testing.allocator, fg, &ids, .{ .direction = .out, .edge_type = .uses_type, .include_external = false });
     defer uses_no_ext.deinit(testing.allocator);
 
     // Act: uses_type out, include external
-    const uses_with_ext = try getEdges(testing.allocator, &g, &ids, .{ .direction = .out, .edge_type = .uses_type, .include_external = true });
+    const uses_with_ext = try getEdges(testing.allocator, fg, &ids, .{ .direction = .out, .edge_type = .uses_type, .include_external = true });
     defer uses_with_ext.deinit(testing.allocator);
 
     // Assert: without external only parse->Token, with external also parse->Allocator
@@ -1307,7 +1332,7 @@ test "getEdges filters by direction, edge_type, and include_external" {
 
     // Act: non-existent node
     const bad_ids = [_]NodeId{nid(9999)};
-    const bad = try getEdges(testing.allocator, &g, &bad_ids, .{});
+    const bad = try getEdges(testing.allocator, fg, &bad_ids, .{});
     defer bad.deinit(testing.allocator);
 
     // Assert

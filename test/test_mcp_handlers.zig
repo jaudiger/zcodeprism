@@ -168,7 +168,7 @@ test "stats on empty graph" {
     // Arrange
     const allocator = std.testing.allocator;
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
-    try gen.graph.freeze(gen.arena.allocator());
+    _ = try gen.graph.freeze(gen.arena.allocator());
     const guard = gen.acquire();
     defer guard.deinit();
     var srv = Server.init(&gen);
@@ -2077,7 +2077,7 @@ test "duplicates empty graph" {
     // Arrange
     const allocator = std.testing.allocator;
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
-    try gen.graph.freeze(gen.arena.allocator());
+    _ = try gen.graph.freeze(gen.arena.allocator());
     const guard = gen.acquire();
     defer guard.deinit();
     var srv = Server.init(&gen);
@@ -2145,7 +2145,7 @@ test "complexity empty graph" {
     // Arrange
     const allocator = std.testing.allocator;
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
-    try gen.graph.freeze(gen.arena.allocator());
+    _ = try gen.graph.freeze(gen.arena.allocator());
     const guard = gen.acquire();
     defer guard.deinit();
     var srv = Server.init(&gen);
@@ -2278,7 +2278,7 @@ test "dead_code empty graph" {
     // Arrange
     const allocator = std.testing.allocator;
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
-    try gen.graph.freeze(gen.arena.allocator());
+    _ = try gen.graph.freeze(gen.arena.allocator());
     const guard = gen.acquire();
     defer guard.deinit();
     var srv = Server.init(&gen);
@@ -2355,7 +2355,7 @@ test "dependency_cycles empty graph" {
     // Arrange
     const allocator = std.testing.allocator;
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
-    try gen.graph.freeze(gen.arena.allocator());
+    _ = try gen.graph.freeze(gen.arena.allocator());
     const guard = gen.acquire();
     defer guard.deinit();
     var srv = Server.init(&gen);
@@ -2418,7 +2418,7 @@ test "coupling empty graph" {
     // Arrange
     const allocator = std.testing.allocator;
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
-    try gen.graph.freeze(gen.arena.allocator());
+    _ = try gen.graph.freeze(gen.arena.allocator());
     const guard = gen.acquire();
     defer guard.deinit();
     var srv = Server.init(&gen);
@@ -2484,7 +2484,7 @@ test "impact empty graph" {
     // Arrange
     const allocator = std.testing.allocator;
     var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
-    try gen.graph.freeze(gen.arena.allocator());
+    _ = try gen.graph.freeze(gen.arena.allocator());
     const guard = gen.acquire();
     defer guard.deinit();
     var srv = Server.init(&gen);

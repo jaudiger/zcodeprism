@@ -6,6 +6,7 @@ const scope_mod = @import("../core/scope.zig");
 const pagination = @import("pagination.zig");
 
 const Graph = graph_mod.Graph;
+const FrozenGraph = graph_mod.FrozenGraph;
 const Node = node_mod.Node;
 const NodeId = types.NodeId;
 const NodeKind = types.NodeKind;
@@ -61,7 +62,8 @@ pub const FuzzyDuplicateOptions = struct {
 };
 
 /// Find groups of functions with identical structural hashes.
-pub fn findDuplicates(allocator: std.mem.Allocator, g: *const Graph, options: DuplicateOptions) !DuplicateResult {
+pub fn findDuplicates(allocator: std.mem.Allocator, fg: FrozenGraph, options: DuplicateOptions) !DuplicateResult {
+    const g = fg.graph;
     const scope_filter: ?Scope = if (options.scope) |s| Scope.parse(s) else null;
 
     // Count how many qualifying functions share each hash.
@@ -173,7 +175,8 @@ pub fn findDuplicates(allocator: std.mem.Allocator, g: *const Graph, options: Du
 }
 
 /// Cluster pre-fingerprinted candidates by Jaccard similarity using union-find.
-pub fn findFuzzyDuplicates(allocator: std.mem.Allocator, g: *const Graph, candidates: []const FuzzyCandidate, options: FuzzyDuplicateOptions) !DuplicateResult {
+pub fn findFuzzyDuplicates(allocator: std.mem.Allocator, fg: FrozenGraph, candidates: []const FuzzyCandidate, options: FuzzyDuplicateOptions) !DuplicateResult {
+    const g = fg.graph;
     const nc = candidates.len;
     if (nc == 0) return .{ .total_groups = 0, .groups = &.{} };
 

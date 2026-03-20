@@ -5,6 +5,7 @@ const std = @import("std");
 const zcodeprism = @import("zcodeprism");
 const tool_utils = @import("tool-utils");
 
+const FrozenGraph = zcodeprism.FrozenGraph;
 const Graph = zcodeprism.Graph;
 const NodeId = zcodeprism.types.NodeId;
 const NodeKind = zcodeprism.NodeKind;
@@ -62,7 +63,7 @@ fn parseNodeId(s: []const u8) ?NodeId {
 
 // -- Command handlers --
 
-fn cmdComplexity(allocator: std.mem.Allocator, g: *const Graph, flags: ParsedFlags, stdout: *std.Io.Writer) !void {
+fn cmdComplexity(allocator: std.mem.Allocator, g: FrozenGraph, flags: ParsedFlags, stdout: *std.Io.Writer) !void {
     const result = try analyzer.complexity.findComplex(allocator, g, .{
         .top_n = flags.limit,
         .scope = flags.scope,
@@ -83,7 +84,7 @@ fn cmdComplexity(allocator: std.mem.Allocator, g: *const Graph, flags: ParsedFla
     if (result.nodes.len == 0) try stdout.print("  (none)\n", .{});
 }
 
-fn cmdDeadCode(allocator: std.mem.Allocator, g: *const Graph, flags: ParsedFlags, stdout: *std.Io.Writer) !void {
+fn cmdDeadCode(allocator: std.mem.Allocator, g: FrozenGraph, flags: ParsedFlags, stdout: *std.Io.Writer) !void {
     const result = try analyzer.dead_code.findDeadCode(allocator, g, .{
         .include_public = flags.include_public,
         .scope = flags.scope,
@@ -105,7 +106,7 @@ fn cmdDeadCode(allocator: std.mem.Allocator, g: *const Graph, flags: ParsedFlags
     if (result.nodes.len == 0) try stdout.print("  (none)\n", .{});
 }
 
-fn cmdDuplicates(allocator: std.mem.Allocator, g: *const Graph, flags: ParsedFlags, stdout: *std.Io.Writer) !void {
+fn cmdDuplicates(allocator: std.mem.Allocator, g: FrozenGraph, flags: ParsedFlags, stdout: *std.Io.Writer) !void {
     const result = try analyzer.duplicates.findDuplicates(allocator, g, .{
         .min_lines = flags.min_lines,
         .scope = flags.scope,
@@ -129,7 +130,7 @@ fn cmdDuplicates(allocator: std.mem.Allocator, g: *const Graph, flags: ParsedFla
     if (result.groups.len == 0) try stdout.print("  (none)\n", .{});
 }
 
-fn cmdCycles(allocator: std.mem.Allocator, g: *const Graph, flags: ParsedFlags, stdout: *std.Io.Writer) !void {
+fn cmdCycles(allocator: std.mem.Allocator, g: FrozenGraph, flags: ParsedFlags, stdout: *std.Io.Writer) !void {
     const result = try analyzer.cycles.findCycles(allocator, g, .{
         .max_cycle_length = flags.max_cycle_length,
         .scope = flags.scope,
@@ -148,7 +149,7 @@ fn cmdCycles(allocator: std.mem.Allocator, g: *const Graph, flags: ParsedFlags, 
     if (result.cycles.len == 0) try stdout.print("  (none)\n", .{});
 }
 
-fn cmdCoupling(allocator: std.mem.Allocator, g: *const Graph, flags: ParsedFlags, stdout: *std.Io.Writer) !void {
+fn cmdCoupling(allocator: std.mem.Allocator, g: FrozenGraph, flags: ParsedFlags, stdout: *std.Io.Writer) !void {
     const result = try analyzer.coupling.findCoupling(allocator, g, .{
         .min_coupling = flags.min_coupling,
         .top_n = flags.limit,
@@ -169,7 +170,7 @@ fn cmdCoupling(allocator: std.mem.Allocator, g: *const Graph, flags: ParsedFlags
     if (result.pairs.len == 0) try stdout.print("  (none)\n", .{});
 }
 
-fn cmdImpact(allocator: std.mem.Allocator, g: *const Graph, flags: ParsedFlags, stdout: *std.Io.Writer) !void {
+fn cmdImpact(allocator: std.mem.Allocator, g: FrozenGraph, flags: ParsedFlags, stdout: *std.Io.Writer) !void {
     if (flags.positional.items.len == 0) {
         try stdout.print("Usage: impact <node_id> [<node_id> ...]\n", .{});
         try stdout.flush();
@@ -325,13 +326,14 @@ pub fn main() !void {
         return;
     };
 
+    const fg = FrozenGraph{ .graph = &graph };
     switch (cmd) {
-        .complexity => try cmdComplexity(allocator, &graph, flags, stdout),
-        .@"dead-code" => try cmdDeadCode(allocator, &graph, flags, stdout),
-        .duplicates => try cmdDuplicates(allocator, &graph, flags, stdout),
-        .cycles => try cmdCycles(allocator, &graph, flags, stdout),
-        .coupling => try cmdCoupling(allocator, &graph, flags, stdout),
-        .impact => try cmdImpact(allocator, &graph, flags, stdout),
+        .complexity => try cmdComplexity(allocator, fg, flags, stdout),
+        .@"dead-code" => try cmdDeadCode(allocator, fg, flags, stdout),
+        .duplicates => try cmdDuplicates(allocator, fg, flags, stdout),
+        .cycles => try cmdCycles(allocator, fg, flags, stdout),
+        .coupling => try cmdCoupling(allocator, fg, flags, stdout),
+        .impact => try cmdImpact(allocator, fg, flags, stdout),
     }
 
     try stdout.flush();

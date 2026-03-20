@@ -19,6 +19,7 @@ const coupling_mod = @import("../analyzer/coupling.zig");
 const cycles_mod = @import("../analyzer/cycles.zig");
 const json_writer_mod = @import("json_writer.zig");
 
+const FrozenGraph = graph_mod.FrozenGraph;
 const Graph = graph_mod.Graph;
 const Direction = types.Direction;
 const Node = node_mod.Node;
@@ -432,13 +433,14 @@ pub fn handleToolCall(
 fn handleStats(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?std.json.Value) HandlerError![]const u8 {
     const args = getArgs(params);
     const g = &gen.graph;
+    const fg = FrozenGraph{ .graph = g };
 
     const scope = getOptionalString(args, "scope");
     const language_str = getOptionalString(args, "language");
     const include_tests = getOptionalBool(args, "include_tests", false);
     const include_external = getOptionalBool(args, "include_external_nodes", false);
 
-    const stats = query_mod.computeStats(allocator, g, .{
+    const stats = query_mod.computeStats(allocator, fg, .{
         .scope = scope,
         .language = if (language_str) |ls| parseLanguage(ls) else null,
         .include_tests = include_tests,
@@ -509,6 +511,7 @@ fn handleStats(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?std
 fn handleSearch(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?std.json.Value) HandlerError![]const u8 {
     const args = getArgs(params);
     const g = &gen.graph;
+    const fg = FrozenGraph{ .graph = g };
 
     const query_str = getOptionalString(args, "query");
     const kind_str = getOptionalString(args, "kind");
@@ -526,7 +529,7 @@ fn handleSearch(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?st
         break :blk .include;
     } else .include;
 
-    const result = query_mod.search(allocator, g, .{
+    const result = query_mod.search(allocator, fg, .{
         .query = query_str,
         .kind = if (kind_str) |ks| parseNodeKind(ks) else null,
         .visibility = if (visibility_str) |vs| parseVisibility(vs) else null,
@@ -565,13 +568,14 @@ fn handleSearch(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?st
 fn handleGetNodes(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?std.json.Value) HandlerError![]const u8 {
     const args = getArgs(params);
     const g = &gen.graph;
+    const fg = FrozenGraph{ .graph = g };
 
     const node_ids = try collectNodeIds(allocator, args, "node_ids");
     defer if (node_ids.len > 0) allocator.free(node_ids);
 
     const include_source = getOptionalBool(args, "include_source", false);
 
-    const result = query_mod.getNodes(allocator, g, node_ids, .{}) catch return error.OutOfMemory;
+    const result = query_mod.getNodes(allocator, fg, node_ids, .{}) catch return error.OutOfMemory;
     defer result.deinit(allocator);
 
     var aw: std.io.Writer.Allocating = .init(allocator);
@@ -664,6 +668,7 @@ fn handleGetSource(allocator: std.mem.Allocator, gen: *GraphGeneration, params: 
 fn handleGetEdges(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?std.json.Value) HandlerError![]const u8 {
     const args = getArgs(params);
     const g = &gen.graph;
+    const fg = FrozenGraph{ .graph = g };
 
     const node_ids = try collectNodeIds(allocator, args, "node_ids");
     defer if (node_ids.len > 0) allocator.free(node_ids);
@@ -674,7 +679,7 @@ fn handleGetEdges(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?
     const offset = getOptionalInt(args, "offset", 0);
     const limit = getOptionalInt(args, "limit", 50);
 
-    const result = query_mod.getEdges(allocator, g, node_ids, .{
+    const result = query_mod.getEdges(allocator, fg, node_ids, .{
         .direction = parseDirection(direction_str),
         .edge_type = if (edge_type_str) |es| parseEdgeType(es) else null,
         .include_external = include_external,
@@ -734,6 +739,7 @@ fn writeNodeRef(w: JsonWriter, id: NodeId, n: *const Node) HandlerError!void {
 fn handlePath(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?std.json.Value) HandlerError![]const u8 {
     const args = getArgs(params);
     const g = &gen.graph;
+    const fg = FrozenGraph{ .graph = g };
 
     const from_str = getOptionalString(args, "from_id") orelse return try emptyPathsResult(allocator);
     const to_str = getOptionalString(args, "to_id") orelse return try emptyPathsResult(allocator);
@@ -764,7 +770,7 @@ fn handlePath(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?std.
         break :blk edge_types_buf[0..edge_types_count];
     };
 
-    const result = query_mod.findPaths(allocator, g, from_id, to_id, .{
+    const result = query_mod.findPaths(allocator, fg, from_id, to_id, .{
         .edge_types = edge_types_val,
         .max_depth = max_depth,
         .max_paths = max_paths,
@@ -1055,6 +1061,7 @@ fn handleCursorExpand(allocator: std.mem.Allocator, gen: *GraphGeneration, curso
 fn handleCursorQuery(allocator: std.mem.Allocator, gen: *GraphGeneration, cursor_mgr: *CursorManager, params: ?std.json.Value) HandlerError![]const u8 {
     const args = getArgs(params);
     const g = &gen.graph;
+    const fg = FrozenGraph{ .graph = g };
 
     const cursor_id = getOptionalString(args, "cursor_id") orelse return try errorResult(allocator, "invalid_cursor");
     const cursor = cursor_mgr.getCursor(cursor_id) orelse return try errorResult(allocator, "invalid_cursor");
@@ -1081,7 +1088,7 @@ fn handleCursorQuery(allocator: std.mem.Allocator, gen: *GraphGeneration, cursor
     }
 
     // Apply all filters over the reachable set only, bypassing the global search cap.
-    const filtered = query_mod.search(allocator, g, .{
+    const filtered = query_mod.search(allocator, fg, .{
         .node_ids = reachable_ids,
         .query = query_str,
         .kind = if (kind_str) |ks| parseNodeKind(ks) else null,
@@ -1420,6 +1427,7 @@ fn buildFuzzyCandidate(allocator: std.mem.Allocator, g: *const Graph, nid: NodeI
 fn handleDuplicates(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?std.json.Value) HandlerError![]const u8 {
     const args = getArgs(params);
     const g = &gen.graph;
+    const fg = FrozenGraph{ .graph = g };
     const min_lines = getOptionalInt(args, "min_lines", 3);
     const threshold = getOptionalFloat(args, "threshold", 0.75);
     const scope = getOptionalString(args, "scope");
@@ -1436,7 +1444,7 @@ fn handleDuplicates(allocator: std.mem.Allocator, gen: *GraphGeneration, params:
     try w.beginObject();
 
     if (threshold >= 1.0) {
-        const result = duplicates_mod.findDuplicates(allocator, g, .{
+        const result = duplicates_mod.findDuplicates(allocator, fg, .{
             .min_lines = min_lines,
             .scope = scope,
             .language = if (language_str) |ls| parseLanguage(ls) else null,
@@ -1472,7 +1480,7 @@ fn handleDuplicates(allocator: std.mem.Allocator, gen: *GraphGeneration, params:
             try fuzzy_candidates.append(allocator, buildFuzzyCandidate(allocator, g, nid, n, m.structural_hash));
         }
 
-        const result = duplicates_mod.findFuzzyDuplicates(allocator, g, fuzzy_candidates.items, .{
+        const result = duplicates_mod.findFuzzyDuplicates(allocator, fg, fuzzy_candidates.items, .{
             .threshold = threshold,
             .offset = offset,
             .limit = limit,
@@ -1491,6 +1499,7 @@ fn handleDuplicates(allocator: std.mem.Allocator, gen: *GraphGeneration, params:
 fn handleComplexity(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?std.json.Value) HandlerError![]const u8 {
     const args = getArgs(params);
     const g = &gen.graph;
+    const fg = FrozenGraph{ .graph = g };
     const top_n = getOptionalInt(args, "top_n", 10);
     const scope = getOptionalString(args, "scope");
     const kind_str = getOptionalString(args, "kind") orelse "function";
@@ -1498,7 +1507,7 @@ fn handleComplexity(allocator: std.mem.Allocator, gen: *GraphGeneration, params:
 
     const kind: NodeKind = if (std.mem.eql(u8, kind_str, "file")) .file else .function;
 
-    const result = complexity_mod.findComplex(allocator, g, .{
+    const result = complexity_mod.findComplex(allocator, fg, .{
         .top_n = top_n,
         .scope = scope,
         .kind = kind,
@@ -1533,6 +1542,7 @@ fn handleComplexity(allocator: std.mem.Allocator, gen: *GraphGeneration, params:
 fn handleDeadCode(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?std.json.Value) HandlerError![]const u8 {
     const args = getArgs(params);
     const g = &gen.graph;
+    const fg = FrozenGraph{ .graph = g };
     const include_public = getOptionalBool(args, "include_public", false);
     const include_test_only = getOptionalBool(args, "include_test_only", false);
     const scope = getOptionalString(args, "scope");
@@ -1543,7 +1553,7 @@ fn handleDeadCode(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?
 
     const kind: ?NodeKind = if (std.mem.eql(u8, kind_str, "all")) null else parseNodeKind(kind_str);
 
-    const result = dead_code_mod.findDeadCode(allocator, g, .{
+    const result = dead_code_mod.findDeadCode(allocator, fg, .{
         .include_public = include_public,
         .include_test_only = include_test_only,
         .scope = scope,
@@ -1583,6 +1593,7 @@ fn handleDeadCode(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?
 fn handleDependencyCycles(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?std.json.Value) HandlerError![]const u8 {
     const args = getArgs(params);
     const g = &gen.graph;
+    const fg = FrozenGraph{ .graph = g };
     const max_cycle_length = getOptionalInt(args, "max_cycle_length", 20);
     const scope = getOptionalString(args, "scope");
     const language_str = getOptionalString(args, "language");
@@ -1590,7 +1601,7 @@ fn handleDependencyCycles(allocator: std.mem.Allocator, gen: *GraphGeneration, p
     var et_buf: [16]EdgeType = undefined;
     const parsed_et = parseEdgeTypesArray(args, &et_buf);
 
-    const result = cycles_mod.findCycles(allocator, g, .{
+    const result = cycles_mod.findCycles(allocator, fg, .{
         .max_cycle_length = max_cycle_length,
         .edge_types = if (parsed_et.len > 0) parsed_et else null,
         .scope = scope,
@@ -1631,6 +1642,7 @@ fn handleDependencyCycles(allocator: std.mem.Allocator, gen: *GraphGeneration, p
 fn handleCoupling(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?std.json.Value) HandlerError![]const u8 {
     const args = getArgs(params);
     const g = &gen.graph;
+    const fg = FrozenGraph{ .graph = g };
     const top_n = getOptionalInt(args, "top_n", 10);
     const min_coupling = getOptionalFloat(args, "min_coupling", 0.3);
     const scope = getOptionalString(args, "scope");
@@ -1641,7 +1653,7 @@ fn handleCoupling(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?
     const granularity: coupling_mod.Granularity = if (std.mem.eql(u8, granularity_str, "file")) .file else .directory;
     const include_external = std.mem.eql(u8, external_str, "include");
 
-    const result = coupling_mod.findCoupling(allocator, g, .{
+    const result = coupling_mod.findCoupling(allocator, fg, .{
         .min_coupling = min_coupling,
         .top_n = top_n,
         .scope = scope,
@@ -1678,6 +1690,7 @@ fn handleCoupling(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?
 fn handleImpact(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?std.json.Value) HandlerError![]const u8 {
     const args = getArgs(params);
     const g = &gen.graph;
+    const fg = FrozenGraph{ .graph = g };
     const max_depth = getOptionalInt(args, "max_depth", 10);
     const include_parent_chain = getOptionalBool(args, "include_parent_chain", true);
 
@@ -1691,7 +1704,7 @@ fn handleImpact(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?st
         return try errorResult(allocator, "node_ids is required");
     }
 
-    const result = impact_mod.analyzeImpact(allocator, g, node_ids, .{
+    const result = impact_mod.analyzeImpact(allocator, fg, node_ids, .{
         .max_depth = max_depth,
         .edge_types = if (parsed_et.len > 0) parsed_et else null,
         .include_parent_chain = include_parent_chain,

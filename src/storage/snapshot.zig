@@ -3,6 +3,7 @@ const graph_mod = @import("../core/graph.zig");
 const binary = @import("binary.zig");
 
 const Graph = graph_mod.Graph;
+const FrozenGraph = graph_mod.FrozenGraph;
 
 pub const SnapshotError = error{
     InvalidTagName,
@@ -27,7 +28,7 @@ pub fn validateTag(tag: []const u8) SnapshotError!void {
 /// Save graph as binary under storage_path/snapshots/<tag>.bin.
 pub fn saveSnapshot(
     allocator: std.mem.Allocator,
-    g: *const Graph,
+    fg: FrozenGraph,
     tag: []const u8,
     storage_path: []const u8,
 ) !void {
@@ -48,7 +49,7 @@ pub fn saveSnapshot(
     try path_buf.appendSlice(allocator, tag);
     try path_buf.appendSlice(allocator, ".bin");
 
-    try binary.save(allocator, g, path_buf.items);
+    try binary.save(allocator, fg, path_buf.items);
 }
 
 /// Load a snapshot graph by tag from storage_path/snapshots/<tag>.bin.
@@ -74,7 +75,8 @@ pub fn loadSnapshotGraph(
 }
 
 /// 12-hex-char hash of all file content_hashes in the graph. Order-independent.
-pub fn computeSourceHash(g: *const Graph) [12]u8 {
+pub fn computeSourceHash(fg: FrozenGraph) [12]u8 {
+    const g = fg.graph;
     var combined: u64 = 0;
     for (g.nodes.items) |n| {
         if (n.kind != .file) continue;

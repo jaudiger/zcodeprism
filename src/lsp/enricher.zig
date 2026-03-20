@@ -125,8 +125,9 @@ pub fn enrich(
     client.stop();
 
     // Re-freeze to rebuild adjacency with any new edges.
-    graph.freeze(allocator) catch {
+    _ = graph.freeze(allocator) catch {
         log.warn("LSP: re-freeze failed", &.{});
+        return result;
     };
 
     // Re-run post-freeze enrichment.

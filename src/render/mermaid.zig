@@ -4,6 +4,7 @@ const common = @import("common.zig");
 const sections = @import("mermaid_sections.zig");
 
 const Graph = graph_mod.Graph;
+const FrozenGraph = graph_mod.FrozenGraph;
 
 const appendNum = common.appendNum;
 const appendCurrentTimestamp = common.appendCurrentTimestamp;
@@ -23,11 +24,12 @@ pub const MermaidOptions = struct {
 /// See `docs/zcodeprism-mermaid-spec.md` for the full format specification.
 pub fn renderMermaid(
     allocator: std.mem.Allocator,
-    g: *const Graph,
+    fg: FrozenGraph,
     options: MermaidOptions,
     out: *std.ArrayList(u8),
 ) !void {
-    var assignment = try common.buildIdAssignment(allocator, g, options.scope, options.filter);
+    const g = fg.graph;
+    var assignment = try common.buildIdAssignment(allocator, fg, options.scope, options.filter);
     defer assignment.deinit(allocator);
 
     var total_name_bytes: usize = 0;
@@ -354,7 +356,8 @@ test "header line 1 matches spec" {
     };
 
     // Act
-    try renderMermaid(allocator, &g, options, &out);
+    const fg = try g.freeze(allocator);
+    try renderMermaid(allocator, fg, options, &out);
 
     // Assert: first line: "%% zcodeprism mermaid -- myproject"
     const output = out.items;
@@ -377,7 +380,8 @@ test "header line 2 has stats" {
     };
 
     // Act
-    try renderMermaid(allocator, &g, options, &out);
+    const fg = try g.freeze(allocator);
+    try renderMermaid(allocator, fg, options, &out);
 
     // Assert: second line starts with "%% " and contains "files" and "functions"
     const output = out.items;
@@ -403,7 +407,8 @@ test "header line 3 has timestamp" {
     };
 
     // Act
-    try renderMermaid(allocator, &g, options, &out);
+    const fg = try g.freeze(allocator);
+    try renderMermaid(allocator, fg, options, &out);
 
     // Assert: third line: "%% generated 2026-02-14T10:30:00Z"
     const output = out.items;
@@ -428,7 +433,8 @@ test "starts with flowchart TB" {
     };
 
     // Act
-    try renderMermaid(allocator, &g, options, &out);
+    const fg = try g.freeze(allocator);
+    try renderMermaid(allocator, fg, options, &out);
 
     // Assert: first non-comment non-empty line is "flowchart TB"
     const output = out.items;
@@ -455,7 +461,8 @@ test "sections appear in correct order" {
     };
 
     // Act
-    try renderMermaid(allocator, &g, options, &out);
+    const fg = try g.freeze(allocator);
+    try renderMermaid(allocator, fg, options, &out);
 
     // Assert: section markers in order
     const output = out.items;
@@ -489,7 +496,8 @@ test "classDef styles are alphabetical" {
     };
 
     // Act
-    try renderMermaid(allocator, &g, options, &out);
+    const fg = try g.freeze(allocator);
+    try renderMermaid(allocator, fg, options, &out);
 
     // Assert: classDef names appear in alphabetical order
     const output = out.items;
@@ -532,8 +540,10 @@ test "deterministic output" {
     };
 
     // Act
-    try renderMermaid(allocator, &g1, options, &out1);
-    try renderMermaid(allocator, &g2, options, &out2);
+    const fg1 = try g1.freeze(allocator);
+    try renderMermaid(allocator, fg1, options, &out1);
+    const fg2 = try g2.freeze(allocator);
+    try renderMermaid(allocator, fg2, options, &out2);
 
     // Assert: byte-identical output
     try std.testing.expectEqualSlices(u8, out1.items, out2.items);
@@ -553,7 +563,8 @@ test "functions use rectangle shape" {
     };
 
     // Act
-    try renderMermaid(allocator, &g, options, &out);
+    const fg = try g.freeze(allocator);
+    try renderMermaid(allocator, fg, options, &out);
 
     // Assert: output contains rectangle shape for function: fn_N["fn: main"]
     const output = out.items;
@@ -574,7 +585,8 @@ test "type_def nodes use subroutine shape" {
     };
 
     // Act
-    try renderMermaid(allocator, &g, options, &out);
+    const fg = try g.freeze(allocator);
+    try renderMermaid(allocator, fg, options, &out);
 
     // Assert: output contains subroutine shape: ty_N[["struct: Tokenizer"]]
     const output = out.items;
@@ -595,7 +607,8 @@ test "enums use hexagon shape" {
     };
 
     // Act
-    try renderMermaid(allocator, &g, options, &out);
+    const fg = try g.freeze(allocator);
+    try renderMermaid(allocator, fg, options, &out);
 
     // Assert: output contains hexagon shape: en_N{{"enum: TokenKind"}}
     const output = out.items;
@@ -616,7 +629,8 @@ test "constants use parallelogram shape" {
     };
 
     // Act
-    try renderMermaid(allocator, &g, options, &out);
+    const fg = try g.freeze(allocator);
+    try renderMermaid(allocator, fg, options, &out);
 
     // Assert: output contains parallelogram shape: c_N[/"const: MAX_SIZE"/]
     const output = out.items;
@@ -637,7 +651,8 @@ test "methods labeled with parent type" {
     };
 
     // Act
-    try renderMermaid(allocator, &g, options, &out);
+    const fg = try g.freeze(allocator);
+    try renderMermaid(allocator, fg, options, &out);
 
     // Assert: method "next" on Tokenizer appears as "fn: Tokenizer.next"
     const output = out.items;
@@ -658,7 +673,8 @@ test "calls edges use solid arrow" {
     };
 
     // Act
-    try renderMermaid(allocator, &g, options, &out);
+    const fg = try g.freeze(allocator);
+    try renderMermaid(allocator, fg, options, &out);
 
     // Assert: calls edges use "-->" syntax
     const output = out.items;
@@ -679,7 +695,8 @@ test "imports edges use dotted arrow" {
     };
 
     // Act
-    try renderMermaid(allocator, &g, options, &out);
+    const fg = try g.freeze(allocator);
+    try renderMermaid(allocator, fg, options, &out);
 
     // Assert: imports edges use "-.->'" syntax
     const output = out.items;
@@ -700,7 +717,8 @@ test "empty graph renders without crash" {
     };
 
     // Act
-    try renderMermaid(allocator, &g, options, &out);
+    const fg = try g.freeze(allocator);
+    try renderMermaid(allocator, fg, options, &out);
 
     // Assert: has header and flowchart directive, no crash
     const output = out.items;
@@ -723,7 +741,8 @@ test "phantom nodes in subgraphs" {
     };
 
     // Act
-    try renderMermaid(allocator, &g, options, &out);
+    const fg = try g.freeze(allocator);
+    try renderMermaid(allocator, fg, options, &out);
 
     // Assert: phantom stdlib node renders as subgraph with "std (stdlib)" label
     // and child nodes use "ext:" prefix
@@ -749,7 +768,8 @@ test "scoped export creates ghost nodes" {
     };
 
     // Act
-    try renderMermaid(allocator, &g, options, &out);
+    const fg = try g.freeze(allocator);
+    try renderMermaid(allocator, fg, options, &out);
 
     // Assert: ghost nodes appear with ghoty_style
     const output = out.items;

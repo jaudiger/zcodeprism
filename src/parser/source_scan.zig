@@ -90,7 +90,7 @@ pub fn extractLineRange(source: []const u8, line_start: u32, line_end: u32) []co
     }
 
     if (found_start) return source[start_byte..];
-    return source;
+    return source[0..0];
 }
 
 /// Return true if `node_id` is a descendant of `ancestor_id` in the parent chain.

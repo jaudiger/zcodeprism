@@ -7,6 +7,7 @@ const metrics_mod = @import("../core/metrics.zig");
 const lang = @import("../languages/language.zig");
 
 const Graph = graph_mod.Graph;
+const FrozenGraph = graph_mod.FrozenGraph;
 const Node = node_mod.Node;
 const Edge = edge_mod.Edge;
 const NodeId = types.NodeId;
@@ -217,7 +218,8 @@ fn validateStringRef(st_data: []const u8, ref: StringRef) error{InvalidFormat}!v
 /// Uses the MAF pattern: measures string table sizes, allocates a single
 /// output buffer, fills all table sections, then writes the file atomically.
 /// The caller owns `g`; this function does not modify it.
-pub fn save(allocator: std.mem.Allocator, g: *const Graph, path: []const u8) !void {
+pub fn save(allocator: std.mem.Allocator, fg: FrozenGraph, path: []const u8) !void {
+    const g = fg.graph;
     // Measure: build string table, compute refs per node
     var stb = StringTableBuilder{};
     defer stb.deinit(allocator);
@@ -567,7 +569,7 @@ pub fn load(allocator: std.mem.Allocator, path: []const u8) !Graph {
     }
 
     try g.rebuildEdgeIndex(allocator);
-    try g.freeze(allocator);
+    _ = try g.freeze(allocator);
     return g;
 }
 
@@ -575,7 +577,9 @@ pub fn load(allocator: std.mem.Allocator, path: []const u8) !Graph {
 ///
 /// Loads the current file, merges in the nodes and edges from `g`,
 /// then performs a full save (compaction) back to the same path.
-pub fn append(allocator: std.mem.Allocator, g: *const Graph, path: []const u8) !void {
+pub fn append(allocator: std.mem.Allocator, fg: FrozenGraph, path: []const u8) !void {
+    const g = fg.graph;
+
     // Load existing graph
     var existing = try load(allocator, path);
     defer existing.deinit(allocator);
@@ -591,7 +595,8 @@ pub fn append(allocator: std.mem.Allocator, g: *const Graph, path: []const u8) !
     }
 
     // Full save (compaction)
-    try save(allocator, &existing, path);
+    const existing_fg = try existing.freeze(allocator);
+    try save(allocator, existing_fg, path);
 }
 
 /// Build a test graph with 3 diverse nodes and 2 edges for use in tests.
@@ -687,7 +692,8 @@ test "binary round-trip preserves nodes, edges, and metrics" {
     defer std.testing.allocator.free(file_path);
 
     // Act
-    try save(std.testing.allocator, &g, file_path);
+    const fg = try g.freeze(std.testing.allocator);
+    try save(std.testing.allocator, fg, file_path);
     var loaded = try load(std.testing.allocator, file_path);
     defer loaded.deinit(std.testing.allocator);
 
@@ -741,7 +747,8 @@ test "binary header has correct magic, version, and counts" {
     defer std.testing.allocator.free(file_path);
 
     // Act
-    try save(std.testing.allocator, &g, file_path);
+    const fg = try g.freeze(std.testing.allocator);
+    try save(std.testing.allocator, fg, file_path);
 
     // Assert: magic bytes
     const file = try tmp.dir.openFile("test.bin", .{});
@@ -777,7 +784,8 @@ test "binary save/load empty graph" {
     defer std.testing.allocator.free(file_path);
 
     // Act
-    try save(std.testing.allocator, &g, file_path);
+    const fg = try g.freeze(std.testing.allocator);
+    try save(std.testing.allocator, fg, file_path);
     var loaded = try load(std.testing.allocator, file_path);
     defer loaded.deinit(std.testing.allocator);
 
@@ -806,7 +814,8 @@ test "binary save/load single node" {
     defer std.testing.allocator.free(file_path);
 
     // Act
-    try save(std.testing.allocator, &g, file_path);
+    const fg = try g.freeze(std.testing.allocator);
+    try save(std.testing.allocator, fg, file_path);
     var loaded = try load(std.testing.allocator, file_path);
     defer loaded.deinit(std.testing.allocator);
 
@@ -837,7 +846,8 @@ test "binary preserves phantom nodes" {
     defer std.testing.allocator.free(file_path);
 
     // Act
-    try save(std.testing.allocator, &g, file_path);
+    const fg = try g.freeze(std.testing.allocator);
+    try save(std.testing.allocator, fg, file_path);
     var loaded = try load(std.testing.allocator, file_path);
     defer loaded.deinit(std.testing.allocator);
 
@@ -867,7 +877,8 @@ test "binary preserves null optional fields" {
     defer std.testing.allocator.free(file_path);
 
     // Act
-    try save(std.testing.allocator, &g, file_path);
+    const fg = try g.freeze(std.testing.allocator);
+    try save(std.testing.allocator, fg, file_path);
     var loaded = try load(std.testing.allocator, file_path);
     defer loaded.deinit(std.testing.allocator);
 
@@ -905,7 +916,8 @@ test "binary preserves long strings" {
     defer std.testing.allocator.free(file_path);
 
     // Act
-    try save(std.testing.allocator, &g, file_path);
+    const fg = try g.freeze(std.testing.allocator);
+    try save(std.testing.allocator, fg, file_path);
     var loaded = try load(std.testing.allocator, file_path);
     defer loaded.deinit(std.testing.allocator);
 
@@ -936,7 +948,8 @@ test "binary preserves ZigMeta" {
     defer std.testing.allocator.free(file_path);
 
     // Act
-    try save(std.testing.allocator, &g, file_path);
+    const fg = try g.freeze(std.testing.allocator);
+    try save(std.testing.allocator, fg, file_path);
     var loaded = try load(std.testing.allocator, file_path);
     defer loaded.deinit(std.testing.allocator);
 
@@ -966,7 +979,8 @@ test "binary preserves LangMeta.none" {
     defer std.testing.allocator.free(file_path);
 
     // Act
-    try save(std.testing.allocator, &g, file_path);
+    const fg = try g.freeze(std.testing.allocator);
+    try save(std.testing.allocator, fg, file_path);
     var loaded = try load(std.testing.allocator, file_path);
     defer loaded.deinit(std.testing.allocator);
 
@@ -996,7 +1010,8 @@ test "binary round-trip preserves union_def kind" {
     defer std.testing.allocator.free(file_path);
 
     // Act
-    try save(std.testing.allocator, &g, file_path);
+    const fg = try g.freeze(std.testing.allocator);
+    try save(std.testing.allocator, fg, file_path);
     var loaded = try load(std.testing.allocator, file_path);
     defer loaded.deinit(std.testing.allocator);
 
@@ -1033,7 +1048,8 @@ test "binary round-trip preserves is_packed metadata" {
     defer std.testing.allocator.free(file_path);
 
     // Act
-    try save(std.testing.allocator, &g, file_path);
+    const fg = try g.freeze(std.testing.allocator);
+    try save(std.testing.allocator, fg, file_path);
     var loaded = try load(std.testing.allocator, file_path);
     defer loaded.deinit(std.testing.allocator);
 
@@ -1062,7 +1078,8 @@ test "append adds new nodes" {
     defer std.testing.allocator.free(file_path);
 
     // Save initial 3 nodes
-    try save(std.testing.allocator, &g, file_path);
+    const fg = try g.freeze(std.testing.allocator);
+    try save(std.testing.allocator, fg, file_path);
 
     // Build a graph with 2 additional nodes
     var extra = Graph.init("/tmp/test-project");
@@ -1081,7 +1098,8 @@ test "append adds new nodes" {
     });
 
     // Act
-    try append(std.testing.allocator, &extra, file_path);
+    const extra_fg = try extra.freeze(std.testing.allocator);
+    try append(std.testing.allocator, extra_fg, file_path);
 
     // Assert
     var loaded = try load(std.testing.allocator, file_path);
@@ -1102,23 +1120,27 @@ test "compaction after append" {
     defer std.testing.allocator.free(file_path);
 
     // Save initial graph
-    try save(std.testing.allocator, &g, file_path);
+    const fg = try g.freeze(std.testing.allocator);
+    try save(std.testing.allocator, fg, file_path);
 
     // Append multiple small graphs
     var extra1 = Graph.init("/tmp/test-project");
     defer extra1.deinit(std.testing.allocator);
     _ = try extra1.addNode(std.testing.allocator, .{ .id = .root, .name = "a1", .kind = .function, .language = .zig });
-    try append(std.testing.allocator, &extra1, file_path);
+    const fg1 = try extra1.freeze(std.testing.allocator);
+    try append(std.testing.allocator, fg1, file_path);
 
     var extra2 = Graph.init("/tmp/test-project");
     defer extra2.deinit(std.testing.allocator);
     _ = try extra2.addNode(std.testing.allocator, .{ .id = .root, .name = "a2", .kind = .function, .language = .zig });
-    try append(std.testing.allocator, &extra2, file_path);
+    const fg2 = try extra2.freeze(std.testing.allocator);
+    try append(std.testing.allocator, fg2, file_path);
 
     // Act: full save (compaction) after appends
     var loaded_pre = try load(std.testing.allocator, file_path);
     defer loaded_pre.deinit(std.testing.allocator);
-    try save(std.testing.allocator, &loaded_pre, file_path);
+    const pre_fg = try loaded_pre.freeze(std.testing.allocator);
+    try save(std.testing.allocator, pre_fg, file_path);
 
     // Assert: data preserved after compaction
     var loaded_post = try load(std.testing.allocator, file_path);
@@ -1167,7 +1189,8 @@ test "load rejects corrupt string ref past string table" {
     const file_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/malformed.bin", .{path});
     defer std.testing.allocator.free(file_path);
 
-    try save(std.testing.allocator, &g, file_path);
+    const fg = try g.freeze(std.testing.allocator);
+    try save(std.testing.allocator, fg, file_path);
 
     // Overwrite name StringRef (node base + 72) with out-of-bounds offset
     const raw_file = try std.fs.cwd().openFile(file_path, .{ .mode = .read_write });
@@ -1197,7 +1220,8 @@ test "load rejects invalid enum string" {
     const file_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/malformed.bin", .{path});
     defer std.testing.allocator.free(file_path);
 
-    try save(std.testing.allocator, &g, file_path);
+    const fg = try g.freeze(std.testing.allocator);
+    try save(std.testing.allocator, fg, file_path);
 
     // Overwrite kind StringRef (node base + 48) with out-of-bounds offset
     const raw_file = try std.fs.cwd().openFile(file_path, .{ .mode = .read_write });

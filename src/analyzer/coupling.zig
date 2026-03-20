@@ -5,6 +5,7 @@ const node_mod = @import("../core/node.zig");
 const scope_mod = @import("../core/scope.zig");
 
 const Graph = graph_mod.Graph;
+const FrozenGraph = graph_mod.FrozenGraph;
 const Node = node_mod.Node;
 const NodeId = types.NodeId;
 const NodeKind = types.NodeKind;
@@ -40,7 +41,8 @@ pub const CouplingOptions = struct {
 };
 
 /// Find pairs of files (or directories) that share cross-unit edges.
-pub fn findCoupling(allocator: std.mem.Allocator, g: *const Graph, options: CouplingOptions) !CouplingResult {
+pub fn findCoupling(allocator: std.mem.Allocator, fg: FrozenGraph, options: CouplingOptions) !CouplingResult {
+    const g = fg.graph;
     const scope_filter: ?Scope = if (options.scope) |s| Scope.parse(s) else null;
 
     // unit_of maps every node index to its owning unit (file or directory index).

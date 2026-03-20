@@ -4,6 +4,7 @@ const types = @import("../core/types.zig");
 const node_mod = @import("../core/node.zig");
 
 const Graph = graph_mod.Graph;
+const FrozenGraph = graph_mod.FrozenGraph;
 const Node = node_mod.Node;
 const NodeId = types.NodeId;
 const EdgeType = types.EdgeType;
@@ -32,7 +33,8 @@ pub const ImpactAnalysisOptions = struct {
 };
 
 /// Compute the combined reverse-impact set for one or more seed nodes.
-pub fn analyzeImpact(allocator: std.mem.Allocator, g: *const Graph, node_ids: []const NodeId, options: ImpactAnalysisOptions) !ImpactAnalysis {
+pub fn analyzeImpact(allocator: std.mem.Allocator, fg: FrozenGraph, node_ids: []const NodeId, options: ImpactAnalysisOptions) !ImpactAnalysis {
+    const g = fg.graph;
     if (node_ids.len == 0) return .{ .total_impacted = 0, .dependents = &.{} };
 
     const default_types = [_]EdgeType{ .calls, .uses_type, .accesses_field };

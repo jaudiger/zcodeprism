@@ -176,8 +176,8 @@ pub const Graph = struct {
     /// and before any query that depends on adjacency (getChildren, outEdges,
     /// inEdges, neighbors). Safe to call multiple times; each call frees the
     /// previous index and rebuilds from scratch.
-    /// Returns `error.OutOfMemory` if the index cannot be allocated.
-    pub fn freeze(self: *Graph, allocator: std.mem.Allocator) !void {
+    /// Returns a FrozenGraph view guaranteeing adjacency is present.
+    pub fn freeze(self: *Graph, allocator: std.mem.Allocator) !FrozenGraph {
         // Free the old index if re-freezing after incremental mutations.
         if (self.adjacency) |*adj| adj.deinit(allocator);
         self.adjacency = try adjacency_mod.buildAdjacency(
@@ -185,6 +185,14 @@ pub const Graph = struct {
             self.nodes.items,
             self.edges.items,
         );
+        return .{ .graph = self };
+    }
+
+    /// Return a frozen view of this graph. The graph must already be frozen
+    /// (adjacency built). Panics in debug builds if adjacency is absent.
+    pub fn asFrozen(self: *const Graph) FrozenGraph {
+        std.debug.assert(self.adjacency != null);
+        return .{ .graph = self };
     }
 
     /// Look up a node by its id.
@@ -309,6 +317,83 @@ pub const Graph = struct {
     }
 };
 
+/// Read-only view of a frozen Graph with adjacency guaranteed present.
+/// Obtained from Graph.freeze() or Graph.asFrozen(). Borrows the Graph;
+/// the Graph must outlive this view.
+pub const FrozenGraph = struct {
+    graph: *const Graph,
+
+    pub fn getNode(self: FrozenGraph, id: NodeId) ?*const Node {
+        return self.graph.getNode(id);
+    }
+
+    pub fn getChildren(self: FrozenGraph, parent_id: NodeId) []const NodeId {
+        return self.graph.adjacency.?.childrenOf(parent_id);
+    }
+
+    pub fn getParent(self: FrozenGraph, node_id: NodeId) ?NodeId {
+        return self.graph.getParent(node_id);
+    }
+
+    pub fn outEdges(self: FrozenGraph, node_id: NodeId) []const EdgeId {
+        return self.graph.adjacency.?.outEdges(node_id);
+    }
+
+    pub fn inEdges(self: FrozenGraph, node_id: NodeId) []const EdgeId {
+        return self.graph.adjacency.?.inEdges(node_id);
+    }
+
+    pub fn neighbors(self: FrozenGraph, allocator: std.mem.Allocator, node_id: NodeId, direction: Direction) ![]NodeId {
+        const adj = self.graph.adjacency.?;
+        const g = self.graph;
+
+        // Measure
+        var count: usize = 0;
+        switch (direction) {
+            .out => count = adj.outEdges(node_id).len,
+            .in => count = adj.inEdges(node_id).len,
+            .both => count = adj.outEdges(node_id).len + adj.inEdges(node_id).len,
+        }
+
+        // Allocate
+        const result = try allocator.alloc(NodeId, count);
+        errdefer allocator.free(result);
+
+        // Fill
+        var pos: usize = 0;
+        if (direction == .out or direction == .both) {
+            for (adj.outEdges(node_id)) |eid| {
+                result[pos] = g.edges.items[@intFromEnum(eid)].target_id;
+                pos += 1;
+            }
+        }
+        if (direction == .in or direction == .both) {
+            for (adj.inEdges(node_id)) |eid| {
+                result[pos] = g.edges.items[@intFromEnum(eid)].source_id;
+                pos += 1;
+            }
+        }
+        std.debug.assert(pos == count);
+        return result;
+    }
+
+    pub fn findContainingFile(self: FrozenGraph, node_id: NodeId) ?NodeId {
+        return self.graph.findContainingFile(node_id);
+    }
+
+    pub fn findTypeAmongChildren(self: FrozenGraph, children: []const u64, type_name: []const u8) ?NodeId {
+        return self.graph.findTypeAmongChildren(children, type_name);
+    }
+
+    pub fn nodeCount(self: FrozenGraph) usize {
+        return self.graph.nodes.items.len;
+    }
+
+    pub fn edgeCount(self: FrozenGraph) usize {
+        return self.graph.edges.items.len;
+    }
+};
+
 /// Collapse runs of whitespace (spaces, tabs, newlines) into single spaces,
 /// trimming any trailing space. The caller owns the returned buffer.
 fn collapseWhitespace(allocator: std.mem.Allocator, input: []const u8) ![]const u8 {
@@ -421,10 +506,10 @@ test "getChildren returns direct children" {
     const parent_id = try g.addNode(std.testing.allocator, .{ .id = .root, .name = "parent", .kind = .type_def, .language = .zig });
     _ = try g.addNode(std.testing.allocator, .{ .id = .root, .name = "child1", .kind = .function, .language = .zig, .parent_id = parent_id });
     _ = try g.addNode(std.testing.allocator, .{ .id = .root, .name = "child2", .kind = .function, .language = .zig, .parent_id = parent_id });
-    try g.freeze(std.testing.allocator);
+    const fg = try g.freeze(std.testing.allocator);
 
     // Act
-    const children = g.getChildren(parent_id);
+    const children = fg.getChildren(parent_id);
 
     // Assert
     try std.testing.expectEqual(@as(usize, 2), children.len);
@@ -456,10 +541,10 @@ test "neighbors out returns outgoing edges" {
     const c = try g.addNode(std.testing.allocator, .{ .id = .root, .name = "c", .kind = .function, .language = .zig });
     _ = try g.addEdgeIfNew(std.testing.allocator, .{ .source_id = a, .target_id = b, .edge_type = .calls });
     _ = try g.addEdgeIfNew(std.testing.allocator, .{ .source_id = a, .target_id = c, .edge_type = .calls });
-    try g.freeze(std.testing.allocator);
+    const fg = try g.freeze(std.testing.allocator);
 
     // Act
-    const result = try g.neighbors(std.testing.allocator, a, .out);
+    const result = try fg.neighbors(std.testing.allocator, a, .out);
     defer std.testing.allocator.free(result);
 
     // Assert
@@ -476,10 +561,10 @@ test "neighbors in returns incoming edges" {
     const c = try g.addNode(std.testing.allocator, .{ .id = .root, .name = "c", .kind = .function, .language = .zig });
     _ = try g.addEdgeIfNew(std.testing.allocator, .{ .source_id = b, .target_id = a, .edge_type = .calls });
     _ = try g.addEdgeIfNew(std.testing.allocator, .{ .source_id = c, .target_id = a, .edge_type = .calls });
-    try g.freeze(std.testing.allocator);
+    const fg = try g.freeze(std.testing.allocator);
 
     // Act
-    const result = try g.neighbors(std.testing.allocator, a, .in);
+    const result = try fg.neighbors(std.testing.allocator, a, .in);
     defer std.testing.allocator.free(result);
 
     // Assert
@@ -496,10 +581,10 @@ test "neighbors both returns all edges" {
     const c = try g.addNode(std.testing.allocator, .{ .id = .root, .name = "c", .kind = .function, .language = .zig });
     _ = try g.addEdgeIfNew(std.testing.allocator, .{ .source_id = a, .target_id = b, .edge_type = .calls });
     _ = try g.addEdgeIfNew(std.testing.allocator, .{ .source_id = c, .target_id = a, .edge_type = .calls });
-    try g.freeze(std.testing.allocator);
+    const fg = try g.freeze(std.testing.allocator);
 
     // Act
-    const result = try g.neighbors(std.testing.allocator, a, .both);
+    const result = try fg.neighbors(std.testing.allocator, a, .both);
     defer std.testing.allocator.free(result);
 
     // Assert
@@ -533,22 +618,22 @@ test "getChildren returns empty for missing parent" {
     // Arrange
     var g = Graph.init("/tmp/project");
     defer g.deinit(std.testing.allocator);
-    try g.freeze(std.testing.allocator);
+    const fg = try g.freeze(std.testing.allocator);
 
     // Act / Assert: .root on empty graph
-    try std.testing.expectEqual(@as(usize, 0), g.getChildren(.root).len);
+    try std.testing.expectEqual(@as(usize, 0), fg.getChildren(.root).len);
     // Act / Assert: non-existent parent id
-    try std.testing.expectEqual(@as(usize, 0), g.getChildren(@enumFromInt(99)).len);
+    try std.testing.expectEqual(@as(usize, 0), fg.getChildren(@enumFromInt(99)).len);
 }
 
 test "neighbors on empty graph returns empty" {
     // Arrange
     var g = Graph.init("/tmp/project");
     defer g.deinit(std.testing.allocator);
-    try g.freeze(std.testing.allocator);
+    const fg = try g.freeze(std.testing.allocator);
 
     // Act
-    const result = try g.neighbors(std.testing.allocator, .root, .both);
+    const result = try fg.neighbors(std.testing.allocator, .root, .both);
     defer std.testing.allocator.free(result);
 
     // Assert

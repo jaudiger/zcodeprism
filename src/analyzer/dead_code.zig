@@ -7,6 +7,7 @@ const lang = @import("../languages/language.zig");
 const pagination = @import("pagination.zig");
 
 const Graph = graph_mod.Graph;
+const FrozenGraph = graph_mod.FrozenGraph;
 const Node = node_mod.Node;
 const NodeId = types.NodeId;
 const EdgeId = types.EdgeId;
@@ -45,7 +46,8 @@ pub const DeadCodeOptions = struct {
 };
 
 /// Find declaration nodes with zero incoming edges.
-pub fn findDeadCode(allocator: std.mem.Allocator, g: *const Graph, options: DeadCodeOptions) !DeadCodeResult {
+pub fn findDeadCode(allocator: std.mem.Allocator, fg: FrozenGraph, options: DeadCodeOptions) !DeadCodeResult {
+    const g = fg.graph;
     const scope_filter: ?Scope = if (options.scope) |s| Scope.parse(s) else null;
 
     var candidates = std.ArrayList(DeadCodeEntry){};

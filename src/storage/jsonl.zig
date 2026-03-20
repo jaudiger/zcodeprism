@@ -7,6 +7,7 @@ const metrics_mod = @import("../core/metrics.zig");
 const lang = @import("../languages/language.zig");
 
 const Graph = graph_mod.Graph;
+const FrozenGraph = graph_mod.FrozenGraph;
 const Node = node_mod.Node;
 const Edge = edge_mod.Edge;
 const NodeId = types.NodeId;
@@ -327,7 +328,8 @@ fn edgeLessThan(_: void, a: Edge, b: Edge) bool {
 /// by edge_type, then by source_id, then by target_id). Each line contains a
 /// `_type` field set to "node" or "edge". The `allocator` is used for a
 /// temporary sorted-edge copy; `g` is not modified.
-pub fn exportJsonl(allocator: std.mem.Allocator, g: *const Graph, writer: *std.Io.Writer) !void {
+pub fn exportJsonl(allocator: std.mem.Allocator, fg: FrozenGraph, writer: *std.Io.Writer) !void {
+    const g = fg.graph;
     // Nodes (already sorted by id, sequential in the graph)
     for (g.nodes.items) |n| {
         try writeNodeLine(writer, n);
@@ -386,7 +388,7 @@ pub fn importJsonl(allocator: std.mem.Allocator, data: []const u8) !Graph {
     }
 
     try g.rebuildEdgeIndex(allocator);
-    try g.freeze(allocator);
+    _ = try g.freeze(allocator);
     return g;
 }
 
@@ -468,7 +470,8 @@ test "jsonl round-trip preserves nodes and edges" {
     defer aw.deinit();
 
     // Act
-    try exportJsonl(std.testing.allocator, &g, &aw.writer);
+    const fg = try g.freeze(std.testing.allocator);
+    try exportJsonl(std.testing.allocator, fg, &aw.writer);
     try aw.writer.flush();
     var loaded = try importJsonl(std.testing.allocator, aw.written());
     defer loaded.deinit(std.testing.allocator);
@@ -512,7 +515,8 @@ test "jsonl lines are valid json" {
     defer aw.deinit();
 
     // Act
-    try exportJsonl(std.testing.allocator, &g, &aw.writer);
+    const fg = try g.freeze(std.testing.allocator);
+    try exportJsonl(std.testing.allocator, fg, &aw.writer);
     try aw.writer.flush();
 
     // Assert: each non-empty line parses as JSON
@@ -534,7 +538,8 @@ test "jsonl records have correct _type field" {
     defer aw.deinit();
 
     // Act
-    try exportJsonl(std.testing.allocator, &g, &aw.writer);
+    const fg = try g.freeze(std.testing.allocator);
+    try exportJsonl(std.testing.allocator, fg, &aw.writer);
     try aw.writer.flush();
 
     // Assert: count node and edge lines by _type
@@ -564,7 +569,8 @@ test "jsonl output is sorted" {
     defer aw.deinit();
 
     // Act
-    try exportJsonl(std.testing.allocator, &g, &aw.writer);
+    const fg = try g.freeze(std.testing.allocator);
+    try exportJsonl(std.testing.allocator, fg, &aw.writer);
     try aw.writer.flush();
 
     // Assert: node ids are in ascending order
@@ -624,7 +630,8 @@ test "jsonl empty graph" {
     defer aw.deinit();
 
     // Act
-    try exportJsonl(std.testing.allocator, &g, &aw.writer);
+    const fg = try g.freeze(std.testing.allocator);
+    try exportJsonl(std.testing.allocator, fg, &aw.writer);
     try aw.writer.flush();
 
     // Assert: no output lines
@@ -659,7 +666,8 @@ test "jsonl preserves null fields as explicit null" {
     defer aw.deinit();
 
     // Act
-    try exportJsonl(std.testing.allocator, &g, &aw.writer);
+    const fg = try g.freeze(std.testing.allocator);
+    try exportJsonl(std.testing.allocator, fg, &aw.writer);
     try aw.writer.flush();
 
     // Assert: null fields are serialized as explicit JSON null, not omitted
@@ -697,7 +705,8 @@ test "jsonl preserves phantom nodes" {
     defer aw.deinit();
 
     // Act
-    try exportJsonl(std.testing.allocator, &g, &aw.writer);
+    const fg = try g.freeze(std.testing.allocator);
+    try exportJsonl(std.testing.allocator, fg, &aw.writer);
     try aw.writer.flush();
     var loaded = try importJsonl(std.testing.allocator, aw.written());
     defer loaded.deinit(std.testing.allocator);
@@ -724,7 +733,8 @@ test "jsonl round-trip preserves union_def kind" {
     defer aw.deinit();
 
     // Act
-    try exportJsonl(std.testing.allocator, &g, &aw.writer);
+    const fg = try g.freeze(std.testing.allocator);
+    try exportJsonl(std.testing.allocator, fg, &aw.writer);
     try aw.writer.flush();
     var loaded = try importJsonl(std.testing.allocator, aw.written());
     defer loaded.deinit(std.testing.allocator);
@@ -751,7 +761,8 @@ test "jsonl round-trip preserves is_packed metadata" {
     defer aw.deinit();
 
     // Act
-    try exportJsonl(std.testing.allocator, &g, &aw.writer);
+    const fg = try g.freeze(std.testing.allocator);
+    try exportJsonl(std.testing.allocator, fg, &aw.writer);
     try aw.writer.flush();
     var loaded = try importJsonl(std.testing.allocator, aw.written());
     defer loaded.deinit(std.testing.allocator);

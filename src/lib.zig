@@ -111,6 +111,8 @@ pub const logging = @import("logging.zig");
 
 /// Semantic kind of an edge (calls, uses_type, exports, etc.).
 pub const EdgeType = types.EdgeType;
+/// Immutable view of a frozen graph.
+pub const FrozenGraph = graph.FrozenGraph;
 /// The central graph container.
 pub const Graph = graph.Graph;
 /// Vtable-based logger interface.

@@ -5,6 +5,7 @@ const std = @import("std");
 const zcodeprism = @import("zcodeprism");
 const tool_utils = @import("tool-utils");
 
+const FrozenGraph = zcodeprism.FrozenGraph;
 const Graph = zcodeprism.Graph;
 const Node = zcodeprism.Node;
 const NodeId = zcodeprism.types.NodeId;
@@ -77,7 +78,7 @@ fn parseNodeKind(s: []const u8) ?NodeKind {
 
 // -- Display helpers --
 
-fn printNodeSummary(stdout: *std.Io.Writer, g: *const Graph, id: NodeId) !void {
+fn printNodeSummary(stdout: *std.Io.Writer, g: FrozenGraph, id: NodeId) !void {
     const n = g.getNode(id) orelse {
         try stdout.print("  [{d}] <not found>\n", .{@intFromEnum(id)});
         return;
@@ -147,7 +148,7 @@ fn printStats(stdout: *std.Io.Writer, stats: query.Stats) !void {
 
 // -- Command handlers --
 
-fn cmdSearch(allocator: std.mem.Allocator, g: *const Graph, flags: ParsedFlags, stdout: *std.Io.Writer) !void {
+fn cmdSearch(allocator: std.mem.Allocator, g: FrozenGraph, flags: ParsedFlags, stdout: *std.Io.Writer) !void {
     const q: ?[]const u8 = if (flags.positional.items.len > 0) flags.positional.items[0] else null;
     const result = try query.search(allocator, g, .{
         .query = q,
@@ -163,7 +164,7 @@ fn cmdSearch(allocator: std.mem.Allocator, g: *const Graph, flags: ParsedFlags, 
     for (result.nodes) |id| try printNodeSummary(stdout, g, id);
 }
 
-fn cmdStats(allocator: std.mem.Allocator, g: *const Graph, flags: ParsedFlags, stdout: *std.Io.Writer) !void {
+fn cmdStats(allocator: std.mem.Allocator, g: FrozenGraph, flags: ParsedFlags, stdout: *std.Io.Writer) !void {
     const stats = try query.computeStats(allocator, g, .{
         .scope = flags.scope,
         .include_tests = flags.include_tests,
@@ -172,7 +173,7 @@ fn cmdStats(allocator: std.mem.Allocator, g: *const Graph, flags: ParsedFlags, s
     try printStats(stdout, stats);
 }
 
-fn cmdAncestors(allocator: std.mem.Allocator, g: *const Graph, flags: ParsedFlags, stdout: *std.Io.Writer) !void {
+fn cmdAncestors(allocator: std.mem.Allocator, g: FrozenGraph, flags: ParsedFlags, stdout: *std.Io.Writer) !void {
     const id = try requirePositionalId(flags.positional.items, 0, stdout, "Usage: ancestors <node_id>") orelse return;
     const ancestors = try query.getAncestors(allocator, g, id);
     defer if (ancestors.len > 0) allocator.free(ancestors);
@@ -182,7 +183,7 @@ fn cmdAncestors(allocator: std.mem.Allocator, g: *const Graph, flags: ParsedFlag
     if (ancestors.len == 0) try stdout.print("  (root, no ancestors)\n", .{});
 }
 
-fn cmdImpact(allocator: std.mem.Allocator, g: *const Graph, flags: ParsedFlags, stdout: *std.Io.Writer) !void {
+fn cmdImpact(allocator: std.mem.Allocator, g: FrozenGraph, flags: ParsedFlags, stdout: *std.Io.Writer) !void {
     const id = try requirePositionalId(flags.positional.items, 0, stdout, "Usage: impact <node_id>") orelse return;
     const result = try query.getImpact(allocator, g, id, .{});
     defer result.deinit(allocator);
@@ -191,7 +192,7 @@ fn cmdImpact(allocator: std.mem.Allocator, g: *const Graph, flags: ParsedFlags, 
     for (result.impacted) |iid| try printNodeSummary(stdout, g, iid);
 }
 
-fn cmdPath(allocator: std.mem.Allocator, g: *const Graph, flags: ParsedFlags, stdout: *std.Io.Writer) !void {
+fn cmdPath(allocator: std.mem.Allocator, g: FrozenGraph, flags: ParsedFlags, stdout: *std.Io.Writer) !void {
     const from = try requirePositionalId(flags.positional.items, 0, stdout, "Usage: path <from_id> <to_id>") orelse return;
     const to = try requirePositionalId(flags.positional.items, 1, stdout, "Usage: path <from_id> <to_id>") orelse return;
     const result = try query.findPaths(allocator, g, from, to, .{});
@@ -209,7 +210,7 @@ fn cmdPath(allocator: std.mem.Allocator, g: *const Graph, flags: ParsedFlags, st
     }
 }
 
-fn cmdEdges(allocator: std.mem.Allocator, g: *const Graph, flags: ParsedFlags, stdout: *std.Io.Writer) !void {
+fn cmdEdges(allocator: std.mem.Allocator, g: FrozenGraph, flags: ParsedFlags, stdout: *std.Io.Writer) !void {
     const id = try requirePositionalId(flags.positional.items, 0, stdout, "Usage: edges <node_id>") orelse return;
     const ids = [_]NodeId{id};
     const result = try query.getEdges(allocator, g, &ids, .{
@@ -229,7 +230,7 @@ fn cmdEdges(allocator: std.mem.Allocator, g: *const Graph, flags: ParsedFlags, s
     }
 }
 
-fn cmdNode(allocator: std.mem.Allocator, g: *const Graph, flags: ParsedFlags, stdout: *std.Io.Writer) !void {
+fn cmdNode(allocator: std.mem.Allocator, g: FrozenGraph, flags: ParsedFlags, stdout: *std.Io.Writer) !void {
     const id = try requirePositionalId(flags.positional.items, 0, stdout, "Usage: node <node_id>") orelse return;
     const ids = [_]NodeId{id};
     const result = try query.getNodes(allocator, g, &ids, .{});
@@ -367,14 +368,15 @@ pub fn main() !void {
         return;
     };
 
+    const fg = FrozenGraph{ .graph = &graph };
     switch (cmd) {
-        .search => try cmdSearch(allocator, &graph, flags, stdout),
-        .stats => try cmdStats(allocator, &graph, flags, stdout),
-        .ancestors => try cmdAncestors(allocator, &graph, flags, stdout),
-        .impact => try cmdImpact(allocator, &graph, flags, stdout),
-        .path => try cmdPath(allocator, &graph, flags, stdout),
-        .edges => try cmdEdges(allocator, &graph, flags, stdout),
-        .node => try cmdNode(allocator, &graph, flags, stdout),
+        .search => try cmdSearch(allocator, fg, flags, stdout),
+        .stats => try cmdStats(allocator, fg, flags, stdout),
+        .ancestors => try cmdAncestors(allocator, fg, flags, stdout),
+        .impact => try cmdImpact(allocator, fg, flags, stdout),
+        .path => try cmdPath(allocator, fg, flags, stdout),
+        .edges => try cmdEdges(allocator, fg, flags, stdout),
+        .node => try cmdNode(allocator, fg, flags, stdout),
     }
 
     try stdout.flush();

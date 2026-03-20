@@ -4,6 +4,7 @@ const common = @import("common.zig");
 const sections = @import("ctg_sections.zig");
 
 const Graph = graph_mod.Graph;
+const FrozenGraph = graph_mod.FrozenGraph;
 
 const appendNum = common.appendNum;
 const appendCurrentTimestamp = common.appendCurrentTimestamp;
@@ -124,11 +125,12 @@ fn appendSeparator(out: *std.ArrayList(u8), allocator: std.mem.Allocator, writte
 /// the full format specification.
 pub fn renderCtg(
     allocator: std.mem.Allocator,
-    g: *const Graph,
+    fg: FrozenGraph,
     options: RenderOptions,
     out: *std.ArrayList(u8),
 ) !void {
-    var assignment = try common.buildIdAssignment(allocator, g, options.scope, options.filter);
+    const g = fg.graph;
+    var assignment = try common.buildIdAssignment(allocator, fg, options.scope, options.filter);
     defer assignment.deinit(allocator);
 
     var total_name_bytes: usize = 0;
@@ -449,7 +451,8 @@ test "header line 1 matches spec" {
     };
 
     // Act
-    try renderCtg(allocator, &g, options, &out);
+    const fg = try g.freeze(allocator);
+    try renderCtg(allocator, fg, options, &out);
 
     // Assert: first line: "# zcodeprism graph -- myproject"
     const output = out.items;
@@ -472,7 +475,8 @@ test "header line 2 has stats" {
     };
 
     // Act
-    try renderCtg(allocator, &g, options, &out);
+    const fg = try g.freeze(allocator);
+    try renderCtg(allocator, fg, options, &out);
 
     // Assert: second line starts with "# " and contains "files" and "functions"
     const output = out.items;
@@ -501,7 +505,8 @@ test "header line 3 has languages" {
     };
 
     // Act
-    try renderCtg(allocator, &g, options, &out);
+    const fg = try g.freeze(allocator);
+    try renderCtg(allocator, fg, options, &out);
 
     // Assert: third line: "# languages: zig"
     const output = out.items;
@@ -526,7 +531,8 @@ test "header line 4 has timestamp" {
     };
 
     // Act
-    try renderCtg(allocator, &g, options, &out);
+    const fg = try g.freeze(allocator);
+    try renderCtg(allocator, fg, options, &out);
 
     // Assert: fourth line: "# generated 2026-02-14T10:30:00Z"
     const output = out.items;
@@ -553,7 +559,8 @@ test "sections appear in correct order" {
     };
 
     // Act
-    try renderCtg(allocator, &g, options, &out);
+    const fg = try g.freeze(allocator);
+    try renderCtg(allocator, fg, options, &out);
 
     // Assert: sections in order
     const output = out.items;
@@ -591,7 +598,8 @@ test "file IDs use f: prefix" {
     };
 
     // Act
-    try renderCtg(allocator, &g, options, &out);
+    const fg = try g.freeze(allocator);
+    try renderCtg(allocator, fg, options, &out);
 
     // Assert
     const output = out.items;
@@ -623,7 +631,8 @@ test "function IDs use fn: prefix" {
     };
 
     // Act
-    try renderCtg(allocator, &g, options, &out);
+    const fg = try g.freeze(allocator);
+    try renderCtg(allocator, fg, options, &out);
 
     // Assert
     const output = out.items;
@@ -656,7 +665,8 @@ test "type IDs use ty: prefix" {
     };
 
     // Act
-    try renderCtg(allocator, &g, options, &out);
+    const fg = try g.freeze(allocator);
+    try renderCtg(allocator, fg, options, &out);
 
     // Assert
     const output = out.items;
@@ -689,7 +699,8 @@ test "enum IDs use en: prefix" {
     };
 
     // Act
-    try renderCtg(allocator, &g, options, &out);
+    const fg = try g.freeze(allocator);
+    try renderCtg(allocator, fg, options, &out);
 
     // Assert
     const output = out.items;
@@ -745,7 +756,8 @@ test "union IDs use un: prefix" {
     };
 
     // Act
-    try renderCtg(allocator, &g, options, &out);
+    const fg = try g.freeze(allocator);
+    try renderCtg(allocator, fg, options, &out);
 
     // Assert: [unions] section exists with un: prefix
     const output = out.items;
@@ -782,7 +794,8 @@ test "constant IDs use c: prefix" {
     };
 
     // Act
-    try renderCtg(allocator, &g, options, &out);
+    const fg = try g.freeze(allocator);
+    try renderCtg(allocator, fg, options, &out);
 
     // Assert
     const output = out.items;
@@ -815,7 +828,8 @@ test "error IDs use err: prefix" {
     };
 
     // Act
-    try renderCtg(allocator, &g, options, &out);
+    const fg = try g.freeze(allocator);
+    try renderCtg(allocator, fg, options, &out);
 
     // Assert
     const output = out.items;
@@ -849,7 +863,8 @@ test "test IDs use t: prefix" {
     };
 
     // Act
-    try renderCtg(allocator, &g, options, &out);
+    const fg = try g.freeze(allocator);
+    try renderCtg(allocator, fg, options, &out);
 
     // Assert
     const output = out.items;
@@ -882,7 +897,8 @@ test "external IDs use x: prefix" {
     };
 
     // Act
-    try renderCtg(allocator, &g, options, &out);
+    const fg = try g.freeze(allocator);
+    try renderCtg(allocator, fg, options, &out);
 
     // Assert
     const output = out.items;
@@ -915,7 +931,8 @@ test "files sorted by path alphabetical" {
     };
 
     // Act
-    try renderCtg(allocator, &g, options, &out);
+    const fg = try g.freeze(allocator);
+    try renderCtg(allocator, fg, options, &out);
 
     // Assert: file entries are sorted: src/lib.zig before src/main.zig
     const output = out.items;
@@ -938,7 +955,8 @@ test "edges sorted by type then source then target" {
     };
 
     // Act
-    try renderCtg(allocator, &g, options, &out);
+    const fg = try g.freeze(allocator);
+    try renderCtg(allocator, fg, options, &out);
 
     // Assert: within [edges], "calls" < "imports" < "uses_type" (alphabetical)
     const output = out.items;
@@ -977,8 +995,10 @@ test "deterministic output" {
     };
 
     // Act
-    try renderCtg(allocator, &g1, options, &out1);
-    try renderCtg(allocator, &g2, options, &out2);
+    const fg1 = try g1.freeze(allocator);
+    try renderCtg(allocator, fg1, options, &out1);
+    const fg2 = try g2.freeze(allocator);
+    try renderCtg(allocator, fg2, options, &out2);
 
     // Assert: byte-identical output
     try std.testing.expectEqualSlices(u8, out1.items, out2.items);
@@ -998,7 +1018,8 @@ test "empty graph renders without crash" {
     };
 
     // Act
-    try renderCtg(allocator, &g, options, &out);
+    const fg = try g.freeze(allocator);
+    try renderCtg(allocator, fg, options, &out);
 
     // Assert: has header, no crash
     const output = out.items;
@@ -1020,7 +1041,8 @@ test "single file no functions" {
     };
 
     // Act
-    try renderCtg(allocator, &g, options, &out);
+    const fg = try g.freeze(allocator);
+    try renderCtg(allocator, fg, options, &out);
 
     // Assert
     const output = out.items;
@@ -1043,7 +1065,8 @@ test "with scope filters nodes" {
     };
 
     // Act
-    try renderCtg(allocator, &g, options, &out);
+    const fg = try g.freeze(allocator);
+    try renderCtg(allocator, fg, options, &out);
 
     // Assert: only src/main.zig nodes appear, not src/lib.zig nodes
     const output = out.items;
@@ -1072,7 +1095,8 @@ test "phantom nodes in externals section" {
     };
 
     // Act
-    try renderCtg(allocator, &g, options, &out);
+    const fg = try g.freeze(allocator);
+    try renderCtg(allocator, fg, options, &out);
 
     // Assert
     const output = out.items;
@@ -1098,7 +1122,8 @@ test "snapshot line present when options set" {
     };
 
     // Act
-    try renderCtg(allocator, &g, options, &out);
+    const fg = try g.freeze(allocator);
+    try renderCtg(allocator, fg, options, &out);
 
     // Assert
     const output = out.items;
@@ -1119,7 +1144,8 @@ test "snapshot line absent for export" {
     };
 
     // Act
-    try renderCtg(allocator, &g, options, &out);
+    const fg = try g.freeze(allocator);
+    try renderCtg(allocator, fg, options, &out);
 
     // Assert: no snapshot line, exactly 4 header lines
     const output = out.items;

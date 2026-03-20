@@ -4,6 +4,7 @@ const node_mod = @import("../core/node.zig");
 const types = @import("../core/types.zig");
 
 const Graph = graph_mod.Graph;
+const FrozenGraph = graph_mod.FrozenGraph;
 const Node = node_mod.Node;
 const EdgeType = types.EdgeType;
 
@@ -612,10 +613,11 @@ fn buildPhantomPackages(
 /// returns an IdAssignment that the caller must deinit.
 pub fn buildIdAssignment(
     allocator: std.mem.Allocator,
-    g: *const Graph,
+    fg: FrozenGraph,
     scope: ?[]const u8,
     filter: FilterOptions,
 ) !IdAssignment {
+    const g = fg.graph;
     const node_count = g.nodes.items.len;
     const ids = try allocator.alloc(?IdEntry, node_count);
     errdefer allocator.free(ids);

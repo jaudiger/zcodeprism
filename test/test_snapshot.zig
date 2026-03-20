@@ -1,6 +1,7 @@
 const std = @import("std");
 const zcodeprism = @import("zcodeprism");
 
+const FrozenGraph = zcodeprism.FrozenGraph;
 const Graph = zcodeprism.graph.Graph;
 const snapshot = zcodeprism.storage.snapshot;
 
@@ -26,7 +27,8 @@ test "snapshot save and load round-trip" {
     defer allocator.free(storage_path);
 
     // Act
-    try snapshot.saveSnapshot(allocator, &g, "v1", storage_path);
+    const fg = try g.freeze(allocator);
+    try snapshot.saveSnapshot(allocator, fg, "v1", storage_path);
 
     var loaded = try snapshot.loadSnapshotGraph(allocator, "v1", storage_path);
     defer loaded.deinit(allocator);
@@ -54,13 +56,14 @@ test "snapshot rejects invalid tag and loads missing tag" {
     defer allocator.free(storage_path);
 
     // Act / Assert: invalid tags
+    const fg2 = FrozenGraph{ .graph = &g };
     try std.testing.expectError(
         error.InvalidTagName,
-        snapshot.saveSnapshot(allocator, &g, "has/slash", storage_path),
+        snapshot.saveSnapshot(allocator, fg2, "has/slash", storage_path),
     );
     try std.testing.expectError(
         error.InvalidTagName,
-        snapshot.saveSnapshot(allocator, &g, "has space", storage_path),
+        snapshot.saveSnapshot(allocator, fg2, "has space", storage_path),
     );
 
     // Act / Assert: load nonexistent tag
@@ -94,8 +97,9 @@ test "computeSourceHash is deterministic and content-sensitive" {
     });
 
     // Act
-    const hash1a = snapshot.computeSourceHash(&g1);
-    const hash1b = snapshot.computeSourceHash(&g1);
+    const fg1 = FrozenGraph{ .graph = &g1 };
+    const hash1a = snapshot.computeSourceHash(fg1);
+    const hash1b = snapshot.computeSourceHash(fg1);
 
     // Assert: deterministic
     try std.testing.expectEqualSlices(u8, &hash1a, &hash1b);
@@ -125,7 +129,8 @@ test "computeSourceHash is deterministic and content-sensitive" {
         .content_hash = "bbbbbbbbbbbb".*,
     });
 
-    const hash2 = snapshot.computeSourceHash(&g2);
+    const fg_g2 = FrozenGraph{ .graph = &g2 };
+    const hash2 = snapshot.computeSourceHash(fg_g2);
 
     // Assert: different content -> different hash
     try std.testing.expect(!std.mem.eql(u8, &hash1a, &hash2));
@@ -150,7 +155,8 @@ test "computeSourceHash is deterministic and content-sensitive" {
         .content_hash = "bbbbbbbbbbbb".*,
     });
 
-    const hash3 = snapshot.computeSourceHash(&g3);
+    const fg_g3 = FrozenGraph{ .graph = &g3 };
+    const hash3 = snapshot.computeSourceHash(fg_g3);
 
     // Assert: different file path -> different hash
     try std.testing.expect(!std.mem.eql(u8, &hash1a, &hash3));
@@ -163,7 +169,8 @@ test "computeSourceHash handles empty graph" {
     defer g.deinit(allocator);
 
     // Act
-    const hash = snapshot.computeSourceHash(&g);
+    const fg_empty = FrozenGraph{ .graph = &g };
+    const hash = snapshot.computeSourceHash(fg_empty);
 
     // Assert: valid 12-char hex string
     try std.testing.expectEqual(@as(usize, 12), hash.len);
