@@ -3,17 +3,15 @@
 
 const std = @import("std");
 const graph_mod = @import("../core/graph.zig");
-const types = @import("../core/types.zig");
 
 const Graph = graph_mod.Graph;
-const EdgeType = types.EdgeType;
 
 /// Reset fan_out to 0 for all nodes, then count outgoing calls and
 /// uses_type edges. Saturates at maxInt(u16). No allocations.
 pub fn computeFanOut(graph: *Graph) void {
     resetFanOut(graph);
     for (graph.edges.items) |e| {
-        if (!isFanEdge(e.edge_type)) continue;
+        if (!e.edge_type.isFanEdge()) continue;
         const idx = @intFromEnum(e.source_id);
         if (idx >= graph.nodes.items.len) continue;
         const n = &graph.nodes.items[idx];
@@ -28,7 +26,7 @@ pub fn computeFanOut(graph: *Graph) void {
 pub fn computeFanIn(graph: *Graph) void {
     resetFanIn(graph);
     for (graph.edges.items) |e| {
-        if (!isFanEdge(e.edge_type)) continue;
+        if (!e.edge_type.isFanEdge()) continue;
         const idx = @intFromEnum(e.target_id);
         if (idx >= graph.nodes.items.len) continue;
         const n = &graph.nodes.items[idx];
@@ -36,11 +34,6 @@ pub fn computeFanIn(graph: *Graph) void {
             m.fan_in +|= 1;
         }
     }
-}
-
-/// Only calls and uses_type count as fan edges.
-fn isFanEdge(t: EdgeType) bool {
-    return t == .calls or t == .uses_type;
 }
 
 fn resetFanOut(graph: *Graph) void {

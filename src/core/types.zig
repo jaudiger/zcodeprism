@@ -75,6 +75,23 @@ pub const EdgeType = enum {
     implements,
     /// Directory or module contains the target file or sub-directory.
     contains,
+
+    /// Whether this edge represents actual usage (call, type ref, field access,
+    /// trait impl) as opposed to a structural or analytical relationship.
+    pub fn isSemanticRef(self: EdgeType) bool {
+        return switch (self) {
+            .calls, .uses_type, .accesses_field, .implements => true,
+            .imports, .exports, .contains, .similar_to => false,
+        };
+    }
+
+    /// Whether this edge counts for fan-in/fan-out metrics.
+    pub fn isFanEdge(self: EdgeType) bool {
+        return switch (self) {
+            .calls, .uses_type => true,
+            .accesses_field, .implements, .imports, .exports, .contains, .similar_to => false,
+        };
+    }
 };
 
 /// How an edge was discovered during indexing.
@@ -184,4 +201,26 @@ test "Visibility has exactly 2 variants" {
         const fields = @typeInfo(Visibility).@"enum".fields;
         std.debug.assert(fields.len == 2);
     }
+}
+
+test "isSemanticRef classifies every variant" {
+    try std.testing.expect(EdgeType.calls.isSemanticRef());
+    try std.testing.expect(EdgeType.uses_type.isSemanticRef());
+    try std.testing.expect(EdgeType.accesses_field.isSemanticRef());
+    try std.testing.expect(EdgeType.implements.isSemanticRef());
+    try std.testing.expect(!EdgeType.imports.isSemanticRef());
+    try std.testing.expect(!EdgeType.exports.isSemanticRef());
+    try std.testing.expect(!EdgeType.contains.isSemanticRef());
+    try std.testing.expect(!EdgeType.similar_to.isSemanticRef());
+}
+
+test "isFanEdge classifies every variant" {
+    try std.testing.expect(EdgeType.calls.isFanEdge());
+    try std.testing.expect(EdgeType.uses_type.isFanEdge());
+    try std.testing.expect(!EdgeType.accesses_field.isFanEdge());
+    try std.testing.expect(!EdgeType.implements.isFanEdge());
+    try std.testing.expect(!EdgeType.imports.isFanEdge());
+    try std.testing.expect(!EdgeType.exports.isFanEdge());
+    try std.testing.expect(!EdgeType.contains.isFanEdge());
+    try std.testing.expect(!EdgeType.similar_to.isFanEdge());
 }

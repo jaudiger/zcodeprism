@@ -11,7 +11,6 @@ const Node = node_mod.Node;
 const NodeId = types.NodeId;
 const EdgeId = types.EdgeId;
 const NodeKind = types.NodeKind;
-const EdgeType = types.EdgeType;
 const Visibility = types.Visibility;
 const Language = types.Language;
 const ExternalInfo = lang.ExternalInfo;
@@ -81,16 +80,16 @@ pub fn findDeadCode(allocator: std.mem.Allocator, g: *const Graph, options: Dead
         const in_edges = g.inEdges(node_id);
         var has_ref = false;
 
-        if (n.kind == .field) {
-            // Fields are only live via accesses_field edges.
-            for (in_edges) |eid| {
-                if (g.edges.items[@intFromEnum(eid)].edge_type == .accesses_field) {
-                    has_ref = true;
-                    break;
-                }
+        for (in_edges) |eid| {
+            const et = g.edges.items[@intFromEnum(eid)].edge_type;
+            const is_ref = if (n.kind == .field)
+                et == .accesses_field
+            else
+                et.isSemanticRef();
+            if (is_ref) {
+                has_ref = true;
+                break;
             }
-        } else {
-            has_ref = in_edges.len > 0;
         }
 
         if (!has_ref) {
