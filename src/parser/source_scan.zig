@@ -248,7 +248,9 @@ pub fn computeStructuralHash(fn_source: []const u8, syntax: CommentSyntax) u32 {
 
         i += 1;
     }
-    return @truncate(h.final());
+    const raw: u32 = @truncate(h.final());
+    // Zero is reserved as "no hash computed" sentinel.
+    return if (raw == 0) 1 else raw;
 }
 
 fn startsWithAt(text: []const u8, pos: usize, prefix: []const u8) bool {
