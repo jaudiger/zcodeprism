@@ -302,9 +302,12 @@ fn runIndex(stdout: *std.Io.Writer, stderr: *std.Io.Writer, verbosity: u8) void 
     };
 
     // LSP enrichment pass.
+    var lsp_pool = zcodeprism.lsp.pool.LspPool.init(.{});
+    defer lsp_pool.deinit(allocator);
+
     var lsp_result = EnrichResult{};
     for (registry.Registry.allLanguages()) |ls| {
-        const result = lsp_enricher.enrich(allocator, &graph, ls, &wl, .{
+        const result = lsp_enricher.enrich(allocator, &graph, ls, &wl, &lsp_pool, .{
             .logger = logger,
             .project_root = project_root,
         }) catch |err| {

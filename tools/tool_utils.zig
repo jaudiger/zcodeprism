@@ -102,10 +102,12 @@ pub fn runLspEnrichment(
 ) !void {
     const Registry = zcodeprism.registry.Registry;
     const EnrichResult = zcodeprism.language_support.EnrichResult;
+    var lsp_pool = zcodeprism.lsp.pool.LspPool.init(.{});
+    defer lsp_pool.deinit(allocator);
     var result = EnrichResult{};
 
     for (Registry.allLanguages()) |ls| {
-        const r = try zcodeprism.lsp.enricher.enrich(allocator, graph, ls, wl, .{ .logger = log });
+        const r = try zcodeprism.lsp.enricher.enrich(allocator, graph, ls, wl, &lsp_pool, .{ .logger = log });
         result.accumulate(r);
     }
 

@@ -233,7 +233,7 @@ pub const LspClient = struct {
     }
 
     /// Run the initialize/initialized handshake.
-    pub fn initialize(self: *LspClient, allocator: std.mem.Allocator, project_root: []const u8) !void {
+    pub fn initialize(self: *LspClient, allocator: std.mem.Allocator, project_root: []const u8, init_options: ?[]const u8) !void {
         const root_uri = try pathToUri(allocator, project_root);
         defer allocator.free(root_uri);
 
@@ -246,6 +246,12 @@ pub const LspClient = struct {
         try params.put("capabilities", .{ .object = caps });
         try params.put("rootUri", .{ .string = root_uri });
         try params.put("processId", .null);
+
+        if (init_options) |opts_json| {
+            if (std.json.parseFromSlice(Value, a, opts_json, .{})) |parsed| {
+                try params.put("initializationOptions", parsed.value);
+            } else |_| {}
+        }
 
         const req = try self.buildRequest(allocator, a, "initialize", .{ .object = params });
         defer allocator.free(req);
@@ -276,6 +282,48 @@ pub const LspClient = struct {
         try params.put("textDocument", .{ .object = td });
 
         const notif = try buildNotification(allocator, a, "textDocument/didOpen", .{ .object = params });
+        defer allocator.free(notif);
+        self.sendFramed(notif) catch {};
+    }
+
+    /// Notify the server that a document's content changed (full replacement).
+    pub fn textDocumentDidChange(self: *LspClient, allocator: std.mem.Allocator, uri: []const u8, version: i32, new_text: []const u8) !void {
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+
+        var td = ObjectMap.init(a);
+        try td.put("uri", .{ .string = uri });
+        try td.put("version", .{ .integer = @as(i64, version) });
+
+        var change = ObjectMap.init(a);
+        try change.put("text", .{ .string = new_text });
+
+        var changes = std.json.Array.init(a);
+        try changes.append(.{ .object = change });
+
+        var params = ObjectMap.init(a);
+        try params.put("textDocument", .{ .object = td });
+        try params.put("contentChanges", .{ .array = changes });
+
+        const notif = try LspClient.buildNotification(allocator, a, "textDocument/didChange", .{ .object = params });
+        defer allocator.free(notif);
+        self.sendFramed(notif) catch {};
+    }
+
+    /// Notify the server that a document was closed.
+    pub fn textDocumentDidClose(self: *LspClient, allocator: std.mem.Allocator, uri: []const u8) !void {
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+
+        var td = ObjectMap.init(a);
+        try td.put("uri", .{ .string = uri });
+
+        var params = ObjectMap.init(a);
+        try params.put("textDocument", .{ .object = td });
+
+        const notif = try LspClient.buildNotification(allocator, a, "textDocument/didClose", .{ .object = params });
         defer allocator.free(notif);
         self.sendFramed(notif) catch {};
     }
@@ -529,4 +577,65 @@ test "references request includes context with includeDeclaration" {
     try std.testing.expect(std.mem.indexOf(u8, req, "textDocument/references") != null);
     try std.testing.expect(std.mem.indexOf(u8, req, "includeDeclaration") != null);
     try std.testing.expect(std.mem.indexOf(u8, req, "false") != null);
+}
+
+test "textDocumentDidChange builds correct notification" {
+    // Arrange
+    const allocator = std.testing.allocator;
+    var client = LspClient.init(Logger.noop);
+    defer client.deinit();
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // Build the same params that textDocumentDidChange would build.
+    var td = ObjectMap.init(a);
+    try td.put("uri", .{ .string = "file:///src/main.zig" });
+    try td.put("version", .{ .integer = 2 });
+
+    var change = ObjectMap.init(a);
+    try change.put("text", .{ .string = "const x = 42;\n" });
+
+    var changes = std.json.Array.init(a);
+    try changes.append(.{ .object = change });
+
+    var params = ObjectMap.init(a);
+    try params.put("textDocument", .{ .object = td });
+    try params.put("contentChanges", .{ .array = changes });
+
+    // Act
+    const notif = try LspClient.buildNotification(allocator, a, "textDocument/didChange", .{ .object = params });
+    defer allocator.free(notif);
+
+    // Assert
+    try std.testing.expect(std.mem.indexOf(u8, notif, "textDocument/didChange") != null);
+    try std.testing.expect(std.mem.indexOf(u8, notif, "\"version\":2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, notif, "contentChanges") != null);
+    try std.testing.expect(std.mem.indexOf(u8, notif, "const x = 42;") != null);
+}
+
+test "textDocumentDidClose builds correct notification" {
+    // Arrange
+    const allocator = std.testing.allocator;
+    var client = LspClient.init(Logger.noop);
+    defer client.deinit();
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var td = ObjectMap.init(a);
+    try td.put("uri", .{ .string = "file:///src/lib.zig" });
+
+    var params = ObjectMap.init(a);
+    try params.put("textDocument", .{ .object = td });
+
+    // Act
+    const notif = try LspClient.buildNotification(allocator, a, "textDocument/didClose", .{ .object = params });
+    defer allocator.free(notif);
+
+    // Assert
+    try std.testing.expect(std.mem.indexOf(u8, notif, "textDocument/didClose") != null);
+    try std.testing.expect(std.mem.indexOf(u8, notif, "file:///src/lib.zig") != null);
 }

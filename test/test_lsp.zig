@@ -78,7 +78,9 @@ test "LSP enrichment adds edges and populates errors" {
 
     // Act: run LSP enrichment with the populated worklist
     const zig_support = zcodeprism.registry.Registry.getByExtension(".zig").?;
-    const result = try enricher.enrich(allocator, &graph, zig_support, &wl, .{
+    var lsp_pool = zcodeprism.lsp.pool.LspPool.init(.{});
+    defer lsp_pool.deinit(allocator);
+    const result = try enricher.enrich(allocator, &graph, zig_support, &wl, &lsp_pool, .{
         .project_root = fixture_path,
     });
 
