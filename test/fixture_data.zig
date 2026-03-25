@@ -2,6 +2,11 @@
 //! Organized by language. Each language gets its own namespace struct.
 //! This module is rooted in `test/`, so @embedFile can reach `test/fixtures/`.
 
+pub const mixed_project = struct {
+    pub const lib_rs = @embedFile("fixtures/mixed_project/src/lib.rs");
+    pub const main_zig = @embedFile("fixtures/mixed_project/src/main.zig");
+};
+
 pub const rust = struct {
     pub const simple = @embedFile("fixtures/rust/simple.rs");
 

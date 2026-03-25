@@ -216,6 +216,8 @@ pub fn indexDirectory(
     log.debug("building edges", &.{Field.uint("file_count", file_infos.items.len)});
     buildCrossFileEdges(allocator, graph, file_infos.items, &graph_index, &phantom, wl, log);
 
+    try resolveCrossLanguageEdges(allocator, graph, log);
+
     if (wl.count() > 0) {
         log.info("worklist entries collected", &.{Field.uint("count", wl.count())});
     }
@@ -594,6 +596,84 @@ fn buildCrossFileEdges(
             });
         };
     }
+}
+
+/// Match FFI prototypes to definitions across languages by convention and symbol name.
+fn resolveCrossLanguageEdges(
+    allocator: std.mem.Allocator,
+    graph: *Graph,
+    log: Logger,
+) !void {
+    const nodes = graph.nodes.items;
+
+    // Index: (name, convention) -> list of definition node indices.
+    const FfiKey = struct { name: []const u8, convention: []const u8 };
+    var defn_map = std.ArrayHashMapUnmanaged(FfiKey, std.ArrayList(usize), struct {
+        pub fn hash(_: @This(), key: FfiKey) u32 {
+            var h = std.hash.Fnv1a_32.init();
+            h.update(key.name);
+            for (key.convention) |c| h.update(&.{std.ascii.toLower(c)});
+            return h.final();
+        }
+        pub fn eql(_: @This(), a: FfiKey, b: FfiKey, _: usize) bool {
+            return std.mem.eql(u8, a.name, b.name) and std.ascii.eqlIgnoreCase(a.convention, b.convention);
+        }
+    }, true){};
+    defer {
+        for (defn_map.values()) |*list| list.deinit(allocator);
+        defn_map.deinit(allocator);
+    }
+
+    // Collect all FFI definitions (functions with a body).
+    for (nodes, 0..) |n, idx| {
+        if (n.kind != .function) continue;
+        if (n.language == null) continue;
+        const conv = n.lang_meta.ffiConvention() orelse continue;
+        if (!isFfiDefinition(n)) continue;
+        const key = FfiKey{ .name = n.name, .convention = conv };
+        const gop = try defn_map.getOrPut(allocator, key);
+        if (!gop.found_existing) gop.value_ptr.* = .{};
+        try gop.value_ptr.append(allocator, idx);
+    }
+
+    // Match prototypes against definitions in other languages.
+    var edges_added: usize = 0;
+    for (nodes) |proto| {
+        if (proto.kind != .function) continue;
+        const proto_lang = proto.language orelse continue;
+        const conv = proto.lang_meta.ffiConvention() orelse continue;
+        if (!isFfiPrototype(proto)) continue;
+
+        const key = FfiKey{ .name = proto.name, .convention = conv };
+        const defns = defn_map.get(key) orelse continue;
+        for (defns.items) |didx| {
+            const defn = nodes[didx];
+            if (defn.language.? == proto_lang) continue;
+            _ = try graph.addEdgeIfNew(allocator, .{
+                .source_id = proto.id,
+                .target_id = defn.id,
+                .edge_type = .calls,
+                .source = .workspace,
+            });
+            edges_added += 1;
+        }
+    }
+
+    if (edges_added > 0) {
+        log.info("cross-language FFI edges", &.{Field.uint("count", edges_added)});
+    }
+}
+
+fn isFfiPrototype(n: Node) bool {
+    const s = n.line_start orelse return false;
+    const e = n.line_end orelse return false;
+    return s == e;
+}
+
+fn isFfiDefinition(n: Node) bool {
+    const s = n.line_start orelse return false;
+    const e = n.line_end orelse return false;
+    return s < e;
 }
 
 /// Create contains edges from module nodes to their root source files.

@@ -143,6 +143,22 @@ pub fn build(b: *std.Build) void {
     cli_test.step.dependOn(b.getInstallStep());
     addTestStep(b, test_step, cli_test, coverage, kcov_args);
 
+    // Cross-language integration tests (mixed Zig+Rust projects)
+    const cross_lang_test_mod = b.createModule(.{
+        .root_source_file = b.path("test/test_cross_language.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    cross_lang_test_mod.addImport("zcodeprism", lib_mod);
+    cross_lang_test_mod.addImport("test-fixtures", fixture_mod);
+    cross_lang_test_mod.addImport("test-helpers", helpers_mod);
+    cross_lang_test_mod.linkLibrary(ts_rust_lib);
+    cross_lang_test_mod.linkLibrary(ts_zig_dep.artifact("tree-sitter-zig"));
+
+    addTestStep(b, test_step, b.addTest(.{
+        .root_module = cross_lang_test_mod,
+    }), coverage, kcov_args);
+
     // LSP integration tests
     const lsp_test_mod = b.createModule(.{
         .root_source_file = b.path("test/test_lsp.zig"),

@@ -16,6 +16,15 @@ pub const LangMeta = union(enum) {
     /// No language-specific metadata for this node.
     none: void,
 
+    /// FFI convention string for extern functions, or null if not FFI.
+    pub fn ffiConvention(self: LangMeta) ?[]const u8 {
+        return switch (self) {
+            .zig => |zm| if (zm.is_extern) zm.calling_convention else null,
+            .rust => |rm| if (rm.is_extern) rm.abi else null,
+            .none => null,
+        };
+    }
+
     // Binary serialization
 
     /// Fixed header: tag + flags + sub_kind + abi_len + vs_len + derives_len + attrs_len + inner_attrs_len.
