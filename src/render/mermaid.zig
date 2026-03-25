@@ -21,7 +21,7 @@ pub const MermaidOptions = struct {
 /// Render the graph as a Mermaid flowchart.
 ///
 /// The output is deterministic: same graph + same options = byte-identical output.
-/// See `docs/zcodeprism-mermaid-spec.md` for the full format specification.
+/// See `docs/specs/mermaid.md` for the full format specification.
 pub fn renderMermaid(
     allocator: std.mem.Allocator,
     fg: FrozenGraph,
@@ -99,6 +99,7 @@ pub fn renderMermaid(
     try out.appendSlice(allocator, "    classDef phantom_style fill:#f0f0f0,stroke:#999999,stroke-dasharray:5 5,color:#888888\n");
     try out.appendSlice(allocator, "    classDef test_style fill:#f8d7da,stroke:#c0392b,color:#721c24\n");
     try out.appendSlice(allocator, "    classDef ty_style fill:#d4edda,stroke:#28a745,color:#155724\n");
+    try out.appendSlice(allocator, "    classDef un_style fill:#e2d4f0,stroke:#7b2d8e,color:#4a1a5e\n");
 
     const ctx = common.SectionCtx{ .g = g, .ids = ids, .num_buf = &num_buf };
 

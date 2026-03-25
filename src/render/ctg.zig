@@ -123,7 +123,7 @@ fn appendSeparator(out: *std.ArrayList(u8), allocator: std.mem.Allocator, writte
 
 /// Renders the graph in Compact Text Graph (CTG) format, appending the
 /// result to `out`. Output is deterministic: identical graph + options
-/// produces byte-identical output. See docs/zcodeprism-ctg-spec.md for
+/// produces byte-identical output. See docs/specs/ctg.md for
 /// the full format specification.
 pub fn renderCtg(
     allocator: std.mem.Allocator,

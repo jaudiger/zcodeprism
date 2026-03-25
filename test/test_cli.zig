@@ -188,7 +188,7 @@ test "init on already initialized project" {
     try std.testing.expect(result.exit_code != 0);
 }
 
-test "index --full on fixture produces output" {
+test "index on fixture produces output" {
     // Arrange
     const allocator = std.testing.allocator;
     const bin = try exePath(allocator);
@@ -205,7 +205,7 @@ test "index --full on fixture produces output" {
     src.close();
 
     // Act
-    const result = try runCli(allocator, bin, &.{ "index", "--full" }, tmp.dir);
+    const result = try runCli(allocator, bin, &.{"index"}, tmp.dir);
     defer result.deinit(allocator);
 
     // Assert
@@ -228,7 +228,7 @@ test "status on indexed project" {
     try src.writeAll("pub fn hello() void {}");
     src.close();
 
-    const idx_result = try runCli(allocator, bin, &.{ "index", "--full" }, tmp.dir);
+    const idx_result = try runCli(allocator, bin, &.{"index"}, tmp.dir);
     idx_result.deinit(allocator);
 
     // Act

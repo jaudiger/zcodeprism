@@ -49,8 +49,6 @@ const usage_text =
     \\  --version            Print version and exit
     \\  --help               Show this help message
     \\  --force              Force overwrite (with init)
-    \\  --full               Full re-index (with index, default)
-    \\  --json               Output in JSON format
     \\  --name TAG           Snapshot tag name (with snapshot)
     \\  --snapshot TAG       Load a snapshot instead of current graph (with export)
     \\  --project-root PATH  Set the project root directory
@@ -125,8 +123,6 @@ fn parseArgs(stderr: *std.Io.Writer) CliArgs {
             cli.workspace = requireArg(&args, "--workspace", stderr);
         } else if (std.mem.eql(u8, arg, "--snapshot")) {
             cli.snapshot = requireArg(&args, "--snapshot", stderr);
-        } else if (std.mem.eql(u8, arg, "--full") or std.mem.eql(u8, arg, "--incremental") or std.mem.eql(u8, arg, "--json")) {
-            // Accepted but not yet used beyond index.
         } else if (std.mem.eql(u8, arg, "--ctg")) {
             cli.export_format = .ctg_fmt;
         } else if (std.mem.eql(u8, arg, "--mermaid")) {
