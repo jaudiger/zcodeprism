@@ -555,4 +555,3 @@ fn parseNamesFromErrorSetNode(
 
     return .{ .slices = slices, .flat_buf = flat_buf };
 }
-

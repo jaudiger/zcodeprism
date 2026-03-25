@@ -173,7 +173,7 @@ const InotifyBackend = struct {
         exclude_paths: []const []const u8,
         _: std.posix.fd_t,
     ) !InotifyBackend {
-        const fd = try std.posix.inotify_init1(.{ .NONBLOCK = true });
+        const fd = try std.posix.inotify_init1(std.os.linux.IN.NONBLOCK);
         errdefer std.posix.close(fd);
 
         var self = InotifyBackend{
