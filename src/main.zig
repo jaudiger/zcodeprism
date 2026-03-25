@@ -14,6 +14,7 @@ const lang_support = zcodeprism.language_support;
 const lsp_enricher = zcodeprism.lsp.enricher;
 const registry = zcodeprism.registry;
 const storage = zcodeprism.storage;
+const types = zcodeprism.types;
 const workspace_mod = zcodeprism.workspace;
 const FrozenGraph = zcodeprism.FrozenGraph;
 const Graph = zcodeprism.Graph;
@@ -642,7 +643,7 @@ fn runServe(stderr: *std.Io.Writer, workspace_arg: ?[]const u8, verbosity: u8) v
     defer allocator.free(project_root);
 
     // Heap-allocate the initial generation so old/new can coexist.
-    const initial_gen = GraphGeneration.create(allocator, 1, .{0} ** 12) catch {
+    const initial_gen = GraphGeneration.create(allocator, 1, .{0} ** types.hash_len) catch {
         stderr.writeAll("out of memory\n") catch {};
         stderr.flush() catch {};
         std.process.exit(1);
@@ -755,7 +756,7 @@ fn watcherThreadFn(
         }
 
         generation_id += 1;
-        const new_gen = GraphGeneration.create(allocator, generation_id, .{0} ** 12) catch continue;
+        const new_gen = GraphGeneration.create(allocator, generation_id, .{0} ** types.hash_len) catch continue;
 
         if (workspace_arg) |ws_path| {
             new_gen.graph = loadWorkspaceGraph(new_gen.arena.allocator(), ws_path, stderr);
@@ -846,7 +847,7 @@ fn serveStdioLoop(allocator: std.mem.Allocator, server: *mcp.server.Server, stdo
 }
 
 fn computeSourceHash(gen: *GraphGeneration) void {
-    var hasher = std.hash.XxHash3.init(0);
+    var hasher = std.crypto.hash.Blake3.init(.{});
     for (gen.graph.nodes.items) |n| {
         if (n.kind == .file) {
             if (n.content_hash) |h| {
@@ -854,8 +855,7 @@ fn computeSourceHash(gen: *GraphGeneration) void {
             }
         }
     }
-    const hash_u64 = hasher.final();
-    @memcpy(gen.source_hash[0..8], std.mem.asBytes(&hash_u64));
+    hasher.final(&gen.source_hash);
 }
 
 fn readLine(reader: *std.Io.Reader, line_buf: *std.ArrayList(u8), allocator: std.mem.Allocator) ?[]const u8 {
@@ -995,8 +995,7 @@ fn runStatus(stdout: *std.Io.Writer, stderr: *std.Io.Writer, workspace_arg: ?[]c
         }
     }
 
-    // Compute source_hash from file nodes' content_hashes.
-    var hasher = std.hash.XxHash3.init(0);
+    var hasher = std.crypto.hash.Blake3.init(.{});
     for (graph.nodes.items) |n| {
         if (n.kind == .file) {
             if (n.content_hash) |h| {
@@ -1004,19 +1003,21 @@ fn runStatus(stdout: *std.Io.Writer, stderr: *std.Io.Writer, workspace_arg: ?[]c
             }
         }
     }
-    const source_hash = hasher.final();
+    var source_hash: types.ContentHash = undefined;
+    hasher.final(&source_hash);
+    const source_hex = types.formatHash(source_hash);
 
     stdout.print(
         "nodes: {d} ({d} files, {d} functions, {d} types)\n" ++
             "edges: {d}\n" ++
-            "source_hash: {x:0>16}\n",
+            "source_hash: {s}\n",
         .{
             graph.nodeCount(),
             file_count,
             function_count,
             type_count,
             graph.edgeCount(),
-            source_hash,
+            &source_hex,
         },
     ) catch {};
     stdout.flush() catch {};

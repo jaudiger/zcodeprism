@@ -20,7 +20,7 @@ test "snapshot save and load round-trip" {
         .name = "a.zig",
         .kind = .file,
         .file_path = "src/a.zig",
-        .content_hash = "abcdef123456".*,
+        .content_hash = "abcdef1234567890".*,
     });
 
     const storage_path = try tmp.dir.realpathAlloc(allocator, ".");
@@ -86,14 +86,14 @@ test "computeSourceHash is deterministic and content-sensitive" {
         .name = "a.zig",
         .kind = .file,
         .file_path = "src/a.zig",
-        .content_hash = "aaaaaaaaaaaa".*,
+        .content_hash = "aaaaaaaaaaaaaaaa".*,
     });
     _ = try g1.addNode(allocator, .{
         .id = .root,
         .name = "b.zig",
         .kind = .file,
         .file_path = "src/b.zig",
-        .content_hash = "bbbbbbbbbbbb".*,
+        .content_hash = "bbbbbbbbbbbbbbbb".*,
     });
 
     // Act
@@ -103,11 +103,6 @@ test "computeSourceHash is deterministic and content-sensitive" {
 
     // Assert: deterministic
     try std.testing.expectEqualSlices(u8, &hash1a, &hash1b);
-
-    // Assert: all hex characters
-    for (&hash1a) |c| {
-        try std.testing.expect(std.ascii.isHex(c));
-    }
 
     // Arrange: second graph with different content hash
     var g2 = Graph.init("proj");
@@ -119,14 +114,14 @@ test "computeSourceHash is deterministic and content-sensitive" {
         .name = "a.zig",
         .kind = .file,
         .file_path = "src/a.zig",
-        .content_hash = "cccccccccccc".*,
+        .content_hash = "cccccccccccccccc".*,
     });
     _ = try g2.addNode(allocator, .{
         .id = .root,
         .name = "b.zig",
         .kind = .file,
         .file_path = "src/b.zig",
-        .content_hash = "bbbbbbbbbbbb".*,
+        .content_hash = "bbbbbbbbbbbbbbbb".*,
     });
 
     const fg_g2 = FrozenGraph{ .graph = &g2 };
@@ -145,14 +140,14 @@ test "computeSourceHash is deterministic and content-sensitive" {
         .name = "a.zig",
         .kind = .file,
         .file_path = "lib/a.zig",
-        .content_hash = "aaaaaaaaaaaa".*,
+        .content_hash = "aaaaaaaaaaaaaaaa".*,
     });
     _ = try g3.addNode(allocator, .{
         .id = .root,
         .name = "b.zig",
         .kind = .file,
         .file_path = "src/b.zig",
-        .content_hash = "bbbbbbbbbbbb".*,
+        .content_hash = "bbbbbbbbbbbbbbbb".*,
     });
 
     const fg_g3 = FrozenGraph{ .graph = &g3 };
@@ -172,9 +167,6 @@ test "computeSourceHash handles empty graph" {
     const fg_empty = FrozenGraph{ .graph = &g };
     const hash = snapshot.computeSourceHash(fg_empty);
 
-    // Assert: valid 12-char hex string
-    try std.testing.expectEqual(@as(usize, 12), hash.len);
-    for (&hash) |c| {
-        try std.testing.expect(std.ascii.isHex(c));
-    }
+    // Assert: returns a 16-byte hash
+    try std.testing.expectEqual(@as(usize, 16), hash.len);
 }

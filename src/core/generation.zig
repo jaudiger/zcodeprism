@@ -1,5 +1,6 @@
 const std = @import("std");
 const graph_mod = @import("graph.zig");
+const types = @import("types.zig");
 
 const Graph = graph_mod.Graph;
 
@@ -10,12 +11,12 @@ pub const GraphGeneration = struct {
     graph: Graph,
     arena: std.heap.ArenaAllocator,
     ref_count: std.atomic.Value(u32),
-    source_hash: [12]u8,
+    source_hash: types.ContentHash,
     generation_id: u64,
     indexed_at: i128,
 
     /// Heap-allocate a new generation.
-    pub fn create(allocator: std.mem.Allocator, generation_id: u64, source_hash: [12]u8) !*GraphGeneration {
+    pub fn create(allocator: std.mem.Allocator, generation_id: u64, source_hash: types.ContentHash) !*GraphGeneration {
         const gen = try allocator.create(GraphGeneration);
         const arena = std.heap.ArenaAllocator.init(allocator);
         gen.* = .{
@@ -57,7 +58,7 @@ pub const GraphGeneration = struct {
 
 test "acquire increments refcount" {
     // Arrange
-    const gen = try GraphGeneration.create(std.testing.allocator, 1, "abcdef123456".*);
+    const gen = try GraphGeneration.create(std.testing.allocator, 1, "abcdef1234567890".*);
     defer gen.destroy(std.testing.allocator);
 
     // Act
@@ -72,7 +73,7 @@ test "acquire increments refcount" {
 
 test "guard deinit decrements refcount" {
     // Arrange
-    const gen = try GraphGeneration.create(std.testing.allocator, 1, "abcdef123456".*);
+    const gen = try GraphGeneration.create(std.testing.allocator, 1, "abcdef1234567890".*);
     defer gen.destroy(std.testing.allocator);
     const g1 = gen.acquire();
     const g2 = gen.acquire();
@@ -89,7 +90,7 @@ test "guard deinit decrements refcount" {
 
 test "multiple acquires and releases" {
     // Arrange
-    const gen = try GraphGeneration.create(std.testing.allocator, 1, "abcdef123456".*);
+    const gen = try GraphGeneration.create(std.testing.allocator, 1, "abcdef1234567890".*);
     defer gen.destroy(std.testing.allocator);
 
     // Act
@@ -110,7 +111,7 @@ test "multiple acquires and releases" {
 
 test "generation_id is set" {
     // Arrange
-    const gen = try GraphGeneration.create(std.testing.allocator, 42, "abcdef123456".*);
+    const gen = try GraphGeneration.create(std.testing.allocator, 42, "abcdef1234567890".*);
     defer gen.destroy(std.testing.allocator);
     const guard = gen.acquire();
     defer guard.deinit();

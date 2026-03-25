@@ -98,17 +98,14 @@ pub const JsonWriter = struct {
         self.s.write(hex) catch return error.OutOfMemory;
     }
 
-    /// Write a 12-byte hash as a 24-char hex string value.
-    pub fn hashHex(self: JsonWriter, hash: [12]u8) OomError!void {
-        var hex_buf: [24]u8 = undefined;
-        for (hash, 0..) |byte, bi| {
-            _ = std.fmt.bufPrint(hex_buf[bi * 2 ..][0..2], "{x:0>2}", .{byte}) catch unreachable;
-        }
+    /// Write a ContentHash as a hex string value.
+    pub fn hashHex(self: JsonWriter, hash: types.ContentHash) OomError!void {
+        const hex_buf = types.formatHash(hash);
         self.s.write(@as([]const u8, &hex_buf)) catch return error.OutOfMemory;
     }
 
-    /// objectField + 12-byte hash as hex or null.
-    pub fn optionalFieldHashHex(self: JsonWriter, name: []const u8, hash: ?[12]u8) OomError!void {
+    /// objectField + ContentHash as hex or null.
+    pub fn optionalFieldHashHex(self: JsonWriter, name: []const u8, hash: ?types.ContentHash) OomError!void {
         self.s.objectField(name) catch return error.OutOfMemory;
         if (hash) |h| {
             try self.hashHex(h);

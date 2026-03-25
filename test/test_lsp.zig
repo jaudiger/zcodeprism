@@ -118,6 +118,68 @@ test "LSP enrichment adds edges and populates errors" {
     try std.testing.expect(has_inferred);
 }
 
+test "rust graph is complete without rust-analyzer" {
+    // Arrange: index the Rust project fixture directory
+    const allocator = std.testing.allocator;
+    const fixture_path = try resolveFixturePath(allocator, "test/fixtures/rust/project");
+    defer allocator.free(fixture_path);
+
+    var graph = Graph.init(fixture_path);
+    defer graph.deinit(allocator);
+
+    // Act
+    _ = try indexer.indexDirectory(allocator, fixture_path, &graph, null, .{});
+
+    // Assert: graph has Rust nodes
+    try std.testing.expect(graph.nodeCount() > 0);
+    try std.testing.expect(graph.edgeCount() > 0);
+
+    // No edge was discovered by LSP
+    try std.testing.expect(!helpers.hasEdgeWithSource(&graph, .lsp));
+}
+
+test "rust-analyzer enrichment adds edges" {
+    // Arrange: check if rust-analyzer is available, skip if not
+    const allocator = std.testing.allocator;
+    const ra_available = blk: {
+        var child = std.process.Child.init(&.{ "rust-analyzer", "--version" }, allocator);
+        child.stderr_behavior = .Ignore;
+        child.stdout_behavior = .Ignore;
+        const term = child.spawnAndWait() catch break :blk false;
+        break :blk term == .Exited and term.Exited == 0;
+    };
+    if (!ra_available) return;
+
+    const fixture_path = try resolveFixturePath(allocator, "test/fixtures/rust_project");
+    defer allocator.free(fixture_path);
+
+    var graph = Graph.init(fixture_path);
+    defer graph.deinit(allocator);
+
+    // Index with a worklist for LSP enrichment.
+    var wl = zcodeprism.lsp.worklist.LspWorklist{};
+    defer wl.deinit(allocator);
+    _ = try indexer.indexDirectory(allocator, fixture_path, &graph, &wl, .{});
+
+    // Record pre-LSP state
+    const pre_lsp_edge_count = graph.edgeCount();
+
+    // Act: run LSP enrichment with the populated worklist
+    const rust_support = zcodeprism.registry.Registry.getByExtension(".rs").?;
+    var lsp_pool = zcodeprism.lsp.pool.LspPool.init(.{});
+    defer lsp_pool.deinit(allocator);
+    const result = try enricher.enrich(allocator, &graph, rust_support, &wl, &lsp_pool, .{
+        .project_root = fixture_path,
+    });
+
+    // LSP enrichment only adds edges, never removes.
+    try std.testing.expect(graph.edgeCount() >= pre_lsp_edge_count);
+
+    // All LSP edges in the graph are accounted for by the result counters.
+    const lsp_edge_count = helpers.countEdgesBySource(&graph, .lsp);
+    try std.testing.expectEqual(result.edges_promoted + result.edges_added, lsp_edge_count);
+}
+
 /// Resolve a project-relative path to an absolute path.
 fn resolveFixturePath(allocator: std.mem.Allocator, rel: []const u8) ![]const u8 {
     var buf: [std.fs.max_path_bytes]u8 = undefined;

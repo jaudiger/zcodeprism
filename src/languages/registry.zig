@@ -12,13 +12,17 @@ const rust_support = LanguageSupport{
     .language = .rust,
     .extensions = &.{".rs"},
     .parseFn = &rust_visitor.parse,
-    .lsp_config = null,
+    .lsp_config = .{
+        .server_name = "rust-analyzer",
+        .server_command = "rust-analyzer",
+        .enrichFn = &rust_hooks.enrichWithLsp,
+    },
     .excluded_dirs = &.{ "target", ".cargo" },
-    .build_files = &.{},
+    .build_files = &.{"Cargo.toml"},
     .import_granularity = .file,
     .extractImportsFn = &rust_hooks.extractImports,
     .resolveImportPathFn = &rust_hooks.resolveImportPath,
-    .parseBuildConfigFn = null,
+    .parseBuildConfigFn = &rust_hooks.parseBuildConfig,
     .resolvePhantomsFn = &rust_hooks.resolvePhantoms,
     .buildEdgesFn = &rust_visitor.buildEdges,
     .grammarFn = &ts_api.tree_sitter_rust,
@@ -50,6 +54,8 @@ const all_languages = [_]*const LanguageSupport{ &rust_support, &zig_support };
 ///
 /// All entries are comptime constants; the registry requires no allocator
 /// and no initialization at runtime.
+pub const language_count = all_languages.len;
+
 pub const Registry = struct {
     /// Returns the language support descriptor for the given file extension.
     ///

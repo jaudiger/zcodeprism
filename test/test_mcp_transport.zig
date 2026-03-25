@@ -62,7 +62,7 @@ test "parses request without params" {
 test "rejects malformed JSON" {
     // Arrange
     const allocator = std.testing.allocator;
-    const gen = try GraphGeneration.create(allocator, 1, "abcdef123456".*);
+    const gen = try GraphGeneration.create(allocator, 1, "abcdef1234567890".*);
     defer gen.destroy(allocator);
     const guard = gen.acquire();
     defer guard.deinit();
@@ -85,7 +85,7 @@ test "rejects malformed JSON" {
 test "rejects missing jsonrpc field" {
     // Arrange
     const allocator = std.testing.allocator;
-    const gen = try GraphGeneration.create(allocator, 1, "abcdef123456".*);
+    const gen = try GraphGeneration.create(allocator, 1, "abcdef1234567890".*);
     defer gen.destroy(allocator);
     const guard = gen.acquire();
     defer guard.deinit();
@@ -111,7 +111,7 @@ test "rejects missing jsonrpc field" {
 test "rejects missing method" {
     // Arrange
     const allocator = std.testing.allocator;
-    const gen = try GraphGeneration.create(allocator, 1, "abcdef123456".*);
+    const gen = try GraphGeneration.create(allocator, 1, "abcdef1234567890".*);
     defer gen.destroy(allocator);
     const guard = gen.acquire();
     defer guard.deinit();
@@ -137,7 +137,7 @@ test "rejects missing method" {
 test "rejects unknown method" {
     // Arrange
     const allocator = std.testing.allocator;
-    const gen = try GraphGeneration.create(allocator, 1, "abcdef123456".*);
+    const gen = try GraphGeneration.create(allocator, 1, "abcdef1234567890".*);
     defer gen.destroy(allocator);
     const guard = gen.acquire();
     defer guard.deinit();
@@ -163,7 +163,7 @@ test "rejects unknown method" {
 test "handles string id" {
     // Arrange
     const allocator = std.testing.allocator;
-    const gen = try GraphGeneration.create(allocator, 1, "abcdef123456".*);
+    const gen = try GraphGeneration.create(allocator, 1, "abcdef1234567890".*);
     defer gen.destroy(allocator);
     const guard = gen.acquire();
     defer guard.deinit();
@@ -189,7 +189,7 @@ test "handles string id" {
 test "handles integer id" {
     // Arrange
     const allocator = std.testing.allocator;
-    const gen = try GraphGeneration.create(allocator, 1, "abcdef123456".*);
+    const gen = try GraphGeneration.create(allocator, 1, "abcdef1234567890".*);
     defer gen.destroy(allocator);
     const guard = gen.acquire();
     defer guard.deinit();
@@ -215,7 +215,7 @@ test "handles integer id" {
 test "handles null id (notification)" {
     // Arrange
     const allocator = std.testing.allocator;
-    const gen = try GraphGeneration.create(allocator, 1, "abcdef123456".*);
+    const gen = try GraphGeneration.create(allocator, 1, "abcdef1234567890".*);
     defer gen.destroy(allocator);
     const guard = gen.acquire();
     defer guard.deinit();
@@ -240,7 +240,7 @@ test "handles null id (notification)" {
 test "tools list returns exactly 20 tools" {
     // Arrange
     const allocator = std.testing.allocator;
-    const gen = try GraphGeneration.create(allocator, 1, "abcdef123456".*);
+    const gen = try GraphGeneration.create(allocator, 1, "abcdef1234567890".*);
     defer gen.destroy(allocator);
     const guard = gen.acquire();
     defer guard.deinit();
@@ -266,7 +266,7 @@ test "tools list returns exactly 20 tools" {
 test "tools list has 6 graph tools" {
     // Arrange
     const allocator = std.testing.allocator;
-    const gen = try GraphGeneration.create(allocator, 1, "abcdef123456".*);
+    const gen = try GraphGeneration.create(allocator, 1, "abcdef1234567890".*);
     defer gen.destroy(allocator);
     const guard = gen.acquire();
     defer guard.deinit();
@@ -296,7 +296,7 @@ test "tools list has 6 graph tools" {
 test "tools list has 8 explorer tools" {
     // Arrange
     const allocator = std.testing.allocator;
-    const gen = try GraphGeneration.create(allocator, 1, "abcdef123456".*);
+    const gen = try GraphGeneration.create(allocator, 1, "abcdef1234567890".*);
     defer gen.destroy(allocator);
     const guard = gen.acquire();
     defer guard.deinit();
@@ -326,7 +326,7 @@ test "tools list has 8 explorer tools" {
 test "tools list has 6 analysis tools" {
     // Arrange
     const allocator = std.testing.allocator;
-    const gen = try GraphGeneration.create(allocator, 1, "abcdef123456".*);
+    const gen = try GraphGeneration.create(allocator, 1, "abcdef1234567890".*);
     defer gen.destroy(allocator);
     const guard = gen.acquire();
     defer guard.deinit();
@@ -356,7 +356,7 @@ test "tools list has 6 analysis tools" {
 test "each tool has name and inputSchema" {
     // Arrange
     const allocator = std.testing.allocator;
-    const gen = try GraphGeneration.create(allocator, 1, "abcdef123456".*);
+    const gen = try GraphGeneration.create(allocator, 1, "abcdef1234567890".*);
     defer gen.destroy(allocator);
     const guard = gen.acquire();
     defer guard.deinit();
@@ -388,7 +388,7 @@ test "each tool has name and inputSchema" {
 test "initialize returns serverInfo" {
     // Arrange
     const allocator = std.testing.allocator;
-    const gen = try GraphGeneration.create(allocator, 1, "abcdef123456".*);
+    const gen = try GraphGeneration.create(allocator, 1, "abcdef1234567890".*);
     defer gen.destroy(allocator);
     const guard = gen.acquire();
     defer guard.deinit();
@@ -415,7 +415,7 @@ test "initialize returns serverInfo" {
 test "initialize returns capabilities" {
     // Arrange
     const allocator = std.testing.allocator;
-    const gen = try GraphGeneration.create(allocator, 1, "abcdef123456".*);
+    const gen = try GraphGeneration.create(allocator, 1, "abcdef1234567890".*);
     defer gen.destroy(allocator);
     const guard = gen.acquire();
     defer guard.deinit();
@@ -444,7 +444,7 @@ test "initialize returns capabilities" {
 test "server acquires generation on request" {
     // Arrange
     const allocator = std.testing.allocator;
-    const gen = try GraphGeneration.create(allocator, 1, "abcdef123456".*);
+    const gen = try GraphGeneration.create(allocator, 1, "abcdef1234567890".*);
     defer gen.destroy(allocator);
     const guard = gen.acquire();
     defer guard.deinit();
@@ -468,7 +468,7 @@ test "server acquires generation on request" {
 test "server releases generation after response" {
     // Arrange
     const allocator = std.testing.allocator;
-    const gen = try GraphGeneration.create(allocator, 1, "abcdef123456".*);
+    const gen = try GraphGeneration.create(allocator, 1, "abcdef1234567890".*);
     defer gen.destroy(allocator);
     const guard = gen.acquire();
     defer guard.deinit();

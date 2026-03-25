@@ -42,11 +42,11 @@ pub const BinaryHeader = struct {
 };
 
 const HEADER_SIZE: usize = 80;
-const NODE_RECORD_SIZE: usize = 120;
+const NODE_RECORD_SIZE: usize = 128;
 const EDGE_RECORD_SIZE: usize = 32;
 const METRICS_RECORD_SIZE: usize = 28;
 
-// Node record layout (120 bytes):
+// Node record layout (128 bytes):
 //   [0..8]   id (u64)
 //   [8..16]  parent_id (u64, present when FLAG_HAS_PARENT)
 //   [16..20] line_start (u32, present when FLAG_HAS_LINE_START)
@@ -56,16 +56,17 @@ const METRICS_RECORD_SIZE: usize = 28;
 //   [32]     external_kind (u8)
 //   [33]     flags (u8)
 //   [34..36] padding
-//   [36..48] content_hash (12 bytes, present when FLAG_HAS_CONTENT_HASH)
-//   [48..56] kind StringRef
-//   [56..64] language StringRef
-//   [64..72] visibility StringRef
-//   [72..80] name StringRef
-//   [80..88] file_path StringRef
-//   [88..96] signature StringRef
-//   [96..104] doc StringRef
-//   [104..112] ext_version StringRef
-//   [112..120] lang_meta StringRef
+//   [36..52] content_hash (16 bytes, present when FLAG_HAS_CONTENT_HASH)
+//   [52..56] padding
+//   [56..64] kind StringRef
+//   [64..72] language StringRef
+//   [72..80] visibility StringRef
+//   [80..88] name StringRef
+//   [88..96] file_path StringRef
+//   [96..104] signature StringRef
+//   [104..112] doc StringRef
+//   [112..120] ext_version StringRef
+//   [120..128] lang_meta StringRef
 
 // Node flags bitmask
 const FLAG_HAS_CONTENT_HASH: u8 = 0x01;
@@ -370,20 +371,21 @@ pub fn save(allocator: std.mem.Allocator, fg: FrozenGraph, path: []const u8) !vo
         if (n.col_end != null) flags |= FLAG_HAS_COL_END;
         buf[base + 33] = flags;
         // [34..36] padding already zero
-        // [36..48] content_hash
+        // [36..52] content_hash
         if (n.content_hash) |ch| {
-            @memcpy(buf[base + 36 ..][0..12], &ch);
+            @memcpy(buf[base + 36 ..][0..types.hash_len], &ch);
         }
-        // [48..120] 9 string refs
-        writeStringRef(buf, base + 48, refs.kind);
-        writeStringRef(buf, base + 56, refs.language);
-        writeStringRef(buf, base + 64, refs.visibility);
-        writeStringRef(buf, base + 72, refs.name);
-        writeStringRef(buf, base + 80, refs.file_path);
-        writeStringRef(buf, base + 88, refs.signature);
-        writeStringRef(buf, base + 96, refs.doc);
-        writeStringRef(buf, base + 104, refs.ext_version);
-        writeStringRef(buf, base + 112, refs.lang_meta);
+        // [52..56] padding already zero
+        // [56..128] 9 string refs
+        writeStringRef(buf, base + 56, refs.kind);
+        writeStringRef(buf, base + 64, refs.language);
+        writeStringRef(buf, base + 72, refs.visibility);
+        writeStringRef(buf, base + 80, refs.name);
+        writeStringRef(buf, base + 88, refs.file_path);
+        writeStringRef(buf, base + 96, refs.signature);
+        writeStringRef(buf, base + 104, refs.doc);
+        writeStringRef(buf, base + 112, refs.ext_version);
+        writeStringRef(buf, base + 120, refs.lang_meta);
     }
 
     // Edge records
@@ -480,9 +482,9 @@ pub fn load(allocator: std.mem.Allocator, path: []const u8) !Graph {
         const has_col_end = flags & FLAG_HAS_COL_END != 0;
 
         // Enum StringRefs
-        const kind_ref = readStringRef(buf, base + 48);
-        const lang_ref = readStringRef(buf, base + 56);
-        const vis_ref = readStringRef(buf, base + 64);
+        const kind_ref = readStringRef(buf, base + 56);
+        const lang_ref = readStringRef(buf, base + 64);
+        const vis_ref = readStringRef(buf, base + 72);
 
         const kind_str = try resolveStr(st_data, kind_ref);
         const kind = std.meta.stringToEnum(NodeKind, kind_str) orelse return error.InvalidFormat;
@@ -494,12 +496,12 @@ pub fn load(allocator: std.mem.Allocator, path: []const u8) !Graph {
         const visibility = std.meta.stringToEnum(Visibility, vis_str) orelse return error.InvalidFormat;
 
         // Data StringRefs
-        const name_ref = readStringRef(buf, base + 72);
-        const file_path_ref = readStringRef(buf, base + 80);
-        const sig_ref = readStringRef(buf, base + 88);
-        const doc_ref = readStringRef(buf, base + 96);
-        const ext_ver_ref = readStringRef(buf, base + 104);
-        const lang_meta_ref = readStringRef(buf, base + 112);
+        const name_ref = readStringRef(buf, base + 80);
+        const file_path_ref = readStringRef(buf, base + 88);
+        const sig_ref = readStringRef(buf, base + 96);
+        const doc_ref = readStringRef(buf, base + 104);
+        const ext_ver_ref = readStringRef(buf, base + 112);
+        const lang_meta_ref = readStringRef(buf, base + 120);
 
         const name = try resolveStr(st_data, name_ref);
         const file_path = try resolveOptStr(st_data, file_path_ref);
@@ -541,7 +543,7 @@ pub fn load(allocator: std.mem.Allocator, path: []const u8) !Graph {
             .visibility = visibility,
             .doc = doc,
             .signature = signature,
-            .content_hash = if (has_content_hash) buf[base + 36 ..][0..12].* else null,
+            .content_hash = if (has_content_hash) buf[base + 36 ..][0..types.hash_len].* else null,
             .metrics = metrics,
             .lang_meta = lang_meta,
             .external = external,
@@ -630,7 +632,7 @@ fn createTestGraph(allocator: std.mem.Allocator) !Graph {
         .parent_id = @enumFromInt(0),
         .doc = "/// Process the input data.",
         .signature = "pub fn process(data: []const u8) !void",
-        .content_hash = "abcdefghijkl".*,
+        .content_hash = "abcdefghijklmnop".*,
         .metrics = .{
             .complexity = 5,
             .lines = 40,
@@ -886,7 +888,7 @@ test "binary preserves null optional fields" {
     const n = loaded.getNode(.root).?;
     try std.testing.expectEqual(@as(?[]const u8, null), n.doc);
     try std.testing.expectEqual(@as(?[]const u8, null), n.signature);
-    try std.testing.expectEqual(@as(?[12]u8, null), n.content_hash);
+    try std.testing.expectEqual(@as(?types.ContentHash, null), n.content_hash);
     try std.testing.expectEqual(@as(?Metrics, null), n.metrics);
 }
 
@@ -1223,10 +1225,10 @@ test "load rejects invalid enum string" {
     const fg = try g.freeze(std.testing.allocator);
     try save(std.testing.allocator, fg, file_path);
 
-    // Overwrite kind StringRef (node base + 48) with out-of-bounds offset
+    // Overwrite kind StringRef (node base + 56) with out-of-bounds offset
     const raw_file = try std.fs.cwd().openFile(file_path, .{ .mode = .read_write });
     defer raw_file.close();
-    try raw_file.seekTo(HEADER_SIZE + 48);
+    try raw_file.seekTo(HEADER_SIZE + 56);
     var ref_buf: [8]u8 = undefined;
     std.mem.writeInt(u32, ref_buf[0..4], 0xFFFF, .little);
     std.mem.writeInt(u32, ref_buf[4..8], 10, .little);

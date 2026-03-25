@@ -438,8 +438,6 @@ fn collapseWhitespace(allocator: std.mem.Allocator, input: []const u8) ![]const 
     return buf[0..len];
 }
 
-// Nominal tests (fail: NotImplemented stubs)
-
 test "addNode returns sequential ids" {
     // Arrange
     var g = Graph.init("/tmp/project");
@@ -675,7 +673,7 @@ test "node with all optional fields null" {
     try std.testing.expect(result != null);
     try std.testing.expectEqual(@as(?[]const u8, null), result.?.doc);
     try std.testing.expectEqual(@as(?[]const u8, null), result.?.signature);
-    try std.testing.expectEqual(@as(?[12]u8, null), result.?.content_hash);
+    try std.testing.expectEqual(@as(?types.ContentHash, null), result.?.content_hash);
     try std.testing.expectEqual(lang_meta_mod.LangMeta.none, result.?.lang_meta);
 }
 

@@ -77,10 +77,8 @@ pub const Node = struct {
     /// Null when the visitor cannot extract a meaningful signature.
     signature: ?[]const u8 = null,
 
-    /// Truncated hash of the node's source text, used for change detection
-    /// and snapshot diffing. 12 bytes (96 bits). Null when the source text
-    /// is not available (phantom nodes).
-    content_hash: ?[12]u8 = null,
+    /// Blake3 hash of the node's source text. Null for phantom nodes.
+    content_hash: ?types.ContentHash = null,
 
     /// Quantitative code metrics (complexity, lines, fan-in/out, etc.).
     /// Null until the metrics pass populates them.

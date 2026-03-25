@@ -134,6 +134,21 @@ pub const Language = enum {
     zig,
 };
 
+/// 128-bit content hash stored as raw bytes.
+pub const ContentHash = [hash_len]u8;
+
+pub const hash_len = 16;
+pub const hex_len = hash_len * 2;
+
+/// Format a ContentHash as a lowercase hex string.
+pub fn formatHash(hash: ContentHash) [hex_len]u8 {
+    var buf: [hex_len]u8 = undefined;
+    for (hash, 0..) |byte, i| {
+        _ = std.fmt.bufPrint(buf[i * 2 ..][0..2], "{x:0>2}", .{byte}) catch unreachable;
+    }
+    return buf;
+}
+
 /// Parse a string into any enum type by matching against field names.
 pub fn parseEnum(comptime E: type, name: []const u8) ?E {
     inline for (@typeInfo(E).@"enum".fields) |f| {

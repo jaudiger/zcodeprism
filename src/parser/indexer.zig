@@ -68,7 +68,7 @@ const FileEntry = struct {
     rel_path: []const u8,
     basename: []const u8,
     content: []const u8,
-    content_hash: [12]u8,
+    content_hash: types.ContentHash,
     lang_support: *const lang_support.LanguageSupport,
     import_count: usize = 0,
 };
@@ -128,18 +128,16 @@ pub fn indexDirectory(
     // Topological sort: imported files are parsed before their importers.
     try topoSortFiles(allocator, file_entries.items);
 
-    // Load build config from the first registered language that provides one.
-    var build_config: ?lang.BuildConfig = null;
-    var build_config_lang: Language = undefined;
-    defer if (build_config) |*bc| bc.deinit(allocator);
-    for (registry_mod.Registry.allLanguages()) |ls| {
-        if (ls.parseBuildConfigFn) |parse_config_fn| {
-            build_config = parse_config_fn(allocator, project_root, log) catch null;
-            if (build_config != null) {
-                build_config_lang = ls.language;
-                break;
-            }
-        }
+    // Load build configs for each language whose build files exist on disk.
+    const all_langs = registry_mod.Registry.allLanguages();
+    var build_configs: [registry_mod.language_count]?lang.BuildConfig = .{null} ** registry_mod.language_count;
+    defer for (&build_configs) |*slot| {
+        if (slot.*) |*bc| bc.deinit(allocator);
+    };
+    for (all_langs, 0..) |ls, lang_idx| {
+        const parse_config_fn = ls.parseBuildConfigFn orelse continue;
+        if (!hasBuildFile(project_root, ls.build_files)) continue;
+        build_configs[lang_idx] = try parse_config_fn(allocator, project_root, log);
     }
 
     // Transfer all paths and content to graph ownership in one batch.
@@ -157,7 +155,8 @@ pub fn indexDirectory(
 
     var module_file_map = std.StringHashMapUnmanaged(NodeId){};
     defer module_file_map.deinit(allocator);
-    if (build_config) |bc| {
+    for (build_configs) |maybe_bc| {
+        const bc = maybe_bc orelse continue;
         try buildModuleNodes(allocator, graph, root_dir_id, bc, &module_file_map);
     }
 
@@ -187,8 +186,9 @@ pub fn indexDirectory(
     var phantom = PhantomManager.init(graph);
     defer phantom.deinit(allocator);
 
-    if (build_config) |bc| {
-        try buildPhantomDependencies(allocator, graph, bc, build_config_lang, &phantom);
+    for (all_langs, 0..) |ls, lang_idx| {
+        const bc = build_configs[lang_idx] orelse continue;
+        try buildPhantomDependencies(allocator, graph, bc, ls.language, &phantom);
     }
 
     try graph_index.buildImportTargets(allocator, graph.edges.items);
@@ -197,7 +197,7 @@ pub fn indexDirectory(
     defer local_wl.deinit(allocator);
     const wl: *LspWorklist = out_worklist orelse &local_wl;
 
-    try resolvePhantomNodes(allocator, graph, file_infos.items, &phantom, &graph_index, build_config, log);
+    try resolvePhantomNodes(allocator, graph, file_infos.items, &phantom, &graph_index, all_langs, &build_configs, log);
 
     // Transfer phantom usage sites into the phantom_hovers list, one entry per phantom NodeId.
     {
@@ -567,19 +567,26 @@ fn buildPhantomDependencies(
     }
 }
 
-/// Call each language's resolvePhantomsFn for every file.
+/// Call each language's resolvePhantomsFn for every file, passing
+/// the build config that matches the file's language.
 fn resolvePhantomNodes(
     allocator: std.mem.Allocator,
     graph: *Graph,
     infos: []const FileInfo,
     phantom: *PhantomManager,
     graph_index: *GraphIndex,
-    build_config: ?lang.BuildConfig,
+    all_langs: []const *const lang_support.LanguageSupport,
+    build_configs: []const ?lang.BuildConfig,
     log: Logger,
 ) !void {
     for (infos) |fi| {
         const resolve_fn = fi.lang_support.resolvePhantomsFn orelse continue;
-        const bc_ptr: ?*const lang.BuildConfig = if (build_config) |*bc| bc else null;
+        const bc_ptr: ?*const lang.BuildConfig = for (all_langs, 0..) |ls, i| {
+            if (ls == fi.lang_support) {
+                if (build_configs[i]) |*bc| break bc;
+                break null;
+            }
+        } else null;
         try resolve_fn(allocator, graph, fi.source, fi.node_idx, fi.scope_end, phantom, graph_index, bc_ptr, log);
     }
 }
@@ -718,12 +725,11 @@ fn buildFileSources(allocator: std.mem.Allocator, infos: []const FileInfo) ![]co
     return result;
 }
 
-fn computeContentHash(content: []const u8) [12]u8 {
-    const h1 = std.hash.XxHash3.hash(0, content);
-    const h2 = std.hash.XxHash3.hash(1, content);
-    var result: [12]u8 = undefined;
-    std.mem.writeInt(u64, result[0..8], h1, .little);
-    std.mem.writeInt(u32, result[8..12], @truncate(h2), .little);
+fn computeContentHash(content: []const u8) types.ContentHash {
+    var hasher = std.crypto.hash.Blake3.init(.{});
+    hasher.update(content);
+    var result: types.ContentHash = undefined;
+    hasher.final(&result);
     return result;
 }
 
@@ -874,6 +880,20 @@ fn topoSortFiles(allocator: std.mem.Allocator, entries: []FileEntry) !void {
     defer allocator.free(tmp);
     for (order[0..n], 0..) |src_idx, dst| tmp[dst] = entries[src_idx];
     @memcpy(entries, tmp);
+}
+
+/// Returns true when at least one of the given build file names exists
+/// directly under `project_root`.
+fn hasBuildFile(project_root: []const u8, build_files: []const []const u8) bool {
+    const dir = std.fs.openDirAbsolute(project_root, .{}) catch return false;
+    // dir is a copy of the handle struct, not a pointer; closing is fine.
+    var d = dir;
+    defer d.close();
+    for (build_files) |name| {
+        d.access(name, .{}) catch continue;
+        return true;
+    }
+    return false;
 }
 
 fn findExistingFileNode(graph: *const Graph, rel_path: []const u8) ?usize {

@@ -789,3 +789,119 @@ test "scoped field type creates phantom uses_type edge" {
     }
     try std.testing.expect(has_uses_type);
 }
+
+// --- Cargo.toml integration tests ---
+
+const cargo_project_files: []const helpers.FileEntry = &.{
+    .{ .sub_path = "Cargo.toml", .data = fixtures.rust.rust_project.cargo_toml },
+    .{ .sub_path = "src/main.rs", .data = fixtures.rust.rust_project.main_rs },
+    .{ .sub_path = "src/lib.rs", .data = fixtures.rust.rust_project.lib_rs },
+    .{ .sub_path = "src/helpers.rs", .data = fixtures.rust.rust_project.helpers_rs },
+};
+
+const cargo_workspace_files: []const helpers.FileEntry = &.{
+    .{ .sub_path = "Cargo.toml", .data = fixtures.rust.rust_workspace.root_cargo_toml },
+    .{ .sub_path = "crate-a/Cargo.toml", .data = fixtures.rust.rust_workspace.crate_a_cargo_toml },
+    .{ .sub_path = "crate-a/src/lib.rs", .data = fixtures.rust.rust_workspace.crate_a_lib_rs },
+    .{ .sub_path = "crate-b/Cargo.toml", .data = fixtures.rust.rust_workspace.crate_b_cargo_toml },
+    .{ .sub_path = "crate-b/src/lib.rs", .data = fixtures.rust.rust_workspace.crate_b_lib_rs },
+};
+
+const cargo_no_deps_files: []const helpers.FileEntry = &.{
+    .{ .sub_path = "Cargo.toml", .data = fixtures.rust.rust_no_deps.cargo_toml },
+    .{ .sub_path = "src/lib.rs", .data = fixtures.rust.rust_no_deps.lib_rs },
+};
+
+fn setupCargoFixtures(tmp_dir: *std.testing.TmpDir, files: []const helpers.FileEntry) ![]const u8 {
+    try writeFixtureFiles(tmp_dir.dir, files);
+    return try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+}
+
+test "Cargo.toml: crate module and dependencies" {
+    // Arrange
+    var g = Graph.init("/tmp/rust-cargo");
+    defer g.deinit(std.testing.allocator);
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const project_root = try setupCargoFixtures(&tmp_dir, cargo_project_files);
+    defer std.testing.allocator.free(project_root);
+
+    // Act
+    _ = try indexDirectory(std.testing.allocator, project_root, &g, null, .{});
+
+    // Assert: source files are indexed
+    try std.testing.expect(helpers.findNode(&g, "main.rs", .file) != null);
+    try std.testing.expect(helpers.findNode(&g, "lib.rs", .file) != null);
+    try std.testing.expect(helpers.findNode(&g, "helpers.rs", .file) != null);
+
+    // Assert: phantom nodes exist for external crates used in source (serde, log)
+    const main_file = helpers.findNode(&g, "main.rs", .file) orelse return error.TestExpectedEqual;
+    var has_serde_phantom = false;
+    var has_log_phantom = false;
+    for (g.edges.items) |e| {
+        if (e.source_id != main_file.id) continue;
+        if (e.source != .phantom) continue;
+        const target = g.getNode(e.target_id) orelse continue;
+        if (std.mem.eql(u8, target.name, "serde")) has_serde_phantom = true;
+        if (std.mem.eql(u8, target.name, "log")) has_log_phantom = true;
+    }
+    try std.testing.expect(has_serde_phantom);
+    try std.testing.expect(has_log_phantom);
+
+    // Assert: std phantom exists from lib.rs (use std::collections::HashMap)
+    const lib_file = helpers.findNode(&g, "lib.rs", .file) orelse return error.TestExpectedEqual;
+    var has_std_phantom = false;
+    for (g.edges.items) |e| {
+        if (e.source_id != lib_file.id) continue;
+        if (e.source != .phantom) continue;
+        const target = g.getNode(e.target_id) orelse continue;
+        if (std.mem.eql(u8, target.name, "std") and target.external == .stdlib) {
+            has_std_phantom = true;
+            break;
+        }
+    }
+    try std.testing.expect(has_std_phantom);
+}
+
+test "Cargo.toml: no dependencies" {
+    // Arrange
+    var g = Graph.init("/tmp/rust-no-deps");
+    defer g.deinit(std.testing.allocator);
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const project_root = try setupCargoFixtures(&tmp_dir, cargo_no_deps_files);
+    defer std.testing.allocator.free(project_root);
+
+    // Act
+    _ = try indexDirectory(std.testing.allocator, project_root, &g, null, .{});
+
+    // Assert: source file is indexed
+    try std.testing.expect(helpers.findNode(&g, "lib.rs", .file) != null);
+
+    // Assert: no phantom dependency modules (no external crate imports in source)
+    for (g.nodes.items) |n| {
+        if (n.external == .dependency) {
+            return error.TestExpectedEqual;
+        }
+    }
+}
+
+test "Cargo.toml: workspace members" {
+    // Arrange
+    var g = Graph.init("/tmp/rust-workspace");
+    defer g.deinit(std.testing.allocator);
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const project_root = try setupCargoFixtures(&tmp_dir, cargo_workspace_files);
+    defer std.testing.allocator.free(project_root);
+
+    // Act
+    _ = try indexDirectory(std.testing.allocator, project_root, &g, null, .{});
+
+    // Assert: both crate lib.rs files are indexed
+    var lib_count: usize = 0;
+    for (g.nodes.items) |n| {
+        if (n.kind == .file and std.mem.eql(u8, n.name, "lib.rs")) lib_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), lib_count);
+}

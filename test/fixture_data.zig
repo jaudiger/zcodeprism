@@ -42,6 +42,26 @@ pub const rust = struct {
         pub const lib_rs = @embedFile("fixtures/rust/reexport_chain/lib.rs");
         pub const mid_rs = @embedFile("fixtures/rust/reexport_chain/mid.rs");
     };
+
+    pub const rust_no_deps = struct {
+        pub const cargo_toml = @embedFile("fixtures/rust_no_deps/Cargo.toml");
+        pub const lib_rs = @embedFile("fixtures/rust_no_deps/src/lib.rs");
+    };
+
+    pub const rust_project = struct {
+        pub const cargo_toml = @embedFile("fixtures/rust_project/Cargo.toml");
+        pub const helpers_rs = @embedFile("fixtures/rust_project/src/helpers.rs");
+        pub const lib_rs = @embedFile("fixtures/rust_project/src/lib.rs");
+        pub const main_rs = @embedFile("fixtures/rust_project/src/main.rs");
+    };
+
+    pub const rust_workspace = struct {
+        pub const crate_a_cargo_toml = @embedFile("fixtures/rust_workspace/crate-a/Cargo.toml");
+        pub const crate_a_lib_rs = @embedFile("fixtures/rust_workspace/crate-a/src/lib.rs");
+        pub const crate_b_cargo_toml = @embedFile("fixtures/rust_workspace/crate-b/Cargo.toml");
+        pub const crate_b_lib_rs = @embedFile("fixtures/rust_workspace/crate-b/src/lib.rs");
+        pub const root_cargo_toml = @embedFile("fixtures/rust_workspace/Cargo.toml");
+    };
 };
 
 pub const zig = struct {

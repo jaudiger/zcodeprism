@@ -1,4 +1,5 @@
 const std = @import("std");
+const types = @import("../core/types.zig");
 const generation_mod = @import("../core/generation.zig");
 const gen_manager_mod = @import("../watcher/generation_manager.zig");
 const cursor_manager_mod = @import("../explorer/cursor_manager.zig");
@@ -227,7 +228,7 @@ pub const Server = struct {
     }
 
     /// Build a JSON-RPC notification (no id field). Caller owns returned slice.
-    pub fn buildNotification(allocator: std.mem.Allocator, method: []const u8, generation_id: u64, source_hash: [12]u8) ServerError![]const u8 {
+    pub fn buildNotification(allocator: std.mem.Allocator, method: []const u8, generation_id: u64, source_hash: types.ContentHash) ServerError![]const u8 {
         var aw: std.io.Writer.Allocating = .init(allocator);
         errdefer aw.deinit();
         var s: std.json.Stringify = .{ .writer = &aw.writer };
@@ -239,7 +240,8 @@ pub const Server = struct {
         try w.field("params");
         try w.beginObject();
         try w.fieldValue("generation_id", generation_id);
-        try w.fieldValue("source_hash", &source_hash);
+        try w.field("source_hash");
+        try w.hashHex(source_hash);
         try w.endObject();
         try w.endObject();
 

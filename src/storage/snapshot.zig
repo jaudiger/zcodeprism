@@ -1,5 +1,6 @@
 const std = @import("std");
 const graph_mod = @import("../core/graph.zig");
+const types = @import("../core/types.zig");
 const binary = @import("binary.zig");
 
 const Graph = graph_mod.Graph;
@@ -74,28 +75,18 @@ pub fn loadSnapshotGraph(
     };
 }
 
-/// 12-hex-char hash of all file content_hashes in the graph. Order-independent.
-pub fn computeSourceHash(fg: FrozenGraph) [12]u8 {
+/// Order-independent hash of all file content_hashes in the graph.
+pub fn computeSourceHash(fg: FrozenGraph) types.ContentHash {
     const g = fg.graph;
-    var combined: u64 = 0;
+    var hasher = std.crypto.hash.Blake3.init(.{});
     for (g.nodes.items) |n| {
         if (n.kind != .file) continue;
-        var h = std.hash.XxHash3.init(0x7a636f6465707269);
-        h.update(n.file_path orelse "");
-        h.update(&[_]u8{0});
-        if (n.content_hash) |ch| h.update(&ch);
-        combined +%= h.final();
+        hasher.update(n.file_path orelse "");
+        hasher.update(&[_]u8{0});
+        if (n.content_hash) |ch| hasher.update(&ch);
     }
-
-    const hex = "0123456789abcdef";
-    var result: [12]u8 = undefined;
-    var val = combined;
-    var i: usize = 12;
-    while (i > 0) {
-        i -= 1;
-        result[i] = hex[@intCast(val & 0xf)];
-        val >>= 4;
-    }
+    var result: types.ContentHash = undefined;
+    hasher.final(&result);
     return result;
 }
 

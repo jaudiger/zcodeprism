@@ -45,6 +45,8 @@ pub const registry = @import("languages/registry.zig");
 
 /// Rust AST analysis helpers.
 pub const rust_ast_analysis = @import("languages/rust/ast_analysis.zig");
+/// Rust Cargo.toml parser for dependency and target extraction.
+pub const rust_cargo_parser = @import("languages/rust/cargo_parser.zig");
 /// Rust intra-file edge builder (calls, uses_type, implements).
 pub const rust_edge_builder = @import("languages/rust/edge_builder.zig");
 /// Rust indexer hooks for multi-file processing.
@@ -158,6 +160,7 @@ test {
     _ = @import("languages/language_support.zig");
     _ = @import("languages/registry.zig");
     _ = @import("languages/rust/ast_analysis.zig");
+    _ = @import("languages/rust/cargo_parser.zig");
     _ = @import("languages/rust/edge_builder.zig");
     _ = @import("languages/rust/indexer_hooks.zig");
     _ = @import("languages/rust/meta.zig");
@@ -169,6 +172,7 @@ test {
     _ = @import("languages/zig/meta.zig");
     _ = @import("languages/zig/visitor.zig");
     _ = @import("logging.zig");
+    _ = @import("lsp/enrich_helpers.zig");
     _ = @import("lsp/lsp.zig");
     _ = @import("mcp/mcp.zig");
     _ = @import("parser/source_map.zig");

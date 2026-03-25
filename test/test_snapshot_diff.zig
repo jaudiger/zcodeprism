@@ -32,14 +32,14 @@ test "detects added and removed functions" {
 
     var ga = Graph.init("proj");
     defer ga.deinit(allocator);
-    _ = try ga.addNode(allocator, .{ .id = .root, .name = "main.zig", .kind = .file, .file_path = "main.zig", .content_hash = "aaaaaaaaaaaa".* });
+    _ = try ga.addNode(allocator, .{ .id = .root, .name = "main.zig", .kind = .file, .file_path = "main.zig", .content_hash = "aaaaaaaaaaaaaaaa".* });
     _ = try ga.addNode(allocator, .{ .id = .root, .name = "a", .kind = .function, .file_path = "main.zig" });
     _ = try ga.addNode(allocator, .{ .id = .root, .name = "b", .kind = .function, .file_path = "main.zig" });
     _ = try ga.addNode(allocator, .{ .id = .root, .name = "c", .kind = .function, .file_path = "main.zig" });
 
     var gb = Graph.init("proj");
     defer gb.deinit(allocator);
-    _ = try gb.addNode(allocator, .{ .id = .root, .name = "main.zig", .kind = .file, .file_path = "main.zig", .content_hash = "aaaaaaaaaaaa".* });
+    _ = try gb.addNode(allocator, .{ .id = .root, .name = "main.zig", .kind = .file, .file_path = "main.zig", .content_hash = "aaaaaaaaaaaaaaaa".* });
     _ = try gb.addNode(allocator, .{ .id = .root, .name = "b", .kind = .function, .file_path = "main.zig" });
     _ = try gb.addNode(allocator, .{ .id = .root, .name = "c", .kind = .function, .file_path = "main.zig" });
     _ = try gb.addNode(allocator, .{ .id = .root, .name = "d", .kind = .function, .file_path = "main.zig" });
@@ -63,7 +63,7 @@ test "detects modified and renamed functions" {
 
     var ga = Graph.init("proj");
     defer ga.deinit(allocator);
-    _ = try ga.addNode(allocator, .{ .id = .root, .name = "main.zig", .kind = .file, .file_path = "main.zig", .content_hash = "aaaaaaaaaaaa".* });
+    _ = try ga.addNode(allocator, .{ .id = .root, .name = "main.zig", .kind = .file, .file_path = "main.zig", .content_hash = "aaaaaaaaaaaaaaaa".* });
     _ = try ga.addNode(allocator, .{
         .id = .root,
         .name = "scanChar",
@@ -82,7 +82,7 @@ test "detects modified and renamed functions" {
 
     var gb = Graph.init("proj");
     defer gb.deinit(allocator);
-    _ = try gb.addNode(allocator, .{ .id = .root, .name = "main.zig", .kind = .file, .file_path = "main.zig", .content_hash = "aaaaaaaaaaaa".* });
+    _ = try gb.addNode(allocator, .{ .id = .root, .name = "main.zig", .kind = .file, .file_path = "main.zig", .content_hash = "aaaaaaaaaaaaaaaa".* });
     _ = try gb.addNode(allocator, .{
         .id = .root,
         .name = "scanCharacter",
@@ -122,13 +122,13 @@ test "detects added and removed files" {
 
     var ga = Graph.init("proj");
     defer ga.deinit(allocator);
-    _ = try ga.addNode(allocator, .{ .id = .root, .name = "a.zig", .kind = .file, .file_path = "a.zig", .content_hash = "aaaaaaaaaaaa".* });
-    _ = try ga.addNode(allocator, .{ .id = .root, .name = "b.zig", .kind = .file, .file_path = "b.zig", .content_hash = "bbbbbbbbbbbb".* });
+    _ = try ga.addNode(allocator, .{ .id = .root, .name = "a.zig", .kind = .file, .file_path = "a.zig", .content_hash = "aaaaaaaaaaaaaaaa".* });
+    _ = try ga.addNode(allocator, .{ .id = .root, .name = "b.zig", .kind = .file, .file_path = "b.zig", .content_hash = "bbbbbbbbbbbbbbbb".* });
 
     var gb = Graph.init("proj");
     defer gb.deinit(allocator);
-    _ = try gb.addNode(allocator, .{ .id = .root, .name = "b.zig", .kind = .file, .file_path = "b.zig", .content_hash = "bbbbbbbbbbbb".* });
-    _ = try gb.addNode(allocator, .{ .id = .root, .name = "c.zig", .kind = .file, .file_path = "c.zig", .content_hash = "cccccccccccc".* });
+    _ = try gb.addNode(allocator, .{ .id = .root, .name = "b.zig", .kind = .file, .file_path = "b.zig", .content_hash = "bbbbbbbbbbbbbbbb".* });
+    _ = try gb.addNode(allocator, .{ .id = .root, .name = "c.zig", .kind = .file, .file_path = "c.zig", .content_hash = "cccccccccccccccc".* });
 
     // Act
     const fga = FrozenGraph{ .graph = &ga };
@@ -147,7 +147,7 @@ test "diff identical graphs produces zero changes" {
 
     var g = Graph.init("proj");
     defer g.deinit(allocator);
-    _ = try g.addNode(allocator, .{ .id = .root, .name = "a.zig", .kind = .file, .file_path = "a.zig", .content_hash = "aaaaaaaaaaaa".* });
+    _ = try g.addNode(allocator, .{ .id = .root, .name = "a.zig", .kind = .file, .file_path = "a.zig", .content_hash = "aaaaaaaaaaaaaaaa".* });
     _ = try g.addNode(allocator, .{ .id = .root, .name = "foo", .kind = .function, .file_path = "a.zig" });
 
     // Act
@@ -172,7 +172,7 @@ test "diff empty vs populated and populated vs empty" {
 
     var populated = Graph.init("proj");
     defer populated.deinit(allocator);
-    _ = try populated.addNode(allocator, .{ .id = .root, .name = "a.zig", .kind = .file, .file_path = "a.zig", .content_hash = "aaaaaaaaaaaa".* });
+    _ = try populated.addNode(allocator, .{ .id = .root, .name = "a.zig", .kind = .file, .file_path = "a.zig", .content_hash = "aaaaaaaaaaaaaaaa".* });
     _ = try populated.addNode(allocator, .{ .id = .root, .name = "foo", .kind = .function, .file_path = "a.zig" });
 
     // Act: empty -> populated = everything added
@@ -205,12 +205,12 @@ test "diff output is deterministic" {
 
     var ga = Graph.init("proj");
     defer ga.deinit(allocator);
-    _ = try ga.addNode(allocator, .{ .id = .root, .name = "a.zig", .kind = .file, .file_path = "a.zig", .content_hash = "aaaaaaaaaaaa".* });
+    _ = try ga.addNode(allocator, .{ .id = .root, .name = "a.zig", .kind = .file, .file_path = "a.zig", .content_hash = "aaaaaaaaaaaaaaaa".* });
     _ = try ga.addNode(allocator, .{ .id = .root, .name = "foo", .kind = .function, .file_path = "a.zig" });
 
     var gb = Graph.init("proj");
     defer gb.deinit(allocator);
-    _ = try gb.addNode(allocator, .{ .id = .root, .name = "a.zig", .kind = .file, .file_path = "a.zig", .content_hash = "aaaaaaaaaaaa".* });
+    _ = try gb.addNode(allocator, .{ .id = .root, .name = "a.zig", .kind = .file, .file_path = "a.zig", .content_hash = "aaaaaaaaaaaaaaaa".* });
     _ = try gb.addNode(allocator, .{ .id = .root, .name = "bar", .kind = .function, .file_path = "a.zig" });
 
     // Act: diff twice

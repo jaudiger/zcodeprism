@@ -56,10 +56,7 @@ fn writeNodeLine(writer: *std.Io.Writer, n: Node) !void {
     try stream.write(n.signature);
     try stream.objectField("content_hash");
     if (n.content_hash) |ch| {
-        var hex_buf: [24]u8 = undefined;
-        for (ch, 0..) |byte, i| {
-            _ = std.fmt.bufPrint(hex_buf[i * 2 ..][0..2], "{x:0>2}", .{byte}) catch unreachable;
-        }
+        const hex_buf = types.formatHash(ch);
         try stream.write(@as([]const u8, &hex_buf));
     } else {
         try stream.write(null);
@@ -138,10 +135,10 @@ fn dupeAndOwn(allocator: std.mem.Allocator, g: *Graph, str: []const u8) ![]const
     return duped;
 }
 
-fn parseContentHash(hex: []const u8) ?[12]u8 {
-    if (hex.len != 24) return null;
-    var result: [12]u8 = undefined;
-    for (0..12) |i| {
+fn parseContentHash(hex: []const u8) ?types.ContentHash {
+    if (hex.len != types.hex_len) return null;
+    var result: types.ContentHash = undefined;
+    for (0..types.hash_len) |i| {
         result[i] = std.fmt.parseInt(u8, hex[i * 2 ..][0..2], 16) catch return null;
     }
     return result;
@@ -227,7 +224,7 @@ fn parseNodeFromJson(allocator: std.mem.Allocator, g: *Graph, obj: std.json.Obje
         break :blk @intCast(i);
     } else null;
 
-    const content_hash: ?[12]u8 = if (obj.get("content_hash")) |v| blk: {
+    const content_hash: ?types.ContentHash = if (obj.get("content_hash")) |v| blk: {
         const s = jsonOptStr(v) orelse break :blk null;
         break :blk parseContentHash(s);
     } else null;
@@ -421,7 +418,7 @@ fn createTestGraph(allocator: std.mem.Allocator) !Graph {
         .parent_id = @enumFromInt(0),
         .doc = "/// Process the input data.",
         .signature = "pub fn process(data: []const u8) !void",
-        .content_hash = "abcdefghijkl".*,
+        .content_hash = "abcdefghijklmnop".*,
         .metrics = .{
             .complexity = 5,
             .lines = 40,

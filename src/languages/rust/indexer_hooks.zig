@@ -10,9 +10,13 @@ const impl_resolve = @import("impl_resolve.zig");
 const logging = @import("../../logging.zig");
 const types = @import("../../core/types.zig");
 const lang = @import("../language.zig");
+const lang_support = @import("../language_support.zig");
 const rust_ctx = @import("parse_context.zig");
 const node_mod = @import("../../core/node.zig");
 const worklist_mod = @import("../../lsp/worklist.zig");
+const enrich_helpers = @import("../../lsp/enrich_helpers.zig");
+const lsp_client = @import("../../lsp/client.zig");
+const protocol = @import("../../lsp/protocol.zig");
 
 const Graph = graph_mod.Graph;
 const PhantomManager = phantom_mod.PhantomManager;
@@ -29,6 +33,9 @@ const ExternalInfo = lang.ExternalInfo;
 const BuildConfig = lang.BuildConfig;
 const Node = node_mod.Node;
 const UsageSite = worklist_mod.UsageSite;
+const LspClient = lsp_client.LspClient;
+const LspWorklist = worklist_mod.LspWorklist;
+const EnrichResult = lang_support.EnrichResult;
 
 /// Parse source with tree-sitter and extract external mod declarations from the AST.
 ///
@@ -198,6 +205,47 @@ fn isLocalCrate(crate_name: []const u8, importer_path: ?[]const u8, file_index: 
         if (file_index.findByName(buf[0..needed]) != null) return true;
     }
     return false;
+}
+
+/// Dispatch worklist entries to LSP queries, confirm dead-code candidates
+/// with a targeted references pass, and fill in signatures and docs for
+/// phantom nodes by querying hover at their usage sites.
+pub fn enrichWithLsp(
+    allocator: std.mem.Allocator,
+    graph: *Graph,
+    client: *LspClient,
+    wl: *const LspWorklist,
+    logger: Logger,
+) error{OutOfMemory}!EnrichResult {
+    var result = EnrichResult{};
+    result.worklist_total = wl.count();
+
+    var file_map = try enrich_helpers.buildFileNodeMap(allocator, graph);
+    defer file_map.deinit(allocator);
+
+    try enrich_helpers.dispatchWorklist(allocator, graph, client, wl.items(), &file_map, &result, &handleRustHover, logger);
+    try enrich_helpers.runDeadCodeReferencesPass(allocator, graph, client, &file_map, &result, logger);
+    try enrich_helpers.enrichPhantoms(allocator, graph, client, wl.phantomHovers(), &result, logger);
+
+    return result;
+}
+
+/// Rust-specific hover handler: extracts and stores the signature on the
+/// source node. No error set inference for Rust.
+fn handleRustHover(allocator: std.mem.Allocator, graph: *Graph, src_idx: usize, hover: protocol.Hover, result: *EnrichResult) error{OutOfMemory}!void {
+    const hover_text = switch (hover.contents) {
+        .markup => |m| m.value,
+        .plain_string => |s| s,
+    };
+    const extracted = enrich_helpers.parseHoverContents(hover_text);
+    if (extracted.signature) |sig| {
+        const d = try allocator.dupe(u8, sig);
+        errdefer allocator.free(d);
+        try graph.addOwnedBuffer(allocator, d);
+        graph.nodes.items[src_idx].signature = d;
+        result.hover_successes += 1;
+        result.worklist_resolved += 1;
+    }
 }
 
 /// Create phantom nodes and edges for all `use` declarations in a single Rust file.
@@ -420,6 +468,93 @@ fn createExternalPhantom(
         .edge_type = edge_type,
         .source = .phantom,
     });
+}
+
+/// Parse Cargo.toml at the project root and return a BuildConfig.
+/// Returns an empty config if no Cargo.toml is found or parsing fails.
+pub fn parseBuildConfig(
+    allocator: std.mem.Allocator,
+    project_root: []const u8,
+    log: Logger,
+) error{OutOfMemory}!BuildConfig {
+    const cargo_parser = @import("cargo_parser.zig");
+    const info = cargo_parser.parseCargoManifest(allocator, project_root, log) catch return .{};
+    defer {
+        // Free fields not transferred to BuildConfig.
+        if (info.dev_dependencies) |deps| {
+            for (deps) |d| {
+                allocator.free(d.name);
+                if (d.version) |v| allocator.free(v);
+            }
+            allocator.free(deps);
+        }
+        if (info.bin_targets) |targets| {
+            for (targets) |t| {
+                allocator.free(t.name);
+                if (t.path) |p| allocator.free(p);
+            }
+            allocator.free(targets);
+        }
+        if (info.workspace_members) |members| {
+            for (members) |m| allocator.free(m);
+            allocator.free(members);
+        }
+    }
+
+    // Convert dependencies to BuildDeps, transferring ownership.
+    var build_deps: ?[]BuildConfig.BuildDep = null;
+    errdefer if (build_deps) |bd| {
+        for (bd) |d| {
+            allocator.free(d.name);
+            if (d.version) |v| allocator.free(v);
+        }
+        allocator.free(bd);
+    };
+    if (info.dependencies) |deps| {
+        const bd = try allocator.alloc(BuildConfig.BuildDep, deps.len);
+        for (deps, 0..) |d, i| {
+            bd[i] = .{ .name = d.name, .version = d.version };
+        }
+        allocator.free(deps);
+        build_deps = bd;
+    }
+
+    // Convert package name to a single BuildModule, transferring ownership.
+    var build_modules: ?[]BuildConfig.BuildModule = null;
+    errdefer if (build_modules) |bm| {
+        for (bm) |m| {
+            allocator.free(m.name);
+            if (m.root_source_file) |rsf| allocator.free(rsf);
+        }
+        allocator.free(bm);
+    };
+    if (info.package_name) |pkg_name| {
+        const mods = try allocator.alloc(BuildConfig.BuildModule, 1);
+        // Pick root_source_file from lib target or first bin target.
+        var rsf: ?[]u8 = null;
+        if (info.lib_target) |lib| {
+            rsf = lib.path;
+            if (lib.name) |n| allocator.free(n);
+        } else if (info.bin_targets) |bins| {
+            if (bins.len > 0 and bins[0].path != null) {
+                rsf = bins[0].path;
+            }
+        }
+        mods[0] = .{ .name = pkg_name, .root_source_file = rsf };
+        build_modules = mods;
+    } else {
+        // No package name: free lib_target strings if present.
+        if (info.lib_target) |lib| {
+            if (lib.name) |n| allocator.free(n);
+            if (lib.path) |p| allocator.free(p);
+        }
+    }
+    if (info.package_version) |v| allocator.free(v);
+
+    return .{
+        .build_modules = build_modules,
+        .build_dependencies = build_deps,
+    };
 }
 
 /// Scan struct/enum field signatures for module-qualified type references

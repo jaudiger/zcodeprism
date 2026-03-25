@@ -1,5 +1,6 @@
 const std = @import("std");
 const graph_mod = @import("../core/graph.zig");
+const types = @import("../core/types.zig");
 const common = @import("common.zig");
 const sections = @import("ctg_sections.zig");
 
@@ -17,8 +18,8 @@ pub const RenderOptions = struct {
     project_name: []const u8,
     /// When set, a "# snapshot:" header line is emitted with this name.
     snapshot_name: ?[]const u8 = null,
-    /// 12-byte hex hash of the source tree, shown alongside snapshot_name.
-    source_hash: ?[12]u8 = null,
+    /// Hash of the source tree, shown alongside snapshot_name.
+    source_hash: ?types.ContentHash = null,
     /// Path prefix filter: only nodes whose file_path starts with this
     /// value are included. Null means no filtering (all files).
     scope: ?[]const u8 = null,
@@ -107,7 +108,8 @@ fn renderCtgHeader(
         try out.appendSlice(allocator, snap_name);
         try out.appendSlice(allocator, " | source_hash: ");
         if (options.source_hash) |hash| {
-            try out.appendSlice(allocator, &hash);
+            const hex = types.formatHash(hash);
+            try out.appendSlice(allocator, &hex);
         }
         try out.append(allocator, '\n');
     }
@@ -1118,7 +1120,7 @@ test "snapshot line present when options set" {
         .project_name = "myproject",
         .timestamp = "2026-02-14T10:30:00Z",
         .snapshot_name = "main-baseline",
-        .source_hash = "a7f3b2c9e1d4".*,
+        .source_hash = "\xa7\xf3\xb2\xc9\xe1\xd4\x00\x11\x22\x33\x44\x55\x66\x77\x88\x99".*,
     };
 
     // Act
@@ -1127,7 +1129,7 @@ test "snapshot line present when options set" {
 
     // Assert
     const output = out.items;
-    try std.testing.expect(std.mem.indexOf(u8, output, "# snapshot: main-baseline | source_hash: a7f3b2c9e1d4") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "# snapshot: main-baseline | source_hash: a7f3b2c9e1d400112233445566778899") != null);
 }
 
 test "snapshot line absent for export" {

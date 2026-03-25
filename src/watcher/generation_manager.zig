@@ -40,7 +40,7 @@ pub const GenerationManager = struct {
 
 test "init stores initial generation" {
     // Arrange
-    const gen = try GraphGeneration.create(std.testing.allocator, 1, "abcdef123456".*);
+    const gen = try GraphGeneration.create(std.testing.allocator, 1, "abcdef1234567890".*);
     defer gen.destroy(std.testing.allocator);
 
     // Act
@@ -52,7 +52,7 @@ test "init stores initial generation" {
 
 test "acquireCurrent increments ref count" {
     // Arrange
-    const gen = try GraphGeneration.create(std.testing.allocator, 1, "abcdef123456".*);
+    const gen = try GraphGeneration.create(std.testing.allocator, 1, "abcdef1234567890".*);
     defer gen.destroy(std.testing.allocator);
     var mgr = GenerationManager.init(gen);
 
@@ -68,9 +68,9 @@ test "acquireCurrent increments ref count" {
 
 test "swap returns old generation and installs new" {
     // Arrange
-    const gen1 = try GraphGeneration.create(std.testing.allocator, 1, "abcdef123456".*);
+    const gen1 = try GraphGeneration.create(std.testing.allocator, 1, "abcdef1234567890".*);
     defer gen1.destroy(std.testing.allocator);
-    const gen2 = try GraphGeneration.create(std.testing.allocator, 2, "654321fedcba".*);
+    const gen2 = try GraphGeneration.create(std.testing.allocator, 2, "654321fedcba7890".*);
     defer gen2.destroy(std.testing.allocator);
     var mgr = GenerationManager.init(gen1);
 
@@ -84,9 +84,9 @@ test "swap returns old generation and installs new" {
 
 test "acquireCurrent after swap returns new generation" {
     // Arrange
-    const gen1 = try GraphGeneration.create(std.testing.allocator, 1, "abcdef123456".*);
+    const gen1 = try GraphGeneration.create(std.testing.allocator, 1, "abcdef1234567890".*);
     defer gen1.destroy(std.testing.allocator);
-    const gen2 = try GraphGeneration.create(std.testing.allocator, 2, "654321fedcba".*);
+    const gen2 = try GraphGeneration.create(std.testing.allocator, 2, "654321fedcba7890".*);
     defer gen2.destroy(std.testing.allocator);
     var mgr = GenerationManager.init(gen1);
 
