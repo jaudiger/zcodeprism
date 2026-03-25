@@ -4,12 +4,15 @@ const zcodeprism = @import("zcodeprism");
 const jsonrpc = zcodeprism.mcp.jsonrpc;
 const server_mod = zcodeprism.mcp.server;
 const generation_mod = zcodeprism.generation;
+const gen_manager_mod = zcodeprism.watcher.generation_manager;
 
 const Server = server_mod.Server;
 const GraphGeneration = generation_mod.GraphGeneration;
+const GenerationManager = gen_manager_mod.GenerationManager;
 
-fn makeTestServer(gen: *GraphGeneration) Server {
-    return Server.init(gen);
+fn makeTestServer(gen: *GraphGeneration, mgr: *GenerationManager) Server {
+    mgr.* = GenerationManager.init(gen);
+    return Server.init(mgr);
 }
 
 fn parseJsonResponse(allocator: std.mem.Allocator, bytes: []const u8) !std.json.Parsed(std.json.Value) {
@@ -59,10 +62,12 @@ test "parses request without params" {
 test "rejects malformed JSON" {
     // Arrange
     const allocator = std.testing.allocator;
-    var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
+    const gen = try GraphGeneration.create(allocator, 1, "abcdef123456".*);
+    defer gen.destroy(allocator);
     const guard = gen.acquire();
     defer guard.deinit();
-    var srv = makeTestServer(&gen);
+    var mgr: GenerationManager = undefined;
+    var srv = makeTestServer(gen, &mgr);
     defer srv.deinit();
 
     // Act
@@ -80,10 +85,12 @@ test "rejects malformed JSON" {
 test "rejects missing jsonrpc field" {
     // Arrange
     const allocator = std.testing.allocator;
-    var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
+    const gen = try GraphGeneration.create(allocator, 1, "abcdef123456".*);
+    defer gen.destroy(allocator);
     const guard = gen.acquire();
     defer guard.deinit();
-    var srv = makeTestServer(&gen);
+    var mgr: GenerationManager = undefined;
+    var srv = makeTestServer(gen, &mgr);
     defer srv.deinit();
     const input =
         \\{"id":1,"method":"foo"}
@@ -104,10 +111,12 @@ test "rejects missing jsonrpc field" {
 test "rejects missing method" {
     // Arrange
     const allocator = std.testing.allocator;
-    var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
+    const gen = try GraphGeneration.create(allocator, 1, "abcdef123456".*);
+    defer gen.destroy(allocator);
     const guard = gen.acquire();
     defer guard.deinit();
-    var srv = makeTestServer(&gen);
+    var mgr: GenerationManager = undefined;
+    var srv = makeTestServer(gen, &mgr);
     defer srv.deinit();
     const input =
         \\{"jsonrpc":"2.0","id":1}
@@ -128,10 +137,12 @@ test "rejects missing method" {
 test "rejects unknown method" {
     // Arrange
     const allocator = std.testing.allocator;
-    var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
+    const gen = try GraphGeneration.create(allocator, 1, "abcdef123456".*);
+    defer gen.destroy(allocator);
     const guard = gen.acquire();
     defer guard.deinit();
-    var srv = makeTestServer(&gen);
+    var mgr: GenerationManager = undefined;
+    var srv = makeTestServer(gen, &mgr);
     defer srv.deinit();
     const input =
         \\{"jsonrpc":"2.0","id":1,"method":"nonexistent"}
@@ -152,10 +163,12 @@ test "rejects unknown method" {
 test "handles string id" {
     // Arrange
     const allocator = std.testing.allocator;
-    var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
+    const gen = try GraphGeneration.create(allocator, 1, "abcdef123456".*);
+    defer gen.destroy(allocator);
     const guard = gen.acquire();
     defer guard.deinit();
-    var srv = makeTestServer(&gen);
+    var mgr: GenerationManager = undefined;
+    var srv = makeTestServer(gen, &mgr);
     defer srv.deinit();
     const input =
         \\{"jsonrpc":"2.0","id":"abc","method":"tools/list"}
@@ -176,10 +189,12 @@ test "handles string id" {
 test "handles integer id" {
     // Arrange
     const allocator = std.testing.allocator;
-    var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
+    const gen = try GraphGeneration.create(allocator, 1, "abcdef123456".*);
+    defer gen.destroy(allocator);
     const guard = gen.acquire();
     defer guard.deinit();
-    var srv = makeTestServer(&gen);
+    var mgr: GenerationManager = undefined;
+    var srv = makeTestServer(gen, &mgr);
     defer srv.deinit();
     const input =
         \\{"jsonrpc":"2.0","id":42,"method":"tools/list"}
@@ -200,10 +215,12 @@ test "handles integer id" {
 test "handles null id (notification)" {
     // Arrange
     const allocator = std.testing.allocator;
-    var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
+    const gen = try GraphGeneration.create(allocator, 1, "abcdef123456".*);
+    defer gen.destroy(allocator);
     const guard = gen.acquire();
     defer guard.deinit();
-    var srv = makeTestServer(&gen);
+    var mgr: GenerationManager = undefined;
+    var srv = makeTestServer(gen, &mgr);
     defer srv.deinit();
     const input =
         \\{"jsonrpc":"2.0","method":"notifications/cancelled","params":{}}
@@ -223,10 +240,12 @@ test "handles null id (notification)" {
 test "tools list returns exactly 20 tools" {
     // Arrange
     const allocator = std.testing.allocator;
-    var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
+    const gen = try GraphGeneration.create(allocator, 1, "abcdef123456".*);
+    defer gen.destroy(allocator);
     const guard = gen.acquire();
     defer guard.deinit();
-    var srv = makeTestServer(&gen);
+    var mgr: GenerationManager = undefined;
+    var srv = makeTestServer(gen, &mgr);
     defer srv.deinit();
     const input =
         \\{"jsonrpc":"2.0","id":1,"method":"tools/list"}
@@ -247,10 +266,12 @@ test "tools list returns exactly 20 tools" {
 test "tools list has 6 graph tools" {
     // Arrange
     const allocator = std.testing.allocator;
-    var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
+    const gen = try GraphGeneration.create(allocator, 1, "abcdef123456".*);
+    defer gen.destroy(allocator);
     const guard = gen.acquire();
     defer guard.deinit();
-    var srv = makeTestServer(&gen);
+    var mgr: GenerationManager = undefined;
+    var srv = makeTestServer(gen, &mgr);
     defer srv.deinit();
     const input =
         \\{"jsonrpc":"2.0","id":1,"method":"tools/list"}
@@ -275,10 +296,12 @@ test "tools list has 6 graph tools" {
 test "tools list has 8 explorer tools" {
     // Arrange
     const allocator = std.testing.allocator;
-    var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
+    const gen = try GraphGeneration.create(allocator, 1, "abcdef123456".*);
+    defer gen.destroy(allocator);
     const guard = gen.acquire();
     defer guard.deinit();
-    var srv = makeTestServer(&gen);
+    var mgr: GenerationManager = undefined;
+    var srv = makeTestServer(gen, &mgr);
     defer srv.deinit();
     const input =
         \\{"jsonrpc":"2.0","id":1,"method":"tools/list"}
@@ -303,10 +326,12 @@ test "tools list has 8 explorer tools" {
 test "tools list has 6 analysis tools" {
     // Arrange
     const allocator = std.testing.allocator;
-    var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
+    const gen = try GraphGeneration.create(allocator, 1, "abcdef123456".*);
+    defer gen.destroy(allocator);
     const guard = gen.acquire();
     defer guard.deinit();
-    var srv = makeTestServer(&gen);
+    var mgr: GenerationManager = undefined;
+    var srv = makeTestServer(gen, &mgr);
     defer srv.deinit();
     const input =
         \\{"jsonrpc":"2.0","id":1,"method":"tools/list"}
@@ -331,10 +356,12 @@ test "tools list has 6 analysis tools" {
 test "each tool has name and inputSchema" {
     // Arrange
     const allocator = std.testing.allocator;
-    var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
+    const gen = try GraphGeneration.create(allocator, 1, "abcdef123456".*);
+    defer gen.destroy(allocator);
     const guard = gen.acquire();
     defer guard.deinit();
-    var srv = makeTestServer(&gen);
+    var mgr: GenerationManager = undefined;
+    var srv = makeTestServer(gen, &mgr);
     defer srv.deinit();
     const input =
         \\{"jsonrpc":"2.0","id":1,"method":"tools/list"}
@@ -361,10 +388,12 @@ test "each tool has name and inputSchema" {
 test "initialize returns serverInfo" {
     // Arrange
     const allocator = std.testing.allocator;
-    var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
+    const gen = try GraphGeneration.create(allocator, 1, "abcdef123456".*);
+    defer gen.destroy(allocator);
     const guard = gen.acquire();
     defer guard.deinit();
-    var srv = makeTestServer(&gen);
+    var mgr: GenerationManager = undefined;
+    var srv = makeTestServer(gen, &mgr);
     defer srv.deinit();
     const input =
         \\{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0.1.0"}}}
@@ -386,10 +415,12 @@ test "initialize returns serverInfo" {
 test "initialize returns capabilities" {
     // Arrange
     const allocator = std.testing.allocator;
-    var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
+    const gen = try GraphGeneration.create(allocator, 1, "abcdef123456".*);
+    defer gen.destroy(allocator);
     const guard = gen.acquire();
     defer guard.deinit();
-    var srv = makeTestServer(&gen);
+    var mgr: GenerationManager = undefined;
+    var srv = makeTestServer(gen, &mgr);
     defer srv.deinit();
     const input =
         \\{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0.1.0"}}}
@@ -413,10 +444,12 @@ test "initialize returns capabilities" {
 test "server acquires generation on request" {
     // Arrange
     const allocator = std.testing.allocator;
-    var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
+    const gen = try GraphGeneration.create(allocator, 1, "abcdef123456".*);
+    defer gen.destroy(allocator);
     const guard = gen.acquire();
     defer guard.deinit();
-    var srv = makeTestServer(&gen);
+    var mgr: GenerationManager = undefined;
+    var srv = makeTestServer(gen, &mgr);
     defer srv.deinit();
     const before = gen.ref_count.load(.monotonic);
     const input =
@@ -435,10 +468,12 @@ test "server acquires generation on request" {
 test "server releases generation after response" {
     // Arrange
     const allocator = std.testing.allocator;
-    var gen = GraphGeneration.init(allocator, 1, "abcdef123456".*);
+    const gen = try GraphGeneration.create(allocator, 1, "abcdef123456".*);
+    defer gen.destroy(allocator);
     const guard = gen.acquire();
     defer guard.deinit();
-    var srv = makeTestServer(&gen);
+    var mgr: GenerationManager = undefined;
+    var srv = makeTestServer(gen, &mgr);
     defer srv.deinit();
     const baseline = gen.ref_count.load(.monotonic);
 

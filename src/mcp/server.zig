@@ -1,5 +1,6 @@
 const std = @import("std");
 const generation_mod = @import("../core/generation.zig");
+const gen_manager_mod = @import("../watcher/generation_manager.zig");
 const cursor_manager_mod = @import("../explorer/cursor_manager.zig");
 const dispatcher_mod = @import("dispatcher.zig");
 const handlers = @import("handlers.zig");
@@ -8,6 +9,7 @@ const protocol = @import("protocol.zig");
 const json_writer_mod = @import("json_writer.zig");
 
 const GraphGeneration = generation_mod.GraphGeneration;
+const GenerationManager = gen_manager_mod.GenerationManager;
 const CursorManager = cursor_manager_mod.CursorManager;
 const Dispatcher = dispatcher_mod.Dispatcher;
 const JsonWriter = json_writer_mod.JsonWriter;
@@ -19,14 +21,13 @@ pub const ServerError = error{
 
 /// MCP server that processes JSON-RPC messages against a graph generation.
 pub const Server = struct {
-    generation: *GraphGeneration,
+    gen_manager: *GenerationManager,
     dispatcher: Dispatcher,
     cursor_manager: CursorManager,
 
-    /// Create a server bound to a graph generation.
-    pub fn init(gen: *GraphGeneration) Server {
+    pub fn init(mgr: *GenerationManager) Server {
         return .{
-            .generation = gen,
+            .gen_manager = mgr,
             .dispatcher = Dispatcher.init(),
             .cursor_manager = CursorManager.init(),
         };
@@ -50,7 +51,7 @@ pub const Server = struct {
 
         if (req.id == .none) return null;
 
-        const guard = self.generation.acquire();
+        const guard = self.gen_manager.acquireCurrent();
         defer guard.deinit();
 
         if (std.mem.eql(u8, req.method, "initialize")) {
@@ -60,13 +61,13 @@ pub const Server = struct {
         } else if (std.mem.eql(u8, req.method, "tools/list")) {
             return try buildToolsListResponse(allocator, req.id, self.dispatcher.listTools());
         } else if (std.mem.eql(u8, req.method, "tools/call")) {
-            return try self.handleToolCall(allocator, req);
+            return try self.handleToolCall(allocator, req, guard.gen);
         } else {
             return try buildErrorResponse(allocator, req.id, jsonrpc.method_not_found, "Method not found");
         }
     }
 
-    fn handleToolCall(self: *Server, allocator: std.mem.Allocator, req: jsonrpc.Request) ServerError![]const u8 {
+    fn handleToolCall(self: *Server, allocator: std.mem.Allocator, req: jsonrpc.Request, gen: *GraphGeneration) ServerError![]const u8 {
         const params_obj = if (req.params) |p| (if (p == .object) p.object else null) else null;
         const tool_name = if (params_obj) |obj| (if (obj.get("name")) |v| (if (v == .string) v.string else null) else null) else null;
 
@@ -74,7 +75,7 @@ pub const Server = struct {
             return try buildErrorResponse(allocator, req.id, jsonrpc.invalid_params, "Missing tool name");
         }
 
-        const content_json = handlers.handleToolCall(allocator, self.generation, &self.cursor_manager, tool_name.?, req.params) catch
+        const content_json = handlers.handleToolCall(allocator, gen, &self.cursor_manager, tool_name.?, req.params) catch
             return try buildErrorResponse(allocator, req.id, jsonrpc.internal_error, "Handler error");
 
         if (content_json) |json| {
@@ -223,6 +224,26 @@ pub const Server = struct {
         }
 
         try s.endObject();
+    }
+
+    /// Build a JSON-RPC notification (no id field). Caller owns returned slice.
+    pub fn buildNotification(allocator: std.mem.Allocator, method: []const u8, generation_id: u64, source_hash: [12]u8) ServerError![]const u8 {
+        var aw: std.io.Writer.Allocating = .init(allocator);
+        errdefer aw.deinit();
+        var s: std.json.Stringify = .{ .writer = &aw.writer };
+        const w: JsonWriter = .{ .s = &s };
+
+        try w.beginObject();
+        try w.fieldValue("jsonrpc", protocol.jsonrpc_version);
+        try w.fieldValue("method", method);
+        try w.field("params");
+        try w.beginObject();
+        try w.fieldValue("generation_id", generation_id);
+        try w.fieldValue("source_hash", &source_hash);
+        try w.endObject();
+        try w.endObject();
+
+        return aw.toOwnedSlice() catch return error.OutOfMemory;
     }
 
     /// Writes the JSON Schema for a single property.

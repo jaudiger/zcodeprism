@@ -103,6 +103,9 @@ pub const lsp = @import("lsp/lsp.zig");
 /// MCP server: JSON-RPC transport, protocol types, dispatch.
 pub const mcp = @import("mcp/mcp.zig");
 
+/// File watcher, debouncer, and generation manager for watch mode.
+pub const watcher = @import("watcher/watcher_mod.zig");
+
 /// Persistent storage backends (binary and JSONL).
 pub const storage = @import("storage/storage.zig");
 
@@ -173,4 +176,5 @@ test {
     _ = @import("render/mermaid.zig");
     _ = @import("render/mermaid_sections.zig");
     _ = @import("storage/storage.zig");
+    _ = @import("watcher/watcher_mod.zig");
 }

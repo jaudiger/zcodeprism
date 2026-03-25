@@ -22,6 +22,14 @@ const EdgeType = zcodeprism.EdgeType;
 const logging = zcodeprism.logging;
 const EnrichResult = lang_support.EnrichResult;
 
+const gen_manager_mod = zcodeprism.watcher.generation_manager;
+const watcher_mod = zcodeprism.watcher.watcher;
+const debouncer_mod = zcodeprism.watcher.debouncer;
+const GenerationManager = gen_manager_mod.GenerationManager;
+const FileWatcher = watcher_mod.FileWatcher;
+const Debouncer = debouncer_mod.Debouncer;
+const GraphGeneration = generation_mod.GraphGeneration;
+
 const version_string = "zcodeprism 0.1.0\n";
 
 const usage_text =
@@ -198,7 +206,7 @@ pub fn main() void {
         .@"export" => runExport(stdout, stderr, cli.export_format, cli.scope, cli.output, cli.snapshot, cli.include_test_nodes, cli.include_external_nodes),
         .snapshot => runSnapshot(stdout, stderr, cli.name),
         .diff => runDiff(stdout, stderr, cli.positional_args[0], cli.positional_args[1]),
-        .serve => runServe(stderr, cli.workspace),
+        .serve => runServe(stderr, cli.workspace, cli.verbosity),
         .status => runStatus(stdout, stderr, cli.workspace),
     }
 }
@@ -594,7 +602,7 @@ fn runDiff(stdout: *std.Io.Writer, stderr: *std.Io.Writer, tag_a_arg: ?[]const u
     stdout.flush() catch {};
 }
 
-fn runServe(stderr: *std.Io.Writer, workspace_arg: ?[]const u8) void {
+fn runServe(stderr: *std.Io.Writer, workspace_arg: ?[]const u8, verbosity: u8) void {
     stdin_fd = std.fs.File.stdin().handle;
     std.posix.sigaction(std.posix.SIG.TERM, &.{
         .handler = .{ .handler = handleSigterm },
@@ -606,36 +614,203 @@ fn runServe(stderr: *std.Io.Writer, workspace_arg: ?[]const u8) void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    var gen = generation_mod.GraphGeneration.init(allocator, 1, .{0} ** 12);
+    const log_level: logging.Level = switch (verbosity) {
+        0 => .warn,
+        1 => .info,
+        2 => .debug,
+        else => .trace,
+    };
+    var text_logger = logging.TextStderrLogger.init(log_level);
+    const logger = text_logger.logger();
+
+    // Load config for exclude paths.
+    const cfg = loadConfig(allocator) catch |err| {
+        stderr.print("failed to load config: {s}\n", .{@errorName(err)}) catch {};
+        stderr.flush() catch {};
+        std.process.exit(1);
+    };
+    defer config.deinit(cfg, allocator);
+    const full = config.withDefaults(cfg);
+    const exclude_paths = full.exclude_paths orelse config.defaultExcludePaths();
+
+    const project_root = std.fs.cwd().realpathAlloc(allocator, ".") catch |err| {
+        stderr.print("failed to resolve project root: {s}\n", .{@errorName(err)}) catch {};
+        stderr.flush() catch {};
+        std.process.exit(1);
+    };
+    defer allocator.free(project_root);
+
+    // Heap-allocate the initial generation so old/new can coexist.
+    const initial_gen = GraphGeneration.create(allocator, 1, .{0} ** 12) catch {
+        stderr.writeAll("out of memory\n") catch {};
+        stderr.flush() catch {};
+        std.process.exit(1);
+    };
+
+    // Initial index.
+    var wl = zcodeprism.lsp.worklist.LspWorklist{};
+    defer wl.deinit(allocator);
 
     if (workspace_arg) |ws_path| {
-        gen.graph = loadWorkspaceGraph(gen.arena.allocator(), ws_path, stderr);
+        initial_gen.graph = loadWorkspaceGraph(initial_gen.arena.allocator(), ws_path, stderr);
     } else {
-        gen.graph = storage.binary.load(gen.arena.allocator(), ".zcodeprism/graph.bin") catch {
-            stderr.writeAll("failed to load graph (run 'index' first)\n") catch {};
+        _ = indexer.indexDirectory(allocator, project_root, &initial_gen.graph, &wl, .{
+            .exclude_paths = exclude_paths,
+            .logger = logger,
+        }) catch |err| {
+            stderr.print("initial indexing failed: {s}\n", .{@errorName(err)}) catch {};
             stderr.flush() catch {};
+            initial_gen.destroy(allocator);
             std.process.exit(1);
         };
     }
 
-    // Compute source hash from file content hashes.
-    var hasher = std.hash.XxHash3.init(0);
-    for (gen.graph.nodes.items) |n| {
-        if (n.kind == .file) {
-            if (n.content_hash) |h| {
-                hasher.update(&h);
-            }
+    // LSP pool shared across re-indexes.
+    var lsp_pool = zcodeprism.lsp.pool.LspPool.init(.{});
+    defer lsp_pool.deinit(allocator);
+
+    if (workspace_arg == null) {
+        for (registry.Registry.allLanguages()) |ls| {
+            _ = lsp_enricher.enrich(allocator, &initial_gen.graph, ls, &wl, &lsp_pool, .{
+                .logger = logger,
+                .project_root = project_root,
+            }) catch {};
         }
     }
-    const hash_u64 = hasher.final();
-    @memcpy(gen.source_hash[0..8], std.mem.asBytes(&hash_u64));
 
-    const guard = gen.acquire();
-    defer guard.deinit();
+    computeSourceHash(initial_gen);
 
-    var server = mcp.server.Server.init(&gen);
+    const initial_guard = initial_gen.acquire();
+    defer initial_guard.deinit();
+
+    var gen_manager = GenerationManager.init(initial_gen);
+
+    var server = mcp.server.Server.init(&gen_manager);
     defer server.deinit();
 
+    // Stdout mutex shared between main read loop and watcher thread.
+    var stdout_mutex: std.Thread.Mutex = .{};
+
+    // Determine watch root: for workspace, watch the workspace directory.
+    const watch_root = if (workspace_arg) |ws_path|
+        std.fs.cwd().realpathAlloc(allocator, std.fs.path.dirname(ws_path) orelse ".") catch project_root
+    else
+        project_root;
+    defer if (workspace_arg != null) allocator.free(watch_root);
+
+    // Spawn watcher thread.
+    const watcher_thread = std.Thread.spawn(.{}, watcherThreadFn, .{
+        allocator,
+        &gen_manager,
+        &lsp_pool,
+        project_root,
+        exclude_paths,
+        &stdout_mutex,
+        logger,
+        workspace_arg,
+        stderr,
+        watch_root,
+    }) catch {
+        stderr.writeAll("failed to spawn watcher thread\n") catch {};
+        stderr.flush() catch {};
+        std.process.exit(1);
+    };
+    defer watcher_thread.join();
+
+    serveStdioLoop(allocator, &server, &stdout_mutex);
+}
+
+fn watcherThreadFn(
+    allocator: std.mem.Allocator,
+    gen_manager: *GenerationManager,
+    lsp_pool: *zcodeprism.lsp.pool.LspPool,
+    project_root: []const u8,
+    exclude_paths: []const []const u8,
+    stdout_mutex: *std.Thread.Mutex,
+    logger: logging.Logger,
+    workspace_arg: ?[]const u8,
+    stderr: *std.Io.Writer,
+    watch_root: []const u8,
+) void {
+    var file_watcher = FileWatcher.init(watch_root, allocator, exclude_paths) catch return;
+    defer file_watcher.deinit(allocator);
+
+    var debouncer = Debouncer.init(500);
+    var generation_id: u64 = 1;
+
+    while (true) {
+        if (!file_watcher.waitForEvents()) break;
+        debouncer.trigger();
+
+        // Drain additional events during debounce window.
+        while (!debouncer.isReady()) {
+            std.Thread.sleep(@as(u64, debouncer.remainingMs()) * std.time.ns_per_ms);
+            if (debouncer.isReady()) break;
+        }
+
+        generation_id += 1;
+        const new_gen = GraphGeneration.create(allocator, generation_id, .{0} ** 12) catch continue;
+
+        if (workspace_arg) |ws_path| {
+            new_gen.graph = loadWorkspaceGraph(new_gen.arena.allocator(), ws_path, stderr);
+        } else {
+            var wl = zcodeprism.lsp.worklist.LspWorklist{};
+            defer wl.deinit(allocator);
+
+            _ = indexer.indexDirectory(allocator, project_root, &new_gen.graph, &wl, .{
+                .exclude_paths = exclude_paths,
+                .logger = logger,
+            }) catch {
+                new_gen.destroy(allocator);
+                continue;
+            };
+
+            for (registry.Registry.allLanguages()) |ls| {
+                _ = lsp_enricher.enrich(allocator, &new_gen.graph, ls, &wl, lsp_pool, .{
+                    .logger = logger,
+                    .project_root = project_root,
+                }) catch {};
+            }
+        }
+
+        computeSourceHash(new_gen);
+
+        // Acquire a guard on new_gen to keep it alive during notification.
+        const new_guard = new_gen.acquire();
+
+        const old_gen = gen_manager.swap(new_gen);
+        if (old_gen.ref_count.load(.monotonic) == 0) {
+            old_gen.destroy(allocator);
+        }
+
+        // Send notification under stdout mutex.
+        const notification = mcp.server.Server.buildNotification(
+            allocator,
+            "graph/updated",
+            new_gen.generation_id,
+            new_gen.source_hash,
+        ) catch {
+            new_guard.deinit();
+            continue;
+        };
+        defer allocator.free(notification);
+
+        {
+            stdout_mutex.lock();
+            defer stdout_mutex.unlock();
+            var stdout_buffer: [4096]u8 = undefined;
+            var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+            const stdout = &stdout_writer.interface;
+            stdout.writeAll(notification) catch {};
+            stdout.writeAll("\n") catch {};
+            stdout.flush() catch {};
+        }
+
+        new_guard.deinit();
+    }
+}
+
+fn serveStdioLoop(allocator: std.mem.Allocator, server: *mcp.server.Server, stdout_mutex: *std.Thread.Mutex) void {
     var stdin_buffer: [4096]u8 = undefined;
     var stdin_reader = std.fs.File.stdin().readerStreaming(&stdin_buffer);
     const reader = &stdin_reader.interface;
@@ -654,11 +829,26 @@ fn runServe(stderr: *std.Io.Writer, workspace_arg: ?[]const u8) void {
         const response = server.handleMessage(allocator, line) catch continue;
         if (response) |resp| {
             defer allocator.free(resp);
+            stdout_mutex.lock();
+            defer stdout_mutex.unlock();
             stdout.writeAll(resp) catch break;
             stdout.writeAll("\n") catch break;
             stdout.flush() catch break;
         }
     }
+}
+
+fn computeSourceHash(gen: *GraphGeneration) void {
+    var hasher = std.hash.XxHash3.init(0);
+    for (gen.graph.nodes.items) |n| {
+        if (n.kind == .file) {
+            if (n.content_hash) |h| {
+                hasher.update(&h);
+            }
+        }
+    }
+    const hash_u64 = hasher.final();
+    @memcpy(gen.source_hash[0..8], std.mem.asBytes(&hash_u64));
 }
 
 fn readLine(reader: *std.Io.Reader, line_buf: *std.ArrayList(u8), allocator: std.mem.Allocator) ?[]const u8 {

@@ -4,7 +4,8 @@ const graph_mod = @import("graph.zig");
 const Graph = graph_mod.Graph;
 
 /// A versioned snapshot of the code graph with reference counting.
-/// When the last reference is released, the arena is freed.
+/// Heap-allocated via `create`. The caller is responsible for calling
+/// `destroy` once all guards have been released (ref_count == 0).
 pub const GraphGeneration = struct {
     graph: Graph,
     arena: std.heap.ArenaAllocator,
@@ -13,11 +14,11 @@ pub const GraphGeneration = struct {
     generation_id: u64,
     indexed_at: i128,
 
-    /// Create a new generation with the given id and source hash.
-    /// Allocates an internal arena from `backing_allocator` for the graph.
-    pub fn init(backing_allocator: std.mem.Allocator, generation_id: u64, source_hash: [12]u8) GraphGeneration {
-        const arena = std.heap.ArenaAllocator.init(backing_allocator);
-        return .{
+    /// Heap-allocate a new generation.
+    pub fn create(allocator: std.mem.Allocator, generation_id: u64, source_hash: [12]u8) !*GraphGeneration {
+        const gen = try allocator.create(GraphGeneration);
+        const arena = std.heap.ArenaAllocator.init(allocator);
+        gen.* = .{
             .graph = Graph.init(""),
             .arena = arena,
             .ref_count = std.atomic.Value(u32).init(0),
@@ -25,19 +26,24 @@ pub const GraphGeneration = struct {
             .generation_id = generation_id,
             .indexed_at = std.time.nanoTimestamp(),
         };
+        return gen;
+    }
+
+    /// Free the generation's graph, arena, and struct. Only safe when
+    /// ref_count is 0 (all guards have been released).
+    pub fn destroy(self: *GraphGeneration, allocator: std.mem.Allocator) void {
+        self.graph.deinit(self.arena.allocator());
+        self.arena.deinit();
+        allocator.destroy(self);
     }
 
     /// RAII guard that decrements the reference count on deinit.
     pub const Guard = struct {
         gen: *GraphGeneration,
 
-        /// Decrement the reference count. When it reaches zero, frees the arena.
         pub fn deinit(self: Guard) void {
             const prev = self.gen.ref_count.fetchSub(1, .monotonic);
-            if (prev == 1) {
-                self.gen.graph.deinit(self.gen.arena.allocator());
-                self.gen.arena.deinit();
-            }
+            std.debug.assert(prev > 0);
         }
     };
 
@@ -51,7 +57,8 @@ pub const GraphGeneration = struct {
 
 test "acquire increments refcount" {
     // Arrange
-    var gen = GraphGeneration.init(std.testing.allocator, 1, "abcdef123456".*);
+    const gen = try GraphGeneration.create(std.testing.allocator, 1, "abcdef123456".*);
+    defer gen.destroy(std.testing.allocator);
 
     // Act
     const guard = gen.acquire();
@@ -65,7 +72,8 @@ test "acquire increments refcount" {
 
 test "guard deinit decrements refcount" {
     // Arrange
-    var gen = GraphGeneration.init(std.testing.allocator, 1, "abcdef123456".*);
+    const gen = try GraphGeneration.create(std.testing.allocator, 1, "abcdef123456".*);
+    defer gen.destroy(std.testing.allocator);
     const g1 = gen.acquire();
     const g2 = gen.acquire();
 
@@ -79,21 +87,10 @@ test "guard deinit decrements refcount" {
     g1.deinit();
 }
 
-test "last guard deinit frees arena" {
-    // Arrange
-    var gen = GraphGeneration.init(std.testing.allocator, 1, "abcdef123456".*);
-    const guard = gen.acquire();
-
-    // Act
-    guard.deinit();
-
-    // Assert
-    try std.testing.expectEqual(@as(u32, 0), gen.ref_count.load(.monotonic));
-}
-
 test "multiple acquires and releases" {
     // Arrange
-    var gen = GraphGeneration.init(std.testing.allocator, 1, "abcdef123456".*);
+    const gen = try GraphGeneration.create(std.testing.allocator, 1, "abcdef123456".*);
+    defer gen.destroy(std.testing.allocator);
 
     // Act
     const g1 = gen.acquire();
@@ -113,7 +110,8 @@ test "multiple acquires and releases" {
 
 test "generation_id is set" {
     // Arrange
-    var gen = GraphGeneration.init(std.testing.allocator, 42, "abcdef123456".*);
+    const gen = try GraphGeneration.create(std.testing.allocator, 42, "abcdef123456".*);
+    defer gen.destroy(std.testing.allocator);
     const guard = gen.acquire();
     defer guard.deinit();
 
