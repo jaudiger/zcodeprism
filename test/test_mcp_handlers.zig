@@ -2688,3 +2688,71 @@ test "no analysis tool returns opinions" {
         try std.testing.expect(!containsOpinionKey(result.inner.value.object));
     }
 }
+
+// ---------------------------------------------------------------------------
+// dispatch: all tools respond
+// ---------------------------------------------------------------------------
+
+test "all 20 MCP tools respond without crash" {
+    // Arrange
+    const allocator = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try writeFixtureFiles(tmp_dir.dir, &.{
+        .{ .sub_path = "main.zig", .data = "pub fn hello() void {}" },
+    });
+    const project_root = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(project_root);
+
+    const gen = try GraphGeneration.create(allocator, 1, "abcdef123456".*);
+    defer gen.destroy(allocator);
+    gen.graph = Graph.init(project_root);
+    _ = try indexDirectory(gen.arena.allocator(), project_root, &gen.graph, null, .{});
+    const guard = gen.acquire();
+    defer guard.deinit();
+    var mgr = GenerationManager.init(gen);
+    var srv = Server.init(&mgr);
+    defer srv.deinit();
+
+    // Act: tools/list
+    const list_input =
+        \\{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}
+    ;
+    const list_response = (try srv.handleMessage(allocator, list_input)) orelse
+        return error.NoResponse;
+    defer allocator.free(list_response);
+    var list_parsed = try parseJsonResponse(allocator, list_response);
+    defer list_parsed.deinit();
+
+    // Assert: exactly 20 tools
+    const result_obj = list_parsed.value.object.get("result") orelse return error.NoResult;
+    const tools_arr = result_obj.object.get("tools") orelse return error.NoTools;
+    try std.testing.expectEqual(@as(usize, 20), tools_arr.array.items.len);
+
+    // Act + Assert: call each tool with empty arguments, verify it responds
+    for (tools_arr.array.items, 0..) |tool_val, i| {
+        const name = tool_val.object.get("name") orelse continue;
+        if (name != .string) continue;
+        const tool_name = name.string;
+
+        var req_buf: [512]u8 = undefined;
+        const req_id = i + 100;
+        const req = std.fmt.bufPrint(&req_buf,
+            \\{{"jsonrpc":"2.0","id":{d},"method":"tools/call","params":{{"name":"{s}","arguments":{{}}}}}}
+        , .{ req_id, tool_name }) catch continue;
+
+        const response = (try srv.handleMessage(allocator, req)) orelse continue;
+        defer allocator.free(response);
+
+        var parsed = try parseJsonResponse(allocator, response);
+        defer parsed.deinit();
+
+        const has_result = parsed.value.object.get("result") != null;
+        const has_error = parsed.value.object.get("error") != null;
+        if (!has_result and !has_error) {
+            std.debug.print("tool '{s}' returned neither result nor error\n", .{tool_name});
+            return error.InvalidResponse;
+        }
+    }
+}

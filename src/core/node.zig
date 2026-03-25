@@ -1,14 +1,14 @@
 const std = @import("std");
 const types = @import("types.zig");
-const lang = @import("../languages/language.zig");
+const lang_meta_mod = @import("lang_meta.zig");
 const metrics_mod = @import("metrics.zig");
 
 const NodeId = types.NodeId;
 const NodeKind = types.NodeKind;
 const Visibility = types.Visibility;
 const Language = types.Language;
-const LangMeta = lang.LangMeta;
-const ExternalInfo = lang.ExternalInfo;
+const LangMeta = lang_meta_mod.LangMeta;
+const ExternalInfo = lang_meta_mod.ExternalInfo;
 
 /// A semantic code element in the code graph (function, type, field, etc.).
 ///

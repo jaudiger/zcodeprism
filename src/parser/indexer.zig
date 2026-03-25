@@ -49,6 +49,7 @@ pub const IndexOptions = struct {
     exclude_paths: []const []const u8 = &.{},
     incremental: bool = false,
     logger: Logger = Logger.noop,
+    budget_bytes: ?u64 = null,
 };
 
 /// Summary counters returned by `indexDirectory` after a complete run.
@@ -283,6 +284,8 @@ fn discoverFiles(
     var walker = try dir.walk(allocator);
     defer walker.deinit();
 
+    var cumulative_bytes: u64 = 0;
+
     while (try walker.next()) |entry| {
         if (entry.kind != .file) continue;
         const ext = std.fs.path.extension(entry.path);
@@ -305,6 +308,15 @@ fn discoverFiles(
             continue;
         };
         errdefer allocator.free(content);
+
+        cumulative_bytes += content.len;
+        if (options.budget_bytes) |budget| {
+            if (cumulative_bytes > budget) {
+                log.warn("memory budget exceeded, stopping discovery", &.{});
+                allocator.free(content);
+                break;
+            }
+        }
 
         const hash = computeContentHash(content);
         const rel_path = try allocator.dupe(u8, entry.path);

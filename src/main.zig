@@ -303,6 +303,7 @@ fn runIndex(stdout: *std.Io.Writer, stderr: *std.Io.Writer, verbosity: u8) void 
     const idx_result = indexer.indexDirectory(allocator, project_root, &graph, &wl, .{
         .exclude_paths = full.exclude_paths orelse config.defaultExcludePaths(),
         .logger = logger,
+        .budget_bytes = if (full.memory) |m| if (m.budget_mb) |mb| @as(u64, mb) * 1024 * 1024 else null else null,
     }) catch |err| {
         stderr.print("indexing failed: {s}\n", .{@errorName(err)}) catch {};
         stderr.flush() catch {};
@@ -657,6 +658,7 @@ fn runServe(stderr: *std.Io.Writer, workspace_arg: ?[]const u8, verbosity: u8) v
         _ = indexer.indexDirectory(allocator, project_root, &initial_gen.graph, &wl, .{
             .exclude_paths = exclude_paths,
             .logger = logger,
+            .budget_bytes = if (full.memory) |m| if (m.budget_mb) |mb| @as(u64, mb) * 1024 * 1024 else null else null,
         }) catch |err| {
             stderr.print("initial indexing failed: {s}\n", .{@errorName(err)}) catch {};
             stderr.flush() catch {};
@@ -698,6 +700,8 @@ fn runServe(stderr: *std.Io.Writer, workspace_arg: ?[]const u8, verbosity: u8) v
         project_root;
     defer if (workspace_arg != null) allocator.free(watch_root);
 
+    const budget_bytes: ?u64 = if (full.memory) |m| if (m.budget_mb) |mb| @as(u64, mb) * 1024 * 1024 else null else null;
+
     // Spawn watcher thread.
     const watcher_thread = std.Thread.spawn(.{}, watcherThreadFn, .{
         allocator,
@@ -710,6 +714,7 @@ fn runServe(stderr: *std.Io.Writer, workspace_arg: ?[]const u8, verbosity: u8) v
         workspace_arg,
         stderr,
         watch_root,
+        budget_bytes,
     }) catch {
         stderr.writeAll("failed to spawn watcher thread\n") catch {};
         stderr.flush() catch {};
@@ -731,6 +736,7 @@ fn watcherThreadFn(
     workspace_arg: ?[]const u8,
     stderr: *std.Io.Writer,
     watch_root: []const u8,
+    budget_bytes: ?u64,
 ) void {
     var file_watcher = FileWatcher.init(watch_root, allocator, exclude_paths) catch return;
     defer file_watcher.deinit(allocator);
@@ -760,6 +766,7 @@ fn watcherThreadFn(
             _ = indexer.indexDirectory(allocator, project_root, &new_gen.graph, &wl, .{
                 .exclude_paths = exclude_paths,
                 .logger = logger,
+                .budget_bytes = budget_bytes,
             }) catch {
                 new_gen.destroy(allocator);
                 continue;

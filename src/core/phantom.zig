@@ -2,7 +2,7 @@ const std = @import("std");
 const graph_mod = @import("graph.zig");
 const types = @import("types.zig");
 const node_mod = @import("node.zig");
-const lang = @import("../languages/language.zig");
+const lang_meta_mod = @import("lang_meta.zig");
 const worklist_mod = @import("../lsp/worklist.zig");
 
 const Graph = graph_mod.Graph;
@@ -10,7 +10,7 @@ const Node = node_mod.Node;
 const NodeId = types.NodeId;
 const NodeKind = types.NodeKind;
 const Language = types.Language;
-const ExternalInfo = lang.ExternalInfo;
+const ExternalInfo = lang_meta_mod.ExternalInfo;
 const UsageSite = worklist_mod.UsageSite;
 
 /// Deduplicated store for phantom nodes -- external symbols (stdlib, dependencies)

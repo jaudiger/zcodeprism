@@ -34,6 +34,8 @@ pub const types = @import("core/types.zig");
 /// Workspace mode: multi-project assembly under a virtual root.
 pub const workspace = @import("core/workspace.zig");
 
+/// Language-specific metadata (LangMeta) and external provenance (ExternalInfo).
+pub const lang_meta = @import("core/lang_meta.zig");
 /// Language-agnostic metadata and external-info types.
 pub const language = @import("languages/language.zig");
 /// Language feature detection and capability queries.
@@ -137,6 +139,7 @@ test {
     _ = @import("core/graph.zig");
     _ = @import("core/graph_index.zig");
     _ = @import("core/kind_index.zig");
+    _ = @import("core/lang_meta.zig");
     _ = @import("core/metrics.zig");
     _ = @import("core/name_index.zig");
     _ = @import("core/node.zig");

@@ -3,7 +3,7 @@ const graph_mod = @import("../core/graph.zig");
 const types = @import("../core/types.zig");
 const node_mod = @import("../core/node.zig");
 const scope_mod = @import("../core/scope.zig");
-const lang = @import("../languages/language.zig");
+const lang_meta_mod = @import("../core/lang_meta.zig");
 const pagination = @import("pagination.zig");
 
 const Graph = graph_mod.Graph;
@@ -14,9 +14,8 @@ const EdgeId = types.EdgeId;
 const NodeKind = types.NodeKind;
 const Visibility = types.Visibility;
 const Language = types.Language;
-const ExternalInfo = lang.ExternalInfo;
+const ExternalInfo = lang_meta_mod.ExternalInfo;
 const Scope = scope_mod.Scope;
-const RustSubKind = @import("../languages/rust/meta.zig").RustSubKind;
 
 pub const DeadCodeEntry = struct {
     node_id: NodeId,
