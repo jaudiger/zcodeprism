@@ -13,7 +13,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    // tree-sitter-rust grammar (compiled from C sources directly)
+    // tree-sitter-rust grammar (compiled from C sources directly, via upstream dep)
     const ts_rust_dep = b.dependency("tree-sitter-rust", .{});
     const ts_rust_c_mod = b.createModule(.{
         .target = target,
@@ -28,11 +28,20 @@ pub fn build(b: *std.Build) void {
         .root_module = ts_rust_c_mod,
     });
 
-    // tree-sitter-zig grammar (compiled C parser library)
-    const ts_zig_dep = b.dependency("tree-sitter-zig", .{
+    // tree-sitter-zig grammar (compiled from C sources directly, vendored in-tree)
+    const ts_zig_c_mod = b.createModule(.{
         .target = target,
         .optimize = optimize,
-        .@"build-shared" = false,
+        .link_libc = true,
+    });
+    ts_zig_c_mod.addCSourceFile(.{
+        .file = b.path("vendor/tree-sitter-zig/src/parser.c"),
+        .flags = &.{"-std=c11"},
+    });
+    ts_zig_c_mod.addIncludePath(b.path("vendor/tree-sitter-zig/src"));
+    const ts_zig_lib = b.addLibrary(.{
+        .name = "tree-sitter-zig",
+        .root_module = ts_zig_c_mod,
     });
 
     // --- Library module ---
@@ -44,7 +53,7 @@ pub fn build(b: *std.Build) void {
     });
     lib_mod.addImport("tree-sitter", ts_dep.module("tree_sitter"));
     lib_mod.linkLibrary(ts_rust_lib);
-    lib_mod.linkLibrary(ts_zig_dep.artifact("tree-sitter-zig"));
+    lib_mod.linkLibrary(ts_zig_lib);
 
     const lib = b.addLibrary(.{
         .name = "zcodeprism",
@@ -61,7 +70,7 @@ pub fn build(b: *std.Build) void {
     });
     exe_mod.addImport("zcodeprism", lib_mod);
     exe_mod.linkLibrary(ts_rust_lib);
-    exe_mod.linkLibrary(ts_zig_dep.artifact("tree-sitter-zig"));
+    exe_mod.linkLibrary(ts_zig_lib);
 
     const exe = b.addExecutable(.{
         .name = "zcodeprism",
@@ -118,7 +127,7 @@ pub fn build(b: *std.Build) void {
     });
     test_mod.addImport("tree-sitter", ts_dep.module("tree_sitter"));
     test_mod.linkLibrary(ts_rust_lib);
-    test_mod.linkLibrary(ts_zig_dep.artifact("tree-sitter-zig"));
+    test_mod.linkLibrary(ts_zig_lib);
     test_mod.addImport("test-fixtures", fixture_mod);
 
     addTestStep(b, test_step, b.addTest(.{
@@ -153,7 +162,7 @@ pub fn build(b: *std.Build) void {
     cross_lang_test_mod.addImport("test-fixtures", fixture_mod);
     cross_lang_test_mod.addImport("test-helpers", helpers_mod);
     cross_lang_test_mod.linkLibrary(ts_rust_lib);
-    cross_lang_test_mod.linkLibrary(ts_zig_dep.artifact("tree-sitter-zig"));
+    cross_lang_test_mod.linkLibrary(ts_zig_lib);
 
     addTestStep(b, test_step, b.addTest(.{
         .root_module = cross_lang_test_mod,
@@ -169,7 +178,7 @@ pub fn build(b: *std.Build) void {
     lsp_test_mod.addImport("test-helpers", helpers_mod);
     lsp_test_mod.addImport("test-fixtures", fixture_mod);
     lsp_test_mod.linkLibrary(ts_rust_lib);
-    lsp_test_mod.linkLibrary(ts_zig_dep.artifact("tree-sitter-zig"));
+    lsp_test_mod.linkLibrary(ts_zig_lib);
 
     addTestStep(b, test_step, b.addTest(.{
         .root_module = lsp_test_mod,
@@ -185,7 +194,7 @@ pub fn build(b: *std.Build) void {
     mcp_handlers_test_mod.addImport("test-fixtures", fixture_mod);
     mcp_handlers_test_mod.addImport("test-helpers", helpers_mod);
     mcp_handlers_test_mod.linkLibrary(ts_rust_lib);
-    mcp_handlers_test_mod.linkLibrary(ts_zig_dep.artifact("tree-sitter-zig"));
+    mcp_handlers_test_mod.linkLibrary(ts_zig_lib);
 
     addTestStep(b, test_step, b.addTest(.{
         .root_module = mcp_handlers_test_mod,
@@ -199,7 +208,7 @@ pub fn build(b: *std.Build) void {
     });
     mcp_test_mod.addImport("zcodeprism", lib_mod);
     mcp_test_mod.linkLibrary(ts_rust_lib);
-    mcp_test_mod.linkLibrary(ts_zig_dep.artifact("tree-sitter-zig"));
+    mcp_test_mod.linkLibrary(ts_zig_lib);
 
     addTestStep(b, test_step, b.addTest(.{
         .root_module = mcp_test_mod,
@@ -215,7 +224,7 @@ pub fn build(b: *std.Build) void {
     rust_indexer_test_mod.addImport("test-fixtures", fixture_mod);
     rust_indexer_test_mod.addImport("test-helpers", helpers_mod);
     rust_indexer_test_mod.linkLibrary(ts_rust_lib);
-    rust_indexer_test_mod.linkLibrary(ts_zig_dep.artifact("tree-sitter-zig"));
+    rust_indexer_test_mod.linkLibrary(ts_zig_lib);
 
     addTestStep(b, test_step, b.addTest(.{
         .root_module = rust_indexer_test_mod,
@@ -231,7 +240,7 @@ pub fn build(b: *std.Build) void {
     rust_parsing_test_mod.addImport("test-fixtures", fixture_mod);
     rust_parsing_test_mod.addImport("test-helpers", helpers_mod);
     rust_parsing_test_mod.linkLibrary(ts_rust_lib);
-    rust_parsing_test_mod.linkLibrary(ts_zig_dep.artifact("tree-sitter-zig"));
+    rust_parsing_test_mod.linkLibrary(ts_zig_lib);
 
     addTestStep(b, test_step, b.addTest(.{
         .root_module = rust_parsing_test_mod,
@@ -246,7 +255,7 @@ pub fn build(b: *std.Build) void {
     snapshot_test_mod.addImport("zcodeprism", lib_mod);
     snapshot_test_mod.addImport("test-helpers", helpers_mod);
     snapshot_test_mod.linkLibrary(ts_rust_lib);
-    snapshot_test_mod.linkLibrary(ts_zig_dep.artifact("tree-sitter-zig"));
+    snapshot_test_mod.linkLibrary(ts_zig_lib);
 
     addTestStep(b, test_step, b.addTest(.{
         .root_module = snapshot_test_mod,
@@ -261,7 +270,7 @@ pub fn build(b: *std.Build) void {
     snapshot_diff_test_mod.addImport("zcodeprism", lib_mod);
     snapshot_diff_test_mod.addImport("test-helpers", helpers_mod);
     snapshot_diff_test_mod.linkLibrary(ts_rust_lib);
-    snapshot_diff_test_mod.linkLibrary(ts_zig_dep.artifact("tree-sitter-zig"));
+    snapshot_diff_test_mod.linkLibrary(ts_zig_lib);
 
     addTestStep(b, test_step, b.addTest(.{
         .root_module = snapshot_diff_test_mod,
@@ -276,7 +285,7 @@ pub fn build(b: *std.Build) void {
     ts_test_mod.addImport("zcodeprism", lib_mod);
     ts_test_mod.addImport("tree-sitter", ts_dep.module("tree_sitter"));
     ts_test_mod.linkLibrary(ts_rust_lib);
-    ts_test_mod.linkLibrary(ts_zig_dep.artifact("tree-sitter-zig"));
+    ts_test_mod.linkLibrary(ts_zig_lib);
 
     addTestStep(b, test_step, b.addTest(.{
         .root_module = ts_test_mod,
@@ -291,7 +300,7 @@ pub fn build(b: *std.Build) void {
     workspace_test_mod.addImport("zcodeprism", lib_mod);
     workspace_test_mod.addImport("test-helpers", helpers_mod);
     workspace_test_mod.linkLibrary(ts_rust_lib);
-    workspace_test_mod.linkLibrary(ts_zig_dep.artifact("tree-sitter-zig"));
+    workspace_test_mod.linkLibrary(ts_zig_lib);
 
     addTestStep(b, test_step, b.addTest(.{
         .root_module = workspace_test_mod,
@@ -307,7 +316,7 @@ pub fn build(b: *std.Build) void {
     build_parsing_test_mod.addImport("test-fixtures", fixture_mod);
     build_parsing_test_mod.addImport("test-helpers", helpers_mod);
     build_parsing_test_mod.linkLibrary(ts_rust_lib);
-    build_parsing_test_mod.linkLibrary(ts_zig_dep.artifact("tree-sitter-zig"));
+    build_parsing_test_mod.linkLibrary(ts_zig_lib);
 
     addTestStep(b, test_step, b.addTest(.{
         .root_module = build_parsing_test_mod,
@@ -323,7 +332,7 @@ pub fn build(b: *std.Build) void {
     indexer_test_mod.addImport("test-fixtures", fixture_mod);
     indexer_test_mod.addImport("test-helpers", helpers_mod);
     indexer_test_mod.linkLibrary(ts_rust_lib);
-    indexer_test_mod.linkLibrary(ts_zig_dep.artifact("tree-sitter-zig"));
+    indexer_test_mod.linkLibrary(ts_zig_lib);
 
     addTestStep(b, test_step, b.addTest(.{
         .root_module = indexer_test_mod,
@@ -339,7 +348,7 @@ pub fn build(b: *std.Build) void {
     parsing_test_mod.addImport("test-fixtures", fixture_mod);
     parsing_test_mod.addImport("test-helpers", helpers_mod);
     parsing_test_mod.linkLibrary(ts_rust_lib);
-    parsing_test_mod.linkLibrary(ts_zig_dep.artifact("tree-sitter-zig"));
+    parsing_test_mod.linkLibrary(ts_zig_lib);
 
     addTestStep(b, test_step, b.addTest(.{
         .root_module = parsing_test_mod,
