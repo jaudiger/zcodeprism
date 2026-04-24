@@ -162,8 +162,11 @@ pub fn findDuplicates(allocator: std.mem.Allocator, fg: FrozenGraph, options: Du
     const total: u32 = @intCast(group_count);
     const pg = pagination.paginate(total, options.offset, options.limit);
 
-    if (pg.len == 0) return .{ .total_groups = total, .groups = &.{} };
-    if (pg.start == 0 and pg.len == total) return .{ .total_groups = total, .groups = groups };
+    if (pg.len == 0) {
+        for (groups) |gr| allocator.free(gr.members);
+        allocator.free(groups);
+        return .{ .total_groups = total, .groups = &.{} };
+    }
 
     const page = try allocator.alloc(DuplicateGroup, pg.len);
     @memcpy(page, groups[pg.start .. pg.start + pg.len]);
@@ -272,6 +275,7 @@ pub fn findFuzzyDuplicates(allocator: std.mem.Allocator, fg: FrozenGraph, candid
 
     const page = try allocator.alloc(DuplicateGroup, pg.len);
     @memcpy(page, fuzzy_groups.items[pg.start .. pg.start + pg.len]);
+    // Free the non-page groups' member slices; page entries borrow the same slices.
     for (fuzzy_groups.items[0..pg.start]) |gr| allocator.free(gr.members);
     for (fuzzy_groups.items[pg.start + pg.len .. total]) |gr| allocator.free(gr.members);
     return .{ .total_groups = total, .groups = page };
