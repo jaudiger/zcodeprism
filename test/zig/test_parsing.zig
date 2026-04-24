@@ -17,7 +17,7 @@ const buildEdges = zcodeprism.visitor.buildEdges;
 
 /// Parse source and build edges in one step, for single-file tests.
 fn parseWithEdges(allocator: std.mem.Allocator, source: []const u8, g: *Graph) !void {
-    try parse(allocator, source, g, null, Logger.noop);
+    try parse(allocator, std.testing.io, source, g, null, Logger.noop);
     var gi = try GraphIndex.build(allocator, g.nodes.items);
     defer gi.deinit(allocator);
     var phantom_mgr = zcodeprism.phantom.PhantomManager.init(g);
@@ -26,7 +26,7 @@ fn parseWithEdges(allocator: std.mem.Allocator, source: []const u8, g: *Graph) !
     defer wl.deinit(allocator);
     var ntm = zcodeprism.language_support.NodeTypeMap{};
     defer ntm.deinit(allocator);
-    try buildEdges(allocator, source, g, 0, g.nodeCount(), null, &gi, &phantom_mgr, &ntm, &wl, Logger.noop);
+    try buildEdges(allocator, std.testing.io, source, g, 0, g.nodeCount(), null, &gi, &phantom_mgr, &ntm, &wl, Logger.noop);
 }
 
 test "simple fixture: edge creation" {

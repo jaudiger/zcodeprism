@@ -50,12 +50,14 @@ const ScanContext = struct {
     phantom_mgr: *const PhantomManager,
     field_types: *const NodeTypeMap,
     wl: *LspWorklist,
+    io: std.Io,
     log: Logger,
 };
 
 /// Build TypeEnv and run a single-pass body scan for the matched declaration.
 fn processDeclarationEdges(
     allocator: std.mem.Allocator,
+    io: std.Io,
     g: *Graph,
     source: []const u8,
     ts_node: ts.Node,
@@ -72,7 +74,7 @@ fn processDeclarationEdges(
 
     var type_env = TypeEnv{};
     defer type_env.deinit(allocator);
-    try buildTypeEnv(allocator, g, source, ts_node, caller_id, caller_parent_id, ctx, k, graph_index, field_types, &type_env);
+    try buildTypeEnv(allocator, io, g, source, ts_node, caller_id, caller_parent_id, ctx, k, graph_index, field_types, &type_env);
 
     const sctx = ScanContext{
         .g = g,
@@ -87,6 +89,7 @@ fn processDeclarationEdges(
         .phantom_mgr = phantom_mgr,
         .field_types = field_types,
         .wl = wl,
+        .io = io,
         .log = log,
     };
 
@@ -106,6 +109,7 @@ fn processDeclarationEdges(
 /// Binds self, @This() aliases, parameters, and block-local variables.
 fn buildTypeEnv(
     allocator: std.mem.Allocator,
+    io: std.Io,
     g: *const Graph,
     source: []const u8,
     fn_decl_node: ts.Node,
@@ -155,7 +159,7 @@ fn buildTypeEnv(
     while (ci < fn_decl_node.childCount()) : (ci += 1) {
         const child = fn_decl_node.child(ci) orelse continue;
         if (child.kindId() == k.block) {
-            try buildTypeEnvFromBlock(allocator, g, source, child, caller_parent_id, ctx, k, graph_index, field_types, type_env);
+            try buildTypeEnvFromBlock(allocator, io, g, source, child, caller_parent_id, ctx, k, graph_index, field_types, type_env);
             break;
         }
     }
@@ -215,6 +219,7 @@ fn buildTypeEnvFromParams(
 /// Bind block-local variables into TypeEnv.
 fn buildTypeEnvFromBlock(
     allocator: std.mem.Allocator,
+    io: std.Io,
     g: *const Graph,
     source: []const u8,
     block: ts.Node,
@@ -235,7 +240,7 @@ fn buildTypeEnvFromBlock(
 
             // Import-qualified RHS -> cross_file binding.
             if (cf.findImportQualifiedRoot(source, child, ctx, k)) |target_file_id| {
-                const resolved = cf.resolveVarTargetThroughReturnType(g, source, child, ctx, k, graph_index, Logger.noop) orelse target_file_id;
+                const resolved = cf.resolveVarTargetThroughReturnType(io, g, source, child, ctx, k, graph_index, Logger.noop) orelse target_file_id;
                 try type_env.bindCrossFile(allocator, var_name, resolved);
                 continue;
             }
@@ -314,7 +319,7 @@ fn buildTypeEnvFromBlock(
             }
         }
 
-        try buildTypeEnvFromBlock(allocator, g, source, child, caller_parent_id, ctx, k, graph_index, field_types, type_env);
+        try buildTypeEnvFromBlock(allocator, io, g, source, child, caller_parent_id, ctx, k, graph_index, field_types, type_env);
     }
 }
 
@@ -395,21 +400,21 @@ fn processParameterTypeEdges(
 /// For each function or test declaration, matches it to a graph node then
 /// delegates to processDeclarationEdges for env building and edge emission.
 /// Recurses into named children to find nested declarations.
-pub fn walkForEdges(allocator: std.mem.Allocator, g: *Graph, source: []const u8, ts_node: ts.Node, ctx: *const EdgeContext, k: *const KindIds, graph_index: *const GraphIndex, phantom_mgr: *const PhantomManager, node_type_map: *NodeTypeMap, wl: *LspWorklist, log: Logger) !void {
-    try walkForEdgesInner(allocator, g, source, ts_node, ctx, k, graph_index, phantom_mgr, node_type_map, wl, log);
+pub fn walkForEdges(allocator: std.mem.Allocator, io: std.Io, g: *Graph, source: []const u8, ts_node: ts.Node, ctx: *const EdgeContext, k: *const KindIds, graph_index: *const GraphIndex, phantom_mgr: *const PhantomManager, node_type_map: *NodeTypeMap, wl: *LspWorklist, log: Logger) !void {
+    try walkForEdgesInner(allocator, io, g, source, ts_node, ctx, k, graph_index, phantom_mgr, node_type_map, wl, log);
 }
 
-fn walkForEdgesInner(allocator: std.mem.Allocator, g: *Graph, source: []const u8, ts_node: ts.Node, ctx: *const EdgeContext, k: *const KindIds, graph_index: *const GraphIndex, phantom_mgr: *const PhantomManager, field_types: *NodeTypeMap, wl: *LspWorklist, log: Logger) !void {
+fn walkForEdgesInner(allocator: std.mem.Allocator, io: std.Io, g: *Graph, source: []const u8, ts_node: ts.Node, ctx: *const EdgeContext, k: *const KindIds, graph_index: *const GraphIndex, phantom_mgr: *const PhantomManager, field_types: *NodeTypeMap, wl: *LspWorklist, log: Logger) !void {
     const kid = ts_node.kindId();
 
     if (kid == k.function_declaration) {
         if (ast.getIdentifierName(source, ts_node, k)) |name| {
             const decl_line = ts_node.startPoint().row + 1;
             if (findFunctionByNameAndLine(g, name, decl_line, ctx.scope_start, ctx.scope_end)) |fn_id| {
-                try processDeclarationEdges(allocator, g, source, ts_node, fn_id, ctx, k, graph_index, phantom_mgr, field_types, wl, log);
+                try processDeclarationEdges(allocator, io, g, source, ts_node, fn_id, ctx, k, graph_index, phantom_mgr, field_types, wl, log);
                 try processParameterTypeEdges(allocator, g, source, ts_node, fn_id, ctx, k, graph_index, phantom_mgr, field_types, wl, log);
             } else {
-                log.trace("function not found in graph", &.{
+                log.trace(io, "function not found in graph", &.{
                     Field.string("name", name),
                     Field.uint("line", decl_line),
                 });
@@ -418,9 +423,9 @@ fn walkForEdgesInner(allocator: std.mem.Allocator, g: *Graph, source: []const u8
     } else if (kid == k.test_declaration) {
         const test_name = ast.getTestName(source, ts_node, k);
         if (findTestByName(g, test_name, ctx.scope_start, ctx.scope_end)) |test_id| {
-            try processDeclarationEdges(allocator, g, source, ts_node, test_id, ctx, k, graph_index, phantom_mgr, field_types, wl, log);
+            try processDeclarationEdges(allocator, io, g, source, ts_node, test_id, ctx, k, graph_index, phantom_mgr, field_types, wl, log);
         } else {
-            log.trace("test not found in graph", &.{Field.string("name", test_name)});
+            log.trace(io, "test not found in graph", &.{Field.string("name", test_name)});
         }
     } else if (kid == k.struct_declaration or kid == k.enum_declaration or kid == k.union_declaration) {
         const parent = ts_node.parent();
@@ -433,7 +438,7 @@ fn walkForEdgesInner(allocator: std.mem.Allocator, g: *Graph, source: []const u8
             if (findFunctionByNameAndLine(g, n, decl_line, ctx.scope_start, ctx.scope_end)) |container_id| {
                 try processContainerFieldEdges(allocator, g, source, ts_node, container_id, ctx, k, graph_index, phantom_mgr, field_types, wl, log);
             } else {
-                log.trace("container not found in graph", &.{
+                log.trace(io, "container not found in graph", &.{
                     Field.string("name", n),
                     Field.uint("line", decl_line),
                 });
@@ -444,7 +449,7 @@ fn walkForEdgesInner(allocator: std.mem.Allocator, g: *Graph, source: []const u8
     var i: u32 = 0;
     while (i < ts_node.namedChildCount()) : (i += 1) {
         const child = ts_node.namedChild(i) orelse continue;
-        try walkForEdgesInner(allocator, g, source, child, ctx, k, graph_index, phantom_mgr, field_types, wl, log);
+        try walkForEdgesInner(allocator, io, g, source, child, ctx, k, graph_index, phantom_mgr, field_types, wl, log);
     }
 }
 
@@ -481,7 +486,7 @@ fn scanNodeForTypeRefs(allocator: std.mem.Allocator, sctx: *const ScanContext, n
 /// at nested function or test declaration boundaries.
 fn scanBodyForEdges(allocator: std.mem.Allocator, sctx: *const ScanContext, ts_node: ts.Node, depth: u32) !void {
     if (depth >= cf.max_ast_scan_depth) {
-        sctx.log.trace("scan depth cap reached", &.{Field.uint("depth", depth)});
+        sctx.log.trace(sctx.io, "scan depth cap reached", &.{Field.uint("depth", depth)});
         return;
     }
     const kid = ts_node.kindId();
@@ -547,7 +552,7 @@ fn handleCall(allocator: std.mem.Allocator, sctx: *const ScanContext, call_node:
                     });
                 }
             } else {
-                sctx.log.trace("bare call unresolved", &.{Field.string("callee", callee_name)});
+                sctx.log.trace(sctx.io, "bare call unresolved", &.{Field.string("callee", callee_name)});
                 const pos = call_node.startPoint();
                 try sctx.wl.append(allocator, .{
                     .source_node_id = sctx.caller_id,
@@ -621,7 +626,7 @@ fn handleCall(allocator: std.mem.Allocator, sctx: *const ScanContext, call_node:
                             });
                         }
                     } else {
-                        sctx.log.trace("qualified call unresolved", &.{
+                        sctx.log.trace(sctx.io, "qualified call unresolved", &.{
                             Field.string("root", root_name),
                             Field.string("leaf", leaf_name),
                         });
@@ -888,6 +893,7 @@ fn handleReturnStructLiteral(allocator: std.mem.Allocator, sctx: *const ScanCont
 fn resolveOriginCall(allocator: std.mem.Allocator, sctx: *const ScanContext, origin: cf.SymbolOrigin, call_chain: []const []const u8, is_call: bool) !bool {
     const rctx = shared_resolve.ResolveContext{
         .graph_index = sctx.graph_index,
+        .io = sctx.io,
         .log = sctx.log,
         .resolve_return_type = cf.resolveReturnTypeScope,
         .find_in_type_scope = null,
@@ -898,6 +904,7 @@ fn resolveOriginCall(allocator: std.mem.Allocator, sctx: *const ScanContext, ori
 fn addResolvedEdges(allocator: std.mem.Allocator, sctx: *const ScanContext, target_file_id: NodeId, chain: []const []const u8, is_call: bool) !bool {
     const rctx = shared_resolve.ResolveContext{
         .graph_index = sctx.graph_index,
+        .io = sctx.io,
         .log = sctx.log,
         .resolve_return_type = cf.resolveReturnTypeScope,
         .find_in_type_scope = null,

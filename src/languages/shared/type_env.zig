@@ -22,7 +22,7 @@ pub const ParamOrigin = struct {
 pub const TypeEnv = struct {
     local: std.StringHashMapUnmanaged(NodeId) = .{},
     cross_file: std.StringHashMapUnmanaged(NodeId) = .{},
-    param_origins: std.ArrayListUnmanaged(ParamOrigin) = .{},
+    param_origins: std.ArrayListUnmanaged(ParamOrigin) = .empty,
 
     pub fn deinit(self: *TypeEnv, allocator: std.mem.Allocator) void {
         self.local.deinit(allocator);

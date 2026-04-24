@@ -32,30 +32,30 @@ pub const LspConnection = struct {
     /// Borrowed from the caller; must outlive the connection.
     project_root: []const u8,
 
-    pub fn openFile(self: *LspConnection, allocator: std.mem.Allocator, uri: []const u8, text: []const u8, language_id: []const u8) !void {
+    pub fn openFile(self: *LspConnection, allocator: std.mem.Allocator, io: std.Io, uri: []const u8, text: []const u8, language_id: []const u8) !void {
         if (self.opened_files.get(uri)) |version| {
             const new_version = version + 1;
-            try self.client.textDocumentDidChange(allocator, uri, new_version, text);
+            try self.client.textDocumentDidChange(allocator, io, uri, new_version, text);
             // Key already exists so put only updates the value in-place.
             self.opened_files.put(allocator, uri, new_version) catch {};
         } else {
             const owned_uri = try allocator.dupe(u8, uri);
             errdefer allocator.free(owned_uri);
-            try self.client.textDocumentDidOpen(allocator, owned_uri, text, language_id);
+            try self.client.textDocumentDidOpen(allocator, io, owned_uri, text, language_id);
             try self.opened_files.put(allocator, owned_uri, 1);
         }
-        self.touch();
+        self.touch(io);
     }
 
-    pub fn closeFile(self: *LspConnection, allocator: std.mem.Allocator, uri: []const u8) void {
+    pub fn closeFile(self: *LspConnection, allocator: std.mem.Allocator, io: std.Io, uri: []const u8) void {
         if (self.opened_files.fetchRemove(uri)) |kv| {
-            self.client.textDocumentDidClose(allocator, uri) catch {};
+            self.client.textDocumentDidClose(allocator, io, uri) catch {};
             allocator.free(kv.key);
         }
     }
 
     /// Walk file nodes in the graph, read their content, and open each on the server.
-    pub fn openAllFiles(self: *LspConnection, allocator: std.mem.Allocator, graph: *Graph, language_id: []const u8, project_root: []const u8, log: Logger) void {
+    pub fn openAllFiles(self: *LspConnection, allocator: std.mem.Allocator, io: std.Io, graph: *Graph, language_id: []const u8, project_root: []const u8, log: Logger) void {
         for (graph.nodes.items) |n| {
             if (n.kind != .file) continue;
             const file_path = n.file_path orelse continue;
@@ -63,18 +63,20 @@ pub const LspConnection = struct {
             const abs_path = std.fs.path.join(allocator, &.{ project_root, file_path }) catch continue;
             defer allocator.free(abs_path);
 
-            const source = std.fs.openFileAbsolute(abs_path, .{}) catch {
-                log.debug("could not open file", &.{Field.string("path", abs_path)});
+            const source = std.Io.Dir.openFileAbsolute(io, abs_path, .{}) catch {
+                log.debug(io, "could not open file", &.{Field.string("path", abs_path)});
                 continue;
             };
-            defer source.close();
-            const text = source.readToEndAlloc(allocator, 10 * 1024 * 1024) catch continue;
+            defer source.close(io);
+            var read_buf: [4096]u8 = undefined;
+            var src_reader = source.reader(io, &read_buf);
+            const text = src_reader.interface.allocRemaining(allocator, .limited(10 * 1024 * 1024)) catch continue;
             defer allocator.free(text);
 
             const uri = client_mod.pathToUri(allocator, abs_path) catch continue;
             defer allocator.free(uri);
 
-            self.openFile(allocator, uri, text, language_id) catch continue;
+            self.openFile(allocator, io, uri, text, language_id) catch continue;
         }
     }
 
@@ -82,17 +84,17 @@ pub const LspConnection = struct {
         return self.opened_files.count();
     }
 
-    pub fn touch(self: *LspConnection) void {
-        self.last_activity_ns = std.time.nanoTimestamp();
+    pub fn touch(self: *LspConnection, io: std.Io) void {
+        self.last_activity_ns = std.Io.Timestamp.now(io, .awake).nanoseconds;
     }
 
-    pub fn deinit(self: *LspConnection, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: *LspConnection, allocator: std.mem.Allocator, io: std.Io) void {
         var it = self.opened_files.iterator();
         while (it.next()) |entry| {
             allocator.free(entry.key_ptr.*);
         }
         self.opened_files.deinit(allocator);
-        self.client.deinit();
+        self.client.deinit(io);
     }
 };
 
@@ -114,10 +116,10 @@ pub const LspPool = struct {
         };
     }
 
-    pub fn deinit(self: *LspPool, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: *LspPool, allocator: std.mem.Allocator, io: std.Io) void {
         for (&self.connections) |*slot| {
             if (slot.*) |conn| {
-                conn.deinit(allocator);
+                conn.deinit(allocator, io);
                 allocator.destroy(conn);
                 slot.* = null;
             }
@@ -127,17 +129,18 @@ pub const LspPool = struct {
     pub fn acquire(
         self: *LspPool,
         allocator: std.mem.Allocator,
+        io: std.Io,
         language: Language,
         lsp_config: *const LspConfig,
         project_root: []const u8,
         logger: Logger,
     ) !*LspConnection {
-        self.reapIdle(allocator);
+        self.reapIdle(allocator, io);
 
         const idx = @intFromEnum(language);
         if (self.connections[idx]) |conn| {
             conn.state = .ready;
-            conn.touch();
+            conn.touch(io);
             return conn;
         }
 
@@ -146,38 +149,38 @@ pub const LspPool = struct {
             .client = LspClient.init(logger),
             .language = language,
             .state = .ready,
-            .last_activity_ns = std.time.nanoTimestamp(),
+            .last_activity_ns = std.Io.Timestamp.now(io, .awake).nanoseconds,
             .project_root = project_root,
         };
         errdefer {
-            conn.deinit(allocator);
+            conn.deinit(allocator, io);
             allocator.destroy(conn);
         }
 
-        try conn.client.start(allocator, lsp_config.server_command);
-        try conn.client.initialize(allocator, project_root, lsp_config.init_options);
+        try conn.client.start(io, lsp_config.server_command);
+        try conn.client.initialize(allocator, io, project_root, lsp_config.init_options);
         errdefer comptime unreachable;
 
         self.connections[idx] = conn;
         return conn;
     }
 
-    pub fn release(self: *LspPool, language: Language) void {
+    pub fn release(self: *LspPool, io: std.Io, language: Language) void {
         const idx = @intFromEnum(language);
         if (self.connections[idx]) |conn| {
             conn.state = .idle;
-            conn.touch();
+            conn.touch(io);
         }
     }
 
-    pub fn reapIdle(self: *LspPool, allocator: std.mem.Allocator) void {
-        const now = std.time.nanoTimestamp();
+    pub fn reapIdle(self: *LspPool, allocator: std.mem.Allocator, io: std.Io) void {
+        const now = std.Io.Timestamp.now(io, .awake).nanoseconds;
         for (&self.connections) |*slot| {
             const conn = slot.* orelse continue;
             if (conn.state != .idle) continue;
             const elapsed: u64 = @intCast(@max(0, now - conn.last_activity_ns));
             if (elapsed > self.idle_timeout_ns) {
-                conn.deinit(allocator);
+                conn.deinit(allocator, io);
                 allocator.destroy(conn);
                 slot.* = null;
             }
@@ -188,24 +191,26 @@ pub const LspPool = struct {
         self: *LspPool,
         language: Language,
         allocator: std.mem.Allocator,
+        io: std.Io,
         uri: []const u8,
         new_text: []const u8,
         language_id: []const u8,
     ) void {
         const idx = @intFromEnum(language);
         const conn = self.connections[idx] orelse return;
-        conn.openFile(allocator, uri, new_text, language_id) catch {};
+        conn.openFile(allocator, io, uri, new_text, language_id) catch {};
     }
 
     pub fn notifyFileClosed(
         self: *LspPool,
         language: Language,
         allocator: std.mem.Allocator,
+        io: std.Io,
         uri: []const u8,
     ) void {
         const idx = @intFromEnum(language);
         const conn = self.connections[idx] orelse return;
-        conn.closeFile(allocator, uri);
+        conn.closeFile(allocator, io, uri);
     }
 
     pub fn connectionCount(self: *const LspPool) u32 {
@@ -222,7 +227,7 @@ pub const LspPool = struct {
 test "pool init has zero connections" {
     // Arrange / Act
     var pool = LspPool.init(.{});
-    defer pool.deinit(std.testing.allocator);
+    defer pool.deinit(std.testing.allocator, std.testing.io);
 
     // Assert
     try std.testing.expectEqual(@as(u32, 0), pool.connectionCount());
@@ -231,10 +236,10 @@ test "pool init has zero connections" {
 test "reapIdle on empty pool is no-op" {
     // Arrange
     var pool = LspPool.init(.{});
-    defer pool.deinit(std.testing.allocator);
+    defer pool.deinit(std.testing.allocator, std.testing.io);
 
     // Act
-    pool.reapIdle(std.testing.allocator);
+    pool.reapIdle(std.testing.allocator, std.testing.io);
 
     // Assert
     try std.testing.expectEqual(@as(u32, 0), pool.connectionCount());
@@ -245,7 +250,7 @@ test "pool deinit with no connections is clean" {
     var pool = LspPool.init(.{});
 
     // Assert: deinit does not leak (std.testing.allocator checks)
-    pool.deinit(std.testing.allocator);
+    pool.deinit(std.testing.allocator, std.testing.io);
 }
 
 test "LspConnection.touch updates last_activity" {
@@ -258,10 +263,10 @@ test "LspConnection.touch updates last_activity" {
         .last_activity_ns = 0,
         .project_root = ".",
     };
-    defer conn.deinit(allocator);
+    defer conn.deinit(allocator, std.testing.io);
 
     // Act
-    conn.touch();
+    conn.touch(std.testing.io);
 
     // Assert
     try std.testing.expect(conn.last_activity_ns > 0);
@@ -277,24 +282,24 @@ test "LspConnection tracks opened files" {
         .last_activity_ns = 0,
         .project_root = ".",
     };
-    defer conn.deinit(allocator);
+    defer conn.deinit(allocator, std.testing.io);
 
     // Act: open a file
-    try conn.openFile(allocator, "file:///test.zig", "const x = 1;", "zig");
+    try conn.openFile(allocator, std.testing.io, "file:///test.zig", "const x = 1;", "zig");
 
     // Assert: tracked at version 1
     try std.testing.expectEqual(@as(u32, 1), conn.openedFileCount());
     try std.testing.expectEqual(@as(i32, 1), conn.opened_files.get("file:///test.zig").?);
 
     // Act: re-open same file (triggers didChange, increments version)
-    try conn.openFile(allocator, "file:///test.zig", "const x = 2;", "zig");
+    try conn.openFile(allocator, std.testing.io, "file:///test.zig", "const x = 2;", "zig");
 
     // Assert: still one entry, version bumped to 2
     try std.testing.expectEqual(@as(u32, 1), conn.openedFileCount());
     try std.testing.expectEqual(@as(i32, 2), conn.opened_files.get("file:///test.zig").?);
 
     // Act: close the file
-    conn.closeFile(allocator, "file:///test.zig");
+    conn.closeFile(allocator, std.testing.io, "file:///test.zig");
 
     // Assert: entry removed
     try std.testing.expectEqual(@as(u32, 0), conn.openedFileCount());
@@ -311,19 +316,19 @@ test "LspConnection closeFile on unknown uri is no-op" {
         .last_activity_ns = 0,
         .project_root = ".",
     };
-    defer conn.deinit(allocator);
+    defer conn.deinit(allocator, std.testing.io);
 
     // Act / Assert: no crash, no leak
-    conn.closeFile(allocator, "file:///nonexistent.zig");
+    conn.closeFile(allocator, std.testing.io, "file:///nonexistent.zig");
     try std.testing.expectEqual(@as(u32, 0), conn.openedFileCount());
 }
 
 test "idle timeout computation" {
     // Arrange
     var pool = LspPool.init(.{ .idle_timeout_ns = 60 * std.time.ns_per_s });
-    defer pool.deinit(std.testing.allocator);
+    defer pool.deinit(std.testing.allocator, std.testing.io);
 
-    const now: i128 = std.time.nanoTimestamp();
+    const now: i128 = std.Io.Timestamp.now(std.testing.io, .awake).nanoseconds;
     const expired_activity = now - @as(i128, 61 * std.time.ns_per_s);
     const fresh_activity = now - @as(i128, 30 * std.time.ns_per_s);
 

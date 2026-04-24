@@ -49,17 +49,17 @@ const VisitorContext = struct {
 /// `file_path` - relative path within the project, used for cross-file import
 ///   resolution. When null, import resolution falls back to basename-only lookup.
 /// `logger` - structured logger; pass Logger.noop for silent operation.
-pub fn parse(allocator: std.mem.Allocator, source: []const u8, g: *Graph, file_path: ?[]const u8, logger: Logger) error{OutOfMemory}!void {
+pub fn parse(allocator: std.mem.Allocator, io: std.Io, source: []const u8, g: *Graph, file_path: ?[]const u8, logger: Logger) error{OutOfMemory}!void {
     const log = logger.withScope("rust-visitor");
 
-    log.debug("parsing source", &.{Field.uint("bytes", source.len)});
+    log.debug(io, "parsing source", &.{Field.uint("bytes", source.len)});
 
     const line_count = ts_api.countLines(source);
     const ts_lang = ts_api.tree_sitter_rust();
     const k = KindIds.init(ts_lang);
 
     const tree = ts_api.parseSource(ts_lang, source) orelse {
-        log.warn("tree-sitter parse failed", &.{});
+        log.warn(io, "tree-sitter parse failed", &.{});
         _ = try g.addNode(allocator, .{
             .id = .root,
             .name = "",
@@ -103,13 +103,13 @@ pub fn parse(allocator: std.mem.Allocator, source: []const u8, g: *Graph, file_p
     while (i < root.childCount()) : (i += 1) {
         const child = root.child(i) orelse continue;
         if (!child.isNamed()) continue;
-        try processDeclaration(allocator, &ctx, child, file_id);
+        try processDeclaration(allocator, io, &ctx, child, file_id);
     }
 }
 
 /// Re-parse source and emit cross-file edges for the Rust file at file_idx.
 /// Unresolved references are appended to `wl`.
-pub fn buildEdges(allocator: std.mem.Allocator, source: []const u8, g: *Graph, file_idx: usize, scope_end: usize, file_path: ?[]const u8, graph_index: *const GraphIndex, phantom_mgr: *const PhantomManager, node_type_map: *@import("../language_support.zig").NodeTypeMap, wl: *@import("../../lsp/worklist.zig").LspWorklist, logger: Logger) error{OutOfMemory}!void {
+pub fn buildEdges(allocator: std.mem.Allocator, io: std.Io, source: []const u8, g: *Graph, file_idx: usize, scope_end: usize, file_path: ?[]const u8, graph_index: *const GraphIndex, phantom_mgr: *const PhantomManager, node_type_map: *@import("../language_support.zig").NodeTypeMap, wl: *@import("../../lsp/worklist.zig").LspWorklist, logger: Logger) error{OutOfMemory}!void {
     _ = node_type_map;
     const log = logger.withScope("rust-edges");
 
@@ -126,11 +126,11 @@ pub fn buildEdges(allocator: std.mem.Allocator, source: []const u8, g: *Graph, f
     };
     defer ctx.deinit(allocator);
 
-    try cf.buildImportMap(allocator, g, source, root, &ctx, graph_index, file_path, &k, log);
-    try cf.buildExportEdges(allocator, g, &ctx, graph_index, log);
+    try cf.buildImportMap(allocator, io, g, source, root, &ctx, graph_index, file_path, &k, log);
+    try cf.buildExportEdges(allocator, io, g, &ctx, graph_index, log);
 
-    log.debug("building edges", &.{});
-    try eb.walkForEdges(allocator, g, source, root, &k, &ctx, graph_index, phantom_mgr, wl, log);
+    log.debug(io, "building edges", &.{});
+    try eb.walkForEdges(allocator, io, g, source, root, &k, &ctx, graph_index, phantom_mgr, wl, log);
 }
 
 /// Extract outer attributes and register the allocated buffer with the
@@ -148,41 +148,41 @@ fn extractAndRegisterAttributes(allocator: std.mem.Allocator, g: *Graph, source:
 }
 
 /// Dispatch a top-level or nested declaration to the appropriate handler.
-fn processDeclaration(allocator: std.mem.Allocator, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
+fn processDeclaration(allocator: std.mem.Allocator, io: std.Io, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
     const kid = ts_node.kindId();
 
     if (kid == ctx.k.function_item) {
-        try processFunctionItem(allocator, ctx, ts_node, parent_id);
+        try processFunctionItem(allocator, io, ctx, ts_node, parent_id);
     } else if (kid == ctx.k.function_signature_item) {
-        try processFunctionSignatureItem(allocator, ctx, ts_node, parent_id);
+        try processFunctionSignatureItem(allocator, io, ctx, ts_node, parent_id);
     } else if (kid == ctx.k.struct_item) {
-        try processStructItem(allocator, ctx, ts_node, parent_id);
+        try processStructItem(allocator, io, ctx, ts_node, parent_id);
     } else if (kid == ctx.k.enum_item) {
-        try processEnumItem(allocator, ctx, ts_node, parent_id);
+        try processEnumItem(allocator, io, ctx, ts_node, parent_id);
     } else if (kid == ctx.k.union_item) {
-        try processUnionItem(allocator, ctx, ts_node, parent_id);
+        try processUnionItem(allocator, io, ctx, ts_node, parent_id);
     } else if (kid == ctx.k.trait_item) {
-        try processTraitItem(allocator, ctx, ts_node, parent_id);
+        try processTraitItem(allocator, io, ctx, ts_node, parent_id);
     } else if (kid == ctx.k.impl_item) {
-        try processImplItem(allocator, ctx, ts_node, parent_id);
+        try processImplItem(allocator, io, ctx, ts_node, parent_id);
     } else if (kid == ctx.k.const_item) {
-        try processConstItem(allocator, ctx, ts_node, parent_id);
+        try processConstItem(allocator, io, ctx, ts_node, parent_id);
     } else if (kid == ctx.k.static_item) {
-        try processStaticItem(allocator, ctx, ts_node, parent_id);
+        try processStaticItem(allocator, io, ctx, ts_node, parent_id);
     } else if (kid == ctx.k.type_item) {
-        try processTypeItem(allocator, ctx, ts_node, parent_id);
+        try processTypeItem(allocator, io, ctx, ts_node, parent_id);
     } else if (kid == ctx.k.macro_definition) {
-        try processMacroDefinition(allocator, ctx, ts_node, parent_id);
+        try processMacroDefinition(allocator, io, ctx, ts_node, parent_id);
     } else if (kid == ctx.k.mod_item) {
-        try processModItem(allocator, ctx, ts_node, parent_id);
+        try processModItem(allocator, io, ctx, ts_node, parent_id);
     } else if (kid == ctx.k.use_declaration) {
-        try processUseDeclaration(allocator, ctx, ts_node, parent_id);
+        try processUseDeclaration(allocator, io, ctx, ts_node, parent_id);
     } else if (kid == ctx.k.field_declaration) {
-        try processFieldDeclaration(allocator, ctx, ts_node, parent_id);
+        try processFieldDeclaration(allocator, io, ctx, ts_node, parent_id);
     } else if (kid == ctx.k.enum_variant) {
-        try processEnumVariant(allocator, ctx, ts_node, parent_id);
+        try processEnumVariant(allocator, io, ctx, ts_node, parent_id);
     } else if (kid == ctx.k.associated_type) {
-        try processAssociatedType(allocator, ctx, ts_node, parent_id);
+        try processAssociatedType(allocator, io, ctx, ts_node, parent_id);
     }
 }
 
@@ -258,9 +258,9 @@ fn findBlockChild(parent: ts.Node, k: *const KindIds) ?ts.Node {
 
 /// Process a function_item. Detects modifiers (unsafe, async, const, extern),
 /// #[test] attribute, and creates the appropriate node.
-fn processFunctionItem(allocator: std.mem.Allocator, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
+fn processFunctionItem(allocator: std.mem.Allocator, io: std.Io, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
     const name = ast.getIdentifierName(ctx.source, ts_node, ctx.k) orelse {
-        ctx.log.trace("skipping function: no identifier", &.{});
+        ctx.log.trace(io,"skipping function: no identifier", &.{});
         return;
     };
 
@@ -311,13 +311,13 @@ fn processFunctionItem(allocator: std.mem.Allocator, ctx: *const VisitorContext,
         } },
     });
 
-    try emitParameterNodes(allocator, ctx, ts_node, fn_id);
+    try emitParameterNodes(allocator, io, ctx, ts_node, fn_id);
 }
 
 /// Process a function_signature_item (in trait bodies).
-fn processFunctionSignatureItem(allocator: std.mem.Allocator, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
+fn processFunctionSignatureItem(allocator: std.mem.Allocator, io: std.Io, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
     const name = ast.getIdentifierName(ctx.source, ts_node, ctx.k) orelse {
-        ctx.log.trace("skipping fn signature: no identifier", &.{});
+        ctx.log.trace(io,"skipping fn signature: no identifier", &.{});
         return;
     };
 
@@ -342,12 +342,13 @@ fn processFunctionSignatureItem(allocator: std.mem.Allocator, ctx: *const Visito
         .lang_meta = .{ .rust = .{ .sub_kind = .fn_signature, .attributes = attributes, .visibility_scope = vis_info.scope } },
     });
 
-    try emitParameterNodes(allocator, ctx, ts_node, fn_id);
+    try emitParameterNodes(allocator, io, ctx, ts_node, fn_id);
 }
 
 /// Iterate the `parameters` child of a function and emit a `.parameter`
 /// node for each named parameter. Self parameters are skipped.
-fn emitParameterNodes(allocator: std.mem.Allocator, ctx: *const VisitorContext, fn_node: ts.Node, fn_id: NodeId) error{OutOfMemory}!void {
+fn emitParameterNodes(allocator: std.mem.Allocator, io: std.Io, ctx: *const VisitorContext, fn_node: ts.Node, fn_id: NodeId) error{OutOfMemory}!void {
+    _ = io;
     var i: u32 = 0;
     while (i < fn_node.childCount()) : (i += 1) {
         const child = fn_node.child(i) orelse continue;
@@ -378,9 +379,9 @@ fn emitParameterNodes(allocator: std.mem.Allocator, ctx: *const VisitorContext, 
 }
 
 /// Process a struct_item.
-fn processStructItem(allocator: std.mem.Allocator, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
+fn processStructItem(allocator: std.mem.Allocator, io: std.Io, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
     const name = ast.getTypeIdentifierName(ctx.source, ts_node, ctx.k) orelse {
-        ctx.log.trace("skipping struct: no type_identifier", &.{});
+        ctx.log.trace(io,"skipping struct: no type_identifier", &.{});
         return;
     };
 
@@ -408,13 +409,13 @@ fn processStructItem(allocator: std.mem.Allocator, ctx: *const VisitorContext, t
     });
 
     // Recurse into field_declaration_list for fields.
-    try recurseIntoBody(allocator, ctx, ts_node, node_id);
+    try recurseIntoBody(allocator, io, ctx, ts_node, node_id);
 }
 
 /// Process an enum_item.
-fn processEnumItem(allocator: std.mem.Allocator, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
+fn processEnumItem(allocator: std.mem.Allocator, io: std.Io, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
     const name = ast.getTypeIdentifierName(ctx.source, ts_node, ctx.k) orelse {
-        ctx.log.trace("skipping enum: no type_identifier", &.{});
+        ctx.log.trace(io,"skipping enum: no type_identifier", &.{});
         return;
     };
 
@@ -442,13 +443,13 @@ fn processEnumItem(allocator: std.mem.Allocator, ctx: *const VisitorContext, ts_
     });
 
     // Recurse into enum_variant_list for variants.
-    try recurseIntoBody(allocator, ctx, ts_node, node_id);
+    try recurseIntoBody(allocator, io, ctx, ts_node, node_id);
 }
 
 /// Process a union_item.
-fn processUnionItem(allocator: std.mem.Allocator, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
+fn processUnionItem(allocator: std.mem.Allocator, io: std.Io, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
     const name = ast.getTypeIdentifierName(ctx.source, ts_node, ctx.k) orelse {
-        ctx.log.trace("skipping union: no type_identifier", &.{});
+        ctx.log.trace(io,"skipping union: no type_identifier", &.{});
         return;
     };
 
@@ -476,13 +477,13 @@ fn processUnionItem(allocator: std.mem.Allocator, ctx: *const VisitorContext, ts
     });
 
     // Recurse into field_declaration_list for fields.
-    try recurseIntoBody(allocator, ctx, ts_node, node_id);
+    try recurseIntoBody(allocator, io, ctx, ts_node, node_id);
 }
 
 /// Process a trait_item.
-fn processTraitItem(allocator: std.mem.Allocator, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
+fn processTraitItem(allocator: std.mem.Allocator, io: std.Io, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
     const name = ast.getTypeIdentifierName(ctx.source, ts_node, ctx.k) orelse {
-        ctx.log.trace("skipping trait: no type_identifier", &.{});
+        ctx.log.trace(io,"skipping trait: no type_identifier", &.{});
         return;
     };
 
@@ -509,13 +510,13 @@ fn processTraitItem(allocator: std.mem.Allocator, ctx: *const VisitorContext, ts
     });
 
     // Recurse into declaration_list for trait methods.
-    try recurseIntoBody(allocator, ctx, ts_node, node_id);
+    try recurseIntoBody(allocator, io, ctx, ts_node, node_id);
 }
 
 /// Process an impl_item. Creates a type_def node with sub_kind=.impl_block.
-fn processImplItem(allocator: std.mem.Allocator, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
+fn processImplItem(allocator: std.mem.Allocator, io: std.Io, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
     const impl_info = ast.getImplInfo(ctx.source, ts_node, ctx.k) orelse {
-        ctx.log.trace("skipping impl: cannot determine target", &.{});
+        ctx.log.trace(io,"skipping impl: cannot determine target", &.{});
         return;
     };
 
@@ -539,13 +540,13 @@ fn processImplItem(allocator: std.mem.Allocator, ctx: *const VisitorContext, ts_
     });
 
     // Recurse into declaration_list for impl methods.
-    try recurseIntoBody(allocator, ctx, ts_node, node_id);
+    try recurseIntoBody(allocator, io, ctx, ts_node, node_id);
 }
 
 /// Process a const_item.
-fn processConstItem(allocator: std.mem.Allocator, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
+fn processConstItem(allocator: std.mem.Allocator, io: std.Io, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
     const name = ast.getIdentifierName(ctx.source, ts_node, ctx.k) orelse {
-        ctx.log.trace("skipping const: no identifier", &.{});
+        ctx.log.trace(io,"skipping const: no identifier", &.{});
         return;
     };
 
@@ -570,9 +571,9 @@ fn processConstItem(allocator: std.mem.Allocator, ctx: *const VisitorContext, ts
 }
 
 /// Process a static_item.
-fn processStaticItem(allocator: std.mem.Allocator, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
+fn processStaticItem(allocator: std.mem.Allocator, io: std.Io, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
     const name = ast.getIdentifierName(ctx.source, ts_node, ctx.k) orelse {
-        ctx.log.trace("skipping static: no identifier", &.{});
+        ctx.log.trace(io,"skipping static: no identifier", &.{});
         return;
     };
 
@@ -597,9 +598,9 @@ fn processStaticItem(allocator: std.mem.Allocator, ctx: *const VisitorContext, t
 }
 
 /// Process a type_item (type alias).
-fn processTypeItem(allocator: std.mem.Allocator, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
+fn processTypeItem(allocator: std.mem.Allocator, io: std.Io, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
     const name = ast.getTypeIdentifierName(ctx.source, ts_node, ctx.k) orelse {
-        ctx.log.trace("skipping type alias: no type_identifier", &.{});
+        ctx.log.trace(io,"skipping type alias: no type_identifier", &.{});
         return;
     };
 
@@ -627,9 +628,9 @@ fn processTypeItem(allocator: std.mem.Allocator, ctx: *const VisitorContext, ts_
 
 /// Process a macro_definition (macro_rules!). Checks for #[macro_export]
 /// which makes the macro crate-public in Rust.
-fn processMacroDefinition(allocator: std.mem.Allocator, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
+fn processMacroDefinition(allocator: std.mem.Allocator, io: std.Io, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
     const name = ast.getIdentifierName(ctx.source, ts_node, ctx.k) orelse {
-        ctx.log.trace("skipping macro: no identifier", &.{});
+        ctx.log.trace(io,"skipping macro: no identifier", &.{});
         return;
     };
 
@@ -660,9 +661,9 @@ fn processMacroDefinition(allocator: std.mem.Allocator, ctx: *const VisitorConte
 /// Process a mod_item. Inline modules (with declaration_list) create a module
 /// node with recursion into the body. External modules (mod foo;) create an
 /// import_decl node.
-fn processModItem(allocator: std.mem.Allocator, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
+fn processModItem(allocator: std.mem.Allocator, io: std.Io, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
     const name = ast.getIdentifierName(ctx.source, ts_node, ctx.k) orelse {
-        ctx.log.trace("skipping mod: no identifier", &.{});
+        ctx.log.trace(io,"skipping mod: no identifier", &.{});
         return;
     };
 
@@ -684,7 +685,7 @@ fn processModItem(allocator: std.mem.Allocator, ctx: *const VisitorContext, ts_n
             .doc = doc,
             .lang_meta = .{ .rust = .{ .attributes = attributes, .inner_attributes = inner_attrs, .visibility_scope = vis_info.scope } },
         });
-        try recurseIntoBody(allocator, ctx, ts_node, node_id);
+        try recurseIntoBody(allocator, io, ctx, ts_node, node_id);
     } else {
         _ = try ctx.g.addNode(allocator, .{
             .id = .root,
@@ -703,11 +704,12 @@ fn processModItem(allocator: std.mem.Allocator, ctx: *const VisitorContext, ts_n
 }
 
 /// Process a use_declaration.
-fn processUseDeclaration(allocator: std.mem.Allocator, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
+fn processUseDeclaration(allocator: std.mem.Allocator, io: std.Io, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
+    _ = io;
     const start = ts_node.startByte();
     const end = ts_node.endByte();
     const text = ctx.source[start..end];
-    const signature = std.mem.trimRight(u8, text, " \t\n\r;");
+    const signature = std.mem.trimEnd(u8, text, " \t\n\r;");
     const vis_info = ast.detectVisibility(ctx.source, ts_node, ctx.k);
     const doc = ast.collectOuterDocComment(ctx.source, ts_node, ctx.k);
     const attributes = try extractAndRegisterAttributes(allocator, ctx.g, ctx.source, ts_node, ctx.k);
@@ -728,7 +730,8 @@ fn processUseDeclaration(allocator: std.mem.Allocator, ctx: *const VisitorContex
 }
 
 /// Process a field_declaration (inside struct or union).
-fn processFieldDeclaration(allocator: std.mem.Allocator, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
+fn processFieldDeclaration(allocator: std.mem.Allocator, io: std.Io, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
+    _ = io;
     var name: ?[]const u8 = null;
     var i: u32 = 0;
     while (i < ts_node.childCount()) : (i += 1) {
@@ -762,7 +765,7 @@ fn processFieldDeclaration(allocator: std.mem.Allocator, ctx: *const VisitorCont
 /// Rust enum variants share their enum's access level.
 /// Recurses into struct variants (named fields) and tuple variants
 /// (positional fields) when present.
-fn processEnumVariant(allocator: std.mem.Allocator, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
+fn processEnumVariant(allocator: std.mem.Allocator, io: std.Io, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
     const name = ast.getIdentifierName(ctx.source, ts_node, ctx.k) orelse return;
     const doc = ast.collectOuterDocComment(ctx.source, ts_node, ctx.k);
     const attributes = try extractAndRegisterAttributes(allocator, ctx.g, ctx.source, ts_node, ctx.k);
@@ -794,18 +797,19 @@ fn processEnumVariant(allocator: std.mem.Allocator, ctx: *const VisitorContext, 
                 const decl = child.child(j) orelse continue;
                 if (!decl.isNamed()) continue;
                 if (decl.kindId() == ctx.k.field_declaration) {
-                    try processFieldDeclaration(allocator, ctx, decl, variant_id);
+                    try processFieldDeclaration(allocator, io, ctx, decl, variant_id);
                 }
             }
         } else if (kid == ctx.k.ordered_field_declaration_list) {
-            try processTupleFields(allocator, ctx, child, variant_id);
+            try processTupleFields(allocator, io, ctx, child, variant_id);
         }
     }
 }
 
 /// Process an associated_type declaration inside a trait body.
 /// Inherits the parent trait's visibility.
-fn processAssociatedType(allocator: std.mem.Allocator, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
+fn processAssociatedType(allocator: std.mem.Allocator, io: std.Io, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
+    _ = io;
     const name = ast.getTypeIdentifierName(ctx.source, ts_node, ctx.k) orelse return;
     const doc = ast.collectOuterDocComment(ctx.source, ts_node, ctx.k);
     const attributes = try extractAndRegisterAttributes(allocator, ctx.g, ctx.source, ts_node, ctx.k);
@@ -830,7 +834,7 @@ fn processAssociatedType(allocator: std.mem.Allocator, ctx: *const VisitorContex
 
 /// Recurse into the body of a container (struct fields, enum variants,
 /// impl methods, trait methods, inline mod declarations).
-fn recurseIntoBody(allocator: std.mem.Allocator, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
+fn recurseIntoBody(allocator: std.mem.Allocator, io: std.Io, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
     var i: u32 = 0;
     while (i < ts_node.childCount()) : (i += 1) {
         const child = ts_node.child(i) orelse continue;
@@ -841,10 +845,10 @@ fn recurseIntoBody(allocator: std.mem.Allocator, ctx: *const VisitorContext, ts_
             while (j < child.childCount()) : (j += 1) {
                 const decl = child.child(j) orelse continue;
                 if (!decl.isNamed()) continue;
-                try processDeclaration(allocator, ctx, decl, parent_id);
+                try processDeclaration(allocator, io, ctx, decl, parent_id);
             }
         } else if (kid == ctx.k.ordered_field_declaration_list) {
-            try processTupleFields(allocator, ctx, child, parent_id);
+            try processTupleFields(allocator, io, ctx, child, parent_id);
         }
     }
 }
@@ -858,7 +862,8 @@ const tuple_field_names = [_][]const u8{
 /// Process tuple struct fields from an ordered_field_declaration_list.
 /// Tuple fields are positional, so they get names "0", "1", etc.
 /// Attributes on fields are accumulated and attached to the field's lang_meta.
-fn processTupleFields(allocator: std.mem.Allocator, ctx: *const VisitorContext, list_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
+fn processTupleFields(allocator: std.mem.Allocator, io: std.Io, ctx: *const VisitorContext, list_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
+    _ = io;
     var field_index: usize = 0;
     var pending_vis: Visibility = .private;
     var pending_attrs_start: ?u32 = null;

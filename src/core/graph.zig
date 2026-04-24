@@ -53,10 +53,10 @@ pub const Graph = struct {
     /// `project_root` is borrowed, not duped -- it must outlive the Graph.
     pub fn init(project_root: []const u8) Graph {
         return .{
-            .nodes = .{},
-            .edges = .{},
+            .nodes = .empty,
+            .edges = .empty,
             .project_root = project_root,
-            .owned_buffers = .{},
+            .owned_buffers = .empty,
             .edge_index = .{},
         };
     }

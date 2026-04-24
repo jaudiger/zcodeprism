@@ -13,23 +13,23 @@ const indexDirectory = zcodeprism.indexer.indexDirectory;
 
 const writeFixtureFiles = helpers.writeFixtureFiles;
 
-fn setupBuildParsingFixtures(tmp_dir: *std.testing.TmpDir) ![]const u8 {
-    try writeFixtureFiles(tmp_dir.dir, &.{
+fn setupBuildParsingFixtures(tmp_dir: *std.testing.TmpDir) ![:0]const u8 {
+    try writeFixtureFiles(std.testing.io, tmp_dir.dir, &.{
         .{ .sub_path = "build.zig", .data = fixtures.zig.build_parsing.build_zig },
         .{ .sub_path = "build.zig.zon", .data = fixtures.zig.build_parsing.build_zig_zon },
         .{ .sub_path = "src/lib.zig", .data = fixtures.zig.build_parsing.src_lib_zig },
         .{ .sub_path = "src/main.zig", .data = fixtures.zig.build_parsing.src_main_zig },
     });
-    return try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    return try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
 }
 
-fn setupBuildNoDepFixtures(tmp_dir: *std.testing.TmpDir) ![]const u8 {
-    try writeFixtureFiles(tmp_dir.dir, &.{
+fn setupBuildNoDepFixtures(tmp_dir: *std.testing.TmpDir) ![:0]const u8 {
+    try writeFixtureFiles(std.testing.io, tmp_dir.dir, &.{
         .{ .sub_path = "build.zig", .data = fixtures.zig.build_no_deps.build_zig },
         .{ .sub_path = "build.zig.zon", .data = fixtures.zig.build_no_deps.build_zig_zon },
         .{ .sub_path = "src/main.zig", .data = fixtures.zig.build_no_deps.src_main_zig },
     });
-    return try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    return try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
 }
 
 test "parses build.zig into module nodes" {
@@ -42,7 +42,7 @@ test "parses build.zig into module nodes" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = try indexDirectory(std.testing.allocator, project_root, &g, null, .{});
+    _ = try indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{});
 
     // Assert
     const module_count = helpers.countNodesByKind(&g, .module);
@@ -59,7 +59,7 @@ test "module has contains edge to file" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = try indexDirectory(std.testing.allocator, project_root, &g, null, .{});
+    _ = try indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{});
 
     // Assert
     const lib_mod = helpers.findNode(&g, "lib_mod", .module) orelse return error.TestExpectedEqual;
@@ -77,7 +77,7 @@ test "file parent_id still points to directory" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = try indexDirectory(std.testing.allocator, project_root, &g, null, .{});
+    _ = try indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{});
 
     // Assert
     const lib_file = helpers.findNode(&g, "lib.zig", .file) orelse return error.TestExpectedEqual;
@@ -96,7 +96,7 @@ test "dependencies become phantom modules" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = try indexDirectory(std.testing.allocator, project_root, &g, null, .{});
+    _ = try indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{});
 
     // Assert
     const dep_node = helpers.findNode(&g, "tree-sitter", .module) orelse return error.TestExpectedEqual;
@@ -116,7 +116,7 @@ test "phantom dep has version URL" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = try indexDirectory(std.testing.allocator, project_root, &g, null, .{});
+    _ = try indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{});
 
     // Assert
     const dep_node = helpers.findNode(&g, "tree-sitter", .module) orelse return error.TestExpectedEqual;
@@ -140,7 +140,7 @@ test "build.zig with no deps has module node but no phantom dep modules" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = try indexDirectory(std.testing.allocator, project_root, &g, null, .{});
+    _ = try indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{});
 
     // Assert
     const module_count = helpers.countNodesByKind(&g, .module);
@@ -169,7 +169,7 @@ test "multiple targets produce multiple module nodes" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = try indexDirectory(std.testing.allocator, project_root, &g, null, .{});
+    _ = try indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{});
 
     // Assert
     const lib_mod = helpers.findNode(&g, "lib_mod", .module);
@@ -188,7 +188,7 @@ test "module-to-file contains edge has workspace source" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = try indexDirectory(std.testing.allocator, project_root, &g, null, .{});
+    _ = try indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{});
 
     // Assert: find the specific module-to-file contains edge.
     const lib_mod = helpers.findNode(&g, "lib_mod", .module) orelse return error.TestExpectedEqual;
@@ -209,16 +209,16 @@ test "missing build.zig produces no module nodes" {
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
     // Write only source files, no build.zig.
-    try writeFixtureFiles(tmp_dir.dir, &.{
+    try writeFixtureFiles(std.testing.io, tmp_dir.dir, &.{
         .{ .sub_path = "main.zig", .data = fixtures.zig.project.main_zig },
         .{ .sub_path = "parser.zig", .data = fixtures.zig.project.parser_zig },
         .{ .sub_path = "utils.zig", .data = fixtures.zig.project.utils_zig },
     });
-    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    const project_root = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = try indexDirectory(std.testing.allocator, project_root, &g, null, .{});
+    _ = try indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{});
 
     // Assert
     var non_phantom_modules: usize = 0;
@@ -243,7 +243,7 @@ test "module node has correct name" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = try indexDirectory(std.testing.allocator, project_root, &g, null, .{});
+    _ = try indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{});
 
     // Assert
     const lib_mod = helpers.findNode(&g, "lib_mod", .module) orelse return error.TestExpectedEqual;

@@ -4,11 +4,11 @@ const fixtures = @import("test-fixtures");
 /// Memory-map a file for zero-copy read access.
 /// Returns the file content as a byte slice backed by the OS page cache.
 /// The caller must call `unmapFile` when done with the slice.
-pub fn mmapFile(path: []const u8) ![]const u8 {
-    const file = try std.fs.cwd().openFile(path, .{});
-    defer file.close();
+pub fn mmapFile(io: std.Io, path: []const u8) ![]const u8 {
+    const file = try std.Io.Dir.cwd().openFile(io, path, .{});
+    defer file.close(io);
 
-    const stat = try file.stat();
+    const stat = try file.stat(io);
     const size: usize = @intCast(stat.size);
 
     if (size == 0) return &.{};
@@ -16,7 +16,7 @@ pub fn mmapFile(path: []const u8) ![]const u8 {
     const mapped = try std.posix.mmap(
         null,
         size,
-        std.posix.PROT.READ,
+        .{ .READ = true },
         .{ .TYPE = .SHARED },
         file.handle,
         0,
@@ -36,7 +36,7 @@ test "mmap reads file content" {
     const expected = fixtures.zig.simple;
 
     // Act
-    const content = try mmapFile("test/fixtures/zig/simple.zig");
+    const content = try mmapFile(std.testing.io, "test/fixtures/zig/simple.zig");
     defer unmapFile(content);
 
     // Assert
@@ -45,7 +45,7 @@ test "mmap reads file content" {
 
 test "mmap on empty file" {
     // Act
-    const content = try mmapFile("test/fixtures/zig/edge_cases/empty.zig");
+    const content = try mmapFile(std.testing.io, "test/fixtures/zig/edge_cases/empty.zig");
     defer unmapFile(content);
 
     // Assert: empty slice, no crash

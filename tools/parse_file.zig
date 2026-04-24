@@ -41,17 +41,16 @@ fn printHelp(stdout: *std.Io.Writer) !void {
     try stdout.flush();
 }
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    const allocator = init.gpa;
 
     var stdout_buffer: [tool_utils.stdout_buffer_size]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+    var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
     const stdout = &stdout_writer.interface;
 
     // Get file path from args.
-    var args = std.process.args();
+    var args = init.minimal.args.iterate();
     _ = args.next(); // skip program name
 
     const path_arg = args.next() orelse {
@@ -70,7 +69,7 @@ pub fn main() !void {
     }
 
     // Resolve to absolute path so the graph root is accurate.
-    const abs_path = std.fs.cwd().realpathAlloc(allocator, path) catch |err| {
+    const abs_path = std.Io.Dir.cwd().realPathFileAlloc(io, path, allocator) catch |err| {
         try stdout.print("Error resolving path '{s}': {}\n", .{ path, err });
         try stdout.flush();
         std.process.exit(1);
@@ -87,7 +86,7 @@ pub fn main() !void {
     const parseFn = lang_support.parseFn;
 
     // Read the file.
-    const source = source_map.mmapFile(abs_path) catch |err| {
+    const source = source_map.mmapFile(io, abs_path) catch |err| {
         try stdout.print("Error opening file '{s}': {}\n", .{ abs_path, err });
         try stdout.flush();
         std.process.exit(1);
@@ -101,7 +100,7 @@ pub fn main() !void {
     var text_logger = logging.TextStderrLogger.init(tool_utils.verbosityToLevel(verbosity));
     const log = if (verbosity > 0) text_logger.logger() else logging.Logger.noop;
 
-    parseFn(allocator, source, &graph, null, log) catch |err| {
+    parseFn(allocator, io, source, &graph, null, log) catch |err| {
         try stdout.print("Parse error: {}\n", .{err});
         try stdout.flush();
         std.process.exit(1);
@@ -122,7 +121,7 @@ pub fn main() !void {
         defer wl.deinit(allocator);
         var node_type_map = zcodeprism.language_support.NodeTypeMap{};
         defer node_type_map.deinit(allocator);
-        build_edges(allocator, source, &graph, 0, graph.nodeCount(), null, &graph_index, &phantom_mgr, &node_type_map, &wl, log) catch |err| {
+        build_edges(allocator, io, source, &graph, 0, graph.nodeCount(), null, &graph_index, &phantom_mgr, &node_type_map, &wl, log) catch |err| {
             try stdout.print("Edge building error: {}\n", .{err});
             try stdout.flush();
             std.process.exit(1);

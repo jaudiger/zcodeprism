@@ -105,7 +105,7 @@ pub fn parseBuildSource(allocator: std.mem.Allocator, source: []const u8, log: L
 
     const root = tree.rootNode();
 
-    var modules = std.ArrayList(BuildInfo.ModuleEntry){};
+    var modules = std.ArrayList(BuildInfo.ModuleEntry).empty;
     errdefer {
         for (modules.items) |m| {
             allocator.free(m.name);
@@ -118,7 +118,7 @@ pub fn parseBuildSource(allocator: std.mem.Allocator, source: []const u8, log: L
         modules.deinit(allocator);
     }
 
-    var targets = std.ArrayList(BuildInfo.TargetEntry){};
+    var targets = std.ArrayList(BuildInfo.TargetEntry).empty;
     errdefer {
         for (targets.items) |t| {
             allocator.free(t.name);
@@ -127,7 +127,7 @@ pub fn parseBuildSource(allocator: std.mem.Allocator, source: []const u8, log: L
         targets.deinit(allocator);
     }
 
-    var deps = std.ArrayList(BuildInfo.DependencyEntry){};
+    var deps = std.ArrayList(BuildInfo.DependencyEntry).empty;
     errdefer {
         for (deps.items) |d| {
             allocator.free(d.name);
@@ -238,7 +238,7 @@ pub fn extractDependencyUrls(allocator: std.mem.Allocator, content: []const u8) 
     if (pos >= content.len) return null;
     pos += 1;
 
-    var results = std.ArrayList(BuildInfo.DependencyUrl){};
+    var results = std.ArrayList(BuildInfo.DependencyUrl).empty;
     errdefer {
         for (results.items) |r| {
             allocator.free(r.name);
@@ -301,24 +301,28 @@ pub fn extractDependencyUrls(allocator: std.mem.Allocator, content: []const u8) 
 
 /// Read build.zig and build.zig.zon from project_root and return
 /// combined build information. Missing files produce empty results.
-pub fn parseBuildFiles(allocator: std.mem.Allocator, project_root: []const u8, log: Logger) !BuildInfo {
-    var dir = std.fs.openDirAbsolute(project_root, .{}) catch return .{};
-    defer dir.close();
+pub fn parseBuildFiles(allocator: std.mem.Allocator, io: std.Io, project_root: []const u8, log: Logger) !BuildInfo {
+    var dir = std.Io.Dir.openDirAbsolute(io, project_root, .{}) catch return .{};
+    defer dir.close(io);
 
     // Parse build.zig via tree-sitter.
     var info = blk: {
-        const build_file = dir.openFile("build.zig", .{}) catch break :blk BuildInfo{};
-        defer build_file.close();
-        const build_source = build_file.readToEndAlloc(allocator, 1 * 1024 * 1024) catch break :blk BuildInfo{};
+        const build_file = dir.openFile(io, "build.zig", .{}) catch break :blk BuildInfo{};
+        defer build_file.close(io);
+        var rbuf: [4096]u8 = undefined;
+        var br = build_file.reader(io, &rbuf);
+        const build_source = br.interface.allocRemaining(allocator, .limited(1 * 1024 * 1024)) catch break :blk BuildInfo{};
         defer allocator.free(build_source);
         break :blk try parseBuildSource(allocator, build_source, log);
     };
     errdefer info.deinit(allocator);
 
     // Enrich with dependency URLs from the .zon manifest.
-    const zon_file = dir.openFile("build.zig.zon", .{}) catch return info;
-    defer zon_file.close();
-    const zon_content = zon_file.readToEndAlloc(allocator, 1 * 1024 * 1024) catch return info;
+    const zon_file = dir.openFile(io, "build.zig.zon", .{}) catch return info;
+    defer zon_file.close(io);
+    var zbuf: [4096]u8 = undefined;
+    var zr = zon_file.reader(io, &zbuf);
+    const zon_content = zr.interface.allocRemaining(allocator, .limited(1 * 1024 * 1024)) catch return info;
     defer allocator.free(zon_content);
 
     info.dependency_urls = try extractDependencyUrls(allocator, zon_content);

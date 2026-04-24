@@ -89,7 +89,7 @@ pub fn findCoupling(allocator: std.mem.Allocator, fg: FrozenGraph, options: Coup
         gop.value_ptr.* += 1;
     }
 
-    var pairs = std.ArrayList(CouplingPair){};
+    var pairs = std.ArrayList(CouplingPair).empty;
     defer pairs.deinit(allocator);
 
     var it = pair_counts.iterator();

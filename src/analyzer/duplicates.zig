@@ -233,12 +233,12 @@ pub fn findFuzzyDuplicates(allocator: std.mem.Allocator, fg: FrozenGraph, candid
     for (0..nc) |i| {
         const root = unionFindRoot(parents, i);
         const gop = try group_map.getOrPut(allocator, root);
-        if (!gop.found_existing) gop.value_ptr.* = .{};
+        if (!gop.found_existing) gop.value_ptr.* = .empty;
         try gop.value_ptr.append(allocator, candidates[i].node_id);
     }
 
     // Build sorted group list (only multi-member groups).
-    var fuzzy_groups = std.ArrayList(DuplicateGroup){};
+    var fuzzy_groups = std.ArrayList(DuplicateGroup).empty;
     defer fuzzy_groups.deinit(allocator);
     var gmap_it = group_map.iterator();
     while (gmap_it.next()) |entry| {

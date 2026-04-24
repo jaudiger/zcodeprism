@@ -18,7 +18,7 @@ const Field = logging.Field;
 /// function that calls another, the callee's error_set_names merge into
 /// the caller's inferred_errors. Iterates until no new errors are added
 /// or max_rounds is reached.
-pub fn propagateErrorSets(allocator: std.mem.Allocator, graph: *Graph, logger: Logger) !void {
+pub fn propagateErrorSets(allocator: std.mem.Allocator, io: std.Io, graph: *Graph, logger: Logger) !void {
     // Build a map from function NodeId to its error set names, seeded
     // by uses_type edges pointing at error_def nodes.
     var fn_errors = std.AutoHashMapUnmanaged(NodeId, []const []const u8){};
@@ -41,7 +41,7 @@ pub fn propagateErrorSets(allocator: std.mem.Allocator, graph: *Graph, logger: L
     }
 
     if (fn_errors.count() == 0) {
-        logger.debug("no error sets to propagate", &.{});
+        logger.debug(io, "no error sets to propagate", &.{});
         return;
     }
 
@@ -74,7 +74,7 @@ pub fn propagateErrorSets(allocator: std.mem.Allocator, graph: *Graph, logger: L
         if (!changed) break;
     }
 
-    logger.debug("error set propagation converged", &.{Field.uint("rounds", round + 1)});
+    logger.debug(io, "error set propagation converged", &.{Field.uint("rounds", round + 1)});
 
     // Write inferred_errors back to nodes.
     var it = fn_errors.iterator();
@@ -238,7 +238,7 @@ test "propagation: direct, multi-hop, union, and no-call boundary" {
     _ = try g.addEdgeIfNew(allocator, .{ .source_id = fn_f, .target_id = fn_a, .edge_type = .uses_type });
 
     // Act
-    try propagateErrorSets(allocator, &g, Logger.noop);
+    try propagateErrorSets(allocator, std.testing.io, &g, Logger.noop);
 
     // Assert: fn_a has inferred {X} (direct uses_type)
     const a_errors = g.nodes.items[@intFromEnum(fn_a)].lang_meta.zig.inferred_errors.?;

@@ -18,7 +18,7 @@ test "graph is complete without LSP" {
     defer graph.deinit(allocator);
 
     // Act
-    _ = try indexer.indexDirectory(allocator, fixture_path, &graph, null, .{});
+    _ = try indexer.indexDirectory(allocator, std.testing.io, fixture_path, &graph, null, .{});
 
     // Assert: graph has nodes and edges, no crash
     try std.testing.expect(graph.nodeCount() > 0);
@@ -54,11 +54,13 @@ test "LSP enrichment adds edges and populates errors" {
     // Arrange: check if ZLS is available, skip if not
     const allocator = std.testing.allocator;
     const zls_available = blk: {
-        var child = std.process.Child.init(&.{ "zls", "--version" }, allocator);
-        child.stderr_behavior = .Ignore;
-        child.stdout_behavior = .Ignore;
-        const term = child.spawnAndWait() catch break :blk false;
-        break :blk term == .Exited and term.Exited == 0;
+        var child = std.process.spawn(std.testing.io, .{
+            .argv = &.{ "zls", "--version" },
+            .stderr = .ignore,
+            .stdout = .ignore,
+        }) catch break :blk false;
+        const term = child.wait(std.testing.io) catch break :blk false;
+        break :blk term == .exited and term.exited == 0;
     };
     if (!zls_available) return;
 
@@ -71,7 +73,7 @@ test "LSP enrichment adds edges and populates errors" {
     // Index with a worklist so hover entries are collected for LSP enrichment.
     var wl = zcodeprism.lsp.worklist.LspWorklist{};
     defer wl.deinit(allocator);
-    _ = try indexer.indexDirectory(allocator, fixture_path, &graph, &wl, .{});
+    _ = try indexer.indexDirectory(allocator, std.testing.io, fixture_path, &graph, &wl, .{});
 
     // Record pre-LSP state
     const pre_lsp_edge_count = graph.edgeCount();
@@ -79,8 +81,8 @@ test "LSP enrichment adds edges and populates errors" {
     // Act: run LSP enrichment with the populated worklist
     const zig_support = zcodeprism.registry.Registry.getByExtension(".zig").?;
     var lsp_pool = zcodeprism.lsp.pool.LspPool.init(.{});
-    defer lsp_pool.deinit(allocator);
-    const result = try enricher.enrich(allocator, &graph, zig_support, &wl, &lsp_pool, .{
+    defer lsp_pool.deinit(allocator, std.testing.io);
+    const result = try enricher.enrich(allocator, std.testing.io, &graph, zig_support, &wl, &lsp_pool, .{
         .project_root = fixture_path,
     });
 
@@ -128,7 +130,7 @@ test "rust graph is complete without rust-analyzer" {
     defer graph.deinit(allocator);
 
     // Act
-    _ = try indexer.indexDirectory(allocator, fixture_path, &graph, null, .{});
+    _ = try indexer.indexDirectory(allocator, std.testing.io, fixture_path, &graph, null, .{});
 
     // Assert: graph has Rust nodes
     try std.testing.expect(graph.nodeCount() > 0);
@@ -142,11 +144,13 @@ test "rust-analyzer enrichment adds edges" {
     // Arrange: check if rust-analyzer is available, skip if not
     const allocator = std.testing.allocator;
     const ra_available = blk: {
-        var child = std.process.Child.init(&.{ "rust-analyzer", "--version" }, allocator);
-        child.stderr_behavior = .Ignore;
-        child.stdout_behavior = .Ignore;
-        const term = child.spawnAndWait() catch break :blk false;
-        break :blk term == .Exited and term.Exited == 0;
+        var child = std.process.spawn(std.testing.io, .{
+            .argv = &.{ "rust-analyzer", "--version" },
+            .stderr = .ignore,
+            .stdout = .ignore,
+        }) catch break :blk false;
+        const term = child.wait(std.testing.io) catch break :blk false;
+        break :blk term == .exited and term.exited == 0;
     };
     if (!ra_available) return;
 
@@ -159,7 +163,7 @@ test "rust-analyzer enrichment adds edges" {
     // Index with a worklist for LSP enrichment.
     var wl = zcodeprism.lsp.worklist.LspWorklist{};
     defer wl.deinit(allocator);
-    _ = try indexer.indexDirectory(allocator, fixture_path, &graph, &wl, .{});
+    _ = try indexer.indexDirectory(allocator, std.testing.io, fixture_path, &graph, &wl, .{});
 
     // Record pre-LSP state
     const pre_lsp_edge_count = graph.edgeCount();
@@ -167,8 +171,8 @@ test "rust-analyzer enrichment adds edges" {
     // Act: run LSP enrichment with the populated worklist
     const rust_support = zcodeprism.registry.Registry.getByExtension(".rs").?;
     var lsp_pool = zcodeprism.lsp.pool.LspPool.init(.{});
-    defer lsp_pool.deinit(allocator);
-    const result = try enricher.enrich(allocator, &graph, rust_support, &wl, &lsp_pool, .{
+    defer lsp_pool.deinit(allocator, std.testing.io);
+    const result = try enricher.enrich(allocator, std.testing.io, &graph, rust_support, &wl, &lsp_pool, .{
         .project_root = fixture_path,
     });
 
@@ -183,6 +187,6 @@ test "rust-analyzer enrichment adds edges" {
 /// Resolve a project-relative path to an absolute path.
 fn resolveFixturePath(allocator: std.mem.Allocator, rel: []const u8) ![]const u8 {
     var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const cwd = try std.process.getCwd(&buf);
-    return try std.fs.path.join(allocator, &.{ cwd, rel });
+    const n = try std.process.currentPath(std.testing.io, &buf);
+    return try std.fs.path.join(allocator, &.{ buf[0..n], rel });
 }

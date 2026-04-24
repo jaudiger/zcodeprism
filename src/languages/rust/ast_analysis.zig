@@ -409,7 +409,7 @@ pub fn extractFunctionSignature(source: []const u8, node: ts.Node, k: *const Kin
         if (child.kindId() == k.block) {
             const sig_end = child.startByte();
             if (sig_end > start) {
-                const sig = std.mem.trimRight(u8, source[start..sig_end], " \t\n\r");
+                const sig = std.mem.trimEnd(u8, source[start..sig_end], " \t\n\r");
                 if (sig.len > 0) return sig;
             }
             return null;
@@ -419,7 +419,7 @@ pub fn extractFunctionSignature(source: []const u8, node: ts.Node, k: *const Kin
     // No block found (trait method signature without body): use full text minus trailing semicolon.
     const end = node.endByte();
     if (end > start) {
-        const text = std.mem.trimRight(u8, source[start..end], " \t\n\r;");
+        const text = std.mem.trimEnd(u8, source[start..end], " \t\n\r;");
         if (text.len > 0) return text;
     }
     return null;
@@ -442,7 +442,7 @@ pub fn extractDeclarationSignature(source: []const u8, node: ts.Node, k: *const 
         {
             const sig_end = child.startByte();
             if (sig_end > start) {
-                const sig = std.mem.trimRight(u8, source[start..sig_end], " \t\n\r");
+                const sig = std.mem.trimEnd(u8, source[start..sig_end], " \t\n\r");
                 if (sig.len > 0) return sig;
             }
             return null;
@@ -452,7 +452,7 @@ pub fn extractDeclarationSignature(source: []const u8, node: ts.Node, k: *const 
     // No body (unit struct, type alias, external mod declaration).
     const end = node.endByte();
     if (end > start) {
-        const text = std.mem.trimRight(u8, source[start..end], " \t\n\r;");
+        const text = std.mem.trimEnd(u8, source[start..end], " \t\n\r;");
         if (text.len > 0) return text;
     }
     return null;

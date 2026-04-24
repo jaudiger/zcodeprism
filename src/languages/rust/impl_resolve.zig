@@ -258,7 +258,7 @@ fn extractTraitFromImplSig(sig: []const u8) ?[]const u8 {
     }
 
     if (start >= for_idx) return null;
-    const trait_name = std.mem.trimRight(u8, sig[start..for_idx], " ");
+    const trait_name = std.mem.trimEnd(u8, sig[start..for_idx], " ");
     if (trait_name.len == 0) return null;
     return trait_name;
 }

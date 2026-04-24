@@ -51,7 +51,7 @@ pub fn findCycles(allocator: std.mem.Allocator, fg: FrozenGraph, options: CycleO
     const scope_filter: ?Scope = if (options.scope) |s| Scope.parse(s) else null;
 
     // Collect file nodes and assign them dense indices 0..file_count-1.
-    var file_nodes = std.ArrayList(NodeId){};
+    var file_nodes = std.ArrayList(NodeId).empty;
     defer file_nodes.deinit(allocator);
 
     var node_to_dense = std.AutoHashMapUnmanaged(u64, u32){};
@@ -94,7 +94,7 @@ pub fn findCycles(allocator: std.mem.Allocator, fg: FrozenGraph, options: CycleO
     }
 
     // Filter SCCs to 2+ nodes, capped at max_cycle_length.
-    var cycles = std.ArrayList(Cycle){};
+    var cycles = std.ArrayList(Cycle).empty;
     defer cycles.deinit(allocator);
 
     for (tarjan.sccs.items) |scc| {
@@ -248,8 +248,8 @@ const TarjanState = struct {
             .index_of = index_of,
             .lowlink = lowlink,
             .on_stack = on_stack,
-            .stack = .{},
-            .sccs = .{},
+            .stack = .empty,
+            .sccs = .empty,
             .counter = 0,
         };
     }
@@ -266,7 +266,7 @@ const TarjanState = struct {
     /// Iterative strongConnect using an explicit call stack.
     fn strongConnect(self: *TarjanState, allocator: std.mem.Allocator, root: u32, adj: FileAdj) !void {
         const Frame = struct { v: u32, edge_pos: u32 };
-        var call_stack = std.ArrayList(Frame){};
+        var call_stack = std.ArrayList(Frame).empty;
         defer call_stack.deinit(allocator);
 
         self.index_of[root] = self.counter;
@@ -297,7 +297,7 @@ const TarjanState = struct {
                 }
             } else {
                 if (self.lowlink[v] == self.index_of[v]) {
-                    var scc = std.ArrayList(u32){};
+                    var scc = std.ArrayList(u32).empty;
                     while (self.stack.pop()) |w| {
                         self.on_stack[w] = false;
                         try scc.append(allocator, w);

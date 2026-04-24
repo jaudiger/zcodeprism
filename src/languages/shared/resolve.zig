@@ -28,6 +28,7 @@ pub const FindInTypeScopeFn = *const fn (*const Graph, NodeId, []const u8, *cons
 /// passed by const pointer to each resolution call.
 pub const ResolveContext = struct {
     graph_index: *const GraphIndex,
+    io: std.Io,
     log: Logger,
     resolve_return_type: ResolveReturnTypeFn,
     find_in_type_scope: ?FindInTypeScopeFn,
@@ -83,7 +84,7 @@ pub fn resolveQualifiedCall(
         }
 
         const resolved_id = matched_id orelse {
-            rctx.log.trace("qualified call: segment not found", &.{Field.string("segment", segment)});
+            rctx.log.trace(rctx.io, "qualified call: segment not found", &.{Field.string("segment", segment)});
             return count;
         };
 
@@ -103,7 +104,7 @@ pub fn resolveQualifiedCall(
                 current_scope_id = return_type_id;
                 continue;
             }
-            rctx.log.trace("qualified call: return type unresolvable", &.{});
+            rctx.log.trace(rctx.io, "qualified call: return type unresolvable", &.{});
             return count;
         } else {
             const is_type = resolved_node.kind.isTypeContainer();

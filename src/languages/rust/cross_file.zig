@@ -49,6 +49,7 @@ const ReExportResult = struct {
 /// and aliases within groups.
 pub fn buildImportMap(
     allocator: std.mem.Allocator,
+    io: std.Io,
     g: *const Graph,
     source: []const u8,
     root: ts.Node,
@@ -71,11 +72,11 @@ pub fn buildImportMap(
         if (std.mem.eql(u8, n.name, sig) and !std.mem.startsWith(u8, sig, "use ") and !std.mem.startsWith(u8, sig, "pub use ")) {
             if (resolveModTarget(file_index, importer_path, n.name)) |target_id| {
                 try ctx.imports.append(allocator, .{ .name = n.name, .target = target_id });
-                log.trace("import map: mod resolved", &.{
+                log.trace(io,"import map: mod resolved", &.{
                     Field.string("name", n.name),
                 });
             } else {
-                log.trace("import map: mod target not found", &.{
+                log.trace(io,"import map: mod target not found", &.{
                     Field.string("name", n.name),
                 });
             }
@@ -98,7 +99,7 @@ pub fn buildImportMap(
                 is_public = true;
                 continue;
             }
-            try resolveUseNode(allocator, g, source, payload, &.{}, is_public, ctx, graph_index, importer_path, k, log, 0);
+            try resolveUseNode(allocator, io, g, source, payload, &.{}, is_public, ctx, graph_index, importer_path, k, log, 0);
             break;
         }
     }
@@ -106,7 +107,7 @@ pub fn buildImportMap(
     // Bind "super" to the parent module file for inline super:: qualified calls.
     if (resolveParentFile(file_index, importer_path)) |parent_id| {
         try ctx.imports.append(allocator, .{ .name = "super", .target = parent_id });
-        log.trace("import map: super resolved", &.{});
+        log.trace(io,"import map: super resolved", &.{});
     }
 
     // Resolve deferred glob imports. All explicit imports were processed above,
@@ -127,7 +128,7 @@ pub fn buildImportMap(
         }
     }
     if (ctx.glob_targets.items.len > 0) {
-        log.trace("import map: resolved glob imports", &.{
+        log.trace(io,"import map: resolved glob imports", &.{
             Field.uint("count", ctx.glob_targets.items.len),
         });
     }
@@ -138,6 +139,7 @@ pub fn buildImportMap(
 /// descends into nested groups.
 fn resolveUseNode(
     allocator: std.mem.Allocator,
+    io: std.Io,
     g: *const Graph,
     source: []const u8,
     node: ts.Node,
@@ -158,7 +160,7 @@ fn resolveUseNode(
         var seg_count = copyPrefix(prefix, &segments);
         collectScopedSegments(source, node, &segments, &seg_count, k, 0);
         if (seg_count == 0) return;
-        try resolveAndAddEntry(allocator, g, ctx, graph_index, importer_path, segments[0..seg_count], segments[seg_count - 1], is_public, log);
+        try resolveAndAddEntry(allocator, io, g, ctx, graph_index, importer_path, segments[0..seg_count], segments[seg_count - 1], is_public, log);
     } else if (kid == k.scoped_use_list) {
         var new_prefix: [max_chain_depth][]const u8 = undefined;
         var pcount = copyPrefix(prefix, &new_prefix);
@@ -171,7 +173,7 @@ fn resolveUseNode(
                 var mi: u32 = 0;
                 while (mi < child.namedChildCount()) : (mi += 1) {
                     const member = child.namedChild(mi) orelse continue;
-                    try resolveUseNode(allocator, g, source, member, new_prefix[0..pcount], is_public, ctx, graph_index, importer_path, k, log, depth + 1);
+                    try resolveUseNode(allocator, io, g, source, member, new_prefix[0..pcount], is_public, ctx, graph_index, importer_path, k, log, depth + 1);
                 }
             } else {
                 collectScopedSegments(source, child, &new_prefix, &pcount, k, 0);
@@ -187,7 +189,7 @@ fn resolveUseNode(
         if (seg_count == 0) return;
         const alias: ?[]const u8 = if (node.namedChild(1)) |alias_node| ts_api.nodeText(source, alias_node) else null;
         const binding = alias orelse segments[seg_count - 1];
-        try resolveAndAddEntry(allocator, g, ctx, graph_index, importer_path, segments[0..seg_count], binding, is_public, log);
+        try resolveAndAddEntry(allocator, io, g, ctx, graph_index, importer_path, segments[0..seg_count], binding, is_public, log);
     } else if (kid == k.use_wildcard) {
         // The use_wildcard node contains the path prefix in its named children.
         // Combine with the recursion prefix to get the full module path.
@@ -211,7 +213,7 @@ fn resolveUseNode(
         const root_id: NodeId = if (work.len > 0 and std.mem.eql(u8, work[0], "super")) blk: {
             work = work[1..];
             break :blk resolveParentFile(&graph_index.files, importer_path) orelse {
-                log.trace("import map: glob parent not found", &.{});
+                log.trace(io,"import map: glob parent not found", &.{});
                 return;
             };
         } else if (work.len > 0) blk: {
@@ -220,18 +222,18 @@ fn resolveUseNode(
             break :blk ctx.findImportTarget(module_name) orelse
                 graph_index.files.findByName(module_name) orelse
                 resolveModuleByConvention(&graph_index.files, module_name) orelse {
-                log.trace("import map: glob module not found", &.{
+                log.trace(io,"import map: glob module not found", &.{
                     Field.string("module", module_name),
                 });
                 return;
             };
         } else {
-            log.trace("import map: skipping bare glob import", &.{});
+            log.trace(io,"import map: skipping bare glob import", &.{});
             return;
         };
 
         const target = walkScopePath(g, &graph_index.scope, root_id, work) orelse {
-            log.trace("import map: glob inner scope not found", &.{});
+            log.trace(io,"import map: glob inner scope not found", &.{});
             return;
         };
         try ctx.glob_targets.append(allocator, .{ .target = target, .is_public = is_public });
@@ -269,6 +271,7 @@ fn walkScopePath(g: *const Graph, scope_index: *const ScopeIndex, root_id: NodeI
 /// segment to a target file.
 fn resolveAndAddEntry(
     allocator: std.mem.Allocator,
+    io: std.Io,
     g: *const Graph,
     ctx: *EdgeContext,
     graph_index: *const GraphIndex,
@@ -296,7 +299,7 @@ fn resolveAndAddEntry(
         if (work.len == 0) return;
 
         const parent_id = resolveParentFile(file_index, importer_path) orelse {
-            log.trace("use super: parent file not found", &.{});
+            log.trace(io,"use super: parent file not found", &.{});
             return;
         };
 
@@ -307,7 +310,7 @@ fn resolveAndAddEntry(
         }
         entry.chain_len = chain_len;
         try ctx.imports.append(allocator, entry);
-        log.trace("import map: use super resolved", &.{
+        log.trace(io,"import map: use super resolved", &.{
             Field.string("binding", binding_name),
         });
         return;
@@ -319,7 +322,7 @@ fn resolveAndAddEntry(
     const target_file_id = ctx.findImportTarget(module_name) orelse
         file_index.findByName(module_name) orelse
         resolveModuleByConvention(file_index, module_name) orelse {
-        log.trace("use: module not found", &.{
+        log.trace(io,"use: module not found", &.{
             Field.string("module", module_name),
         });
         return;
@@ -327,7 +330,7 @@ fn resolveAndAddEntry(
 
     // Try re-export resolution for the symbol.
     const symbol_name = work[work.len - 1];
-    const reexport = resolveReExport(g, target_file_id, symbol_name, graph_index, log, 0);
+    const reexport = resolveReExport(io, g, target_file_id, symbol_name, graph_index, log, 0);
 
     if (reexport) |re| {
         var entry = ImportEntry{ .name = binding_name, .target = re.file_id, .is_reexport = is_public };
@@ -337,7 +340,7 @@ fn resolveAndAddEntry(
         }
         entry.chain_len = copy_len;
         try ctx.imports.append(allocator, entry);
-        log.trace("import map: use resolved via re-export", &.{
+        log.trace(io,"import map: use resolved via re-export", &.{
             Field.string("binding", binding_name),
         });
     } else {
@@ -349,7 +352,7 @@ fn resolveAndAddEntry(
         }
         entry.chain_len = chain_len;
         try ctx.imports.append(allocator, entry);
-        log.trace("import map: use resolved", &.{
+        log.trace(io,"import map: use resolved", &.{
             Field.string("binding", binding_name),
         });
     }
@@ -439,6 +442,7 @@ fn resolveModuleByConvention(file_index: *const FileIndex, module_name: []const 
 /// including brace groups, aliases, and nested groups.
 pub fn buildExportEdges(
     allocator: std.mem.Allocator,
+    io: std.Io,
     g: *Graph,
     ctx: *const EdgeContext,
     graph_index: *const GraphIndex,
@@ -458,7 +462,7 @@ pub fn buildExportEdges(
             .target_id = target,
             .edge_type = .exports,
         });
-        log.trace("export edge emitted", &.{Field.string("binding", entry.name)});
+        log.trace(io,"export edge emitted", &.{Field.string("binding", entry.name)});
     }
 }
 
@@ -467,6 +471,7 @@ pub fn buildExportEdges(
 /// chains up to max_reexport_depth hops. Returns the defining file and the
 /// remaining chain segments needed to locate the symbol within that file.
 fn resolveReExport(
+    io: std.Io,
     g: *const Graph,
     module_file_id: NodeId,
     symbol_name: []const u8,
@@ -475,7 +480,7 @@ fn resolveReExport(
     depth: usize,
 ) ?ReExportResult {
     if (depth >= max_reexport_depth) {
-        log.warn("re-export chain exceeded max depth", &.{
+        log.warn(io,"re-export chain exceeded max depth", &.{
             Field.string("symbol", symbol_name),
             Field.uint("depth", depth),
         });
@@ -508,7 +513,7 @@ fn resolveReExport(
                 else
                     reexport_path;
                 if (resolveModTarget(file_index, file_path, submod)) |target| {
-                    if (resolveReExport(g, target, symbol_name, graph_index, log, depth + 1)) |deeper| {
+                    if (resolveReExport(io, g, target, symbol_name, graph_index, log, depth + 1)) |deeper| {
                         return deeper;
                     }
                     var result = ReExportResult{ .file_id = target };
@@ -538,7 +543,7 @@ fn resolveReExport(
         if (!std.mem.eql(u8, exported_name, symbol_name)) continue;
 
         if (resolveModTarget(file_index, file_path, reex_segs[0])) |target| {
-            if (resolveReExport(g, target, symbol_name, graph_index, log, depth + 1)) |deeper| {
+            if (resolveReExport(io, g, target, symbol_name, graph_index, log, depth + 1)) |deeper| {
                 return deeper;
             }
             // Return current level with remaining chain (segments after the module name).
@@ -683,10 +688,10 @@ pub fn resolveReturnTypeScope(g: *const Graph, fn_id: NodeId, graph_index: *cons
     // Strip reference markers (&, &mut).
     while (return_text.len > 0 and return_text[0] == '&') {
         return_text = return_text[1..];
-        return_text = std.mem.trimLeft(u8, return_text, " \t\n\r");
+        return_text = std.mem.trimStart(u8, return_text, " \t\n\r");
         if (std.mem.startsWith(u8, return_text, "mut ")) {
             return_text = return_text[4..];
-            return_text = std.mem.trimLeft(u8, return_text, " \t\n\r");
+            return_text = std.mem.trimStart(u8, return_text, " \t\n\r");
         }
     }
 
@@ -696,13 +701,13 @@ pub fn resolveReturnTypeScope(g: *const Graph, fn_id: NodeId, graph_index: *cons
     // Strip pointer markers (* const, * mut).
     while (return_text.len > 0 and return_text[0] == '*') {
         return_text = return_text[1..];
-        return_text = std.mem.trimLeft(u8, return_text, " \t\n\r");
+        return_text = std.mem.trimStart(u8, return_text, " \t\n\r");
         if (std.mem.startsWith(u8, return_text, "const ")) {
             return_text = return_text[6..];
         } else if (std.mem.startsWith(u8, return_text, "mut ")) {
             return_text = return_text[4..];
         }
-        return_text = std.mem.trimLeft(u8, return_text, " \t\n\r");
+        return_text = std.mem.trimStart(u8, return_text, " \t\n\r");
     }
 
     return_text = std.mem.trim(u8, return_text, " \t\n\r");
@@ -795,6 +800,7 @@ fn findImportInFile(g: *const Graph, file_id: NodeId, import_name: []const u8, g
 /// full chain, walks it in the target file to locate the called function, then
 /// resolves that function's return type to find the file containing the result type.
 pub fn resolveVarTargetThroughReturnType(
+    io: std.Io,
     g: *const Graph,
     source: []const u8,
     let_node: ts.Node,
@@ -835,7 +841,7 @@ pub fn resolveVarTargetThroughReturnType(
     }
 
     if (chain_len == 0) {
-        log.trace("var target: chain extraction failed", &.{});
+        log.trace(io,"var target: chain extraction failed", &.{});
         return null;
     }
 

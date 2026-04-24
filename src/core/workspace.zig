@@ -83,7 +83,7 @@ pub fn parseWorkspaceConfig(
     source: [:0]const u8,
     workspace_dir: []const u8,
 ) (WorkspaceError || error{OutOfMemory})!Workspace {
-    const parsed = std.zon.parse.fromSlice(ZonWorkspace, allocator, source, null, .{}) catch |err| switch (err) {
+    const parsed = std.zon.parse.fromSliceAlloc(ZonWorkspace, allocator, source, null, .{}) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         error.ParseZon => return error.InvalidConfig,
     };
@@ -160,17 +160,17 @@ fn validateStructure(ws: *const Workspace) WorkspaceError!void {
 }
 
 /// Structural checks plus filesystem path existence.
-pub fn validateWorkspace(ws: *const Workspace, workspace_dir: []const u8) WorkspaceError!void {
+pub fn validateWorkspace(io: std.Io, ws: *const Workspace, workspace_dir: []const u8) WorkspaceError!void {
     try validateStructure(ws);
 
-    var ws_dir = std.fs.cwd().openDir(workspace_dir, .{}) catch return error.PathNotFound;
-    defer ws_dir.close();
+    var ws_dir = std.Io.Dir.cwd().openDir(io, workspace_dir, .{}) catch return error.PathNotFound;
+    defer ws_dir.close(io);
 
     for (ws.projects) |p| {
         if (std.mem.eql(u8, p.path, ".")) continue;
-        const trimmed = std.mem.trimRight(u8, p.path, "/");
+        const trimmed = std.mem.trimEnd(u8, p.path, "/");
         const check_path = if (trimmed.len > 0) trimmed else ".";
-        ws_dir.access(check_path, .{}) catch return error.PathNotFound;
+        ws_dir.access(io, check_path, .{}) catch return error.PathNotFound;
     }
 }
 

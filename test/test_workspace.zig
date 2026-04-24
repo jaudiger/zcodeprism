@@ -233,9 +233,9 @@ test "validateWorkspace rejects empty name, name over 32 chars, and non-existent
     };
 
     // Act / Assert
-    try std.testing.expectError(error.InvalidProjectName, validateWorkspace(&empty_name, "."));
-    try std.testing.expectError(error.InvalidProjectName, validateWorkspace(&long_name, "."));
-    try std.testing.expectError(error.PathNotFound, validateWorkspace(&bad_path, "."));
+    try std.testing.expectError(error.InvalidProjectName, validateWorkspace(std.testing.io, &empty_name, "."));
+    try std.testing.expectError(error.InvalidProjectName, validateWorkspace(std.testing.io, &long_name, "."));
+    try std.testing.expectError(error.PathNotFound, validateWorkspace(std.testing.io, &bad_path, "."));
 }
 
 // ---------------------------------------------------------------

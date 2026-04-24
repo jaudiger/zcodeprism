@@ -8,7 +8,6 @@ const Graph = graph_mod.Graph;
 const FrozenGraph = graph_mod.FrozenGraph;
 
 const appendNum = common.appendNum;
-const appendCurrentTimestamp = common.appendCurrentTimestamp;
 
 /// Configuration for a single CTG rendering pass.
 /// Required: project_name. Optional fields control snapshot metadata,
@@ -46,6 +45,7 @@ const HeaderCounts = struct {
 fn renderCtgHeader(
     out: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
+    io: std.Io,
     options: RenderOptions,
     counts: HeaderCounts,
     langs: common.LanguageSet,
@@ -98,7 +98,8 @@ fn renderCtgHeader(
     if (options.timestamp) |ts| {
         try out.appendSlice(allocator, ts);
     } else {
-        try appendCurrentTimestamp(out, allocator);
+        var ts_buf: [32]u8 = undefined;
+        try out.appendSlice(allocator, common.formatIsoTimestamp(&ts_buf, io));
     }
     try out.append(allocator, '\n');
 
@@ -127,6 +128,7 @@ fn appendSeparator(out: *std.ArrayList(u8), allocator: std.mem.Allocator, writte
 /// the full format specification.
 pub fn renderCtg(
     allocator: std.mem.Allocator,
+    io: std.Io,
     fg: FrozenGraph,
     options: RenderOptions,
     out: *std.ArrayList(u8),
@@ -151,7 +153,7 @@ pub fn renderCtg(
 
     const ids = assignment.ids;
 
-    try renderCtgHeader(out, allocator, options, .{
+    try renderCtgHeader(out, allocator, io, options, .{
         .files = assignment.file_indices.items.len,
         .functions = assignment.fn_indices.items.len,
         .types = assignment.type_indices.items.len,
@@ -444,7 +446,7 @@ test "header line 1 matches spec" {
     const allocator = std.testing.allocator;
     var g = try createCtgTestGraph(allocator);
     defer g.deinit(allocator);
-    var out: std.ArrayList(u8) = .{};
+    var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);
 
     const options = RenderOptions{
@@ -454,7 +456,7 @@ test "header line 1 matches spec" {
 
     // Act
     const fg = try g.freeze(allocator);
-    try renderCtg(allocator, fg, options, &out);
+    try renderCtg(allocator, std.testing.io, fg, options, &out);
 
     // Assert: first line: "# zcodeprism graph -- myproject"
     const output = out.items;
@@ -468,7 +470,7 @@ test "header line 2 has stats" {
     const allocator = std.testing.allocator;
     var g = try createCtgTestGraph(allocator);
     defer g.deinit(allocator);
-    var out: std.ArrayList(u8) = .{};
+    var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);
 
     const options = RenderOptions{
@@ -478,7 +480,7 @@ test "header line 2 has stats" {
 
     // Act
     const fg = try g.freeze(allocator);
-    try renderCtg(allocator, fg, options, &out);
+    try renderCtg(allocator, std.testing.io, fg, options, &out);
 
     // Assert: second line starts with "# " and contains "files" and "functions"
     const output = out.items;
@@ -498,7 +500,7 @@ test "header line 3 has languages" {
     const allocator = std.testing.allocator;
     var g = try createCtgTestGraph(allocator);
     defer g.deinit(allocator);
-    var out: std.ArrayList(u8) = .{};
+    var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);
 
     const options = RenderOptions{
@@ -508,7 +510,7 @@ test "header line 3 has languages" {
 
     // Act
     const fg = try g.freeze(allocator);
-    try renderCtg(allocator, fg, options, &out);
+    try renderCtg(allocator, std.testing.io, fg, options, &out);
 
     // Assert: third line: "# languages: zig"
     const output = out.items;
@@ -524,7 +526,7 @@ test "header line 4 has timestamp" {
     const allocator = std.testing.allocator;
     var g = try createCtgTestGraph(allocator);
     defer g.deinit(allocator);
-    var out: std.ArrayList(u8) = .{};
+    var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);
 
     const options = RenderOptions{
@@ -534,7 +536,7 @@ test "header line 4 has timestamp" {
 
     // Act
     const fg = try g.freeze(allocator);
-    try renderCtg(allocator, fg, options, &out);
+    try renderCtg(allocator, std.testing.io, fg, options, &out);
 
     // Assert: fourth line: "# generated 2026-02-14T10:30:00Z"
     const output = out.items;
@@ -551,7 +553,7 @@ test "sections appear in correct order" {
     const allocator = std.testing.allocator;
     var g = try createCtgTestGraph(allocator);
     defer g.deinit(allocator);
-    var out: std.ArrayList(u8) = .{};
+    var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);
 
     const options = RenderOptions{
@@ -562,7 +564,7 @@ test "sections appear in correct order" {
 
     // Act
     const fg = try g.freeze(allocator);
-    try renderCtg(allocator, fg, options, &out);
+    try renderCtg(allocator, std.testing.io, fg, options, &out);
 
     // Assert: sections in order
     const output = out.items;
@@ -591,7 +593,7 @@ test "file IDs use f: prefix" {
     const allocator = std.testing.allocator;
     var g = try createCtgTestGraph(allocator);
     defer g.deinit(allocator);
-    var out: std.ArrayList(u8) = .{};
+    var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);
 
     const options = RenderOptions{
@@ -601,7 +603,7 @@ test "file IDs use f: prefix" {
 
     // Act
     const fg = try g.freeze(allocator);
-    try renderCtg(allocator, fg, options, &out);
+    try renderCtg(allocator, std.testing.io, fg, options, &out);
 
     // Assert
     const output = out.items;
@@ -624,7 +626,7 @@ test "function IDs use fn: prefix" {
     const allocator = std.testing.allocator;
     var g = try createCtgTestGraph(allocator);
     defer g.deinit(allocator);
-    var out: std.ArrayList(u8) = .{};
+    var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);
 
     const options = RenderOptions{
@@ -634,7 +636,7 @@ test "function IDs use fn: prefix" {
 
     // Act
     const fg = try g.freeze(allocator);
-    try renderCtg(allocator, fg, options, &out);
+    try renderCtg(allocator, std.testing.io, fg, options, &out);
 
     // Assert
     const output = out.items;
@@ -658,7 +660,7 @@ test "type IDs use ty: prefix" {
     const allocator = std.testing.allocator;
     var g = try createCtgTestGraph(allocator);
     defer g.deinit(allocator);
-    var out: std.ArrayList(u8) = .{};
+    var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);
 
     const options = RenderOptions{
@@ -668,7 +670,7 @@ test "type IDs use ty: prefix" {
 
     // Act
     const fg = try g.freeze(allocator);
-    try renderCtg(allocator, fg, options, &out);
+    try renderCtg(allocator, std.testing.io, fg, options, &out);
 
     // Assert
     const output = out.items;
@@ -692,7 +694,7 @@ test "enum IDs use en: prefix" {
     const allocator = std.testing.allocator;
     var g = try createCtgTestGraph(allocator);
     defer g.deinit(allocator);
-    var out: std.ArrayList(u8) = .{};
+    var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);
 
     const options = RenderOptions{
@@ -702,7 +704,7 @@ test "enum IDs use en: prefix" {
 
     // Act
     const fg = try g.freeze(allocator);
-    try renderCtg(allocator, fg, options, &out);
+    try renderCtg(allocator, std.testing.io, fg, options, &out);
 
     // Assert
     const output = out.items;
@@ -749,7 +751,7 @@ test "union IDs use un: prefix" {
         .visibility = .public,
     });
 
-    var out: std.ArrayList(u8) = .{};
+    var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);
 
     const options = RenderOptions{
@@ -759,7 +761,7 @@ test "union IDs use un: prefix" {
 
     // Act
     const fg = try g.freeze(allocator);
-    try renderCtg(allocator, fg, options, &out);
+    try renderCtg(allocator, std.testing.io, fg, options, &out);
 
     // Assert: [unions] section exists with un: prefix
     const output = out.items;
@@ -787,7 +789,7 @@ test "constant IDs use c: prefix" {
     const allocator = std.testing.allocator;
     var g = try createCtgTestGraph(allocator);
     defer g.deinit(allocator);
-    var out: std.ArrayList(u8) = .{};
+    var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);
 
     const options = RenderOptions{
@@ -797,7 +799,7 @@ test "constant IDs use c: prefix" {
 
     // Act
     const fg = try g.freeze(allocator);
-    try renderCtg(allocator, fg, options, &out);
+    try renderCtg(allocator, std.testing.io, fg, options, &out);
 
     // Assert
     const output = out.items;
@@ -821,7 +823,7 @@ test "error IDs use err: prefix" {
     const allocator = std.testing.allocator;
     var g = try createCtgTestGraph(allocator);
     defer g.deinit(allocator);
-    var out: std.ArrayList(u8) = .{};
+    var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);
 
     const options = RenderOptions{
@@ -831,7 +833,7 @@ test "error IDs use err: prefix" {
 
     // Act
     const fg = try g.freeze(allocator);
-    try renderCtg(allocator, fg, options, &out);
+    try renderCtg(allocator, std.testing.io, fg, options, &out);
 
     // Assert
     const output = out.items;
@@ -855,7 +857,7 @@ test "test IDs use t: prefix" {
     const allocator = std.testing.allocator;
     var g = try createCtgTestGraph(allocator);
     defer g.deinit(allocator);
-    var out: std.ArrayList(u8) = .{};
+    var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);
 
     const options = RenderOptions{
@@ -866,7 +868,7 @@ test "test IDs use t: prefix" {
 
     // Act
     const fg = try g.freeze(allocator);
-    try renderCtg(allocator, fg, options, &out);
+    try renderCtg(allocator, std.testing.io, fg, options, &out);
 
     // Assert
     const output = out.items;
@@ -889,7 +891,7 @@ test "external IDs use x: prefix" {
     const allocator = std.testing.allocator;
     var g = try createCtgTestGraph(allocator);
     defer g.deinit(allocator);
-    var out: std.ArrayList(u8) = .{};
+    var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);
 
     const options = RenderOptions{
@@ -900,7 +902,7 @@ test "external IDs use x: prefix" {
 
     // Act
     const fg = try g.freeze(allocator);
-    try renderCtg(allocator, fg, options, &out);
+    try renderCtg(allocator, std.testing.io, fg, options, &out);
 
     // Assert
     const output = out.items;
@@ -924,7 +926,7 @@ test "files sorted by path alphabetical" {
     const allocator = std.testing.allocator;
     var g = try createCtgTestGraph(allocator);
     defer g.deinit(allocator);
-    var out: std.ArrayList(u8) = .{};
+    var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);
 
     const options = RenderOptions{
@@ -934,7 +936,7 @@ test "files sorted by path alphabetical" {
 
     // Act
     const fg = try g.freeze(allocator);
-    try renderCtg(allocator, fg, options, &out);
+    try renderCtg(allocator, std.testing.io, fg, options, &out);
 
     // Assert: file entries are sorted: src/lib.zig before src/main.zig
     const output = out.items;
@@ -948,7 +950,7 @@ test "edges sorted by type then source then target" {
     const allocator = std.testing.allocator;
     var g = try createCtgTestGraph(allocator);
     defer g.deinit(allocator);
-    var out: std.ArrayList(u8) = .{};
+    var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);
 
     const options = RenderOptions{
@@ -958,7 +960,7 @@ test "edges sorted by type then source then target" {
 
     // Act
     const fg = try g.freeze(allocator);
-    try renderCtg(allocator, fg, options, &out);
+    try renderCtg(allocator, std.testing.io, fg, options, &out);
 
     // Assert: within [edges], "calls" < "imports" < "uses_type" (alphabetical)
     const output = out.items;
@@ -983,12 +985,12 @@ test "deterministic output" {
 
     var g1 = try createCtgTestGraph(allocator);
     defer g1.deinit(allocator);
-    var out1: std.ArrayList(u8) = .{};
+    var out1: std.ArrayList(u8) = .empty;
     defer out1.deinit(allocator);
 
     var g2 = try createCtgTestGraph(allocator);
     defer g2.deinit(allocator);
-    var out2: std.ArrayList(u8) = .{};
+    var out2: std.ArrayList(u8) = .empty;
     defer out2.deinit(allocator);
 
     const options = RenderOptions{
@@ -998,9 +1000,9 @@ test "deterministic output" {
 
     // Act
     const fg1 = try g1.freeze(allocator);
-    try renderCtg(allocator, fg1, options, &out1);
+    try renderCtg(allocator, std.testing.io, fg1, options, &out1);
     const fg2 = try g2.freeze(allocator);
-    try renderCtg(allocator, fg2, options, &out2);
+    try renderCtg(allocator, std.testing.io, fg2, options, &out2);
 
     // Assert: byte-identical output
     try std.testing.expectEqualSlices(u8, out1.items, out2.items);
@@ -1011,7 +1013,7 @@ test "empty graph renders without crash" {
     const allocator = std.testing.allocator;
     var g = Graph.init("/tmp/project");
     defer g.deinit(allocator);
-    var out: std.ArrayList(u8) = .{};
+    var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);
 
     const options = RenderOptions{
@@ -1021,7 +1023,7 @@ test "empty graph renders without crash" {
 
     // Act
     const fg = try g.freeze(allocator);
-    try renderCtg(allocator, fg, options, &out);
+    try renderCtg(allocator, std.testing.io, fg, options, &out);
 
     // Assert: has header, no crash
     const output = out.items;
@@ -1034,7 +1036,7 @@ test "single file no functions" {
     const allocator = std.testing.allocator;
     var g = try createSingleFileGraph(allocator);
     defer g.deinit(allocator);
-    var out: std.ArrayList(u8) = .{};
+    var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);
 
     const options = RenderOptions{
@@ -1044,7 +1046,7 @@ test "single file no functions" {
 
     // Act
     const fg = try g.freeze(allocator);
-    try renderCtg(allocator, fg, options, &out);
+    try renderCtg(allocator, std.testing.io, fg, options, &out);
 
     // Assert
     const output = out.items;
@@ -1057,7 +1059,7 @@ test "with scope filters nodes" {
     const allocator = std.testing.allocator;
     var g = try createCtgTestGraph(allocator);
     defer g.deinit(allocator);
-    var out: std.ArrayList(u8) = .{};
+    var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);
 
     const options = RenderOptions{
@@ -1068,7 +1070,7 @@ test "with scope filters nodes" {
 
     // Act
     const fg = try g.freeze(allocator);
-    try renderCtg(allocator, fg, options, &out);
+    try renderCtg(allocator, std.testing.io, fg, options, &out);
 
     // Assert: only src/main.zig nodes appear, not src/lib.zig nodes
     const output = out.items;
@@ -1087,7 +1089,7 @@ test "phantom nodes in externals section" {
     const allocator = std.testing.allocator;
     var g = try createCtgTestGraph(allocator);
     defer g.deinit(allocator);
-    var out: std.ArrayList(u8) = .{};
+    var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);
 
     const options = RenderOptions{
@@ -1098,7 +1100,7 @@ test "phantom nodes in externals section" {
 
     // Act
     const fg = try g.freeze(allocator);
-    try renderCtg(allocator, fg, options, &out);
+    try renderCtg(allocator, std.testing.io, fg, options, &out);
 
     // Assert
     const output = out.items;
@@ -1113,7 +1115,7 @@ test "snapshot line present when options set" {
     const allocator = std.testing.allocator;
     var g = try createCtgTestGraph(allocator);
     defer g.deinit(allocator);
-    var out: std.ArrayList(u8) = .{};
+    var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);
 
     const options = RenderOptions{
@@ -1125,7 +1127,7 @@ test "snapshot line present when options set" {
 
     // Act
     const fg = try g.freeze(allocator);
-    try renderCtg(allocator, fg, options, &out);
+    try renderCtg(allocator, std.testing.io, fg, options, &out);
 
     // Assert
     const output = out.items;
@@ -1137,7 +1139,7 @@ test "snapshot line absent for export" {
     const allocator = std.testing.allocator;
     var g = try createCtgTestGraph(allocator);
     defer g.deinit(allocator);
-    var out: std.ArrayList(u8) = .{};
+    var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);
 
     const options = RenderOptions{
@@ -1147,7 +1149,7 @@ test "snapshot line absent for export" {
 
     // Act
     const fg = try g.freeze(allocator);
-    try renderCtg(allocator, fg, options, &out);
+    try renderCtg(allocator, std.testing.io, fg, options, &out);
 
     // Assert: no snapshot line, exactly 4 header lines
     const output = out.items;

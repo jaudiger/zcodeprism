@@ -50,7 +50,7 @@ pub const Language = types.Language;
 /// `allocator` is passed through to graph mutation methods.
 /// `file_path`, when provided, is stored on each created node for location tracking.
 /// Returns `error.OutOfMemory` if graph mutation fails.
-pub const ParseFn = *const fn (allocator: std.mem.Allocator, source: []const u8, graph: *Graph, file_path: ?[]const u8, logger: Logger) error{OutOfMemory}!void;
+pub const ParseFn = *const fn (allocator: std.mem.Allocator, io: std.Io, source: []const u8, graph: *Graph, file_path: ?[]const u8, logger: Logger) error{OutOfMemory}!void;
 
 /// Resolves external references for a single file's node range.
 ///
@@ -81,6 +81,7 @@ pub const ResolvePhantomsFn = *const fn (
 /// references.
 pub const BuildEdgesFn = *const fn (
     allocator: std.mem.Allocator,
+    io: std.Io,
     source: []const u8,
     graph: *Graph,
     file_idx: usize,
@@ -176,6 +177,7 @@ pub const EnrichResult = struct {
 /// `wl` carries both unresolved AST references and phantom hover sites.
 pub const EnrichFn = *const fn (
     allocator: std.mem.Allocator,
+    io: std.Io,
     graph: *Graph,
     client: *LspClient,
     wl: *const LspWorklist,

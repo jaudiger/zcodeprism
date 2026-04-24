@@ -22,7 +22,7 @@ pub const Cursor = struct {
     pub fn init(position: NodeId) Cursor {
         return .{
             .position = position,
-            .annotations = .{},
+            .annotations = .empty,
             .scope = null,
             .include_tests = false,
             .include_external_nodes = false,

@@ -49,10 +49,10 @@ const VisitorContext = struct {
 ///
 /// On tree-sitter parse failure, a bare file node is still created so the
 /// graph remains consistent.
-pub fn parse(allocator: std.mem.Allocator, source: []const u8, g: *Graph, file_path: ?[]const u8, logger: Logger) error{OutOfMemory}!void {
+pub fn parse(allocator: std.mem.Allocator, io: std.Io, source: []const u8, g: *Graph, file_path: ?[]const u8, logger: Logger) error{OutOfMemory}!void {
     const log = logger.withScope("zig-visitor");
 
-    log.debug("parsing source", &.{Field.uint("bytes", source.len)});
+    log.debug(io, "parsing source", &.{Field.uint("bytes", source.len)});
 
     const line_count = ts_api.countLines(source);
     const ts_lang = ts_api.tree_sitter_zig();
@@ -60,7 +60,7 @@ pub fn parse(allocator: std.mem.Allocator, source: []const u8, g: *Graph, file_p
 
     // Parse source with tree-sitter first so we can collect module doc comments.
     const tree = ts_api.parseSource(ts_lang, source) orelse {
-        log.warn("tree-sitter parse failed", &.{});
+        log.warn(io, "tree-sitter parse failed", &.{});
         // If tree-sitter parsing fails, create a bare file node.
         _ = try g.addNode(allocator, .{
             .id = .root,
@@ -101,13 +101,13 @@ pub fn parse(allocator: std.mem.Allocator, source: []const u8, g: *Graph, file_p
     while (i < root.childCount()) : (i += 1) {
         const child = root.child(i) orelse continue;
         if (!child.isNamed()) continue;
-        try processDeclaration(allocator, &ctx, child, file_id);
+        try processDeclaration(allocator, io, &ctx, child, file_id);
     }
 }
 
 /// Re-parse source and emit cross-file edges for the Zig file at file_idx.
 /// Unresolved references are appended to `wl`.
-pub fn buildEdges(allocator: std.mem.Allocator, source: []const u8, g: *Graph, file_idx: usize, scope_end: usize, file_path: ?[]const u8, graph_index: *const GraphIndex, phantom_mgr: *const phantom_mod.PhantomManager, node_type_map: *eb.NodeTypeMap, wl: *@import("../../lsp/worklist.zig").LspWorklist, logger: Logger) error{OutOfMemory}!void {
+pub fn buildEdges(allocator: std.mem.Allocator, io: std.Io, source: []const u8, g: *Graph, file_idx: usize, scope_end: usize, file_path: ?[]const u8, graph_index: *const GraphIndex, phantom_mgr: *const phantom_mod.PhantomManager, node_type_map: *eb.NodeTypeMap, wl: *@import("../../lsp/worklist.zig").LspWorklist, logger: Logger) error{OutOfMemory}!void {
     const log = logger.withScope("zig-edges");
 
     const ts_lang = ts_api.tree_sitter_zig();
@@ -125,28 +125,28 @@ pub fn buildEdges(allocator: std.mem.Allocator, source: []const u8, g: *Graph, f
     };
     defer ctx.deinit(allocator);
 
-    try cf.buildImportMap(allocator, g, source, root, &ctx, &graph_index.files, file_path, &k, log);
+    try cf.buildImportMap(allocator, io, g, source, root, &ctx, &graph_index.files, file_path, &k, log);
 
-    log.debug("building edges", &.{});
-    try eb.walkForEdges(allocator, g, source, root, &ctx, &k, graph_index, phantom_mgr, node_type_map, wl, log);
+    log.debug(io, "building edges", &.{});
+    try eb.walkForEdges(allocator, io, g, source, root, &ctx, &k, graph_index, phantom_mgr, node_type_map, wl, log);
 }
 
 /// Dispatch a single top-level or nested declaration to the appropriate
 /// handler based on its tree-sitter node kind. Unrecognized kinds are
 /// silently skipped (they produce no graph node).
-fn processDeclaration(allocator: std.mem.Allocator, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
+fn processDeclaration(allocator: std.mem.Allocator, io: std.Io, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
     const kid = ts_node.kindId();
 
     if (kid == ctx.k.variable_declaration) {
-        try processVariableDecl(allocator, ctx, ts_node, parent_id);
+        try processVariableDecl(allocator, io, ctx, ts_node, parent_id);
     } else if (kid == ctx.k.function_declaration) {
-        try processFunctionDecl(allocator, ctx, ts_node, parent_id);
+        try processFunctionDecl(allocator, io, ctx, ts_node, parent_id);
     } else if (kid == ctx.k.test_declaration) {
-        try processTestDecl(allocator, ctx, ts_node, parent_id);
+        try processTestDecl(allocator, io, ctx, ts_node, parent_id);
     } else if (kid == ctx.k.container_field) {
-        try processContainerField(allocator, ctx, ts_node, parent_id);
+        try processContainerField(allocator, io, ctx, ts_node, parent_id);
     } else if (kid == ctx.k.comptime_declaration) {
-        try processComptimeDecl(allocator, ctx, ts_node, parent_id);
+        try processComptimeDecl(allocator, io, ctx, ts_node, parent_id);
     }
 }
 
@@ -207,9 +207,9 @@ fn extractErrorSetNames(allocator: std.mem.Allocator, g: *Graph, source: []const
 /// @This() aliases and private same-name re-exports. Detects Zig-specific
 /// qualifiers (mutable, comptime, packed, extern) and stores them as LangMeta.
 /// Recurses into container bodies for nested declarations.
-fn processVariableDecl(allocator: std.mem.Allocator, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
+fn processVariableDecl(allocator: std.mem.Allocator, io: std.Io, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
     const name = ast.getIdentifierName(ctx.source, ts_node, ctx.k) orelse {
-        ctx.log.trace("skipping variable: no identifier", &.{});
+        ctx.log.trace(io,"skipping variable: no identifier", &.{});
         return;
     };
     const visibility = ast.detectVisibility(ts_node, ctx.k);
@@ -223,7 +223,7 @@ fn processVariableDecl(allocator: std.mem.Allocator, ctx: *const VisitorContext,
     if (kind == .constant) {
         // Skip @This() aliases.
         if (ast.isThisBuiltin(ctx.source, ts_node, ctx.k)) {
-            ctx.log.trace("skipping @This() alias", &.{Field.string("name", name)});
+            ctx.log.trace(io,"skipping @This() alias", &.{Field.string("name", name)});
             return;
         }
 
@@ -232,7 +232,7 @@ fn processVariableDecl(allocator: std.mem.Allocator, ctx: *const VisitorContext,
         if (ast.getFieldExprRootAndLeaf(ctx.source, ts_node, ctx.k)) |info| {
             if (std.mem.eql(u8, info.leaf, name) and visibility == .private) {
                 if (isImportSibling(ctx.g, parent_id, info.root)) {
-                    ctx.log.trace("skipping private re-export", &.{Field.string("name", name)});
+                    ctx.log.trace(io,"skipping private re-export", &.{Field.string("name", name)});
                     return;
                 }
             }
@@ -292,7 +292,7 @@ fn processVariableDecl(allocator: std.mem.Allocator, ctx: *const VisitorContext,
         while (i < body.childCount()) : (i += 1) {
             const child = body.child(i) orelse continue;
             if (!child.isNamed()) continue;
-            try processDeclaration(allocator, ctx, child, node_id);
+            try processDeclaration(allocator, io, ctx, child, node_id);
         }
     }
 }
@@ -390,9 +390,9 @@ fn hasAnonymousChild(node: ts.Node, kind_id: u16) bool {
 /// Extracts the function signature, visibility, doc comment, and
 /// Zig-specific qualifiers (extern, inline, calling convention).
 /// Recurses into the block body to discover inner type definitions.
-fn processFunctionDecl(allocator: std.mem.Allocator, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
+fn processFunctionDecl(allocator: std.mem.Allocator, io: std.Io, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
     const name = ast.getIdentifierName(ctx.source, ts_node, ctx.k) orelse {
-        ctx.log.trace("skipping function: no identifier", &.{});
+        ctx.log.trace(io,"skipping function: no identifier", &.{});
         return;
     };
     const visibility = ast.detectVisibility(ts_node, ctx.k);
@@ -440,11 +440,11 @@ fn processFunctionDecl(allocator: std.mem.Allocator, ctx: *const VisitorContext,
             while (i < body_info.body.childCount()) : (i += 1) {
                 const child = body_info.body.child(i) orelse continue;
                 if (!child.isNamed()) continue;
-                try processDeclaration(allocator, ctx, child, type_id);
+                try processDeclaration(allocator, io, ctx, child, type_id);
             }
             return;
         } else {
-            ctx.log.debug("type-returning function: body not found", &.{Field.string("name", name)});
+            ctx.log.debug(io,"type-returning function: body not found", &.{Field.string("name", name)});
         }
     }
 
@@ -477,16 +477,17 @@ fn processFunctionDecl(allocator: std.mem.Allocator, ctx: *const VisitorContext,
         .col_end = if (ast.getIdentifierNode(ts_node, ctx.k)) |id_node| id_node.endPoint().column else null,
     });
 
-    try emitParameterNodes(allocator, ctx, ts_node, fn_id);
+    try emitParameterNodes(allocator, io, ctx, ts_node, fn_id);
 
     if (block_body) |body| {
-        try discoverInnerTypes(allocator, ctx, body, fn_id);
+        try discoverInnerTypes(allocator, io, ctx, body, fn_id);
     }
 }
 
 /// Iterate the `parameters` child of a function declaration and emit a
 /// `.parameter` node for each named parameter.
-fn emitParameterNodes(allocator: std.mem.Allocator, ctx: *const VisitorContext, fn_decl: ts.Node, fn_id: NodeId) error{OutOfMemory}!void {
+fn emitParameterNodes(allocator: std.mem.Allocator, io: std.Io, ctx: *const VisitorContext, fn_decl: ts.Node, fn_id: NodeId) error{OutOfMemory}!void {
+    _ = io;
     var i: u32 = 0;
     while (i < fn_decl.childCount()) : (i += 1) {
         const child = fn_decl.child(i) orelse continue;
@@ -528,7 +529,7 @@ fn extractFunctionSignature(source: []const u8, ts_node: ts.Node, k: *const Kind
         if (child.kindId() == k.block) {
             const end = child.startByte();
             if (end > start and end <= source.len) {
-                return std.mem.trimRight(u8, source[start..end], " \t\n\r");
+                return std.mem.trimEnd(u8, source[start..end], " \t\n\r");
             }
             return null;
         }
@@ -536,7 +537,7 @@ fn extractFunctionSignature(source: []const u8, ts_node: ts.Node, k: *const Kind
     // No block found (extern function), use full declaration minus trailing semicolon.
     const end = ts_node.endByte();
     if (end > start and end <= source.len) {
-        return std.mem.trimRight(u8, source[start..end], " \t\n\r;");
+        return std.mem.trimEnd(u8, source[start..end], " \t\n\r;");
     }
     return null;
 }
@@ -544,7 +545,7 @@ fn extractFunctionSignature(source: []const u8, ts_node: ts.Node, k: *const Kind
 /// Process a test declaration and add a .test_def node.
 /// Extracts the test name (string literal, decl-reference, or quoted identifier)
 /// and any preceding doc comment. Recurses into the test body for inner types.
-fn processTestDecl(allocator: std.mem.Allocator, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
+fn processTestDecl(allocator: std.mem.Allocator, io: std.Io, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
     const name = ast.getTestName(ctx.source, ts_node, ctx.k);
     const doc = ast.collectDocComment(ctx.source, ts_node, ctx.k);
 
@@ -567,7 +568,7 @@ fn processTestDecl(allocator: std.mem.Allocator, ctx: *const VisitorContext, ts_
     while (i < ts_node.childCount()) : (i += 1) {
         const child = ts_node.child(i) orelse continue;
         if (child.kindId() == ctx.k.block) {
-            try discoverInnerTypes(allocator, ctx, child, test_id);
+            try discoverInnerTypes(allocator, io, ctx, child, test_id);
             break;
         }
     }
@@ -577,12 +578,12 @@ fn processTestDecl(allocator: std.mem.Allocator, ctx: *const VisitorContext, ts_
 /// Comptime blocks are syntactic containers, not semantic entities --
 /// they produce no graph node themselves. Instead, inner type definitions
 /// are promoted to children of the enclosing scope (parent_id).
-fn processComptimeDecl(allocator: std.mem.Allocator, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
+fn processComptimeDecl(allocator: std.mem.Allocator, io: std.Io, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
     var i: u32 = 0;
     while (i < ts_node.childCount()) : (i += 1) {
         const child = ts_node.child(i) orelse continue;
         if (child.kindId() == ctx.k.block) {
-            try discoverInnerTypes(allocator, ctx, child, parent_id);
+            try discoverInnerTypes(allocator, io, ctx, child, parent_id);
             break;
         }
     }
@@ -593,7 +594,7 @@ fn processComptimeDecl(allocator: std.mem.Allocator, ctx: *const VisitorContext,
 /// recursively handles nested declarations (methods, fields, inner types).
 /// Also recurses into nested blocks (if/while/for/comptime bodies) to catch
 /// type definitions at any depth within the block.
-fn discoverInnerTypes(allocator: std.mem.Allocator, ctx: *const VisitorContext, block: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
+fn discoverInnerTypes(allocator: std.mem.Allocator, io: std.Io, ctx: *const VisitorContext, block: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
     var i: u32 = 0;
     while (i < block.childCount()) : (i += 1) {
         const child = block.child(i) orelse continue;
@@ -602,7 +603,7 @@ fn discoverInnerTypes(allocator: std.mem.Allocator, ctx: *const VisitorContext, 
         if (kid == ctx.k.variable_declaration) {
             const classification = ast.classifyVariableValue(ctx.source, child, ctx.k);
             if (classification.body != null) {
-                try processVariableDecl(allocator, ctx, child, parent_id);
+                try processVariableDecl(allocator, io, ctx, child, parent_id);
             }
             continue;
         }
@@ -616,16 +617,16 @@ fn discoverInnerTypes(allocator: std.mem.Allocator, ctx: *const VisitorContext, 
             kid == ctx.k.expression_statement or
             kid == ctx.k.defer_statement)
         {
-            try discoverInnerTypes(allocator, ctx, child, parent_id);
+            try discoverInnerTypes(allocator, io, ctx, child, parent_id);
         }
     }
 }
 
 /// Process a container field (struct field or enum variant) and add a .field node.
 /// Fields are always private. Skips unnamed fields.
-fn processContainerField(allocator: std.mem.Allocator, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
+fn processContainerField(allocator: std.mem.Allocator, io: std.Io, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
     const name = ast.getIdentifierName(ctx.source, ts_node, ctx.k) orelse {
-        ctx.log.trace("skipping field: no identifier", &.{});
+        ctx.log.trace(io,"skipping field: no identifier", &.{});
         return;
     };
     const doc = ast.collectDocComment(ctx.source, ts_node, ctx.k);
@@ -668,7 +669,7 @@ test "simple fixture: nodes, visibility, parents, doc comments" {
     defer g.deinit(std.testing.allocator);
 
     // Act
-    try parse(std.testing.allocator, fixtures.zig.simple, &g, null, Logger.noop);
+    try parse(std.testing.allocator, std.testing.io, fixtures.zig.simple, &g, null, Logger.noop);
 
     // Assert: at least one node of each kind exists
     var found_pub_fn = false;
@@ -704,7 +705,7 @@ test "file node is always first" {
     defer g.deinit(std.testing.allocator);
 
     // Act
-    try parse(std.testing.allocator, fixtures.zig.simple, &g, "test/fixtures/zig/simple.zig", Logger.noop);
+    try parse(std.testing.allocator, std.testing.io, fixtures.zig.simple, &g, "test/fixtures/zig/simple.zig", Logger.noop);
 
     // Assert: first node is file node
     const first = g.getNode(@enumFromInt(0)).?;
@@ -717,7 +718,7 @@ test "file node has line_end" {
     defer g.deinit(std.testing.allocator);
 
     // Act
-    try parse(std.testing.allocator, fixtures.zig.simple, &g, null, Logger.noop);
+    try parse(std.testing.allocator, std.testing.io, fixtures.zig.simple, &g, null, Logger.noop);
 
     // Assert: file node line_end > 1 for non-empty source
     const file_node = g.getNode(@enumFromInt(0)).?;
@@ -731,7 +732,7 @@ test "struct methods are children" {
     defer g.deinit(std.testing.allocator);
 
     // Act
-    try parse(std.testing.allocator, fixtures.zig.simple, &g, null, Logger.noop);
+    try parse(std.testing.allocator, std.testing.io, fixtures.zig.simple, &g, null, Logger.noop);
 
     // Assert: at least one function has a type_def parent
     var found_method = false;
@@ -756,7 +757,7 @@ test "doc comment attached to function" {
     defer g.deinit(std.testing.allocator);
 
     // Act
-    try parse(std.testing.allocator, fixtures.zig.simple, &g, null, Logger.noop);
+    try parse(std.testing.allocator, std.testing.io, fixtures.zig.simple, &g, null, Logger.noop);
 
     // Assert: at least one function has a doc comment
     var found_doc = false;
@@ -777,7 +778,7 @@ test "empty file produces single file node" {
     defer g.deinit(std.testing.allocator);
 
     // Act
-    try parse(std.testing.allocator, fixtures.zig.edge_cases.empty, &g, null, Logger.noop);
+    try parse(std.testing.allocator, std.testing.io, fixtures.zig.edge_cases.empty, &g, null, Logger.noop);
 
     // Assert: exactly 1 node
     try std.testing.expectEqual(@as(usize, 1), g.nodeCount());
@@ -791,7 +792,7 @@ test "only_comments file produces single file node" {
     defer g.deinit(std.testing.allocator);
 
     // Act
-    try parse(std.testing.allocator, fixtures.zig.edge_cases.only_comments, &g, null, Logger.noop);
+    try parse(std.testing.allocator, std.testing.io, fixtures.zig.edge_cases.only_comments, &g, null, Logger.noop);
 
     // Assert: only file node
     try std.testing.expectEqual(@as(usize, 1), g.nodeCount());
@@ -803,7 +804,7 @@ test "no_pub file has no public declarations" {
     defer g.deinit(std.testing.allocator);
 
     // Act
-    try parse(std.testing.allocator, fixtures.zig.edge_cases.no_pub, &g, null, Logger.noop);
+    try parse(std.testing.allocator, std.testing.io, fixtures.zig.edge_cases.no_pub, &g, null, Logger.noop);
 
     // Assert: no public nodes except the file node itself
     var i: usize = 1;
@@ -819,7 +820,7 @@ test "language is always zig" {
     defer g.deinit(std.testing.allocator);
 
     // Act
-    try parse(std.testing.allocator, fixtures.zig.simple, &g, null, Logger.noop);
+    try parse(std.testing.allocator, std.testing.io, fixtures.zig.simple, &g, null, Logger.noop);
 
     // Assert: every node has language == .zig
     var i: usize = 0;
@@ -835,7 +836,7 @@ test "file_struct fixture: @This aliases skipped" {
     defer g.deinit(std.testing.allocator);
 
     // Act
-    try parse(std.testing.allocator, fixtures.zig.file_struct, &g, null, Logger.noop);
+    try parse(std.testing.allocator, std.testing.io, fixtures.zig.file_struct, &g, null, Logger.noop);
 
     // Assert: no node named "Self" (the @This() alias is skipped)
     var found_self = false;
@@ -856,7 +857,7 @@ test "generic_type fixture: type-returning functions promoted to types" {
     defer g.deinit(std.testing.allocator);
 
     // Act
-    try parse(std.testing.allocator, fixtures.zig.generic_type, &g, null, Logger.noop);
+    try parse(std.testing.allocator, std.testing.io, fixtures.zig.generic_type, &g, null, Logger.noop);
 
     // Assert: at least one type_def exists with a method child (promoted generic fn)
     var found_promoted_type = false;
@@ -881,7 +882,7 @@ test "deeply_nested fixture: types at multiple nesting levels" {
     defer g.deinit(std.testing.allocator);
 
     // Act
-    try parse(std.testing.allocator, fixtures.zig.edge_cases.deeply_nested, &g, null, Logger.noop);
+    try parse(std.testing.allocator, std.testing.io, fixtures.zig.edge_cases.deeply_nested, &g, null, Logger.noop);
 
     // Assert: at least 3 different nesting depth levels (file -> fn -> inner type)
     var max_depth: u32 = 0;
@@ -904,7 +905,7 @@ test "function signatures extracted correctly" {
     defer g.deinit(std.testing.allocator);
 
     // Act
-    try parse(std.testing.allocator, fixtures.zig.simple, &g, null, Logger.noop);
+    try parse(std.testing.allocator, std.testing.io, fixtures.zig.simple, &g, null, Logger.noop);
 
     // Assert: at least one function has a non-null signature starting with "pub fn" or "fn"
     var found_sig = false;
@@ -928,7 +929,7 @@ test "import_decl has signature with path" {
     defer g.deinit(std.testing.allocator);
 
     // Act
-    try parse(std.testing.allocator, fixtures.zig.simple, &g, null, Logger.noop);
+    try parse(std.testing.allocator, std.testing.io, fixtures.zig.simple, &g, null, Logger.noop);
 
     // Assert: at least one import_decl has a non-null signature
     var found = false;
@@ -949,7 +950,7 @@ test "module doc comment attached to file node" {
     defer g.deinit(std.testing.allocator);
 
     // Act
-    try parse(std.testing.allocator, fixtures.zig.simple, &g, null, Logger.noop);
+    try parse(std.testing.allocator, std.testing.io, fixtures.zig.simple, &g, null, Logger.noop);
 
     // Assert: file node (index 0) has doc (module doc comment)
     const file_node = g.getNode(@enumFromInt(0)).?;
@@ -962,7 +963,7 @@ test "fields are private" {
     defer g.deinit(std.testing.allocator);
 
     // Act
-    try parse(std.testing.allocator, fixtures.zig.simple, &g, null, Logger.noop);
+    try parse(std.testing.allocator, std.testing.io, fixtures.zig.simple, &g, null, Logger.noop);
 
     // Assert: all .field nodes are private
     var i: usize = 0;
@@ -980,7 +981,7 @@ test "error_def has signature and error_set_names from AST" {
     defer g.deinit(std.testing.allocator);
 
     // Act
-    try parse(std.testing.allocator, fixtures.zig.simple, &g, null, Logger.noop);
+    try parse(std.testing.allocator, std.testing.io, fixtures.zig.simple, &g, null, Logger.noop);
 
     // Assert: ParseError error_def has signature and extracted names
     var found = false;
@@ -1008,7 +1009,7 @@ test "line numbers are 1-based" {
     defer g.deinit(std.testing.allocator);
 
     // Act
-    try parse(std.testing.allocator, fixtures.zig.simple, &g, null, Logger.noop);
+    try parse(std.testing.allocator, std.testing.io, fixtures.zig.simple, &g, null, Logger.noop);
 
     // Assert: all nodes have line_start >= 1
     var i: usize = 0;
@@ -1024,7 +1025,7 @@ test "local_type_param fixture: method calls via local-type params" {
     defer g.deinit(std.testing.allocator);
 
     // Act
-    try parse(std.testing.allocator, fixtures.zig.edge_cases.local_type_param, &g, null, Logger.noop);
+    try parse(std.testing.allocator, std.testing.io, fixtures.zig.edge_cases.local_type_param, &g, null, Logger.noop);
 
     // Assert: the Processor type_def exists with the expected methods
     var found_processor = false;
@@ -1045,7 +1046,7 @@ test "generic_type fixture: enum-returning generic promoted to enum_def" {
     defer g.deinit(std.testing.allocator);
 
     // Act
-    try parse(std.testing.allocator, fixtures.zig.generic_type, &g, null, Logger.noop);
+    try parse(std.testing.allocator, std.testing.io, fixtures.zig.generic_type, &g, null, Logger.noop);
 
     // Assert: find a node named "StatusEnum" that is an enum_def
     var found = false;
@@ -1066,7 +1067,7 @@ test "generic_type fixture: union-returning generic promoted to union_def" {
     defer g.deinit(std.testing.allocator);
 
     // Act
-    try parse(std.testing.allocator, fixtures.zig.generic_type, &g, null, Logger.noop);
+    try parse(std.testing.allocator, std.testing.io, fixtures.zig.generic_type, &g, null, Logger.noop);
 
     // Assert: find a node named "ValueUnion" that is a union_def
     var found = false;
@@ -1087,7 +1088,7 @@ test "generic_type fixture: type signature preserved on promoted types" {
     defer g.deinit(std.testing.allocator);
 
     // Act
-    try parse(std.testing.allocator, fixtures.zig.generic_type, &g, null, Logger.noop);
+    try parse(std.testing.allocator, std.testing.io, fixtures.zig.generic_type, &g, null, Logger.noop);
 
     // Assert: find a node that is a type container with a non-null signature
     // containing parameter info from the generic function header

@@ -68,17 +68,17 @@ pub const CargoInfo = struct {
 
 /// Parse a Cargo.toml content string and extract package, dependency, target,
 /// and workspace information.
-pub fn parseCargoToml(allocator: Allocator, content: []const u8, log: Logger) !CargoInfo {
+pub fn parseCargoToml(allocator: Allocator, io: std.Io, content: []const u8, log: Logger) !CargoInfo {
     var result: CargoInfo = .{};
     errdefer result.deinit(allocator);
 
-    var deps = std.ArrayList(CargoInfo.DepEntry){};
+    var deps = std.ArrayList(CargoInfo.DepEntry).empty;
     defer deps.deinit(allocator);
-    var dev_deps = std.ArrayList(CargoInfo.DepEntry){};
+    var dev_deps = std.ArrayList(CargoInfo.DepEntry).empty;
     defer dev_deps.deinit(allocator);
-    var bin_targets = std.ArrayList(CargoInfo.TargetEntry){};
+    var bin_targets = std.ArrayList(CargoInfo.TargetEntry).empty;
     defer bin_targets.deinit(allocator);
-    var workspace_members = std.ArrayList([]u8){};
+    var workspace_members = std.ArrayList([]u8).empty;
     defer workspace_members.deinit(allocator);
 
     var section: Section = .none;
@@ -92,8 +92,8 @@ pub fn parseCargoToml(allocator: Allocator, content: []const u8, log: Logger) !C
 
     var line_iter = std.mem.splitScalar(u8, content, '\n');
     while (line_iter.next()) |raw_line| {
-        const line = std.mem.trimRight(u8, raw_line, "\r");
-        const trimmed = std.mem.trimLeft(u8, line, " \t");
+        const line = std.mem.trimEnd(u8, raw_line, "\r");
+        const trimmed = std.mem.trimStart(u8, line, " \t");
 
         if (trimmed.len == 0) continue;
         if (trimmed[0] == '#') continue;
@@ -219,7 +219,7 @@ pub fn parseCargoToml(allocator: Allocator, content: []const u8, log: Logger) !C
         result.lib_target = .{ .name = lib_name, .path = lib_path };
     }
 
-    log.debug("parsed Cargo.toml", &.{
+    log.debug(io, "parsed Cargo.toml", &.{
         logging.Field.string("package", result.package_name orelse "(none)"),
         logging.Field.uint("deps", if (result.dependencies) |d| d.len else 0),
     });
@@ -249,8 +249,8 @@ const KV = struct { key: []const u8, value: []const u8 };
 /// Extract a simple key = "value" pair. Returns null if the value is not quoted.
 fn parseKeyValue(line: []const u8) ?KV {
     const eq = std.mem.indexOfScalar(u8, line, '=') orelse return null;
-    const key = std.mem.trimRight(u8, line[0..eq], " \t");
-    const after_eq = std.mem.trimLeft(u8, line[eq + 1 ..], " \t");
+    const key = std.mem.trimEnd(u8, line[0..eq], " \t");
+    const after_eq = std.mem.trimStart(u8, line[eq + 1 ..], " \t");
     if (after_eq.len < 2 or after_eq[0] != '"') return null;
     const close_quote = std.mem.indexOfScalarPos(u8, after_eq, 1, '"') orelse return null;
     return .{ .key = key, .value = after_eq[1..close_quote] };
@@ -266,10 +266,10 @@ fn extractQuotedValue(line: []const u8) ?[]const u8 {
 /// Parse a dependency line: either `name = "version"` or `name = { version = "...", ... }`.
 fn parseDep(allocator: Allocator, line: []const u8, list: *std.ArrayList(CargoInfo.DepEntry)) !void {
     const eq = std.mem.indexOfScalar(u8, line, '=') orelse return;
-    const name_raw = std.mem.trimRight(u8, line[0..eq], " \t");
+    const name_raw = std.mem.trimEnd(u8, line[0..eq], " \t");
     if (name_raw.len == 0) return;
 
-    const after_eq = std.mem.trimLeft(u8, line[eq + 1 ..], " \t");
+    const after_eq = std.mem.trimStart(u8, line[eq + 1 ..], " \t");
 
     const dep_name = try allocator.dupe(u8, name_raw);
     errdefer allocator.free(dep_name);
@@ -300,7 +300,7 @@ fn extractVersionFromInlineTable(table: []const u8) ?[]const u8 {
     const pos = std.mem.indexOf(u8, table, needle) orelse return null;
     const after_key = table[pos + needle.len ..];
     const eq = std.mem.indexOfScalar(u8, after_key, '=') orelse return null;
-    const after_eq = std.mem.trimLeft(u8, after_key[eq + 1 ..], " \t");
+    const after_eq = std.mem.trimStart(u8, after_key[eq + 1 ..], " \t");
     if (after_eq.len < 2 or after_eq[0] != '"') return null;
     const close = std.mem.indexOfScalarPos(u8, after_eq, 1, '"') orelse return null;
     return after_eq[1..close];
@@ -320,19 +320,21 @@ fn collectArrayMembers(allocator: Allocator, text: []const u8, list: *std.ArrayL
 }
 
 /// Read and parse the Cargo.toml file at the given project root directory.
-pub fn parseCargoManifest(allocator: Allocator, project_root: []const u8, log: Logger) !CargoInfo {
+pub fn parseCargoManifest(allocator: Allocator, io: std.Io, project_root: []const u8, log: Logger) !CargoInfo {
     const max_manifest_bytes: usize = 1024 * 1024;
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const joined = std.fmt.bufPrint(&path_buf, "{s}/Cargo.toml", .{project_root}) catch return .{};
 
-    const file = std.fs.openFileAbsolute(joined, .{}) catch return .{};
-    defer file.close();
+    const file = std.Io.Dir.openFileAbsolute(io, joined, .{}) catch return .{};
+    defer file.close(io);
 
-    const content = file.readToEndAlloc(allocator, max_manifest_bytes) catch return .{};
+    var rbuf: [4096]u8 = undefined;
+    var reader = file.reader(io, &rbuf);
+    const content = reader.interface.allocRemaining(allocator, .limited(max_manifest_bytes)) catch return .{};
     defer allocator.free(content);
 
-    return parseCargoToml(allocator, content, log);
+    return parseCargoToml(allocator, io, content, log);
 }
 
 test "parseCargoToml extracts package and dependencies" {
@@ -352,7 +354,7 @@ test "parseCargoToml extracts package and dependencies" {
     ;
 
     // Act
-    const info = try parseCargoToml(allocator, content, Logger.noop);
+    const info = try parseCargoToml(allocator, std.testing.io, content, Logger.noop);
     defer info.deinit(allocator);
 
     // Assert
@@ -372,7 +374,7 @@ test "parseCargoToml handles empty and missing sections" {
     const allocator = std.testing.allocator;
 
     // Act: empty content
-    const empty_info = try parseCargoToml(allocator, "", Logger.noop);
+    const empty_info = try parseCargoToml(allocator, std.testing.io, "", Logger.noop);
     defer empty_info.deinit(allocator);
 
     // Assert: all fields null
@@ -385,7 +387,7 @@ test "parseCargoToml handles empty and missing sections" {
         \\name = "bare"
         \\version = "1.0.0"
     ;
-    const pkg_info = try parseCargoToml(allocator, pkg_only, Logger.noop);
+    const pkg_info = try parseCargoToml(allocator, std.testing.io, pkg_only, Logger.noop);
     defer pkg_info.deinit(allocator);
 
     // Assert

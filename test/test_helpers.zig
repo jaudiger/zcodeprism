@@ -14,12 +14,12 @@ pub const FileEntry = struct {
 };
 
 /// Write fixture files into a directory, creating parent subdirectories as needed.
-pub fn writeFixtureFiles(dir: std.fs.Dir, files: []const FileEntry) !void {
+pub fn writeFixtureFiles(io: std.Io, dir: std.Io.Dir, files: []const FileEntry) !void {
     for (files) |f| {
         if (std.fs.path.dirname(f.sub_path)) |parent| {
-            try dir.makePath(parent);
+            try dir.createDirPath(io, parent);
         }
-        try dir.writeFile(.{ .sub_path = f.sub_path, .data = f.data });
+        try dir.writeFile(io, .{ .sub_path = f.sub_path, .data = f.data });
     }
 }
 

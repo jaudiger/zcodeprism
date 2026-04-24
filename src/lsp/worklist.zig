@@ -52,9 +52,9 @@ pub const WorklistEntry = struct {
 pub const LspWorklist = struct {
     /// Unresolved AST references: definition, type_definition, hover for
     /// local functions, and references queries.
-    entries: std.ArrayList(WorklistEntry) = .{},
+    entries: std.ArrayList(WorklistEntry) = .empty,
     /// Hover sites for phantom (external) nodes, one entry per phantom NodeId.
-    phantom_hovers: std.ArrayList(WorklistEntry) = .{},
+    phantom_hovers: std.ArrayList(WorklistEntry) = .empty,
 
     pub fn deinit(self: *LspWorklist, allocator: std.mem.Allocator) void {
         self.entries.deinit(allocator);

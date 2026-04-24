@@ -116,18 +116,18 @@ pub fn appendNum(out: *std.ArrayList(u8), allocator: std.mem.Allocator, val: usi
     try out.appendSlice(allocator, s);
 }
 
-/// Appends the current UTC wall-clock time as an ISO-8601 timestamp
-/// to the output buffer.
-pub fn appendCurrentTimestamp(out: *std.ArrayList(u8), allocator: std.mem.Allocator) !void {
-    const epoch = std.time.timestamp();
-    const es = std.time.epoch.EpochSeconds{ .secs = @intCast(@max(0, epoch)) };
+/// Writes the current UTC wall-clock time as an ISO-8601 timestamp into
+/// `buf` and returns the slice. Buffer must be at least 20 bytes.
+pub fn formatIsoTimestamp(buf: []u8, io: std.Io) []const u8 {
+    const ns = std.Io.Timestamp.now(io, .real).nanoseconds;
+    const secs: i64 = @intCast(@divTrunc(ns, std.time.ns_per_s));
+    const es = std.time.epoch.EpochSeconds{ .secs = @intCast(@max(0, secs)) };
     const day = es.getEpochDay();
     const yd = day.calculateYearDay();
     const md = yd.calculateMonthDay();
     const ds = es.getDaySeconds();
 
-    var buf: [25]u8 = undefined;
-    const ts = std.fmt.bufPrint(&buf, "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z", .{
+    return std.fmt.bufPrint(buf, "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z", .{
         yd.year,
         @as(u32, @intFromEnum(md.month)),
         @as(u32, md.day_index) + 1,
@@ -135,7 +135,6 @@ pub fn appendCurrentTimestamp(out: *std.ArrayList(u8), allocator: std.mem.Alloca
         ds.getMinutesIntoHour(),
         ds.getSecondsIntoMinute(),
     }) catch unreachable;
-    try out.appendSlice(allocator, ts);
 }
 
 /// Returns the canonical string name for an edge type.
@@ -207,7 +206,7 @@ pub fn collectPhantomSymbols(
 ) !void {
     for (children_index.childrenOf(parent_idx)) |child_idx| {
         const n = g.nodes.items[child_idx];
-        var path_buf = std.ArrayList(u8){};
+        var path_buf = std.ArrayList(u8).empty;
         defer path_buf.deinit(allocator);
         if (parent_path.len > 0) {
             try path_buf.appendSlice(allocator, parent_path);
@@ -238,13 +237,13 @@ pub const IdWalkState = struct {
     err_counter: u32 = 0,
     t_counter: u32 = 0,
     m_counter: u32 = 0,
-    type_indices: std.ArrayList(usize) = .{},
-    union_indices: std.ArrayList(usize) = .{},
-    enum_indices: std.ArrayList(usize) = .{},
-    fn_indices: std.ArrayList(usize) = .{},
-    const_indices: std.ArrayList(usize) = .{},
-    err_indices: std.ArrayList(usize) = .{},
-    test_indices: std.ArrayList(usize) = .{},
+    type_indices: std.ArrayList(usize) = .empty,
+    union_indices: std.ArrayList(usize) = .empty,
+    enum_indices: std.ArrayList(usize) = .empty,
+    fn_indices: std.ArrayList(usize) = .empty,
+    const_indices: std.ArrayList(usize) = .empty,
+    err_indices: std.ArrayList(usize) = .empty,
+    test_indices: std.ArrayList(usize) = .empty,
 
     /// Frees all per-kind index lists.
     pub fn deinit(self: *IdWalkState, allocator: std.mem.Allocator) void {
@@ -439,9 +438,9 @@ fn collectScanResults(
     errdefer child_counts.deinit(allocator);
     var total_children: usize = 0;
     var languages = LanguageSet{ .has_zig = false, .has_rust = false };
-    var file_nodes = std.ArrayList(usize){};
+    var file_nodes = std.ArrayList(usize).empty;
     errdefer file_nodes.deinit(allocator);
-    var phantom_roots = std.ArrayList(usize){};
+    var phantom_roots = std.ArrayList(usize).empty;
     errdefer phantom_roots.deinit(allocator);
 
     for (g.nodes.items, 0..) |n, i| {
@@ -562,7 +561,7 @@ fn buildPhantomPackages(
     ids: []?IdEntry,
     children_index: *const ChildrenIndex,
 ) !struct { packages: std.ArrayList(PhantomPackage), lookup: std.AutoHashMapUnmanaged(usize, PhantomNodeInfo) } {
-    var phantom_packages = std.ArrayList(PhantomPackage){};
+    var phantom_packages = std.ArrayList(PhantomPackage).empty;
     errdefer {
         for (phantom_packages.items) |*pkg| pkg.deinit(allocator);
         phantom_packages.deinit(allocator);
@@ -576,7 +575,7 @@ fn buildPhantomPackages(
         var pkg = PhantomPackage{
             .root_idx = i,
             .x_num = x_counter,
-            .symbols = .{},
+            .symbols = .empty,
         };
         errdefer pkg.deinit(allocator);
         try collectPhantomSymbols(allocator, g, i, "", &pkg.symbols, children_index);
@@ -639,7 +638,7 @@ pub fn buildIdAssignment(
     }.lessThan);
 
     // Assign file IDs and walk children.
-    var file_indices = std.ArrayList(usize){};
+    var file_indices = std.ArrayList(usize).empty;
     errdefer file_indices.deinit(allocator);
     var state = IdWalkState{};
     errdefer state.deinit(allocator);

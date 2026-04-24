@@ -7,7 +7,6 @@ const Graph = graph_mod.Graph;
 const FrozenGraph = graph_mod.FrozenGraph;
 
 const appendNum = common.appendNum;
-const appendCurrentTimestamp = common.appendCurrentTimestamp;
 
 /// Options controlling Mermaid flowchart rendering output.
 pub const MermaidOptions = struct {
@@ -24,6 +23,7 @@ pub const MermaidOptions = struct {
 /// See `docs/specs/mermaid.md` for the full format specification.
 pub fn renderMermaid(
     allocator: std.mem.Allocator,
+    io: std.Io,
     fg: FrozenGraph,
     options: MermaidOptions,
     out: *std.ArrayList(u8),
@@ -82,7 +82,8 @@ pub fn renderMermaid(
     if (options.timestamp) |ts| {
         try out.appendSlice(allocator, ts);
     } else {
-        try appendCurrentTimestamp(out, allocator);
+        var ts_buf: [32]u8 = undefined;
+        try out.appendSlice(allocator, common.formatIsoTimestamp(&ts_buf, io));
     }
     try out.append(allocator, '\n');
 
@@ -348,7 +349,7 @@ test "header line 1 matches spec" {
     const allocator = std.testing.allocator;
     var g = try createMermaidTestGraph(allocator);
     defer g.deinit(allocator);
-    var out: std.ArrayList(u8) = .{};
+    var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);
 
     const options = MermaidOptions{
@@ -358,7 +359,7 @@ test "header line 1 matches spec" {
 
     // Act
     const fg = try g.freeze(allocator);
-    try renderMermaid(allocator, fg, options, &out);
+    try renderMermaid(allocator, std.testing.io, fg, options, &out);
 
     // Assert: first line: "%% zcodeprism mermaid -- myproject"
     const output = out.items;
@@ -372,7 +373,7 @@ test "header line 2 has stats" {
     const allocator = std.testing.allocator;
     var g = try createMermaidTestGraph(allocator);
     defer g.deinit(allocator);
-    var out: std.ArrayList(u8) = .{};
+    var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);
 
     const options = MermaidOptions{
@@ -382,7 +383,7 @@ test "header line 2 has stats" {
 
     // Act
     const fg = try g.freeze(allocator);
-    try renderMermaid(allocator, fg, options, &out);
+    try renderMermaid(allocator, std.testing.io, fg, options, &out);
 
     // Assert: second line starts with "%% " and contains "files" and "functions"
     const output = out.items;
@@ -399,7 +400,7 @@ test "header line 3 has timestamp" {
     const allocator = std.testing.allocator;
     var g = try createMermaidTestGraph(allocator);
     defer g.deinit(allocator);
-    var out: std.ArrayList(u8) = .{};
+    var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);
 
     const options = MermaidOptions{
@@ -409,7 +410,7 @@ test "header line 3 has timestamp" {
 
     // Act
     const fg = try g.freeze(allocator);
-    try renderMermaid(allocator, fg, options, &out);
+    try renderMermaid(allocator, std.testing.io, fg, options, &out);
 
     // Assert: third line: "%% generated 2026-02-14T10:30:00Z"
     const output = out.items;
@@ -425,7 +426,7 @@ test "starts with flowchart TB" {
     const allocator = std.testing.allocator;
     var g = try createMermaidTestGraph(allocator);
     defer g.deinit(allocator);
-    var out: std.ArrayList(u8) = .{};
+    var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);
 
     const options = MermaidOptions{
@@ -435,7 +436,7 @@ test "starts with flowchart TB" {
 
     // Act
     const fg = try g.freeze(allocator);
-    try renderMermaid(allocator, fg, options, &out);
+    try renderMermaid(allocator, std.testing.io, fg, options, &out);
 
     // Assert: first non-comment non-empty line is "flowchart TB"
     const output = out.items;
@@ -453,7 +454,7 @@ test "sections appear in correct order" {
     const allocator = std.testing.allocator;
     var g = try createMermaidTestGraph(allocator);
     defer g.deinit(allocator);
-    var out: std.ArrayList(u8) = .{};
+    var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);
 
     const options = MermaidOptions{
@@ -463,7 +464,7 @@ test "sections appear in correct order" {
 
     // Act
     const fg = try g.freeze(allocator);
-    try renderMermaid(allocator, fg, options, &out);
+    try renderMermaid(allocator, std.testing.io, fg, options, &out);
 
     // Assert: section markers in order
     const output = out.items;
@@ -488,7 +489,7 @@ test "classDef styles are alphabetical" {
     const allocator = std.testing.allocator;
     var g = try createMermaidTestGraph(allocator);
     defer g.deinit(allocator);
-    var out: std.ArrayList(u8) = .{};
+    var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);
 
     const options = MermaidOptions{
@@ -498,7 +499,7 @@ test "classDef styles are alphabetical" {
 
     // Act
     const fg = try g.freeze(allocator);
-    try renderMermaid(allocator, fg, options, &out);
+    try renderMermaid(allocator, std.testing.io, fg, options, &out);
 
     // Assert: classDef names appear in alphabetical order
     const output = out.items;
@@ -527,12 +528,12 @@ test "deterministic output" {
 
     var g1 = try createMermaidTestGraph(allocator);
     defer g1.deinit(allocator);
-    var out1: std.ArrayList(u8) = .{};
+    var out1: std.ArrayList(u8) = .empty;
     defer out1.deinit(allocator);
 
     var g2 = try createMermaidTestGraph(allocator);
     defer g2.deinit(allocator);
-    var out2: std.ArrayList(u8) = .{};
+    var out2: std.ArrayList(u8) = .empty;
     defer out2.deinit(allocator);
 
     const options = MermaidOptions{
@@ -542,9 +543,9 @@ test "deterministic output" {
 
     // Act
     const fg1 = try g1.freeze(allocator);
-    try renderMermaid(allocator, fg1, options, &out1);
+    try renderMermaid(allocator, std.testing.io, fg1, options, &out1);
     const fg2 = try g2.freeze(allocator);
-    try renderMermaid(allocator, fg2, options, &out2);
+    try renderMermaid(allocator, std.testing.io, fg2, options, &out2);
 
     // Assert: byte-identical output
     try std.testing.expectEqualSlices(u8, out1.items, out2.items);
@@ -555,7 +556,7 @@ test "functions use rectangle shape" {
     const allocator = std.testing.allocator;
     var g = try createMermaidTestGraph(allocator);
     defer g.deinit(allocator);
-    var out: std.ArrayList(u8) = .{};
+    var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);
 
     const options = MermaidOptions{
@@ -565,7 +566,7 @@ test "functions use rectangle shape" {
 
     // Act
     const fg = try g.freeze(allocator);
-    try renderMermaid(allocator, fg, options, &out);
+    try renderMermaid(allocator, std.testing.io, fg, options, &out);
 
     // Assert: output contains rectangle shape for function: fn_N["fn: main"]
     const output = out.items;
@@ -577,7 +578,7 @@ test "type_def nodes use subroutine shape" {
     const allocator = std.testing.allocator;
     var g = try createMermaidTestGraph(allocator);
     defer g.deinit(allocator);
-    var out: std.ArrayList(u8) = .{};
+    var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);
 
     const options = MermaidOptions{
@@ -587,7 +588,7 @@ test "type_def nodes use subroutine shape" {
 
     // Act
     const fg = try g.freeze(allocator);
-    try renderMermaid(allocator, fg, options, &out);
+    try renderMermaid(allocator, std.testing.io, fg, options, &out);
 
     // Assert: output contains subroutine shape: ty_N[["struct: Tokenizer"]]
     const output = out.items;
@@ -599,7 +600,7 @@ test "enums use hexagon shape" {
     const allocator = std.testing.allocator;
     var g = try createMermaidTestGraph(allocator);
     defer g.deinit(allocator);
-    var out: std.ArrayList(u8) = .{};
+    var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);
 
     const options = MermaidOptions{
@@ -609,7 +610,7 @@ test "enums use hexagon shape" {
 
     // Act
     const fg = try g.freeze(allocator);
-    try renderMermaid(allocator, fg, options, &out);
+    try renderMermaid(allocator, std.testing.io, fg, options, &out);
 
     // Assert: output contains hexagon shape: en_N{{"enum: TokenKind"}}
     const output = out.items;
@@ -621,7 +622,7 @@ test "constants use parallelogram shape" {
     const allocator = std.testing.allocator;
     var g = try createMermaidTestGraph(allocator);
     defer g.deinit(allocator);
-    var out: std.ArrayList(u8) = .{};
+    var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);
 
     const options = MermaidOptions{
@@ -631,7 +632,7 @@ test "constants use parallelogram shape" {
 
     // Act
     const fg = try g.freeze(allocator);
-    try renderMermaid(allocator, fg, options, &out);
+    try renderMermaid(allocator, std.testing.io, fg, options, &out);
 
     // Assert: output contains parallelogram shape: c_N[/"const: MAX_SIZE"/]
     const output = out.items;
@@ -643,7 +644,7 @@ test "methods labeled with parent type" {
     const allocator = std.testing.allocator;
     var g = try createMermaidTestGraph(allocator);
     defer g.deinit(allocator);
-    var out: std.ArrayList(u8) = .{};
+    var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);
 
     const options = MermaidOptions{
@@ -653,7 +654,7 @@ test "methods labeled with parent type" {
 
     // Act
     const fg = try g.freeze(allocator);
-    try renderMermaid(allocator, fg, options, &out);
+    try renderMermaid(allocator, std.testing.io, fg, options, &out);
 
     // Assert: method "next" on Tokenizer appears as "fn: Tokenizer.next"
     const output = out.items;
@@ -665,7 +666,7 @@ test "calls edges use solid arrow" {
     const allocator = std.testing.allocator;
     var g = try createMermaidTestGraph(allocator);
     defer g.deinit(allocator);
-    var out: std.ArrayList(u8) = .{};
+    var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);
 
     const options = MermaidOptions{
@@ -675,7 +676,7 @@ test "calls edges use solid arrow" {
 
     // Act
     const fg = try g.freeze(allocator);
-    try renderMermaid(allocator, fg, options, &out);
+    try renderMermaid(allocator, std.testing.io, fg, options, &out);
 
     // Assert: calls edges use "-->" syntax
     const output = out.items;
@@ -687,7 +688,7 @@ test "imports edges use dotted arrow" {
     const allocator = std.testing.allocator;
     var g = try createMermaidTestGraph(allocator);
     defer g.deinit(allocator);
-    var out: std.ArrayList(u8) = .{};
+    var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);
 
     const options = MermaidOptions{
@@ -697,7 +698,7 @@ test "imports edges use dotted arrow" {
 
     // Act
     const fg = try g.freeze(allocator);
-    try renderMermaid(allocator, fg, options, &out);
+    try renderMermaid(allocator, std.testing.io, fg, options, &out);
 
     // Assert: imports edges use "-.->'" syntax
     const output = out.items;
@@ -709,7 +710,7 @@ test "empty graph renders without crash" {
     const allocator = std.testing.allocator;
     var g = Graph.init("/tmp/project");
     defer g.deinit(allocator);
-    var out: std.ArrayList(u8) = .{};
+    var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);
 
     const options = MermaidOptions{
@@ -719,7 +720,7 @@ test "empty graph renders without crash" {
 
     // Act
     const fg = try g.freeze(allocator);
-    try renderMermaid(allocator, fg, options, &out);
+    try renderMermaid(allocator, std.testing.io, fg, options, &out);
 
     // Assert: has header and flowchart directive, no crash
     const output = out.items;
@@ -732,7 +733,7 @@ test "phantom nodes in subgraphs" {
     const allocator = std.testing.allocator;
     var g = try createMermaidTestGraph(allocator);
     defer g.deinit(allocator);
-    var out: std.ArrayList(u8) = .{};
+    var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);
 
     const options = MermaidOptions{
@@ -743,7 +744,7 @@ test "phantom nodes in subgraphs" {
 
     // Act
     const fg = try g.freeze(allocator);
-    try renderMermaid(allocator, fg, options, &out);
+    try renderMermaid(allocator, std.testing.io, fg, options, &out);
 
     // Assert: phantom stdlib node renders as subgraph with "std (stdlib)" label
     // and child nodes use "ext:" prefix
@@ -757,7 +758,7 @@ test "scoped export creates ghost nodes" {
     const allocator = std.testing.allocator;
     var g = try createMermaidTestGraph(allocator);
     defer g.deinit(allocator);
-    var out: std.ArrayList(u8) = .{};
+    var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);
 
     // Scope to src/main. main.zig calls method_next which is in src/lib.zig (out of scope)
@@ -770,7 +771,7 @@ test "scoped export creates ghost nodes" {
 
     // Act
     const fg = try g.freeze(allocator);
-    try renderMermaid(allocator, fg, options, &out);
+    try renderMermaid(allocator, std.testing.io, fg, options, &out);
 
     // Assert: ghost nodes appear with ghoty_style
     const output = out.items;

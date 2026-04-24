@@ -429,7 +429,7 @@ pub fn findPaths(allocator: std.mem.Allocator, fg: FrozenGraph, from: NodeId, to
     defer visited.deinit(allocator);
 
     const QueueEntry = struct { node: u64, depth: u32 };
-    var queue = std.ArrayList(QueueEntry){};
+    var queue = std.ArrayList(QueueEntry).empty;
     defer queue.deinit(allocator);
 
     const from_raw = @intFromEnum(from);
@@ -484,9 +484,9 @@ pub fn findPaths(allocator: std.mem.Allocator, fg: FrozenGraph, from: NodeId, to
     if (!found) return .{ .paths = &.{} };
 
     // Reconstruct path by walking parent pointers backwards
-    var path_nodes = std.ArrayList(NodeId){};
+    var path_nodes = std.ArrayList(NodeId).empty;
     defer path_nodes.deinit(allocator);
-    var path_edges = std.ArrayList(EdgeType){};
+    var path_edges = std.ArrayList(EdgeType).empty;
     defer path_edges.deinit(allocator);
 
     var current: u64 = to_raw;
@@ -598,7 +598,7 @@ pub fn getImpact(allocator: std.mem.Allocator, fg: FrozenGraph, node_id: NodeId,
     defer visited.deinit(allocator);
 
     const QEntry = struct { node: u64, depth: u32 };
-    var queue = std.ArrayList(QEntry){};
+    var queue = std.ArrayList(QEntry).empty;
     defer queue.deinit(allocator);
 
     const start_raw = @intFromEnum(node_id);

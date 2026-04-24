@@ -47,17 +47,16 @@ fn printHelp(stdout: *std.Io.Writer) !void {
     try stdout.flush();
 }
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    const allocator = init.gpa;
 
     var stdout_buffer: [tool_utils.stdout_buffer_size]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+    var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
     const stdout = &stdout_writer.interface;
 
     // Parse CLI arguments.
-    var args = std.process.args();
+    var args = init.minimal.args.iterate();
     _ = args.next(); // skip program name
 
     const input_path_arg = args.next() orelse {
@@ -127,7 +126,7 @@ pub fn main() !void {
     }
 
     // Resolve to absolute path.
-    const input_path = std.fs.cwd().realpathAlloc(allocator, input_path_arg) catch |err| {
+    const input_path = std.Io.Dir.cwd().realPathFileAlloc(io, input_path_arg, allocator) catch |err| {
         try stdout.print("Error resolving path '{s}': {}\n", .{ input_path_arg, err });
         try stdout.flush();
         std.process.exit(1);
@@ -140,7 +139,7 @@ pub fn main() !void {
     // Determine whether the input is a directory or a regular file.
     // openDirAbsolute returns error.NotDir when the path points to a file.
     const is_file = blk: {
-        var d = std.fs.openDirAbsolute(input_path, .{}) catch |err| switch (err) {
+        var d = std.Io.Dir.openDirAbsolute(io, input_path, .{}) catch |err| switch (err) {
             error.NotDir => break :blk true,
             else => {
                 try stdout.print("Error opening path '{s}': {}\n", .{ input_path, err });
@@ -148,7 +147,7 @@ pub fn main() !void {
                 std.process.exit(1);
             },
         };
-        d.close();
+        d.close(io);
         break :blk false;
     };
 
@@ -178,13 +177,15 @@ pub fn main() !void {
         };
 
         const source = blk: {
-            const f = std.fs.openFileAbsolute(input_path, .{}) catch |err| {
+            const f = std.Io.Dir.openFileAbsolute(io, input_path, .{}) catch |err| {
                 try stdout.print("Error reading file '{s}': {}\n", .{ input_path, err });
                 try stdout.flush();
                 std.process.exit(1);
             };
-            defer f.close();
-            const content = f.readToEndAlloc(allocator, indexer.max_source_bytes) catch |err| {
+            defer f.close(io);
+            var read_buf: [4096]u8 = undefined;
+            var f_reader = f.reader(io, &read_buf);
+            const content = f_reader.interface.allocRemaining(allocator, .limited(indexer.max_source_bytes)) catch |err| {
                 if (err == error.StreamTooLong) {
                     try stdout.print("Error reading file '{s}': file exceeds 10 MiB read limit\n", .{input_path});
                 } else {
@@ -197,7 +198,7 @@ pub fn main() !void {
             break :blk content;
         };
 
-        lang_support.parseFn(allocator, source, &graph, null, log) catch |err| {
+        lang_support.parseFn(allocator, io, source, &graph, null, log) catch |err| {
             try stdout.print("Parse error: {}\n", .{err});
             try stdout.flush();
             std.process.exit(1);
@@ -216,7 +217,7 @@ pub fn main() !void {
             defer wl.deinit(allocator);
             var node_type_map = zcodeprism.language_support.NodeTypeMap{};
             defer node_type_map.deinit(allocator);
-            build_edges(allocator, source, &graph, 0, graph.nodeCount(), null, &graph_index, &phantom_mgr, &node_type_map, &wl, log) catch |err| {
+            build_edges(allocator, io, source, &graph, 0, graph.nodeCount(), null, &graph_index, &phantom_mgr, &node_type_map, &wl, log) catch |err| {
                 try stdout.print("Edge building error: {}\n", .{err});
                 try stdout.flush();
                 std.process.exit(1);
@@ -229,7 +230,7 @@ pub fn main() !void {
         var wl = zcodeprism.lsp.worklist.LspWorklist{};
         defer wl.deinit(allocator);
 
-        _ = indexer.indexDirectory(allocator, input_path, &graph, &wl, .{
+        _ = indexer.indexDirectory(allocator, io, input_path, &graph, &wl, .{
             .exclude_paths = common_flags.exclude.items,
             .logger = log,
         }) catch |err| {
@@ -239,12 +240,12 @@ pub fn main() !void {
         };
 
         if (common_flags.lsp) {
-            try tool_utils.runLspEnrichment(allocator, &graph, &wl, log, stdout);
+            try tool_utils.runLspEnrichment(allocator, io, &graph, &wl, log, stdout);
         }
     }
 
     // Render.
-    var out: std.ArrayList(u8) = .{};
+    var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);
 
     const render_common = zcodeprism.render_common;
@@ -257,7 +258,7 @@ pub fn main() !void {
     const fg = zcodeprism.FrozenGraph{ .graph = &graph };
     switch (format) {
         .ctg => {
-            ctg.renderCtg(allocator, fg, .{
+            ctg.renderCtg(allocator, io, fg, .{
                 .project_name = name,
                 .scope = scope_arg,
                 .filter = filter,
@@ -268,7 +269,7 @@ pub fn main() !void {
             };
         },
         .mermaid_fmt => {
-            mermaid.renderMermaid(allocator, fg, .{
+            mermaid.renderMermaid(allocator, io, fg, .{
                 .project_name = name,
                 .scope = scope_arg,
                 .filter = filter,
@@ -281,5 +282,5 @@ pub fn main() !void {
     }
 
     // Write output to stdout.
-    try std.fs.File.stdout().writeAll(out.items);
+    try std.Io.File.stdout().writeStreamingAll(io, out.items);
 }

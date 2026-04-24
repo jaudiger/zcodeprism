@@ -22,15 +22,15 @@ const mixed_project_files: []const helpers.FileEntry = &.{
     .{ .sub_path = "src/lib.rs", .data = fixtures.mixed_project.lib_rs },
 };
 
-fn setupMixedProject(tmp_dir: *std.testing.TmpDir) ![]const u8 {
-    try writeFixtureFiles(tmp_dir.dir, mixed_project_files);
-    return try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+fn setupMixedProject(tmp_dir: *std.testing.TmpDir) ![:0]const u8 {
+    try writeFixtureFiles(std.testing.io, tmp_dir.dir, mixed_project_files);
+    return try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
 }
 
 fn indexMixedProject(graph: *Graph, tmp_dir: *std.testing.TmpDir) !zcodeprism.indexer.IndexResult {
     const project_root = try setupMixedProject(tmp_dir);
     defer std.testing.allocator.free(project_root);
-    return indexDirectory(std.testing.allocator, project_root, graph, null, .{});
+    return indexDirectory(std.testing.allocator, std.testing.io, project_root, graph, null, .{});
 }
 
 // --- Unified graph ---

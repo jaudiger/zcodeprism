@@ -6,7 +6,7 @@ const builtin = @import("builtin");
 /// is called from another thread (self-pipe trick).
 pub const FileWatcher = struct {
     backend: Backend,
-    stop_pipe: [2]std.posix.fd_t,
+    stop_pipe: [2]std.c.fd_t,
 
     const Backend = switch (builtin.os.tag) {
         .macos => KqueueBackend,
@@ -15,27 +15,34 @@ pub const FileWatcher = struct {
     };
 
     pub fn init(
-        project_root: []const u8,
         allocator: std.mem.Allocator,
+        io: std.Io,
+        project_root: []const u8,
         exclude_paths: []const []const u8,
     ) !FileWatcher {
-        const pipe = try std.posix.pipe();
+        var pipe_fds: [2]std.c.fd_t = undefined;
+        const pipe_rc = std.c.pipe(&pipe_fds);
+        if (pipe_rc != 0) return switch (std.c.errno(pipe_rc)) {
+            .MFILE => error.ProcessFdQuotaExceeded,
+            .NFILE => error.SystemFdQuotaExceeded,
+            else => |e| std.posix.unexpectedErrno(e),
+        };
         errdefer {
-            std.posix.close(pipe[0]);
-            std.posix.close(pipe[1]);
+            _ = std.c.close(pipe_fds[0]);
+            _ = std.c.close(pipe_fds[1]);
         }
 
-        const backend = try Backend.init(project_root, allocator, exclude_paths, pipe[0]);
+        const backend = try Backend.init(allocator, io, project_root, exclude_paths, pipe_fds[0]);
         return .{
             .backend = backend,
-            .stop_pipe = pipe,
+            .stop_pipe = pipe_fds,
         };
     }
 
     pub fn deinit(self: *FileWatcher, allocator: std.mem.Allocator) void {
         self.backend.deinit(allocator);
-        std.posix.close(self.stop_pipe[0]);
-        std.posix.close(self.stop_pipe[1]);
+        _ = std.c.close(self.stop_pipe[0]);
+        _ = std.c.close(self.stop_pipe[1]);
     }
 
     /// Blocks until at least one file event is ready or the watcher is stopped.
@@ -46,79 +53,93 @@ pub const FileWatcher = struct {
 
     /// Signal the watcher to stop (from another thread).
     pub fn stop(self: *FileWatcher) void {
-        _ = std.posix.write(self.stop_pipe[1], &.{1}) catch {};
+        const byte: u8 = 1;
+        _ = std.c.write(self.stop_pipe[1], @ptrCast(&byte), 1);
     }
 };
 
 /// kqueue-based watcher for macOS.
 const KqueueBackend = struct {
-    kq: std.posix.fd_t,
+    kq: std.c.fd_t,
     dir_fds: std.ArrayList(DirEntry),
 
     const DirEntry = struct {
-        fd: std.posix.fd_t,
+        fd: std.c.fd_t,
     };
 
     const vnode_flags: u32 = std.c.NOTE.WRITE | std.c.NOTE.DELETE | std.c.NOTE.RENAME | std.c.NOTE.EXTEND;
 
     fn init(
-        project_root: []const u8,
         allocator: std.mem.Allocator,
+        io: std.Io,
+        project_root: []const u8,
         exclude_paths: []const []const u8,
-        pipe_read_fd: std.posix.fd_t,
+        pipe_read_fd: std.c.fd_t,
     ) !KqueueBackend {
-        const kq = try std.posix.kqueue();
-        errdefer std.posix.close(kq);
+        const kq = std.c.kqueue();
+        if (kq < 0) return switch (std.c.errno(kq)) {
+            .MFILE => error.ProcessFdQuotaExceeded,
+            .NFILE => error.SystemFdQuotaExceeded,
+            else => |e| std.posix.unexpectedErrno(e),
+        };
+        errdefer _ = std.c.close(kq);
 
         var self = KqueueBackend{
             .kq = kq,
-            .dir_fds = .{},
+            .dir_fds = .empty,
         };
 
-        // Register the pipe read-end for stop signaling.
         var pipe_event: [1]std.c.Kevent = .{makeReadEvent(pipe_read_fd)};
-        _ = try std.posix.kevent(kq, &pipe_event, &.{}, null);
+        var no_events: [1]std.c.Kevent = undefined;
+        const ev_rc = std.c.kevent(kq, &pipe_event, 1, &no_events, 0, null);
+        if (ev_rc < 0) return switch (std.c.errno(ev_rc)) {
+            .ACCES => error.AccessDenied,
+            .NOMEM => error.SystemResources,
+            .BADF, .INVAL => error.Unexpected,
+            else => |e| std.posix.unexpectedErrno(e),
+        };
 
-        // Walk the project root recursively and register all directories.
-        try self.registerDirectory(allocator, project_root, exclude_paths);
+        try self.registerOne(allocator, project_root);
+
+        var root_dir = std.Io.Dir.cwd().openDir(io, project_root, .{ .iterate = true }) catch return self;
+        defer root_dir.close(io);
+        var walker = root_dir.walk(allocator) catch return self;
+        defer walker.deinit();
+
+        while (walker.next(io) catch null) |entry| {
+            if (entry.kind != .directory) continue;
+            // Skip excludes and hidden directories.
+            if (isExcluded(entry.basename, exclude_paths) or std.mem.startsWith(u8, entry.basename, ".")) {
+                walker.leave(io);
+                continue;
+            }
+            const abs = std.fs.path.join(allocator, &.{ project_root, entry.path }) catch continue;
+            defer allocator.free(abs);
+            self.registerOne(allocator, abs) catch continue;
+        }
 
         return self;
     }
 
-    fn registerDirectory(
-        self: *KqueueBackend,
-        allocator: std.mem.Allocator,
-        path: []const u8,
-        exclude_paths: []const []const u8,
-    ) !void {
-        var dir = std.fs.openDirAbsolute(path, .{ .iterate = true }) catch return;
-        defer dir.close();
+    fn registerOne(self: *KqueueBackend, allocator: std.mem.Allocator, path: []const u8) !void {
+        const path_z = try allocator.dupeZ(u8, path);
+        defer allocator.free(path_z);
+        const fd = std.c.open(path_z, .{ .DIRECTORY = true });
+        if (fd < 0) return;
+        defer _ = std.c.close(fd);
 
-        const fd = dir.fd;
-        // dup the fd so it survives the dir.close() above.
-        const duped = std.posix.dup(fd) catch return;
-        errdefer std.posix.close(duped);
+        const duped = std.c.dup(fd);
+        if (duped < 0) return;
+        errdefer _ = std.c.close(duped);
 
         try self.dir_fds.append(allocator, .{ .fd = duped });
 
         var ev: [1]std.c.Kevent = .{makeVnodeEvent(duped)};
-        _ = std.posix.kevent(self.kq, &ev, &.{}, null) catch {
-            return;
-        };
-
-        var it = dir.iterate();
-        while (it.next() catch null) |entry| {
-            if (entry.kind != .directory) continue;
-            if (isExcluded(entry.name, exclude_paths)) continue;
-            if (std.mem.startsWith(u8, entry.name, ".")) continue;
-
-            var child_buf: [std.fs.max_path_bytes]u8 = undefined;
-            const child_path = std.fmt.bufPrint(&child_buf, "{s}/{s}", .{ path, entry.name }) catch continue;
-            self.registerDirectory(allocator, child_path, exclude_paths) catch continue;
-        }
+        var no_out: [1]std.c.Kevent = undefined;
+        if (std.c.kevent(self.kq, &ev, 1, &no_out, 0, null) < 0) return;
     }
 
-    fn makeVnodeEvent(fd: std.posix.fd_t) std.c.Kevent {
+    fn makeVnodeEvent(fd: std.c.fd_t) std.c.Kevent {
         return .{
             .ident = @intCast(fd),
             .filter = std.c.EVFILT.VNODE,
@@ -129,7 +150,7 @@ const KqueueBackend = struct {
         };
     }
 
-    fn makeReadEvent(fd: std.posix.fd_t) std.c.Kevent {
+    fn makeReadEvent(fd: std.c.fd_t) std.c.Kevent {
         return .{
             .ident = @intCast(fd),
             .filter = std.c.EVFILT.READ,
@@ -140,10 +161,11 @@ const KqueueBackend = struct {
         };
     }
 
-    fn waitForEvents(self: *KqueueBackend, pipe_read_fd: std.posix.fd_t) bool {
+    fn waitForEvents(self: *KqueueBackend, pipe_read_fd: std.c.fd_t) bool {
         var events: [16]std.c.Kevent = undefined;
-        const n = std.posix.kevent(self.kq, &.{}, &events, null) catch return false;
-        if (n == 0) return false;
+        var no_changes: [1]std.c.Kevent = undefined;
+        const n = std.c.kevent(self.kq, &no_changes, 0, &events, events.len, null);
+        if (n <= 0) return false;
 
         for (events[0..@intCast(n)]) |ev| {
             if (ev.filter == std.c.EVFILT.READ and ev.ident == @as(usize, @intCast(pipe_read_fd))) {
@@ -155,63 +177,69 @@ const KqueueBackend = struct {
 
     fn deinit(self: *KqueueBackend, allocator: std.mem.Allocator) void {
         for (self.dir_fds.items) |entry| {
-            std.posix.close(entry.fd);
+            _ = std.c.close(entry.fd);
         }
         self.dir_fds.deinit(allocator);
-        std.posix.close(self.kq);
+        _ = std.c.close(self.kq);
     }
 };
 
 /// inotify-based watcher for Linux.
 const InotifyBackend = struct {
-    inotify_fd: std.posix.fd_t,
+    inotify_fd: std.c.fd_t,
     watch_count: u32,
 
     fn init(
-        project_root: []const u8,
         allocator: std.mem.Allocator,
+        io: std.Io,
+        project_root: []const u8,
         exclude_paths: []const []const u8,
-        _: std.posix.fd_t,
+        _: std.c.fd_t,
     ) !InotifyBackend {
-        const fd = try std.posix.inotify_init1(std.os.linux.IN.NONBLOCK);
-        errdefer std.posix.close(fd);
+        const fd = std.c.inotify_init1(std.os.linux.IN.NONBLOCK);
+        if (fd < 0) return switch (std.c.errno(fd)) {
+            .MFILE => error.ProcessFdQuotaExceeded,
+            .NFILE => error.SystemFdQuotaExceeded,
+            .NOMEM => error.SystemResources,
+            else => |e| std.posix.unexpectedErrno(e),
+        };
+        errdefer _ = std.c.close(fd);
 
         var self = InotifyBackend{
             .inotify_fd = fd,
             .watch_count = 0,
         };
-        self.registerDirectory(allocator, project_root, exclude_paths);
+        self.registerOne(allocator, project_root);
+
+        var root_dir = std.Io.Dir.cwd().openDir(io, project_root, .{ .iterate = true }) catch return self;
+        defer root_dir.close(io);
+        var walker = root_dir.walk(allocator) catch return self;
+        defer walker.deinit();
+
+        while (walker.next(io) catch null) |entry| {
+            if (entry.kind != .directory) continue;
+            // Skip excludes and hidden directories.
+            if (isExcluded(entry.basename, exclude_paths) or std.mem.startsWith(u8, entry.basename, ".")) {
+                walker.leave(io);
+                continue;
+            }
+            const abs = std.fs.path.join(allocator, &.{ project_root, entry.path }) catch continue;
+            defer allocator.free(abs);
+            self.registerOne(allocator, abs);
+        }
+
         return self;
     }
 
-    fn registerDirectory(
-        self: *InotifyBackend,
-        allocator: std.mem.Allocator,
-        path: []const u8,
-        exclude_paths: []const []const u8,
-    ) void {
+    fn registerOne(self: *InotifyBackend, allocator: std.mem.Allocator, path: []const u8) void {
         const mask: u32 = std.os.linux.IN.MODIFY | std.os.linux.IN.CREATE | std.os.linux.IN.DELETE | std.os.linux.IN.MOVE;
         const path_z = allocator.dupeZ(u8, path) catch return;
         defer allocator.free(path_z);
-        _ = std.posix.inotify_add_watch(self.inotify_fd, path_z, mask) catch return;
+        _ = std.c.inotify_add_watch(self.inotify_fd, path_z, mask);
         self.watch_count += 1;
-
-        var dir = std.fs.openDirAbsolute(path, .{ .iterate = true }) catch return;
-        defer dir.close();
-
-        var it = dir.iterate();
-        while (it.next() catch null) |entry| {
-            if (entry.kind != .directory) continue;
-            if (isExcluded(entry.name, exclude_paths)) continue;
-            if (std.mem.startsWith(u8, entry.name, ".")) continue;
-
-            var child_buf: [std.fs.max_path_bytes]u8 = undefined;
-            const child_path = std.fmt.bufPrint(&child_buf, "{s}/{s}", .{ path, entry.name }) catch continue;
-            self.registerDirectory(allocator, child_path, exclude_paths);
-        }
     }
 
-    fn waitForEvents(self: *InotifyBackend, pipe_read_fd: std.posix.fd_t) bool {
+    fn waitForEvents(self: *InotifyBackend, pipe_read_fd: std.c.fd_t) bool {
         var fds = [2]std.posix.pollfd{
             .{ .fd = self.inotify_fd, .events = std.posix.POLL.IN, .revents = 0 },
             .{ .fd = pipe_read_fd, .events = std.posix.POLL.IN, .revents = 0 },
@@ -234,7 +262,7 @@ const InotifyBackend = struct {
     }
 
     fn deinit(self: *InotifyBackend, _: std.mem.Allocator) void {
-        std.posix.close(self.inotify_fd);
+        _ = std.c.close(self.inotify_fd);
         self.* = undefined;
     }
 };

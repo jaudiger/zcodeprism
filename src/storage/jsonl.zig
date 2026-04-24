@@ -572,7 +572,7 @@ test "jsonl output is sorted" {
 
     // Assert: node ids are in ascending order
     const EdgeKey = struct { edge_type: []const u8, source_id: i64, target_id: i64 };
-    var edges: std.ArrayList(EdgeKey) = .{};
+    var edges: std.ArrayList(EdgeKey) = .empty;
     defer edges.deinit(std.testing.allocator);
 
     var line_iter = std.mem.splitScalar(u8, aw.written(), '\n');

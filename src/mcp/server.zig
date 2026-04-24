@@ -42,7 +42,7 @@ pub const Server = struct {
 
     /// Process a single JSON-RPC message. Returns response bytes,
     /// or null for notifications. Caller owns returned slice.
-    pub fn handleMessage(self: *Server, allocator: std.mem.Allocator, input: []const u8) ServerError!?[]const u8 {
+    pub fn handleMessage(self: *Server, allocator: std.mem.Allocator, io: std.Io, input: []const u8) ServerError!?[]const u8 {
         var parsed = jsonrpc.parseRequest(allocator, input) catch |err| switch (err) {
             error.InvalidJson => return try buildErrorResponse(allocator, .none, jsonrpc.parse_error, "Parse error"),
             error.InvalidRequest => return try buildErrorResponse(allocator, .none, jsonrpc.invalid_request, "Invalid Request"),
@@ -52,7 +52,7 @@ pub const Server = struct {
 
         if (req.id == .none) return null;
 
-        const guard = self.gen_manager.acquireCurrent();
+        const guard = self.gen_manager.acquireCurrent(io);
         defer guard.deinit();
 
         if (std.mem.eql(u8, req.method, "initialize")) {
@@ -62,13 +62,13 @@ pub const Server = struct {
         } else if (std.mem.eql(u8, req.method, "tools/list")) {
             return try buildToolsListResponse(allocator, req.id, self.dispatcher.listTools());
         } else if (std.mem.eql(u8, req.method, "tools/call")) {
-            return try self.handleToolCall(allocator, req, guard.gen);
+            return try self.handleToolCall(allocator, io, req, guard.gen);
         } else {
             return try buildErrorResponse(allocator, req.id, jsonrpc.method_not_found, "Method not found");
         }
     }
 
-    fn handleToolCall(self: *Server, allocator: std.mem.Allocator, req: jsonrpc.Request, gen: *GraphGeneration) ServerError![]const u8 {
+    fn handleToolCall(self: *Server, allocator: std.mem.Allocator, io: std.Io, req: jsonrpc.Request, gen: *GraphGeneration) ServerError![]const u8 {
         const params_obj = if (req.params) |p| (if (p == .object) p.object else null) else null;
         const tool_name = if (params_obj) |obj| (if (obj.get("name")) |v| (if (v == .string) v.string else null) else null) else null;
 
@@ -76,7 +76,7 @@ pub const Server = struct {
             return try buildErrorResponse(allocator, req.id, jsonrpc.invalid_params, "Missing tool name");
         }
 
-        const content_json = handlers.handleToolCall(allocator, gen, &self.cursor_manager, tool_name.?, req.params) catch
+        const content_json = handlers.handleToolCall(allocator, io, gen, &self.cursor_manager, tool_name.?, req.params) catch
             return try buildErrorResponse(allocator, req.id, jsonrpc.internal_error, "Handler error");
 
         if (content_json) |json| {
@@ -89,7 +89,7 @@ pub const Server = struct {
 
     /// Wraps raw handler JSON into the full JSON-RPC + MCP content envelope.
     fn buildToolCallResponse(allocator: std.mem.Allocator, id: jsonrpc.RequestId, raw_content_json: []const u8) ServerError![]const u8 {
-        var aw: std.io.Writer.Allocating = .init(allocator);
+        var aw: std.Io.Writer.Allocating = .init(allocator);
         errdefer aw.deinit();
         var s: std.json.Stringify = .{ .writer = &aw.writer };
         const w: JsonWriter = .{ .s = &s };
@@ -122,7 +122,7 @@ pub const Server = struct {
     }
 
     fn buildSuccessResponse(allocator: std.mem.Allocator, id: jsonrpc.RequestId, result: anytype) ServerError![]const u8 {
-        var aw: std.io.Writer.Allocating = .init(allocator);
+        var aw: std.Io.Writer.Allocating = .init(allocator);
         errdefer aw.deinit();
         var s: std.json.Stringify = .{ .writer = &aw.writer };
         const w: JsonWriter = .{ .s = &s };
@@ -138,7 +138,7 @@ pub const Server = struct {
     }
 
     fn buildErrorResponse(allocator: std.mem.Allocator, id: jsonrpc.RequestId, code: i32, message: []const u8) ServerError![]const u8 {
-        var aw: std.io.Writer.Allocating = .init(allocator);
+        var aw: std.Io.Writer.Allocating = .init(allocator);
         errdefer aw.deinit();
         var s: std.json.Stringify = .{ .writer = &aw.writer };
         const w: JsonWriter = .{ .s = &s };
@@ -159,7 +159,7 @@ pub const Server = struct {
 
     /// Build the tools/list response with full JSON Schema for each tool.
     fn buildToolsListResponse(allocator: std.mem.Allocator, id: jsonrpc.RequestId, tools: []const protocol.Tool) ServerError![]const u8 {
-        var aw: std.io.Writer.Allocating = .init(allocator);
+        var aw: std.Io.Writer.Allocating = .init(allocator);
         errdefer aw.deinit();
         var s: std.json.Stringify = .{ .writer = &aw.writer };
         const w: JsonWriter = .{ .s = &s };
@@ -229,7 +229,7 @@ pub const Server = struct {
 
     /// Build a JSON-RPC notification (no id field). Caller owns returned slice.
     pub fn buildNotification(allocator: std.mem.Allocator, method: []const u8, generation_id: u64, source_hash: types.ContentHash) ServerError![]const u8 {
-        var aw: std.io.Writer.Allocating = .init(allocator);
+        var aw: std.Io.Writer.Allocating = .init(allocator);
         errdefer aw.deinit();
         var s: std.json.Stringify = .{ .writer = &aw.writer };
         const w: JsonWriter = .{ .s = &s };

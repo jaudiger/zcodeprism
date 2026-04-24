@@ -152,7 +152,7 @@ pub fn parseResponse(allocator: std.mem.Allocator, json: []const u8) !Response {
 
     if (obj.get("result")) |result_val| {
         if (result_val != .null) {
-            var aw: std.io.Writer.Allocating = .init(allocator);
+            var aw: std.Io.Writer.Allocating = .init(allocator);
             errdefer aw.deinit();
             var stream: std.json.Stringify = .{ .writer = &aw.writer };
             stream.write(result_val) catch return error.OutOfMemory;

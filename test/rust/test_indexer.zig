@@ -34,16 +34,16 @@ const glob_import_files: []const helpers.FileEntry = &.{
     .{ .sub_path = "utils.rs", .data = fixtures.rust.glob_import.utils_rs },
 };
 
-fn setupProjectFixtures(tmp_dir: *std.testing.TmpDir) ![]const u8 {
-    try writeFixtureFiles(tmp_dir.dir, rust_project_files);
-    return try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+fn setupProjectFixtures(tmp_dir: *std.testing.TmpDir) ![:0]const u8 {
+    try writeFixtureFiles(std.testing.io, tmp_dir.dir, rust_project_files);
+    return try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
 }
 
 /// Index the Rust project fixtures using default options.
 fn indexProjectFixtures(graph: *Graph, tmp_dir: *std.testing.TmpDir) !zcodeprism.indexer.IndexResult {
     const project_root = try setupProjectFixtures(tmp_dir);
     defer std.testing.allocator.free(project_root);
-    return indexDirectory(std.testing.allocator, project_root, graph, null, .{});
+    return indexDirectory(std.testing.allocator, std.testing.io, project_root, graph, null, .{});
 }
 
 // --- Nominal tests (project/) ---
@@ -219,8 +219,8 @@ test "incremental skips unchanged files" {
     defer std.testing.allocator.free(project_root);
 
     // Act: index twice with incremental=true
-    _ = indexDirectory(std.testing.allocator, project_root, &g, null, .{ .incremental = true }) catch |err| return err;
-    const result2 = indexDirectory(std.testing.allocator, project_root, &g, null, .{ .incremental = true }) catch |err| return err;
+    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{ .incremental = true }) catch |err| return err;
+    const result2 = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{ .incremental = true }) catch |err| return err;
 
     // Assert
     try std.testing.expect(result2.files_skipped > 0);
@@ -235,15 +235,15 @@ test "single file project" {
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try tmp_dir.dir.writeFile(.{
+    try tmp_dir.dir.writeFile(std.testing.io, .{
         .sub_path = "main.rs",
         .data = "fn main() { println!(\"hello\"); }\n",
     });
-    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    const project_root = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = indexDirectory(std.testing.allocator, project_root, &g, null, .{}) catch |err| return err;
+    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
     // Assert
     try std.testing.expectEqual(@as(usize, 1), helpers.countNodesByKind(&g, .file));
@@ -257,15 +257,15 @@ test "directory with no rs files" {
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try tmp_dir.dir.writeFile(.{
+    try tmp_dir.dir.writeFile(std.testing.io, .{
         .sub_path = "readme.txt",
         .data = "no rust here",
     });
-    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    const project_root = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = indexDirectory(std.testing.allocator, project_root, &g, null, .{}) catch |err| return err;
+    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
     // Assert
     try std.testing.expectEqual(@as(usize, 0), helpers.countNodesByKind(&g, .file));
@@ -282,19 +282,19 @@ test "mod foo resolves to foo.rs" {
     defer tmp_dir.cleanup();
 
     // lib.rs declares mod parser;
-    try tmp_dir.dir.writeFile(.{
+    try tmp_dir.dir.writeFile(std.testing.io, .{
         .sub_path = "lib.rs",
         .data = "mod parser;\npub fn run() { parser::parse(\"\"); }\n",
     });
-    try tmp_dir.dir.writeFile(.{
+    try tmp_dir.dir.writeFile(std.testing.io, .{
         .sub_path = "parser.rs",
         .data = "pub fn parse(input: &str) -> String { input.to_string() }\n",
     });
-    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    const project_root = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = indexDirectory(std.testing.allocator, project_root, &g, null, .{}) catch |err| return err;
+    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
     // Assert: lib.rs has imports edge to parser.rs
     const lib_file = helpers.findNode(&g, "lib.rs", .file) orelse return error.TestExpectedEqual;
@@ -312,7 +312,7 @@ test "module-prefix import resolves to qualified phantom" {
 
     // "use std::fmt;" + "impl fmt::Display for Point" should produce
     // a phantom "std.fmt.Display", not a bare "Display".
-    try tmp_dir.dir.writeFile(.{
+    try tmp_dir.dir.writeFile(std.testing.io, .{
         .sub_path = "lib.rs",
         .data =
         \\use std::fmt;
@@ -326,11 +326,11 @@ test "module-prefix import resolves to qualified phantom" {
         \\}
         ,
     });
-    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    const project_root = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = try indexDirectory(std.testing.allocator, project_root, &g, null, .{});
+    _ = try indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{});
 
     // Assert: a phantom "Display" node exists whose parent is "fmt"
     var found_qualified = false;
@@ -386,7 +386,7 @@ test "aliased use import resolves to qualified phantom" {
 
     // "use std::fmt::Display as Disp;" + "impl Disp for Point" should produce
     // a phantom "std.fmt.Display" (the original path), not a bare "Disp".
-    try tmp_dir.dir.writeFile(.{
+    try tmp_dir.dir.writeFile(std.testing.io, .{
         .sub_path = "lib.rs",
         .data =
         \\use std::fmt::Display as Disp;
@@ -400,11 +400,11 @@ test "aliased use import resolves to qualified phantom" {
         \\}
         ,
     });
-    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    const project_root = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = try indexDirectory(std.testing.allocator, project_root, &g, null, .{});
+    _ = try indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{});
 
     // Assert: a phantom "Display" node exists whose parent is "fmt"
     var found_qualified = false;
@@ -455,7 +455,7 @@ test "phantom module kind and edge type follow Rust naming convention" {
     // Two files exercising both terminal-module and terminal-type phantoms.
     // "io" appears as terminal (use std::io) AND intermediate (use std::io::Read),
     // so this also verifies order-independence.
-    try tmp_dir.dir.writeFile(.{
+    try tmp_dir.dir.writeFile(std.testing.io, .{
         .sub_path = "lib.rs",
         .data =
         \\mod reader;
@@ -464,7 +464,7 @@ test "phantom module kind and edge type follow Rust naming convention" {
         \\pub fn get_io() -> io::Result<()> { Ok(()) }
         ,
     });
-    try tmp_dir.dir.writeFile(.{
+    try tmp_dir.dir.writeFile(std.testing.io, .{
         .sub_path = "reader.rs",
         .data =
         \\use std::io::Read;
@@ -472,11 +472,11 @@ test "phantom module kind and edge type follow Rust naming convention" {
         \\pub fn read_all<R: Read>(r: &mut R) -> Vec<u8> { Vec::new() }
         ,
     });
-    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    const project_root = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = try indexDirectory(std.testing.allocator, project_root, &g, null, .{});
+    _ = try indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{});
 
     // Assert: snake_case "io" is kind=module, PascalCase "Read" is kind=type_def
     for (g.nodes.items) |n| {
@@ -512,20 +512,20 @@ test "mod foo resolves to foo/mod.rs" {
     defer tmp_dir.cleanup();
 
     // lib.rs declares mod parser; and parser lives at parser/mod.rs
-    try tmp_dir.dir.writeFile(.{
+    try tmp_dir.dir.writeFile(std.testing.io, .{
         .sub_path = "lib.rs",
         .data = "mod parser;\npub fn run() {}\n",
     });
-    try tmp_dir.dir.makePath("parser");
-    try tmp_dir.dir.writeFile(.{
+    try tmp_dir.dir.createDirPath(std.testing.io, "parser");
+    try tmp_dir.dir.writeFile(std.testing.io, .{
         .sub_path = "parser/mod.rs",
         .data = "pub fn parse(input: &str) -> String { input.to_string() }\n",
     });
-    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    const project_root = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = indexDirectory(std.testing.allocator, project_root, &g, null, .{}) catch |err| return err;
+    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
     // Assert: lib.rs has imports edge to parser/mod.rs
     const lib_file = helpers.findNode(&g, "lib.rs", .file) orelse return error.TestExpectedEqual;
@@ -603,12 +603,12 @@ test "transitive re-export resolves through chain" {
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try writeFixtureFiles(tmp_dir.dir, reexport_chain_files);
-    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    try writeFixtureFiles(std.testing.io, tmp_dir.dir, reexport_chain_files);
+    const project_root = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = try indexDirectory(std.testing.allocator, project_root, &g, null, .{});
+    _ = try indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{});
 
     // Assert: Widget is defined in deep.rs
     const deep_file = helpers.findNode(&g, "deep.rs", .file) orelse return error.TestExpectedEqual;
@@ -645,12 +645,12 @@ test "pub use emits exports edge to resolved type" {
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try writeFixtureFiles(tmp_dir.dir, reexport_chain_files);
-    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    try writeFixtureFiles(std.testing.io, tmp_dir.dir, reexport_chain_files);
+    const project_root = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = try indexDirectory(std.testing.allocator, project_root, &g, null, .{});
+    _ = try indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{});
 
     // Assert: Widget and Gadget are type nodes in deep.rs
     const deep_file = helpers.findNode(&g, "deep.rs", .file) orelse return error.TestExpectedEqual;
@@ -679,12 +679,12 @@ test "glob import resolves public symbols but not private ones" {
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try writeFixtureFiles(tmp_dir.dir, glob_import_files);
-    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    try writeFixtureFiles(std.testing.io, tmp_dir.dir, glob_import_files);
+    const project_root = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = try indexDirectory(std.testing.allocator, project_root, &g, null, .{});
+    _ = try indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{});
 
     // Assert: lib.rs functions have calls edges to public utils.rs functions
     const lib_file = helpers.findNode(&g, "lib.rs", .file) orelse return error.TestExpectedEqual;
@@ -737,7 +737,7 @@ test "scoped field type creates phantom uses_type edge" {
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try tmp_dir.dir.writeFile(.{
+    try tmp_dir.dir.writeFile(std.testing.io, .{
         .sub_path = "lib.rs",
         .data =
         \\use std::io;
@@ -748,11 +748,11 @@ test "scoped field type creates phantom uses_type edge" {
         \\}
         ,
     });
-    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    const project_root = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = try indexDirectory(std.testing.allocator, project_root, &g, null, .{});
+    _ = try indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{});
 
     // Assert: phantom Error node exists under phantom io module
     var found_error = false;
@@ -812,9 +812,9 @@ const cargo_no_deps_files: []const helpers.FileEntry = &.{
     .{ .sub_path = "src/lib.rs", .data = fixtures.rust.rust_no_deps.lib_rs },
 };
 
-fn setupCargoFixtures(tmp_dir: *std.testing.TmpDir, files: []const helpers.FileEntry) ![]const u8 {
-    try writeFixtureFiles(tmp_dir.dir, files);
-    return try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+fn setupCargoFixtures(tmp_dir: *std.testing.TmpDir, files: []const helpers.FileEntry) ![:0]const u8 {
+    try writeFixtureFiles(std.testing.io, tmp_dir.dir, files);
+    return try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
 }
 
 test "Cargo.toml: crate module and dependencies" {
@@ -827,7 +827,7 @@ test "Cargo.toml: crate module and dependencies" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = try indexDirectory(std.testing.allocator, project_root, &g, null, .{});
+    _ = try indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{});
 
     // Assert: source files are indexed
     try std.testing.expect(helpers.findNode(&g, "main.rs", .file) != null);
@@ -873,7 +873,7 @@ test "Cargo.toml: no dependencies" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = try indexDirectory(std.testing.allocator, project_root, &g, null, .{});
+    _ = try indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{});
 
     // Assert: source file is indexed
     try std.testing.expect(helpers.findNode(&g, "lib.rs", .file) != null);
@@ -896,7 +896,7 @@ test "Cargo.toml: workspace members" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = try indexDirectory(std.testing.allocator, project_root, &g, null, .{});
+    _ = try indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{});
 
     // Assert: both crate lib.rs files are indexed
     var lib_count: usize = 0;

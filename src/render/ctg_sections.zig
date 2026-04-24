@@ -432,7 +432,7 @@ fn collectCtgEdges(
     scope: ?[]const u8,
     filter: common.FilterOptions,
 ) !std.ArrayList(EdgeEntry) {
-    var entries = std.ArrayList(EdgeEntry){};
+    var entries = std.ArrayList(EdgeEntry).empty;
     errdefer entries.deinit(allocator);
 
     if (ctx.g.adjacency != null) {

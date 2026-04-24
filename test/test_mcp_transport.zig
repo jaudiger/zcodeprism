@@ -62,7 +62,7 @@ test "parses request without params" {
 test "rejects malformed JSON" {
     // Arrange
     const allocator = std.testing.allocator;
-    const gen = try GraphGeneration.create(allocator, 1, "abcdef1234567890".*);
+    const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
     defer gen.destroy(allocator);
     const guard = gen.acquire();
     defer guard.deinit();
@@ -71,7 +71,7 @@ test "rejects malformed JSON" {
     defer srv.deinit();
 
     // Act
-    const response_bytes = try srv.handleMessage(allocator, "{{{");
+    const response_bytes = try srv.handleMessage(allocator, std.testing.io, "{{{");
     defer if (response_bytes) |b| allocator.free(b);
 
     // Assert
@@ -85,7 +85,7 @@ test "rejects malformed JSON" {
 test "rejects missing jsonrpc field" {
     // Arrange
     const allocator = std.testing.allocator;
-    const gen = try GraphGeneration.create(allocator, 1, "abcdef1234567890".*);
+    const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
     defer gen.destroy(allocator);
     const guard = gen.acquire();
     defer guard.deinit();
@@ -97,7 +97,7 @@ test "rejects missing jsonrpc field" {
     ;
 
     // Act
-    const response_bytes = try srv.handleMessage(allocator, input);
+    const response_bytes = try srv.handleMessage(allocator, std.testing.io, input);
     defer if (response_bytes) |b| allocator.free(b);
 
     // Assert
@@ -111,7 +111,7 @@ test "rejects missing jsonrpc field" {
 test "rejects missing method" {
     // Arrange
     const allocator = std.testing.allocator;
-    const gen = try GraphGeneration.create(allocator, 1, "abcdef1234567890".*);
+    const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
     defer gen.destroy(allocator);
     const guard = gen.acquire();
     defer guard.deinit();
@@ -123,7 +123,7 @@ test "rejects missing method" {
     ;
 
     // Act
-    const response_bytes = try srv.handleMessage(allocator, input);
+    const response_bytes = try srv.handleMessage(allocator, std.testing.io, input);
     defer if (response_bytes) |b| allocator.free(b);
 
     // Assert
@@ -137,7 +137,7 @@ test "rejects missing method" {
 test "rejects unknown method" {
     // Arrange
     const allocator = std.testing.allocator;
-    const gen = try GraphGeneration.create(allocator, 1, "abcdef1234567890".*);
+    const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
     defer gen.destroy(allocator);
     const guard = gen.acquire();
     defer guard.deinit();
@@ -149,7 +149,7 @@ test "rejects unknown method" {
     ;
 
     // Act
-    const response_bytes = try srv.handleMessage(allocator, input);
+    const response_bytes = try srv.handleMessage(allocator, std.testing.io, input);
     defer if (response_bytes) |b| allocator.free(b);
 
     // Assert
@@ -163,7 +163,7 @@ test "rejects unknown method" {
 test "handles string id" {
     // Arrange
     const allocator = std.testing.allocator;
-    const gen = try GraphGeneration.create(allocator, 1, "abcdef1234567890".*);
+    const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
     defer gen.destroy(allocator);
     const guard = gen.acquire();
     defer guard.deinit();
@@ -175,7 +175,7 @@ test "handles string id" {
     ;
 
     // Act
-    const response_bytes = try srv.handleMessage(allocator, input);
+    const response_bytes = try srv.handleMessage(allocator, std.testing.io, input);
     defer if (response_bytes) |b| allocator.free(b);
 
     // Assert
@@ -189,7 +189,7 @@ test "handles string id" {
 test "handles integer id" {
     // Arrange
     const allocator = std.testing.allocator;
-    const gen = try GraphGeneration.create(allocator, 1, "abcdef1234567890".*);
+    const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
     defer gen.destroy(allocator);
     const guard = gen.acquire();
     defer guard.deinit();
@@ -201,7 +201,7 @@ test "handles integer id" {
     ;
 
     // Act
-    const response_bytes = try srv.handleMessage(allocator, input);
+    const response_bytes = try srv.handleMessage(allocator, std.testing.io, input);
     defer if (response_bytes) |b| allocator.free(b);
 
     // Assert
@@ -215,7 +215,7 @@ test "handles integer id" {
 test "handles null id (notification)" {
     // Arrange
     const allocator = std.testing.allocator;
-    const gen = try GraphGeneration.create(allocator, 1, "abcdef1234567890".*);
+    const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
     defer gen.destroy(allocator);
     const guard = gen.acquire();
     defer guard.deinit();
@@ -227,7 +227,7 @@ test "handles null id (notification)" {
     ;
 
     // Act
-    const response_bytes = try srv.handleMessage(allocator, input);
+    const response_bytes = try srv.handleMessage(allocator, std.testing.io, input);
 
     // Assert: notifications produce no response
     try std.testing.expect(response_bytes == null);
@@ -240,7 +240,7 @@ test "handles null id (notification)" {
 test "tools list returns exactly 20 tools" {
     // Arrange
     const allocator = std.testing.allocator;
-    const gen = try GraphGeneration.create(allocator, 1, "abcdef1234567890".*);
+    const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
     defer gen.destroy(allocator);
     const guard = gen.acquire();
     defer guard.deinit();
@@ -252,7 +252,7 @@ test "tools list returns exactly 20 tools" {
     ;
 
     // Act
-    const response_bytes = (try srv.handleMessage(allocator, input)).?;
+    const response_bytes = (try srv.handleMessage(allocator, std.testing.io, input)).?;
     defer allocator.free(response_bytes);
     const parsed = try parseJsonResponse(allocator, response_bytes);
     defer parsed.deinit();
@@ -266,7 +266,7 @@ test "tools list returns exactly 20 tools" {
 test "tools list has 6 graph tools" {
     // Arrange
     const allocator = std.testing.allocator;
-    const gen = try GraphGeneration.create(allocator, 1, "abcdef1234567890".*);
+    const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
     defer gen.destroy(allocator);
     const guard = gen.acquire();
     defer guard.deinit();
@@ -278,7 +278,7 @@ test "tools list has 6 graph tools" {
     ;
 
     // Act
-    const response_bytes = (try srv.handleMessage(allocator, input)).?;
+    const response_bytes = (try srv.handleMessage(allocator, std.testing.io, input)).?;
     defer allocator.free(response_bytes);
     const parsed = try parseJsonResponse(allocator, response_bytes);
     defer parsed.deinit();
@@ -296,7 +296,7 @@ test "tools list has 6 graph tools" {
 test "tools list has 8 explorer tools" {
     // Arrange
     const allocator = std.testing.allocator;
-    const gen = try GraphGeneration.create(allocator, 1, "abcdef1234567890".*);
+    const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
     defer gen.destroy(allocator);
     const guard = gen.acquire();
     defer guard.deinit();
@@ -308,7 +308,7 @@ test "tools list has 8 explorer tools" {
     ;
 
     // Act
-    const response_bytes = (try srv.handleMessage(allocator, input)).?;
+    const response_bytes = (try srv.handleMessage(allocator, std.testing.io, input)).?;
     defer allocator.free(response_bytes);
     const parsed = try parseJsonResponse(allocator, response_bytes);
     defer parsed.deinit();
@@ -326,7 +326,7 @@ test "tools list has 8 explorer tools" {
 test "tools list has 6 analysis tools" {
     // Arrange
     const allocator = std.testing.allocator;
-    const gen = try GraphGeneration.create(allocator, 1, "abcdef1234567890".*);
+    const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
     defer gen.destroy(allocator);
     const guard = gen.acquire();
     defer guard.deinit();
@@ -338,7 +338,7 @@ test "tools list has 6 analysis tools" {
     ;
 
     // Act
-    const response_bytes = (try srv.handleMessage(allocator, input)).?;
+    const response_bytes = (try srv.handleMessage(allocator, std.testing.io, input)).?;
     defer allocator.free(response_bytes);
     const parsed = try parseJsonResponse(allocator, response_bytes);
     defer parsed.deinit();
@@ -356,7 +356,7 @@ test "tools list has 6 analysis tools" {
 test "each tool has name and inputSchema" {
     // Arrange
     const allocator = std.testing.allocator;
-    const gen = try GraphGeneration.create(allocator, 1, "abcdef1234567890".*);
+    const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
     defer gen.destroy(allocator);
     const guard = gen.acquire();
     defer guard.deinit();
@@ -368,7 +368,7 @@ test "each tool has name and inputSchema" {
     ;
 
     // Act
-    const response_bytes = (try srv.handleMessage(allocator, input)).?;
+    const response_bytes = (try srv.handleMessage(allocator, std.testing.io, input)).?;
     defer allocator.free(response_bytes);
     const parsed = try parseJsonResponse(allocator, response_bytes);
     defer parsed.deinit();
@@ -388,7 +388,7 @@ test "each tool has name and inputSchema" {
 test "initialize returns serverInfo" {
     // Arrange
     const allocator = std.testing.allocator;
-    const gen = try GraphGeneration.create(allocator, 1, "abcdef1234567890".*);
+    const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
     defer gen.destroy(allocator);
     const guard = gen.acquire();
     defer guard.deinit();
@@ -400,7 +400,7 @@ test "initialize returns serverInfo" {
     ;
 
     // Act
-    const response_bytes = (try srv.handleMessage(allocator, input)).?;
+    const response_bytes = (try srv.handleMessage(allocator, std.testing.io, input)).?;
     defer allocator.free(response_bytes);
     const parsed = try parseJsonResponse(allocator, response_bytes);
     defer parsed.deinit();
@@ -415,7 +415,7 @@ test "initialize returns serverInfo" {
 test "initialize returns capabilities" {
     // Arrange
     const allocator = std.testing.allocator;
-    const gen = try GraphGeneration.create(allocator, 1, "abcdef1234567890".*);
+    const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
     defer gen.destroy(allocator);
     const guard = gen.acquire();
     defer guard.deinit();
@@ -427,7 +427,7 @@ test "initialize returns capabilities" {
     ;
 
     // Act
-    const response_bytes = (try srv.handleMessage(allocator, input)).?;
+    const response_bytes = (try srv.handleMessage(allocator, std.testing.io, input)).?;
     defer allocator.free(response_bytes);
     const parsed = try parseJsonResponse(allocator, response_bytes);
     defer parsed.deinit();
@@ -444,7 +444,7 @@ test "initialize returns capabilities" {
 test "server acquires generation on request" {
     // Arrange
     const allocator = std.testing.allocator;
-    const gen = try GraphGeneration.create(allocator, 1, "abcdef1234567890".*);
+    const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
     defer gen.destroy(allocator);
     const guard = gen.acquire();
     defer guard.deinit();
@@ -457,7 +457,7 @@ test "server acquires generation on request" {
     ;
 
     // Act
-    const response_bytes = try srv.handleMessage(allocator, input);
+    const response_bytes = try srv.handleMessage(allocator, std.testing.io, input);
     defer if (response_bytes) |b| allocator.free(b);
 
     // Assert: ref_count unchanged means acquire+release paired correctly
@@ -468,7 +468,7 @@ test "server acquires generation on request" {
 test "server releases generation after response" {
     // Arrange
     const allocator = std.testing.allocator;
-    const gen = try GraphGeneration.create(allocator, 1, "abcdef1234567890".*);
+    const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
     defer gen.destroy(allocator);
     const guard = gen.acquire();
     defer guard.deinit();
@@ -481,11 +481,11 @@ test "server releases generation after response" {
     const input =
         \\{"jsonrpc":"2.0","id":1,"method":"tools/list"}
     ;
-    const r1 = try srv.handleMessage(allocator, input);
+    const r1 = try srv.handleMessage(allocator, std.testing.io, input);
     defer if (r1) |b| allocator.free(b);
-    const r2 = try srv.handleMessage(allocator, input);
+    const r2 = try srv.handleMessage(allocator, std.testing.io, input);
     defer if (r2) |b| allocator.free(b);
-    const r3 = try srv.handleMessage(allocator, input);
+    const r3 = try srv.handleMessage(allocator, std.testing.io, input);
     defer if (r3) |b| allocator.free(b);
 
     // Assert: ref_count stable after all requests

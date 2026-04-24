@@ -31,7 +31,7 @@ const ParsedFlags = struct {
 };
 
 fn parseFlags(allocator: std.mem.Allocator, raw_args: []const []const u8) !ParsedFlags {
-    var flags = ParsedFlags{ .common = tool_utils.CommonFlags.init(), .positional = .{} };
+    var flags = ParsedFlags{ .common = tool_utils.CommonFlags.init(), .positional = .empty };
     errdefer flags.deinit(allocator);
     var iter = tool_utils.SliceIter.init(raw_args);
     while (iter.next()) |a| {
@@ -291,16 +291,15 @@ fn printHelp(stdout: *std.Io.Writer) !void {
 
 // -- Entry point --
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    const allocator = init.gpa;
 
     var stdout_buffer: [tool_utils.stdout_buffer_size]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+    var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
     const stdout = &stdout_writer.interface;
 
-    var args = std.process.args();
+    var args = init.minimal.args.iterate();
     _ = args.next();
     const dir_arg = args.next() orelse {
         try printHelp(stdout);
@@ -321,7 +320,7 @@ pub fn main() !void {
     }
 
     // Collect remaining CLI tokens and parse flags.
-    var raw_remaining = std.ArrayList([]const u8){};
+    var raw_remaining = std.ArrayList([]const u8).empty;
     defer raw_remaining.deinit(allocator);
     while (args.next()) |a| try raw_remaining.append(allocator, a);
 
@@ -329,7 +328,7 @@ pub fn main() !void {
     defer flags.deinit(allocator);
 
     // Resolve and index.
-    const dir_path = std.fs.cwd().realpathAlloc(allocator, dir_arg) catch |err| {
+    const dir_path = std.Io.Dir.cwd().realPathFileAlloc(io, dir_arg, allocator) catch |err| {
         try stdout.print("Error resolving path '{s}': {}\n", .{ dir_arg, err });
         try stdout.flush();
         std.process.exit(1);
@@ -345,7 +344,7 @@ pub fn main() !void {
     var wl = zcodeprism.lsp.worklist.LspWorklist{};
     defer wl.deinit(allocator);
 
-    const idx_result = indexer.indexDirectory(allocator, dir_path, &graph, &wl, .{
+    const idx_result = indexer.indexDirectory(allocator, io, dir_path, &graph, &wl, .{
         .exclude_paths = flags.common.exclude.items,
         .logger = log,
     }) catch |err| {
@@ -355,7 +354,7 @@ pub fn main() !void {
     };
 
     if (flags.common.lsp) {
-        try tool_utils.runLspEnrichment(allocator, &graph, &wl, log, stdout);
+        try tool_utils.runLspEnrichment(allocator, io, &graph, &wl, log, stdout);
     }
 
     try stdout.print("Indexed {d} files ({d} nodes, {d} edges)\n\n", .{

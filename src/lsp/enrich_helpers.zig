@@ -122,6 +122,7 @@ pub fn parseHoverContents(text: []const u8) HoverContents {
 /// to skip hover entries entirely.
 pub fn dispatchWorklist(
     allocator: std.mem.Allocator,
+    io: std.Io,
     graph: *Graph,
     client: *LspClient,
     worklist: []const WorklistEntry,
@@ -139,7 +140,7 @@ pub fn dispatchWorklist(
         switch (entry.query_kind) {
             .definition => {
                 result.definition_queries += 1;
-                const locs = (client.textDocumentDefinition(allocator, uri, entry.line, entry.col) catch continue) orelse continue;
+                const locs = (client.textDocumentDefinition(allocator, io, uri, entry.line, entry.col) catch continue) orelse continue;
                 defer protocol.freeLocationArray(allocator, locs);
                 for (locs) |loc| {
                     const rel = resolveDefinitionToRelPath(loc.uri, graph.project_root) orelse continue;
@@ -157,7 +158,7 @@ pub fn dispatchWorklist(
                         result.definition_successes += 1;
                         result.worklist_resolved += 1;
                         const target_name = if (graph.getNode(target_id)) |n| n.name else "?";
-                        logger.debug("promoted call edge via definition", &.{
+                        logger.debug(io, "promoted call edge via definition", &.{
                             Field.string("hint", entry.hint_name orelse "?"),
                             Field.string("target", target_name),
                         });
@@ -167,7 +168,7 @@ pub fn dispatchWorklist(
             },
             .type_definition => {
                 result.type_definition_queries += 1;
-                const locs = (client.textDocumentTypeDefinition(allocator, uri, entry.line, entry.col) catch continue) orelse continue;
+                const locs = (client.textDocumentTypeDefinition(allocator, io, uri, entry.line, entry.col) catch continue) orelse continue;
                 defer protocol.freeLocationArray(allocator, locs);
                 for (locs) |loc| {
                     const rel = resolveDefinitionToRelPath(loc.uri, graph.project_root) orelse continue;
@@ -192,8 +193,8 @@ pub fn dispatchWorklist(
                 const src_idx = @intFromEnum(entry.source_node_id);
                 if (src_idx >= graph.nodes.items.len) continue;
                 result.hover_queries += 1;
-                const hover = (client.textDocumentHover(allocator, uri, entry.line, entry.col) catch {
-                    logger.debug("hover query failed", &.{Field.string("hint", entry.hint_name orelse "?")});
+                const hover = (client.textDocumentHover(allocator, io, uri, entry.line, entry.col) catch {
+                    logger.debug(io, "hover query failed", &.{Field.string("hint", entry.hint_name orelse "?")});
                     continue;
                 }) orelse continue;
                 defer protocol.freeHover(allocator, hover);
@@ -203,7 +204,7 @@ pub fn dispatchWorklist(
             },
             .references => {
                 result.reference_queries += 1;
-                const locs = (client.textDocumentReferences(allocator, uri, entry.line, entry.col, false) catch continue) orelse continue;
+                const locs = (client.textDocumentReferences(allocator, io, uri, entry.line, entry.col, false) catch continue) orelse continue;
                 defer protocol.freeLocationArray(allocator, locs);
                 var resolved_any = false;
                 for (locs) |loc| {
@@ -236,6 +237,7 @@ pub fn dispatchWorklist(
 /// site that maps to a known graph node.
 pub fn runDeadCodeReferencesPass(
     allocator: std.mem.Allocator,
+    io: std.Io,
     graph: *Graph,
     client: *LspClient,
     file_map: *const std.StringHashMapUnmanaged(NodeId),
@@ -267,7 +269,7 @@ pub fn runDeadCodeReferencesPass(
         defer allocator.free(uri_val);
 
         result.reference_queries += 1;
-        const locs = (client.textDocumentReferences(allocator, uri_val, line_start - 1, col_start, false) catch continue) orelse continue;
+        const locs = (client.textDocumentReferences(allocator, io, uri_val, line_start - 1, col_start, false) catch continue) orelse continue;
         defer protocol.freeLocationArray(allocator, locs);
 
         const edge_type: types.EdgeType = if (node.kind == .function) .calls else .uses_type;
@@ -292,7 +294,7 @@ pub fn runDeadCodeReferencesPass(
         }
         if (resolved_any) {
             result.reference_successes += 1;
-            logger.debug("confirmed live node via references", &.{
+            logger.debug(io, "confirmed live node via references", &.{
                 Field.string("name", node.name),
             });
         }
@@ -303,6 +305,7 @@ pub fn runDeadCodeReferencesPass(
 /// on the corresponding graph node.
 pub fn enrichPhantoms(
     allocator: std.mem.Allocator,
+    io: std.Io,
     graph: *Graph,
     client: *LspClient,
     phantom_hovers: []const WorklistEntry,
@@ -325,11 +328,12 @@ pub fn enrichPhantoms(
         result.hover_queries += 1;
         const hover = (client.textDocumentHover(
             allocator,
+            io,
             uri,
             entry.line,
             entry.col,
         ) catch {
-            logger.debug("phantom hover failed", &.{
+            logger.debug(io, "phantom hover failed", &.{
                 Field.string("hint", entry.hint_name orelse "?"),
             });
             result.phantoms_remaining += 1;
@@ -365,7 +369,7 @@ pub fn enrichPhantoms(
         if (enriched) {
             result.phantoms_enriched += 1;
             result.hover_successes += 1;
-            logger.debug("enriched phantom", &.{
+            logger.debug(io, "enriched phantom", &.{
                 Field.string("hint", entry.hint_name orelse "?"),
             });
         } else {

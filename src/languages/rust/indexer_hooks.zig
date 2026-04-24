@@ -212,6 +212,7 @@ fn isLocalCrate(crate_name: []const u8, importer_path: ?[]const u8, file_index: 
 /// phantom nodes by querying hover at their usage sites.
 pub fn enrichWithLsp(
     allocator: std.mem.Allocator,
+    io: std.Io,
     graph: *Graph,
     client: *LspClient,
     wl: *const LspWorklist,
@@ -223,9 +224,9 @@ pub fn enrichWithLsp(
     var file_map = try enrich_helpers.buildFileNodeMap(allocator, graph);
     defer file_map.deinit(allocator);
 
-    try enrich_helpers.dispatchWorklist(allocator, graph, client, wl.items(), &file_map, &result, &handleRustHover, logger);
-    try enrich_helpers.runDeadCodeReferencesPass(allocator, graph, client, &file_map, &result, logger);
-    try enrich_helpers.enrichPhantoms(allocator, graph, client, wl.phantomHovers(), &result, logger);
+    try enrich_helpers.dispatchWorklist(allocator, io, graph, client, wl.items(), &file_map, &result, &handleRustHover, logger);
+    try enrich_helpers.runDeadCodeReferencesPass(allocator, io, graph, client, &file_map, &result, logger);
+    try enrich_helpers.enrichPhantoms(allocator, io, graph, client, wl.phantomHovers(), &result, logger);
 
     return result;
 }
@@ -474,11 +475,12 @@ fn createExternalPhantom(
 /// Returns an empty config if no Cargo.toml is found or parsing fails.
 pub fn parseBuildConfig(
     allocator: std.mem.Allocator,
+    io: std.Io,
     project_root: []const u8,
     log: Logger,
 ) error{OutOfMemory}!BuildConfig {
     const cargo_parser = @import("cargo_parser.zig");
-    const info = cargo_parser.parseCargoManifest(allocator, project_root, log) catch return .{};
+    const info = cargo_parser.parseCargoManifest(allocator, io, project_root, log) catch return .{};
     defer {
         // Free fields not transferred to BuildConfig.
         if (info.dev_dependencies) |deps| {

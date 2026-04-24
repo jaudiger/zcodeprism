@@ -70,7 +70,7 @@ pub fn diffGraphs(
 ) !DiffReport {
     const graph_a = fg_a.graph;
     const graph_b = fg_b.graph;
-    var entries: std.ArrayList(DiffEntry) = .{};
+    var entries: std.ArrayList(DiffEntry) = .empty;
     errdefer entries.deinit(allocator);
 
     var a_entities = try collectEntities(allocator, graph_a);
@@ -272,7 +272,7 @@ fn toEntityKind(kind: NodeKind) ?EntityKind {
 
 /// Extract all diffable entities from a graph, skipping phantom/structural nodes.
 fn collectEntities(allocator: std.mem.Allocator, g: *const Graph) !std.ArrayList(CollectedEntity) {
-    var list: std.ArrayList(CollectedEntity) = .{};
+    var list: std.ArrayList(CollectedEntity) = .empty;
     errdefer list.deinit(allocator);
 
     for (g.nodes.items) |n| {

@@ -49,7 +49,7 @@ pub fn renderFileSubgraphs(
         try out.appendSlice(allocator, "\"]\n");
 
         // Collect all descendants of this file that have IDs.
-        var file_members = std.ArrayList(MermaidNode){};
+        var file_members = std.ArrayList(MermaidNode).empty;
         defer file_members.deinit(allocator);
         try collectDescendants(ctx.g, ctx.ids, children_index, fi, &file_members, allocator);
 
@@ -303,7 +303,7 @@ pub fn renderGhostNodes(
     num_buf: *[20]u8,
 ) !void {
     // Collect and sort by ghost ID.
-    var entries = std.ArrayList(GhostEntry){};
+    var entries = std.ArrayList(GhostEntry).empty;
     defer entries.deinit(allocator);
 
     var it = ghost_map.iterator();
@@ -419,7 +419,7 @@ fn collectMermaidEdges(
     filter: common.FilterOptions,
     ghost_map: *const std.AutoHashMapUnmanaged(usize, u32),
 ) !std.ArrayList(MermaidEdge) {
-    var entries = std.ArrayList(MermaidEdge){};
+    var entries = std.ArrayList(MermaidEdge).empty;
     errdefer entries.deinit(allocator);
 
     if (ctx.g.adjacency != null) {
@@ -580,7 +580,7 @@ fn collectClassEntries(
     phantom_packages: []const PhantomPackage,
     ghost_map: *const std.AutoHashMapUnmanaged(usize, u32),
 ) !std.ArrayList(ClassEntry) {
-    var entries = std.ArrayList(ClassEntry){};
+    var entries = std.ArrayList(ClassEntry).empty;
     errdefer entries.deinit(allocator);
 
     // Internal nodes with IDs.
@@ -715,7 +715,7 @@ pub fn renderClassAssignments(
     for (style_names, 0..) |style_name, style_idx| {
         const target_style: StyleClass = @enumFromInt(style_idx);
 
-        var id_strings = std.ArrayList(u8){};
+        var id_strings = std.ArrayList(u8).empty;
         defer id_strings.deinit(allocator);
         var count: usize = 0;
 

@@ -23,23 +23,23 @@ test "snapshot save and load round-trip" {
         .content_hash = "abcdef1234567890".*,
     });
 
-    const storage_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const storage_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
     defer allocator.free(storage_path);
 
     // Act
     const fg = try g.freeze(allocator);
-    try snapshot.saveSnapshot(allocator, fg, "v1", storage_path);
+    try snapshot.saveSnapshot(allocator, std.testing.io, fg, "v1", storage_path);
 
-    var loaded = try snapshot.loadSnapshotGraph(allocator, "v1", storage_path);
+    var loaded = try snapshot.loadSnapshotGraph(allocator, std.testing.io, "v1", storage_path);
     defer loaded.deinit(allocator);
 
     // Assert
     try std.testing.expectEqual(g.nodeCount(), loaded.nodeCount());
     try std.testing.expectEqual(g.edgeCount(), loaded.edgeCount());
 
-    const snap_dir = try tmp.dir.openDir("snapshots", .{});
-    defer @constCast(&snap_dir).close();
-    const stat = try snap_dir.statFile("v1.bin");
+    var snap_dir = try tmp.dir.openDir(std.testing.io, "snapshots", .{});
+    defer snap_dir.close(std.testing.io);
+    const stat = try snap_dir.statFile(std.testing.io, "v1.bin", .{});
     try std.testing.expect(stat.size > 0);
 }
 
@@ -52,24 +52,24 @@ test "snapshot rejects invalid tag and loads missing tag" {
     var g = Graph.init("test-project");
     defer g.deinit(allocator);
 
-    const storage_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const storage_path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
     defer allocator.free(storage_path);
 
     // Act / Assert: invalid tags
     const fg2 = FrozenGraph{ .graph = &g };
     try std.testing.expectError(
         error.InvalidTagName,
-        snapshot.saveSnapshot(allocator, fg2, "has/slash", storage_path),
+        snapshot.saveSnapshot(allocator, std.testing.io, fg2, "has/slash", storage_path),
     );
     try std.testing.expectError(
         error.InvalidTagName,
-        snapshot.saveSnapshot(allocator, fg2, "has space", storage_path),
+        snapshot.saveSnapshot(allocator, std.testing.io, fg2, "has space", storage_path),
     );
 
     // Act / Assert: load nonexistent tag
     try std.testing.expectError(
         error.SnapshotNotFound,
-        snapshot.loadSnapshotGraph(allocator, "nonexistent", storage_path),
+        snapshot.loadSnapshotGraph(allocator, std.testing.io, "nonexistent", storage_path),
     );
 }
 

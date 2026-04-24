@@ -44,7 +44,7 @@ pub fn analyzeImpact(allocator: std.mem.Allocator, fg: FrozenGraph, node_ids: []
     defer visited.deinit(allocator);
 
     const QEntry = struct { node: u64, depth: u32 };
-    var queue = std.ArrayList(QEntry){};
+    var queue = std.ArrayList(QEntry).empty;
     defer queue.deinit(allocator);
 
     // Seed all starting nodes at depth 0.

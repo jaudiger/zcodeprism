@@ -50,17 +50,16 @@ fn fileDisplayName(g: *const Graph, file_idx: usize) []const u8 {
     return n.file_path orelse n.name;
 }
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    const allocator = init.gpa;
 
     var stdout_buffer: [tool_utils.stdout_buffer_size]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+    var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
     const stdout = &stdout_writer.interface;
 
     // Parse CLI arguments.
-    var args = std.process.args();
+    var args = init.minimal.args.iterate();
     _ = args.next(); // skip program name
     const dir_arg = args.next() orelse {
         try printHelp(stdout);
@@ -73,7 +72,7 @@ pub fn main() !void {
     }
 
     // Resolve to absolute path.
-    const dir_path = std.fs.cwd().realpathAlloc(allocator, dir_arg) catch |err| {
+    const dir_path = std.Io.Dir.cwd().realPathFileAlloc(io, dir_arg, allocator) catch |err| {
         try stdout.print("Error resolving path '{s}': {}\n", .{ dir_arg, err });
         try stdout.flush();
         std.process.exit(1);
@@ -103,14 +102,14 @@ pub fn main() !void {
     var wl = zcodeprism.lsp.worklist.LspWorklist{};
     defer wl.deinit(allocator);
 
-    const result = indexer.indexDirectory(allocator, dir_path, &graph, &wl, options) catch |err| {
+    const result = indexer.indexDirectory(allocator, io, dir_path, &graph, &wl, options) catch |err| {
         try stdout.print("Index error: {}\n", .{err});
         try stdout.flush();
         std.process.exit(1);
     };
 
     if (common_flags.lsp) {
-        try tool_utils.runLspEnrichment(allocator, &graph, &wl, log, stdout);
+        try tool_utils.runLspEnrichment(allocator, io, &graph, &wl, log, stdout);
     }
 
     // Summary.
@@ -284,7 +283,7 @@ pub fn main() !void {
                 key: SummaryKey,
                 count: u32,
             };
-            var entries = std.ArrayList(Entry){};
+            var entries = std.ArrayList(Entry).empty;
             defer entries.deinit(allocator);
             try entries.ensureTotalCapacity(allocator, summary_map.count());
 

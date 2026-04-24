@@ -1,8 +1,8 @@
 const std = @import("std");
 
 // Resolve the absolute path to the installed CLI binary.
-fn exePath(allocator: std.mem.Allocator) ![]const u8 {
-    return std.fs.cwd().realpathAlloc(allocator, "zig-out/bin/zcodeprism");
+fn exePath(allocator: std.mem.Allocator) ![:0]const u8 {
+    return std.Io.Dir.cwd().realPathFileAlloc(std.testing.io, "zig-out/bin/zcodeprism", allocator);
 }
 
 const CliResult = struct {
@@ -29,23 +29,22 @@ fn runCli(
     allocator: std.mem.Allocator,
     bin: []const u8,
     args: []const []const u8,
-    cwd_dir: ?std.fs.Dir,
+    cwd_dir: ?std.Io.Dir,
 ) !CliResult {
-    // Arrange argv: binary path followed by user args.
-    var argv: std.ArrayList([]const u8) = .{};
+    var argv: std.ArrayList([]const u8) = .empty;
     defer argv.deinit(allocator);
     try argv.ensureTotalCapacity(allocator, 1 + args.len);
     argv.appendAssumeCapacity(bin);
     argv.appendSliceAssumeCapacity(args);
 
-    const result = try std.process.Child.run(.{
-        .allocator = allocator,
+    const cwd: std.process.Child.Cwd = if (cwd_dir) |d| .{ .dir = d } else .inherit;
+    const result = try std.process.run(allocator, std.testing.io, .{
         .argv = argv.items,
-        .cwd_dir = cwd_dir,
+        .cwd = cwd,
     });
 
     const exit_code: u8 = switch (result.term) {
-        .Exited => |code| code,
+        .exited => |code| code,
         else => 255,
     };
 
@@ -83,7 +82,7 @@ test "--help exits with code 0" {
 
     // Assert
     try std.testing.expectEqual(@as(u8, 0), result.exit_code);
-    try std.testing.expect(std.mem.indexOf(u8, result.stdout(), "Usage") != null);
+    try std.testing.expect(std.mem.find(u8, result.stdout(), "Usage") != null);
 }
 
 test "unknown command exits with code 2" {
@@ -114,7 +113,7 @@ test "init creates config file" {
 
     // Assert
     try std.testing.expectEqual(@as(u8, 0), result.exit_code);
-    const stat = tmp.dir.statFile(".zcodeprism.zon") catch |err| {
+    const stat = tmp.dir.statFile(std.testing.io, ".zcodeprism.zon", .{}) catch |err| {
         std.debug.print("expected .zcodeprism.zon to exist, got {}\n", .{err});
         return error.TestExpectedEqual;
     };
@@ -135,11 +134,11 @@ test "init creates data directory" {
 
     // Assert
     try std.testing.expectEqual(@as(u8, 0), result.exit_code);
-    var data_dir = tmp.dir.openDir(".zcodeprism", .{}) catch |err| {
+    var data_dir = tmp.dir.openDir(std.testing.io, ".zcodeprism", .{}) catch |err| {
         std.debug.print("expected .zcodeprism/ to exist, got {}\n", .{err});
         return error.TestExpectedEqual;
     };
-    data_dir.close();
+    data_dir.close(std.testing.io);
 }
 
 test "init --force overwrites existing" {
@@ -154,9 +153,9 @@ test "init --force overwrites existing" {
     first.deinit(allocator);
 
     // Tamper with the config so we can detect overwrite.
-    const file = try tmp.dir.createFile(".zcodeprism.zon", .{});
-    try file.writeAll("modified");
-    file.close();
+    const file = try tmp.dir.createFile(std.testing.io, ".zcodeprism.zon", .{});
+    try file.writeStreamingAll(std.testing.io, "modified");
+    file.close(std.testing.io);
 
     // Act
     const result = try runCli(allocator, bin, &.{ "init", "--force" }, tmp.dir);
@@ -164,7 +163,7 @@ test "init --force overwrites existing" {
 
     // Assert
     try std.testing.expectEqual(@as(u8, 0), result.exit_code);
-    const content = try tmp.dir.readFileAlloc(allocator, ".zcodeprism.zon", 4096);
+    const content = try tmp.dir.readFileAlloc(std.testing.io, ".zcodeprism.zon", allocator, .limited(4096));
     defer allocator.free(content);
     try std.testing.expect(!std.mem.eql(u8, content, "modified"));
 }
@@ -199,10 +198,9 @@ test "index on fixture produces output" {
     const init_result = try runCli(allocator, bin, &.{"init"}, tmp.dir);
     init_result.deinit(allocator);
 
-    // Write a minimal .zig file for the indexer.
-    const src = try tmp.dir.createFile("hello.zig", .{});
-    try src.writeAll("pub fn hello() void {}");
-    src.close();
+    const src = try tmp.dir.createFile(std.testing.io, "hello.zig", .{});
+    try src.writeStreamingAll(std.testing.io, "pub fn hello() void {}");
+    src.close(std.testing.io);
 
     // Act
     const result = try runCli(allocator, bin, &.{"index"}, tmp.dir);
@@ -210,7 +208,7 @@ test "index on fixture produces output" {
 
     // Assert
     try std.testing.expectEqual(@as(u8, 0), result.exit_code);
-    try std.testing.expect(std.mem.indexOf(u8, result.stdout(), "indexed") != null);
+    try std.testing.expect(std.mem.find(u8, result.stdout(), "indexed") != null);
 }
 
 test "status on indexed project" {
@@ -224,9 +222,9 @@ test "status on indexed project" {
     const init_result = try runCli(allocator, bin, &.{"init"}, tmp.dir);
     init_result.deinit(allocator);
 
-    const src = try tmp.dir.createFile("hello.zig", .{});
-    try src.writeAll("pub fn hello() void {}");
-    src.close();
+    const src = try tmp.dir.createFile(std.testing.io, "hello.zig", .{});
+    try src.writeStreamingAll(std.testing.io, "pub fn hello() void {}");
+    src.close(std.testing.io);
 
     const idx_result = try runCli(allocator, bin, &.{"index"}, tmp.dir);
     idx_result.deinit(allocator);
@@ -237,7 +235,7 @@ test "status on indexed project" {
 
     // Assert
     try std.testing.expectEqual(@as(u8, 0), result.exit_code);
-    try std.testing.expect(std.mem.indexOf(u8, result.stdout(), "source_hash") != null);
+    try std.testing.expect(std.mem.find(u8, result.stdout(), "source_hash") != null);
 }
 
 test "status on uninitialized project" {

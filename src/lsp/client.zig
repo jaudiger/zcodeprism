@@ -32,60 +32,61 @@ pub const LspClient = struct {
         return .{ .logger = logger };
     }
 
-    pub fn deinit(self: *LspClient) void {
-        if (self.child != null) self.stop();
+    pub fn deinit(self: *LspClient, io: std.Io) void {
+        if (self.child != null) self.stop(io);
     }
 
     /// Spawn the LSP server as a child process with piped stdio.
-    pub fn start(self: *LspClient, allocator: std.mem.Allocator, server_command: []const u8) !void {
-        var child = std.process.Child.init(&.{server_command}, allocator);
-        child.stdin_behavior = .Pipe;
-        child.stdout_behavior = .Pipe;
-        child.stderr_behavior = .Ignore;
-        try child.spawn();
+    pub fn start(self: *LspClient, io: std.Io, server_command: []const u8) !void {
+        const child = try std.process.spawn(io, .{
+            .argv = &.{server_command},
+            .stdin = .pipe,
+            .stdout = .pipe,
+            .stderr = .ignore,
+        });
         self.child = child;
     }
 
     /// Shut down the LSP server gracefully, then reap the process.
-    pub fn stop(self: *LspClient) void {
+    pub fn stop(self: *LspClient, io: std.Io) void {
         var child = self.child orelse return;
         self.child = null;
 
         if (child.stdin) |stdin| {
             const shutdown = "{\"jsonrpc\":\"2.0\",\"id\":999999,\"method\":\"shutdown\",\"params\":null}";
             const s_hdr = std.fmt.comptimePrint("Content-Length: {d}\r\n\r\n", .{shutdown.len});
-            stdin.writeAll(s_hdr) catch {};
-            stdin.writeAll(shutdown) catch {};
+            stdin.writeStreamingAll(io, s_hdr) catch {};
+            stdin.writeStreamingAll(io, shutdown) catch {};
 
             const exit_msg = "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}";
             const e_hdr = std.fmt.comptimePrint("Content-Length: {d}\r\n\r\n", .{exit_msg.len});
-            stdin.writeAll(e_hdr) catch {};
-            stdin.writeAll(exit_msg) catch {};
+            stdin.writeStreamingAll(io, e_hdr) catch {};
+            stdin.writeStreamingAll(io, exit_msg) catch {};
         }
 
-        _ = child.wait() catch {};
+        _ = child.wait(io) catch {};
     }
 
     /// Write a Content-Length framed message to the server stdin.
-    fn sendFramed(self: *LspClient, data: []const u8) !void {
+    fn sendFramed(self: *LspClient, io: std.Io, data: []const u8) !void {
         const child = &(self.child orelse return error.BrokenPipe);
         const stdin = child.stdin orelse return error.BrokenPipe;
         var hdr_buf: [64]u8 = undefined;
         const hdr = std.fmt.bufPrint(&hdr_buf, "Content-Length: {d}\r\n\r\n", .{data.len}) catch
             return error.BrokenPipe;
-        try stdin.writeAll(hdr);
-        try stdin.writeAll(data);
+        try stdin.writeStreamingAll(io, hdr);
+        try stdin.writeStreamingAll(io, data);
     }
 
     /// Read one Content-Length framed message body from stdout.
-    fn readFramedBody(self: *LspClient, allocator: std.mem.Allocator) ![]const u8 {
+    fn readFramedBody(self: *LspClient, allocator: std.mem.Allocator, io: std.Io) ![]const u8 {
         const child = &(self.child orelse return error.BrokenPipe);
         const stdout = child.stdout orelse return error.BrokenPipe;
 
         var hdr_buf: [512]u8 = undefined;
         var hdr_len: usize = 0;
         while (hdr_len < hdr_buf.len) {
-            const n = try stdout.read(hdr_buf[hdr_len .. hdr_len + 1]);
+            const n = try stdout.readStreaming(io, &.{hdr_buf[hdr_len .. hdr_len + 1]});
             if (n == 0) return error.EndOfStream;
             hdr_len += 1;
             if (hdr_len >= 4 and std.mem.eql(u8, hdr_buf[hdr_len - 4 .. hdr_len], "\r\n\r\n")) break;
@@ -97,7 +98,7 @@ pub const LspClient = struct {
 
         var total: usize = 0;
         while (total < content_length) {
-            const n = try stdout.read(body[total..]);
+            const n = try stdout.readStreaming(io, &.{body[total..]});
             if (n == 0) return error.EndOfStream;
             total += n;
         }
@@ -125,10 +126,10 @@ pub const LspClient = struct {
 
     /// Read responses until one with a non-null id arrives, skipping
     /// server-initiated notifications.
-    fn readResponse(self: *LspClient, allocator: std.mem.Allocator) !protocol.Response {
+    fn readResponse(self: *LspClient, allocator: std.mem.Allocator, io: std.Io) !protocol.Response {
         var skipped: usize = 0;
         while (skipped < 64) : (skipped += 1) {
-            const body = try self.readFramedBody(allocator);
+            const body = try self.readFramedBody(allocator, io);
             defer allocator.free(body);
 
             const resp = protocol.parseResponse(allocator, body) catch continue;
@@ -146,6 +147,7 @@ pub const LspClient = struct {
     pub fn drainNotifications(
         self: *LspClient,
         allocator: std.mem.Allocator,
+        io: std.Io,
         timeout_ms: u32,
         logger: Logger,
     ) WarmupResult {
@@ -160,39 +162,38 @@ pub const LspClient = struct {
             .ready_signal = false,
         };
 
-        var timer = std.time.Timer.start() catch return .{
-            .elapsed_ms = 0,
-            .notifications_drained = 0,
-            .ready_signal = false,
-        };
+        const start_ts = std.Io.Timestamp.now(io, .awake);
         var drained: usize = 0;
 
         while (true) {
-            const elapsed_ms = timer.read() / std.time.ns_per_ms;
+            const now_ts = std.Io.Timestamp.now(io, .awake);
+            const elapsed_ms: u64 = @intCast(@max(0, @divTrunc(now_ts.nanoseconds - start_ts.nanoseconds, std.time.ns_per_ms)));
             if (elapsed_ms >= timeout_ms) break;
 
             const remaining: i32 = @intCast(timeout_ms - elapsed_ms);
             if (!pollAvailable(stdout.handle, remaining)) break;
 
-            const body = self.readFramedBody(allocator) catch break;
+            const body = self.readFramedBody(allocator, io) catch break;
             defer allocator.free(body);
 
             drained += 1;
-            logger.trace("LSP warmup: received notification", &.{
+            logger.trace(io, "LSP warmup: received notification", &.{
                 Field.uint("n", @as(u64, drained)),
             });
 
             if (isReadyNotification(body)) {
+                const end_ts = std.Io.Timestamp.now(io, .awake);
                 return .{
-                    .elapsed_ms = timer.read() / std.time.ns_per_ms,
+                    .elapsed_ms = @intCast(@max(0, @divTrunc(end_ts.nanoseconds - start_ts.nanoseconds, std.time.ns_per_ms))),
                     .notifications_drained = drained,
                     .ready_signal = true,
                 };
             }
         }
 
+        const end_ts = std.Io.Timestamp.now(io, .awake);
         return .{
-            .elapsed_ms = timer.read() / std.time.ns_per_ms,
+            .elapsed_ms = @intCast(@max(0, @divTrunc(end_ts.nanoseconds - start_ts.nanoseconds, std.time.ns_per_ms))),
             .notifications_drained = drained,
             .ready_signal = false,
         };
@@ -206,7 +207,7 @@ pub const LspClient = struct {
 
     /// Serialize a std.json.Value to an allocator-owned byte slice.
     fn serializeValue(allocator: std.mem.Allocator, value: Value) error{OutOfMemory}![]const u8 {
-        var aw: std.io.Writer.Allocating = .init(allocator);
+        var aw: std.Io.Writer.Allocating = .init(allocator);
         errdefer aw.deinit();
         var stream: std.json.Stringify = .{ .writer = &aw.writer };
         stream.write(value) catch return error.OutOfMemory;
@@ -215,25 +216,25 @@ pub const LspClient = struct {
 
     /// Build a JSON-RPC request envelope and serialize it.
     fn buildRequest(self: *LspClient, allocator: std.mem.Allocator, arena: std.mem.Allocator, method: []const u8, params: Value) error{OutOfMemory}![]const u8 {
-        var obj = ObjectMap.init(arena);
-        obj.put("jsonrpc", .{ .string = "2.0" }) catch return error.OutOfMemory;
-        obj.put("id", .{ .integer = self.nextId() }) catch return error.OutOfMemory;
-        obj.put("method", .{ .string = method }) catch return error.OutOfMemory;
-        obj.put("params", params) catch return error.OutOfMemory;
+        var obj: ObjectMap = .empty;
+        obj.put(arena, "jsonrpc", .{ .string = "2.0" }) catch return error.OutOfMemory;
+        obj.put(arena, "id", .{ .integer = self.nextId() }) catch return error.OutOfMemory;
+        obj.put(arena, "method", .{ .string = method }) catch return error.OutOfMemory;
+        obj.put(arena, "params", params) catch return error.OutOfMemory;
         return serializeValue(allocator, .{ .object = obj });
     }
 
     /// Build a JSON-RPC notification envelope and serialize it.
     fn buildNotification(allocator: std.mem.Allocator, arena: std.mem.Allocator, method: []const u8, params: Value) error{OutOfMemory}![]const u8 {
-        var obj = ObjectMap.init(arena);
-        obj.put("jsonrpc", .{ .string = "2.0" }) catch return error.OutOfMemory;
-        obj.put("method", .{ .string = method }) catch return error.OutOfMemory;
-        obj.put("params", params) catch return error.OutOfMemory;
+        var obj: ObjectMap = .empty;
+        obj.put(arena, "jsonrpc", .{ .string = "2.0" }) catch return error.OutOfMemory;
+        obj.put(arena, "method", .{ .string = method }) catch return error.OutOfMemory;
+        obj.put(arena, "params", params) catch return error.OutOfMemory;
         return serializeValue(allocator, .{ .object = obj });
     }
 
     /// Run the initialize/initialized handshake.
-    pub fn initialize(self: *LspClient, allocator: std.mem.Allocator, project_root: []const u8, init_options: ?[]const u8) !void {
+    pub fn initialize(self: *LspClient, allocator: std.mem.Allocator, io: std.Io, project_root: []const u8, init_options: ?[]const u8) !void {
         const root_uri = try pathToUri(allocator, project_root);
         defer allocator.free(root_uri);
 
@@ -241,95 +242,95 @@ pub const LspClient = struct {
         defer arena.deinit();
         const a = arena.allocator();
 
-        const caps = ObjectMap.init(a);
-        var params = ObjectMap.init(a);
-        try params.put("capabilities", .{ .object = caps });
-        try params.put("rootUri", .{ .string = root_uri });
-        try params.put("processId", .null);
+        const caps: ObjectMap = .empty;
+        var params: ObjectMap = .empty;
+        try params.put(a, "capabilities", .{ .object = caps });
+        try params.put(a, "rootUri", .{ .string = root_uri });
+        try params.put(a, "processId", .null);
 
         if (init_options) |opts_json| {
             if (std.json.parseFromSlice(Value, a, opts_json, .{})) |parsed| {
-                try params.put("initializationOptions", parsed.value);
+                try params.put(a, "initializationOptions", parsed.value);
             } else |_| {}
         }
 
         const req = try self.buildRequest(allocator, a, "initialize", .{ .object = params });
         defer allocator.free(req);
-        try self.sendFramed(req);
+        try self.sendFramed(io, req);
 
-        const resp = try self.readResponse(allocator);
+        const resp = try self.readResponse(allocator, io);
         resp.deinit(allocator);
 
-        const empty = ObjectMap.init(a);
+        const empty: ObjectMap = .empty;
         const notif = try buildNotification(allocator, a, "initialized", .{ .object = empty });
         defer allocator.free(notif);
-        self.sendFramed(notif) catch {};
+        self.sendFramed(io, notif) catch {};
     }
 
     /// Notify the server that a document was opened.
-    pub fn textDocumentDidOpen(self: *LspClient, allocator: std.mem.Allocator, uri: []const u8, text: []const u8, language_id: []const u8) !void {
+    pub fn textDocumentDidOpen(self: *LspClient, allocator: std.mem.Allocator, io: std.Io, uri: []const u8, text: []const u8, language_id: []const u8) !void {
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
         const a = arena.allocator();
 
-        var td = ObjectMap.init(a);
-        try td.put("uri", .{ .string = uri });
-        try td.put("languageId", .{ .string = language_id });
-        try td.put("version", .{ .integer = 1 });
-        try td.put("text", .{ .string = text });
+        var td: ObjectMap = .empty;
+        try td.put(a, "uri", .{ .string = uri });
+        try td.put(a, "languageId", .{ .string = language_id });
+        try td.put(a, "version", .{ .integer = 1 });
+        try td.put(a, "text", .{ .string = text });
 
-        var params = ObjectMap.init(a);
-        try params.put("textDocument", .{ .object = td });
+        var params: ObjectMap = .empty;
+        try params.put(a, "textDocument", .{ .object = td });
 
         const notif = try buildNotification(allocator, a, "textDocument/didOpen", .{ .object = params });
         defer allocator.free(notif);
-        self.sendFramed(notif) catch {};
+        self.sendFramed(io, notif) catch {};
     }
 
     /// Notify the server that a document's content changed (full replacement).
-    pub fn textDocumentDidChange(self: *LspClient, allocator: std.mem.Allocator, uri: []const u8, version: i32, new_text: []const u8) !void {
+    pub fn textDocumentDidChange(self: *LspClient, allocator: std.mem.Allocator, io: std.Io, uri: []const u8, version: i32, new_text: []const u8) !void {
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
         const a = arena.allocator();
 
-        var td = ObjectMap.init(a);
-        try td.put("uri", .{ .string = uri });
-        try td.put("version", .{ .integer = @as(i64, version) });
+        var td: ObjectMap = .empty;
+        try td.put(a, "uri", .{ .string = uri });
+        try td.put(a, "version", .{ .integer = @as(i64, version) });
 
-        var change = ObjectMap.init(a);
-        try change.put("text", .{ .string = new_text });
+        var change: ObjectMap = .empty;
+        try change.put(a, "text", .{ .string = new_text });
 
         var changes = std.json.Array.init(a);
         try changes.append(.{ .object = change });
 
-        var params = ObjectMap.init(a);
-        try params.put("textDocument", .{ .object = td });
-        try params.put("contentChanges", .{ .array = changes });
+        var params: ObjectMap = .empty;
+        try params.put(a, "textDocument", .{ .object = td });
+        try params.put(a, "contentChanges", .{ .array = changes });
 
         const notif = try LspClient.buildNotification(allocator, a, "textDocument/didChange", .{ .object = params });
         defer allocator.free(notif);
-        self.sendFramed(notif) catch {};
+        self.sendFramed(io, notif) catch {};
     }
 
     /// Notify the server that a document was closed.
-    pub fn textDocumentDidClose(self: *LspClient, allocator: std.mem.Allocator, uri: []const u8) !void {
+    pub fn textDocumentDidClose(self: *LspClient, allocator: std.mem.Allocator, io: std.Io, uri: []const u8) !void {
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
         const a = arena.allocator();
 
-        var td = ObjectMap.init(a);
-        try td.put("uri", .{ .string = uri });
+        var td: ObjectMap = .empty;
+        try td.put(a, "uri", .{ .string = uri });
 
-        var params = ObjectMap.init(a);
-        try params.put("textDocument", .{ .object = td });
+        var params: ObjectMap = .empty;
+        try params.put(a, "textDocument", .{ .object = td });
 
         const notif = try LspClient.buildNotification(allocator, a, "textDocument/didClose", .{ .object = params });
         defer allocator.free(notif);
-        self.sendFramed(notif) catch {};
+        self.sendFramed(io, notif) catch {};
     }
 
     /// Query hover information at a position.
-    pub fn textDocumentHover(self: *LspClient, allocator: std.mem.Allocator, uri: []const u8, line: u32, character: u32) !?protocol.Hover {
+    pub fn textDocumentHover(self: *LspClient, allocator: std.mem.Allocator, io: std.Io, uri: []const u8, line: u32, character: u32) !?protocol.Hover {
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
 
@@ -337,9 +338,9 @@ pub const LspClient = struct {
 
         const req = try self.buildRequest(allocator, arena.allocator(), "textDocument/hover", .{ .object = params });
         defer allocator.free(req);
-        try self.sendFramed(req);
+        try self.sendFramed(io, req);
 
-        const resp = try self.readResponse(allocator);
+        const resp = try self.readResponse(allocator, io);
         defer resp.deinit(allocator);
 
         if (resp.@"error" != null) return null;
@@ -350,7 +351,7 @@ pub const LspClient = struct {
 
     /// Query definition locations at a position.
     /// Caller owns the returned slice; free with protocol.freeLocationArray.
-    pub fn textDocumentDefinition(self: *LspClient, allocator: std.mem.Allocator, uri: []const u8, line: u32, character: u32) !?[]protocol.Location {
+    pub fn textDocumentDefinition(self: *LspClient, allocator: std.mem.Allocator, io: std.Io, uri: []const u8, line: u32, character: u32) !?[]protocol.Location {
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
 
@@ -358,9 +359,9 @@ pub const LspClient = struct {
 
         const req = try self.buildRequest(allocator, arena.allocator(), "textDocument/definition", .{ .object = params });
         defer allocator.free(req);
-        try self.sendFramed(req);
+        try self.sendFramed(io, req);
 
-        const resp = try self.readResponse(allocator);
+        const resp = try self.readResponse(allocator, io);
         defer resp.deinit(allocator);
 
         if (resp.@"error" != null) return null;
@@ -379,7 +380,7 @@ pub const LspClient = struct {
     /// Query type definition locations at a position.
     /// Servers that do not support this method return null rather than an error.
     /// Caller owns the returned slice; free with protocol.freeLocationArray.
-    pub fn textDocumentTypeDefinition(self: *LspClient, allocator: std.mem.Allocator, uri: []const u8, line: u32, character: u32) !?[]protocol.Location {
+    pub fn textDocumentTypeDefinition(self: *LspClient, allocator: std.mem.Allocator, io: std.Io, uri: []const u8, line: u32, character: u32) !?[]protocol.Location {
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
 
@@ -387,9 +388,9 @@ pub const LspClient = struct {
 
         const req = try self.buildRequest(allocator, arena.allocator(), "textDocument/typeDefinition", .{ .object = params });
         defer allocator.free(req);
-        try self.sendFramed(req);
+        try self.sendFramed(io, req);
 
-        const resp = try self.readResponse(allocator);
+        const resp = try self.readResponse(allocator, io);
         defer resp.deinit(allocator);
 
         if (resp.@"error" != null) return null;
@@ -408,22 +409,22 @@ pub const LspClient = struct {
     /// Find all references to the symbol at a position.
     /// `include_declaration` controls whether the declaration site is included.
     /// Caller owns the returned slice; free with protocol.freeLocationArray.
-    pub fn textDocumentReferences(self: *LspClient, allocator: std.mem.Allocator, uri: []const u8, line: u32, character: u32, include_declaration: bool) !?[]protocol.Location {
+    pub fn textDocumentReferences(self: *LspClient, allocator: std.mem.Allocator, io: std.Io, uri: []const u8, line: u32, character: u32, include_declaration: bool) !?[]protocol.Location {
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
         const a = arena.allocator();
 
         var params = try buildPositionParams(a, uri, line, character);
 
-        var ctx = ObjectMap.init(a);
-        try ctx.put("includeDeclaration", .{ .bool = include_declaration });
-        try params.put("context", .{ .object = ctx });
+        var ctx: ObjectMap = .empty;
+        try ctx.put(a, "includeDeclaration", .{ .bool = include_declaration });
+        try params.put(a, "context", .{ .object = ctx });
 
         const req = try self.buildRequest(allocator, a, "textDocument/references", .{ .object = params });
         defer allocator.free(req);
-        try self.sendFramed(req);
+        try self.sendFramed(io, req);
 
-        const resp = try self.readResponse(allocator);
+        const resp = try self.readResponse(allocator, io);
         defer resp.deinit(allocator);
 
         if (resp.@"error" != null) return null;
@@ -434,16 +435,16 @@ pub const LspClient = struct {
 
     /// Build TextDocumentPositionParams as an ObjectMap.
     fn buildPositionParams(arena: std.mem.Allocator, uri: []const u8, line: u32, character: u32) !ObjectMap {
-        var td = ObjectMap.init(arena);
-        try td.put("uri", .{ .string = uri });
+        var td: ObjectMap = .empty;
+        try td.put(arena, "uri", .{ .string = uri });
 
-        var pos = ObjectMap.init(arena);
-        try pos.put("line", .{ .integer = @intCast(line) });
-        try pos.put("character", .{ .integer = @intCast(character) });
+        var pos: ObjectMap = .empty;
+        try pos.put(arena, "line", .{ .integer = @intCast(line) });
+        try pos.put(arena, "character", .{ .integer = @intCast(character) });
 
-        var params = ObjectMap.init(arena);
-        try params.put("textDocument", .{ .object = td });
-        try params.put("position", .{ .object = pos });
+        var params: ObjectMap = .empty;
+        try params.put(arena, "textDocument", .{ .object = td });
+        try params.put(arena, "position", .{ .object = pos });
 
         return params;
     }
@@ -487,19 +488,19 @@ fn isReadyNotification(body: []const u8) bool {
 test "buildRequest serializes correct JSON-RPC envelope" {
     // Arrange
     var client = LspClient.init(Logger.noop);
-    defer client.deinit();
+    defer client.deinit(std.testing.io);
     const allocator = std.testing.allocator;
 
     // Act: build two sequential requests with empty params
     var arena1 = std.heap.ArenaAllocator.init(allocator);
     defer arena1.deinit();
-    const empty1 = ObjectMap.init(arena1.allocator());
+    const empty1: ObjectMap = .empty;
     const req1 = try client.buildRequest(allocator, arena1.allocator(), "textDocument/definition", .{ .object = empty1 });
     defer allocator.free(req1);
 
     var arena2 = std.heap.ArenaAllocator.init(allocator);
     defer arena2.deinit();
-    const empty2 = ObjectMap.init(arena2.allocator());
+    const empty2: ObjectMap = .empty;
     const req2 = try client.buildRequest(allocator, arena2.allocator(), "textDocument/references", .{ .object = empty2 });
     defer allocator.free(req2);
 
@@ -531,12 +532,12 @@ test "parseContentLength parses headers" {
 test "request method names for typeDefinition" {
     // Arrange
     var client = LspClient.init(Logger.noop);
-    defer client.deinit();
+    defer client.deinit(std.testing.io);
     const allocator = std.testing.allocator;
 
     var arena_td = std.heap.ArenaAllocator.init(allocator);
     defer arena_td.deinit();
-    const empty_td = ObjectMap.init(arena_td.allocator());
+    const empty_td: ObjectMap = .empty;
 
     // Act
     const req_td = try client.buildRequest(allocator, arena_td.allocator(), "textDocument/typeDefinition", .{ .object = empty_td });
@@ -549,7 +550,7 @@ test "request method names for typeDefinition" {
 test "references request includes context with includeDeclaration" {
     // Arrange
     var client = LspClient.init(Logger.noop);
-    defer client.deinit();
+    defer client.deinit(std.testing.io);
     const allocator = std.testing.allocator;
 
     var arena = std.heap.ArenaAllocator.init(allocator);
@@ -557,17 +558,17 @@ test "references request includes context with includeDeclaration" {
     const a = arena.allocator();
 
     // Construct the same params that textDocumentReferences would build.
-    var td = ObjectMap.init(a);
-    try td.put("uri", .{ .string = "file:///src/main.zig" });
-    var pos = ObjectMap.init(a);
-    try pos.put("line", .{ .integer = 10 });
-    try pos.put("character", .{ .integer = 4 });
-    var params = ObjectMap.init(a);
-    try params.put("textDocument", .{ .object = td });
-    try params.put("position", .{ .object = pos });
-    var ctx = ObjectMap.init(a);
-    try ctx.put("includeDeclaration", .{ .bool = false });
-    try params.put("context", .{ .object = ctx });
+    var td: ObjectMap = .empty;
+    try td.put(a, "uri", .{ .string = "file:///src/main.zig" });
+    var pos: ObjectMap = .empty;
+    try pos.put(a, "line", .{ .integer = 10 });
+    try pos.put(a, "character", .{ .integer = 4 });
+    var params: ObjectMap = .empty;
+    try params.put(a, "textDocument", .{ .object = td });
+    try params.put(a, "position", .{ .object = pos });
+    var ctx: ObjectMap = .empty;
+    try ctx.put(a, "includeDeclaration", .{ .bool = false });
+    try params.put(a, "context", .{ .object = ctx });
 
     // Act
     const req = try client.buildRequest(allocator, a, "textDocument/references", .{ .object = params });
@@ -583,26 +584,26 @@ test "textDocumentDidChange builds correct notification" {
     // Arrange
     const allocator = std.testing.allocator;
     var client = LspClient.init(Logger.noop);
-    defer client.deinit();
+    defer client.deinit(std.testing.io);
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     const a = arena.allocator();
 
     // Build the same params that textDocumentDidChange would build.
-    var td = ObjectMap.init(a);
-    try td.put("uri", .{ .string = "file:///src/main.zig" });
-    try td.put("version", .{ .integer = 2 });
+    var td: ObjectMap = .empty;
+    try td.put(a, "uri", .{ .string = "file:///src/main.zig" });
+    try td.put(a, "version", .{ .integer = 2 });
 
-    var change = ObjectMap.init(a);
-    try change.put("text", .{ .string = "const x = 42;\n" });
+    var change: ObjectMap = .empty;
+    try change.put(a, "text", .{ .string = "const x = 42;\n" });
 
     var changes = std.json.Array.init(a);
     try changes.append(.{ .object = change });
 
-    var params = ObjectMap.init(a);
-    try params.put("textDocument", .{ .object = td });
-    try params.put("contentChanges", .{ .array = changes });
+    var params: ObjectMap = .empty;
+    try params.put(a, "textDocument", .{ .object = td });
+    try params.put(a, "contentChanges", .{ .array = changes });
 
     // Act
     const notif = try LspClient.buildNotification(allocator, a, "textDocument/didChange", .{ .object = params });
@@ -619,17 +620,17 @@ test "textDocumentDidClose builds correct notification" {
     // Arrange
     const allocator = std.testing.allocator;
     var client = LspClient.init(Logger.noop);
-    defer client.deinit();
+    defer client.deinit(std.testing.io);
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     const a = arena.allocator();
 
-    var td = ObjectMap.init(a);
-    try td.put("uri", .{ .string = "file:///src/lib.zig" });
+    var td: ObjectMap = .empty;
+    try td.put(a, "uri", .{ .string = "file:///src/lib.zig" });
 
-    var params = ObjectMap.init(a);
-    try params.put("textDocument", .{ .object = td });
+    var params: ObjectMap = .empty;
+    try params.put(a, "textDocument", .{ .object = td });
 
     // Act
     const notif = try LspClient.buildNotification(allocator, a, "textDocument/didClose", .{ .object = params });

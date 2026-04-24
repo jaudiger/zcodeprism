@@ -49,7 +49,7 @@ pub fn findDeadCode(allocator: std.mem.Allocator, fg: FrozenGraph, options: Dead
     const g = fg.graph;
     const scope_filter: ?Scope = if (options.scope) |s| Scope.parse(s) else null;
 
-    var candidates = std.ArrayList(DeadCodeEntry){};
+    var candidates = std.ArrayList(DeadCodeEntry).empty;
     defer candidates.deinit(allocator);
 
     for (g.nodes.items, 0..) |n, i| {

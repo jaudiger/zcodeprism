@@ -14,13 +14,15 @@ const Registry = zcodeprism.registry.Registry;
 const ts_api = zcodeprism.tree_sitter_api;
 const source_map = zcodeprism.source_map;
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+
     var stdout_buffer: [tool_utils.stdout_buffer_size]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+    var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
     const stdout = &stdout_writer.interface;
 
     // Get file path from args.
-    var args = std.process.args();
+    var args = init.minimal.args.iterate();
     _ = args.next(); // skip program name
 
     const path_arg = args.next() orelse {
@@ -43,7 +45,7 @@ pub fn main() !void {
     const language = lang_support.grammarFn();
 
     // Read the file.
-    const source = source_map.mmapFile(path) catch |err| {
+    const source = source_map.mmapFile(io, path) catch |err| {
         try stdout.print("Error opening file '{s}': {}\n", .{ path, err });
         try stdout.flush();
         std.process.exit(1);

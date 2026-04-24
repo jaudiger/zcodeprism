@@ -22,87 +22,87 @@ const zig_project_files: []const helpers.FileEntry = &.{
 };
 
 /// Write project fixture files into a temporary directory and return the real path.
-fn setupProjectFixtures(tmp_dir: *std.testing.TmpDir) ![]const u8 {
-    try writeFixtureFiles(tmp_dir.dir, zig_project_files);
-    return try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+fn setupProjectFixtures(tmp_dir: *std.testing.TmpDir) ![:0]const u8 {
+    try writeFixtureFiles(std.testing.io, tmp_dir.dir, zig_project_files);
+    return try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
 }
 
 /// Index the project fixtures using default options.
 fn indexProjectFixtures(graph: *Graph, tmp_dir: *std.testing.TmpDir) !zcodeprism.indexer.IndexResult {
     const project_root = try setupProjectFixtures(tmp_dir);
     defer std.testing.allocator.free(project_root);
-    return indexDirectory(std.testing.allocator, project_root, graph, null, .{});
+    return indexDirectory(std.testing.allocator, std.testing.io, project_root, graph, null, .{});
 }
 
-fn writeCollisionFixtures(dir: std.fs.Dir) !void {
-    try writeFixtureFiles(dir, &.{
+fn writeCollisionFixtures(io: std.Io, dir: std.Io.Dir) !void {
+    try writeFixtureFiles(io, dir, &.{
         .{ .sub_path = "alpha.zig", .data = fixtures.zig.name_collision.alpha_zig },
         .{ .sub_path = "beta.zig", .data = fixtures.zig.name_collision.beta_zig },
         .{ .sub_path = "consumer.zig", .data = fixtures.zig.name_collision.consumer_zig },
     });
 }
 
-fn writeBasicParamFixtures(dir: std.fs.Dir) !void {
-    try writeFixtureFiles(dir, &.{
+fn writeBasicParamFixtures(io: std.Io, dir: std.Io.Dir) !void {
+    try writeFixtureFiles(io, dir, &.{
         .{ .sub_path = "service.zig", .data = fixtures.zig.param_method_call.service_zig },
         .{ .sub_path = "consumer.zig", .data = fixtures.zig.param_method_call.consumer_zig },
     });
 }
 
-fn writePointerParamFixtures(dir: std.fs.Dir) !void {
-    try writeFixtureFiles(dir, &.{
+fn writePointerParamFixtures(io: std.Io, dir: std.Io.Dir) !void {
+    try writeFixtureFiles(io, dir, &.{
         .{ .sub_path = "service.zig", .data = fixtures.zig.param_method_call.service_zig },
         .{ .sub_path = "pointer_param.zig", .data = fixtures.zig.param_method_call.pointer_param_zig },
     });
 }
 
-fn writeOptionalParamFixtures(dir: std.fs.Dir) !void {
-    try writeFixtureFiles(dir, &.{
+fn writeOptionalParamFixtures(io: std.Io, dir: std.Io.Dir) !void {
+    try writeFixtureFiles(io, dir, &.{
         .{ .sub_path = "service.zig", .data = fixtures.zig.param_method_call.service_zig },
         .{ .sub_path = "optional_param.zig", .data = fixtures.zig.param_method_call.optional_param_zig },
     });
 }
 
-fn writeChainedParamFixtures(dir: std.fs.Dir) !void {
-    try writeFixtureFiles(dir, &.{
+fn writeChainedParamFixtures(io: std.Io, dir: std.Io.Dir) !void {
+    try writeFixtureFiles(io, dir, &.{
         .{ .sub_path = "client.zig", .data = fixtures.zig.param_method_call.client_zig },
         .{ .sub_path = "service_with_client.zig", .data = fixtures.zig.param_method_call.service_with_client_zig },
         .{ .sub_path = "chained.zig", .data = fixtures.zig.param_method_call.chained_zig },
     });
 }
 
-fn writeMultiParamFixtures(dir: std.fs.Dir) !void {
-    try writeFixtureFiles(dir, &.{
+fn writeMultiParamFixtures(io: std.Io, dir: std.Io.Dir) !void {
+    try writeFixtureFiles(io, dir, &.{
         .{ .sub_path = "service.zig", .data = fixtures.zig.param_method_call.service_zig },
         .{ .sub_path = "client.zig", .data = fixtures.zig.param_method_call.client_zig },
         .{ .sub_path = "multi_param.zig", .data = fixtures.zig.param_method_call.multi_param_zig },
     });
 }
 
-fn writeSelfCallsParamFixtures(dir: std.fs.Dir) !void {
-    try writeFixtureFiles(dir, &.{
+fn writeSelfCallsParamFixtures(io: std.Io, dir: std.Io.Dir) !void {
+    try writeFixtureFiles(io, dir, &.{
         .{ .sub_path = "service.zig", .data = fixtures.zig.param_method_call.service_zig },
         .{ .sub_path = "self_calls_param.zig", .data = fixtures.zig.param_method_call.self_calls_param_zig },
     });
 }
 
-fn writeReturnValueFixtures(dir: std.fs.Dir) !void {
-    try writeFixtureFiles(dir, &.{
+fn writeReturnValueFixtures(io: std.Io, dir: std.Io.Dir) !void {
+    try writeFixtureFiles(io, dir, &.{
         .{ .sub_path = "service.zig", .data = fixtures.zig.param_method_call.service_zig },
         .{ .sub_path = "factory.zig", .data = fixtures.zig.param_method_call.factory_zig },
         .{ .sub_path = "return_value.zig", .data = fixtures.zig.param_method_call.return_value_zig },
     });
 }
 
-fn writeNoCallsFixtures(dir: std.fs.Dir) !void {
-    try writeFixtureFiles(dir, &.{
+fn writeNoCallsFixtures(io: std.Io, dir: std.Io.Dir) !void {
+    try writeFixtureFiles(io, dir, &.{
         .{ .sub_path = "service.zig", .data = fixtures.zig.param_method_call.service_zig },
         .{ .sub_path = "no_calls.zig", .data = fixtures.zig.param_method_call.no_calls_zig },
     });
 }
 
-fn writeDirImportsFixtures(dir: std.fs.Dir) !void {
-    try writeFixtureFiles(dir, &.{
+fn writeDirImportsFixtures(io: std.Io, dir: std.Io.Dir) !void {
+    try writeFixtureFiles(io, dir, &.{
         .{ .sub_path = "root.zig", .data = fixtures.zig.dir_imports.root_zig },
         .{ .sub_path = "crypto/aegis.zig", .data = fixtures.zig.dir_imports.crypto_aegis_zig },
         .{ .sub_path = "crypto/hmac.zig", .data = fixtures.zig.dir_imports.crypto_hmac_zig },
@@ -267,8 +267,8 @@ test "incremental indexing: skip unchanged, detect changes" {
         const project_root = setupProjectFixtures(&tmp_dir) catch return error.SkipZigTest;
         defer std.testing.allocator.free(project_root);
 
-        _ = indexDirectory(std.testing.allocator, project_root, &g, null, .{ .incremental = true }) catch |err| return err;
-        const result2 = indexDirectory(std.testing.allocator, project_root, &g, null, .{ .incremental = true }) catch |err| return err;
+        _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{ .incremental = true }) catch |err| return err;
+        const result2 = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{ .incremental = true }) catch |err| return err;
 
         try std.testing.expect(result2.files_skipped > 0);
     }
@@ -282,14 +282,14 @@ test "incremental indexing: skip unchanged, detect changes" {
         const project_root = setupProjectFixtures(&tmp_dir) catch return error.SkipZigTest;
         defer std.testing.allocator.free(project_root);
 
-        _ = indexDirectory(std.testing.allocator, project_root, &g, null, .{ .incremental = true }) catch |err| return err;
+        _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{ .incremental = true }) catch |err| return err;
 
-        try tmp_dir.dir.writeFile(.{
+        try tmp_dir.dir.writeFile(std.testing.io, .{
             .sub_path = "utils.zig",
             .data = "pub fn changed() void {}\n",
         });
 
-        const result2 = indexDirectory(std.testing.allocator, project_root, &g, null, .{ .incremental = true }) catch |err| return err;
+        const result2 = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{ .incremental = true }) catch |err| return err;
 
         try std.testing.expect(result2.files_indexed > 0);
     }
@@ -303,19 +303,19 @@ test "incremental indexing: skip unchanged, detect changes" {
         const project_root = setupProjectFixtures(&tmp_dir) catch return error.SkipZigTest;
         defer std.testing.allocator.free(project_root);
 
-        _ = indexDirectory(std.testing.allocator, project_root, &g, null, .{}) catch |err| return err;
+        _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
         const utils_node = helpers.findNode(&g, "utils.zig", .file) orelse return error.TestExpectedEqual;
         const old_hash = utils_node.content_hash orelse return error.TestExpectedEqual;
 
-        try tmp_dir.dir.writeFile(.{
+        try tmp_dir.dir.writeFile(std.testing.io, .{
             .sub_path = "utils.zig",
             .data = "pub fn changed() void {}\n",
         });
 
         var g2 = Graph.init("/tmp/project");
         defer g2.deinit(std.testing.allocator);
-        _ = indexDirectory(std.testing.allocator, project_root, &g2, null, .{}) catch |err| return err;
+        _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g2, null, .{}) catch |err| return err;
 
         const utils_node2 = helpers.findNode(&g2, "utils.zig", .file) orelse return error.TestExpectedEqual;
         const new_hash = utils_node2.content_hash orelse return error.TestExpectedEqual;
@@ -331,14 +331,14 @@ test "edge cases: single file, no zig files, exclude paths" {
         var tmp_dir = std.testing.tmpDir(.{});
         defer tmp_dir.cleanup();
 
-        try tmp_dir.dir.writeFile(.{
+        try tmp_dir.dir.writeFile(std.testing.io, .{
             .sub_path = "single.zig",
             .data = fixtures.zig.edge_cases.project_single_file,
         });
-        const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+        const project_root = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
         defer std.testing.allocator.free(project_root);
 
-        _ = indexDirectory(std.testing.allocator, project_root, &g, null, .{}) catch |err| return err;
+        _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
         try std.testing.expectEqual(@as(usize, 1), helpers.countNodesByKind(&g, .file));
         try std.testing.expect(g.nodeCount() > 1);
@@ -351,14 +351,14 @@ test "edge cases: single file, no zig files, exclude paths" {
         var tmp_dir = std.testing.tmpDir(.{});
         defer tmp_dir.cleanup();
 
-        try tmp_dir.dir.writeFile(.{
+        try tmp_dir.dir.writeFile(std.testing.io, .{
             .sub_path = "readme.txt",
             .data = "no zig here",
         });
-        const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+        const project_root = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
         defer std.testing.allocator.free(project_root);
 
-        _ = indexDirectory(std.testing.allocator, project_root, &g, null, .{}) catch |err| return err;
+        _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
         try std.testing.expectEqual(@as(usize, 0), helpers.countNodesByKind(&g, .file));
         try std.testing.expectEqual(@as(usize, 0), g.nodeCount());
@@ -374,7 +374,7 @@ test "edge cases: single file, no zig files, exclude paths" {
         defer std.testing.allocator.free(project_root);
 
         const exclude = [_][]const u8{"parser.zig"};
-        _ = indexDirectory(std.testing.allocator, project_root, &g, null, .{
+        _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{
             .exclude_paths = &exclude,
         }) catch |err| return err;
 
@@ -452,12 +452,12 @@ test "name collision: cross-file init/deinit resolution" {
     defer g.deinit(std.testing.allocator);
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
-    try writeCollisionFixtures(tmp_dir.dir);
-    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    try writeCollisionFixtures(std.testing.io, tmp_dir.dir);
+    const project_root = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = indexDirectory(std.testing.allocator, project_root, &g, null, .{}) catch |err| return err;
+    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
     const alpha_file = helpers.findNode(&g, "alpha.zig", .file) orelse return error.TestExpectedEqual;
     const beta_file = helpers.findNode(&g, "beta.zig", .file) orelse return error.TestExpectedEqual;
@@ -496,15 +496,15 @@ test "test block resolves method call on import-assigned variable" {
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try writeFixtureFiles(tmp_dir.dir, &.{
+    try writeFixtureFiles(std.testing.io, tmp_dir.dir, &.{
         .{ .sub_path = "provider.zig", .data = fixtures.zig.test_import_call.provider_zig },
         .{ .sub_path = "consumer.zig", .data = fixtures.zig.test_import_call.consumer_zig },
     });
-    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    const project_root = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = indexDirectory(std.testing.allocator, project_root, &g, null, .{}) catch |err| return err;
+    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
     // Assert: the test node has a calls edge to the increment method
     const provider_file = helpers.findNode(&g, "provider.zig", .file) orelse return error.TestExpectedEqual;
@@ -533,12 +533,12 @@ test "parameter method call: basic parameter" {
     defer g.deinit(std.testing.allocator);
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
-    try writeBasicParamFixtures(tmp_dir.dir);
-    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    try writeBasicParamFixtures(std.testing.io, tmp_dir.dir);
+    const project_root = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = indexDirectory(std.testing.allocator, project_root, &g, null, .{}) catch |err| return err;
+    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
     const service_file = helpers.findNode(&g, "service.zig", .file) orelse return error.TestExpectedEqual;
     const consumer_file = helpers.findNode(&g, "consumer.zig", .file) orelse return error.TestExpectedEqual;
@@ -565,12 +565,12 @@ test "parameter method call: pointer parameter" {
     defer g.deinit(std.testing.allocator);
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
-    try writePointerParamFixtures(tmp_dir.dir);
-    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    try writePointerParamFixtures(std.testing.io, tmp_dir.dir);
+    const project_root = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = indexDirectory(std.testing.allocator, project_root, &g, null, .{}) catch |err| return err;
+    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
     const service_file = helpers.findNode(&g, "service.zig", .file) orelse return error.TestExpectedEqual;
     const param_file = helpers.findNode(&g, "pointer_param.zig", .file) orelse return error.TestExpectedEqual;
@@ -590,12 +590,12 @@ test "parameter method call: optional parameter" {
     defer g.deinit(std.testing.allocator);
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
-    try writeOptionalParamFixtures(tmp_dir.dir);
-    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    try writeOptionalParamFixtures(std.testing.io, tmp_dir.dir);
+    const project_root = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = indexDirectory(std.testing.allocator, project_root, &g, null, .{}) catch |err| return err;
+    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
     const service_file = helpers.findNode(&g, "service.zig", .file) orelse return error.TestExpectedEqual;
     const param_file = helpers.findNode(&g, "optional_param.zig", .file) orelse return error.TestExpectedEqual;
@@ -612,12 +612,12 @@ test "parameter method call: chained cross-file" {
     defer g.deinit(std.testing.allocator);
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
-    try writeChainedParamFixtures(tmp_dir.dir);
-    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    try writeChainedParamFixtures(std.testing.io, tmp_dir.dir);
+    const project_root = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = indexDirectory(std.testing.allocator, project_root, &g, null, .{}) catch |err| return err;
+    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
     const swc_file = helpers.findNode(&g, "service_with_client.zig", .file) orelse return error.TestExpectedEqual;
     const client_file = helpers.findNode(&g, "client.zig", .file) orelse return error.TestExpectedEqual;
@@ -638,12 +638,12 @@ test "parameter method call: multiple parameters" {
     defer g.deinit(std.testing.allocator);
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
-    try writeMultiParamFixtures(tmp_dir.dir);
-    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    try writeMultiParamFixtures(std.testing.io, tmp_dir.dir);
+    const project_root = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = indexDirectory(std.testing.allocator, project_root, &g, null, .{}) catch |err| return err;
+    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
     const service_file = helpers.findNode(&g, "service.zig", .file) orelse return error.TestExpectedEqual;
     const client_file = helpers.findNode(&g, "client.zig", .file) orelse return error.TestExpectedEqual;
@@ -671,12 +671,12 @@ test "parameter method call: self method calling parameter method" {
     defer g.deinit(std.testing.allocator);
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
-    try writeSelfCallsParamFixtures(tmp_dir.dir);
-    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    try writeSelfCallsParamFixtures(std.testing.io, tmp_dir.dir);
+    const project_root = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = indexDirectory(std.testing.allocator, project_root, &g, null, .{}) catch |err| return err;
+    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
     const service_file = helpers.findNode(&g, "service.zig", .file) orelse return error.TestExpectedEqual;
     const self_file = helpers.findNode(&g, "self_calls_param.zig", .file) orelse return error.TestExpectedEqual;
@@ -696,12 +696,12 @@ test "parameter method call: return value from imported function" {
     defer g.deinit(std.testing.allocator);
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
-    try writeReturnValueFixtures(tmp_dir.dir);
-    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    try writeReturnValueFixtures(std.testing.io, tmp_dir.dir);
+    const project_root = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = indexDirectory(std.testing.allocator, project_root, &g, null, .{}) catch |err| return err;
+    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
     const factory_file = helpers.findNode(&g, "factory.zig", .file) orelse return error.TestExpectedEqual;
     const service_file = helpers.findNode(&g, "service.zig", .file) orelse return error.TestExpectedEqual;
@@ -723,11 +723,11 @@ test "parameter method call: negative tests" {
         defer g.deinit(std.testing.allocator);
         var tmp_dir = std.testing.tmpDir(.{});
         defer tmp_dir.cleanup();
-        try writeNoCallsFixtures(tmp_dir.dir);
-        const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+        try writeNoCallsFixtures(std.testing.io, tmp_dir.dir);
+        const project_root = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
         defer std.testing.allocator.free(project_root);
 
-        _ = indexDirectory(std.testing.allocator, project_root, &g, null, .{}) catch |err| return err;
+        _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
         const service_file = helpers.findNode(&g, "service.zig", .file) orelse return error.TestExpectedEqual;
         const no_calls_file = helpers.findNode(&g, "no_calls.zig", .file) orelse return error.TestExpectedEqual;
@@ -748,12 +748,12 @@ test "dir imports: same-directory resolution with duplicate basenames" {
     defer g.deinit(std.testing.allocator);
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
-    try writeDirImportsFixtures(tmp_dir.dir);
-    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    try writeDirImportsFixtures(std.testing.io, tmp_dir.dir);
+    const project_root = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = indexDirectory(std.testing.allocator, project_root, &g, null, .{}) catch |err| return err;
+    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
     // Assert: find file nodes by file_path
     var crypto_helpers_id: ?NodeId = null;
@@ -789,12 +789,12 @@ test "dir imports: dot-slash prefix resolves to same directory" {
     defer g.deinit(std.testing.allocator);
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
-    try writeDirImportsFixtures(tmp_dir.dir);
-    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    try writeDirImportsFixtures(std.testing.io, tmp_dir.dir);
+    const project_root = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = indexDirectory(std.testing.allocator, project_root, &g, null, .{}) catch |err| return err;
+    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
     // Assert: crypto/hmac.zig (uses @import("./helpers.zig")) imports crypto/helpers.zig
     var crypto_hmac_id: ?NodeId = null;
@@ -818,12 +818,12 @@ test "dir imports: subdirectory import resolves across directories" {
     defer g.deinit(std.testing.allocator);
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
-    try writeDirImportsFixtures(tmp_dir.dir);
-    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    try writeDirImportsFixtures(std.testing.io, tmp_dir.dir);
+    const project_root = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = indexDirectory(std.testing.allocator, project_root, &g, null, .{}) catch |err| return err;
+    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
     // Assert: compress/flate.zig (uses @import("flate/inner.zig")) imports compress/flate/inner.zig
     var compress_flate_id: ?NodeId = null;
@@ -847,12 +847,12 @@ test "dir imports: parent directory import resolves across directories" {
     defer g.deinit(std.testing.allocator);
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
-    try writeDirImportsFixtures(tmp_dir.dir);
-    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    try writeDirImportsFixtures(std.testing.io, tmp_dir.dir);
+    const project_root = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = indexDirectory(std.testing.allocator, project_root, &g, null, .{}) catch |err| return err;
+    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
     // Assert: compress/flate/inner.zig (uses @import("../flate.zig")) imports compress/flate.zig
     var compress_flate_inner_id: ?NodeId = null;
@@ -876,12 +876,12 @@ test "dir imports: subdirectory import from root" {
     defer g.deinit(std.testing.allocator);
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
-    try writeDirImportsFixtures(tmp_dir.dir);
-    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    try writeDirImportsFixtures(std.testing.io, tmp_dir.dir);
+    const project_root = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = indexDirectory(std.testing.allocator, project_root, &g, null, .{}) catch |err| return err;
+    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
     // Assert: root.zig (uses @import("crypto/aegis.zig")) imports crypto/aegis.zig
     var root_id: ?NodeId = null;
@@ -905,12 +905,12 @@ test "dir imports: cross-file call edges resolve to correct targets" {
     defer g.deinit(std.testing.allocator);
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
-    try writeDirImportsFixtures(tmp_dir.dir);
-    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    try writeDirImportsFixtures(std.testing.io, tmp_dir.dir);
+    const project_root = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = indexDirectory(std.testing.allocator, project_root, &g, null, .{}) catch |err| return err;
+    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
     // Find file nodes
     var crypto_aegis_id: ?NodeId = null;
@@ -948,22 +948,22 @@ test "dir imports: cross-file call edges resolve to correct targets" {
     try std.testing.expect(!helpers.hasEdge(&g, read_fn, validate_fn, .calls));
 }
 
-fn writeDirectExtractionTypeFixtures(dir: std.fs.Dir) !void {
-    try writeFixtureFiles(dir, &.{
+fn writeDirectExtractionTypeFixtures(io: std.Io, dir: std.Io.Dir) !void {
+    try writeFixtureFiles(io, dir, &.{
         .{ .sub_path = "provider.zig", .data = fixtures.zig.direct_extraction.provider_zig },
         .{ .sub_path = "type_consumer.zig", .data = fixtures.zig.direct_extraction.type_consumer_zig },
     });
 }
 
-fn writeDirectExtractionFnFixtures(dir: std.fs.Dir) !void {
-    try writeFixtureFiles(dir, &.{
+fn writeDirectExtractionFnFixtures(io: std.Io, dir: std.Io.Dir) !void {
+    try writeFixtureFiles(io, dir, &.{
         .{ .sub_path = "provider.zig", .data = fixtures.zig.direct_extraction.provider_zig },
         .{ .sub_path = "fn_consumer.zig", .data = fixtures.zig.direct_extraction.fn_consumer_zig },
     });
 }
 
-fn writeInnerStructCallFixtures(dir: std.fs.Dir) !void {
-    try writeFixtureFiles(dir, &.{
+fn writeInnerStructCallFixtures(io: std.Io, dir: std.Io.Dir) !void {
+    try writeFixtureFiles(io, dir, &.{
         .{ .sub_path = "provider.zig", .data = fixtures.zig.inner_struct_call.provider_zig },
         .{ .sub_path = "consumer.zig", .data = fixtures.zig.inner_struct_call.consumer_zig },
     });
@@ -975,12 +975,12 @@ test "inner struct call: cross-file edges from test block inner struct" {
     defer g.deinit(std.testing.allocator);
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
-    try writeInnerStructCallFixtures(tmp_dir.dir);
-    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    try writeInnerStructCallFixtures(std.testing.io, tmp_dir.dir);
+    const project_root = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = indexDirectory(std.testing.allocator, project_root, &g, null, .{}) catch |err| return err;
+    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
     // Assert: find file nodes
     const provider_file = helpers.findNode(&g, "provider.zig", .file) orelse return error.TestExpectedEqual;
@@ -1024,12 +1024,12 @@ test "direct extraction type: qualified method call creates cross-file calls edg
     defer g.deinit(std.testing.allocator);
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
-    try writeDirectExtractionTypeFixtures(tmp_dir.dir);
-    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    try writeDirectExtractionTypeFixtures(std.testing.io, tmp_dir.dir);
+    const project_root = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = indexDirectory(std.testing.allocator, project_root, &g, null, .{}) catch |err| return err;
+    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
     // Assert: find file nodes
     const provider_file = helpers.findNode(&g, "provider.zig", .file) orelse return error.TestExpectedEqual;
@@ -1055,12 +1055,12 @@ test "direct extraction fn: bare call creates cross-file calls edge" {
     defer g.deinit(std.testing.allocator);
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
-    try writeDirectExtractionFnFixtures(tmp_dir.dir);
-    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    try writeDirectExtractionFnFixtures(std.testing.io, tmp_dir.dir);
+    const project_root = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = indexDirectory(std.testing.allocator, project_root, &g, null, .{}) catch |err| return err;
+    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
     // Assert: find nodes
     const provider_file = helpers.findNode(&g, "provider.zig", .file) orelse return error.TestExpectedEqual;
@@ -1084,12 +1084,12 @@ test "directory nodes created for each directory" {
     defer g.deinit(std.testing.allocator);
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
-    try writeDirImportsFixtures(tmp_dir.dir);
-    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    try writeDirImportsFixtures(std.testing.io, tmp_dir.dir);
+    const project_root = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = indexDirectory(std.testing.allocator, project_root, &g, null, .{}) catch |err| return err;
+    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
     // Assert: directory nodes exist with correct file_path and name (basename)
     var found_crypto = false;
@@ -1132,12 +1132,12 @@ test "file parent_id points to directory" {
     defer g.deinit(std.testing.allocator);
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
-    try writeDirImportsFixtures(tmp_dir.dir);
-    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    try writeDirImportsFixtures(std.testing.io, tmp_dir.dir);
+    const project_root = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = indexDirectory(std.testing.allocator, project_root, &g, null, .{}) catch |err| return err;
+    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
     // Assert: every file node's parent_id resolves to a directory node
     for (g.nodes.items) |n| {
@@ -1154,12 +1154,12 @@ test "directory parent_id chain" {
     defer g.deinit(std.testing.allocator);
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
-    try writeDirImportsFixtures(tmp_dir.dir);
-    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    try writeDirImportsFixtures(std.testing.io, tmp_dir.dir);
+    const project_root = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = indexDirectory(std.testing.allocator, project_root, &g, null, .{}) catch |err| return err;
+    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
     // Assert: compress/flate's parent is compress, compress's parent is root
     var flate_node: ?*const Node = null;
@@ -1227,12 +1227,12 @@ test "incremental indexing does not duplicate directory nodes" {
     defer g.deinit(std.testing.allocator);
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
-    try writeDirImportsFixtures(tmp_dir.dir);
-    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    try writeDirImportsFixtures(std.testing.io, tmp_dir.dir);
+    const project_root = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(project_root);
 
     // Act: index twice with incremental
-    _ = indexDirectory(std.testing.allocator, project_root, &g, null, .{ .incremental = true }) catch |err| return err;
+    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{ .incremental = true }) catch |err| return err;
     const count_after_first = helpers.countNodesByKind(&g, .directory);
 
     // Capture NodeIds of directory nodes after first run.
@@ -1248,7 +1248,7 @@ test "incremental indexing does not duplicate directory nodes" {
         }
     }
 
-    _ = indexDirectory(std.testing.allocator, project_root, &g, null, .{ .incremental = true }) catch |err| return err;
+    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{ .incremental = true }) catch |err| return err;
     const count_after_second = helpers.countNodesByKind(&g, .directory);
 
     // Assert: same number of directory nodes after both runs
@@ -1272,12 +1272,12 @@ test "no zig files produces zero directory nodes" {
     defer g.deinit(std.testing.allocator);
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
-    try tmp_dir.dir.writeFile(.{ .sub_path = "readme.txt", .data = "no zig here" });
-    const project_root = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+    try tmp_dir.dir.writeFile(std.testing.io, .{ .sub_path = "readme.txt", .data = "no zig here" });
+    const project_root = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = indexDirectory(std.testing.allocator, project_root, &g, null, .{}) catch |err| return err;
+    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
     // Assert: zero directory nodes (early return before directory creation)
     try std.testing.expectEqual(@as(usize, 0), helpers.countNodesByKind(&g, .directory));

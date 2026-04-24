@@ -59,9 +59,9 @@ const usage_text =
 
 var stdin_fd: std.posix.fd_t = 0;
 
-fn handleSigterm(_: c_int) callconv(.c) void {
+fn handleSigterm(_: std.c.SIG) callconv(.c) void {
     // Close stdin to unblock the read loop (read retries on EINTR).
-    std.posix.close(stdin_fd);
+    _ = std.c.close(stdin_fd);
 }
 
 const ExportFormat = enum { ctg_fmt, mermaid_fmt, jsonl_fmt };
@@ -95,7 +95,7 @@ const CliArgs = struct {
     positional_count: usize = 0,
 };
 
-fn requireArg(args: *std.process.ArgIterator, flag: []const u8, stderr: *std.Io.Writer) []const u8 {
+fn requireArg(args: *std.process.Args.Iterator, flag: []const u8, stderr: *std.Io.Writer) []const u8 {
     return args.next() orelse {
         stderr.print("{s} requires an argument\n", .{flag}) catch {};
         stderr.flush() catch {};
@@ -103,9 +103,9 @@ fn requireArg(args: *std.process.ArgIterator, flag: []const u8, stderr: *std.Io.
     };
 }
 
-fn parseArgs(stderr: *std.Io.Writer) CliArgs {
+fn parseArgs(args_src: std.process.Args, stderr: *std.Io.Writer) CliArgs {
     var cli = CliArgs{};
-    var args = std.process.args();
+    var args = args_src.iterate();
     _ = args.next();
 
     while (args.next()) |arg| {
@@ -164,19 +164,21 @@ fn parseArgs(stderr: *std.Io.Writer) CliArgs {
     return cli;
 }
 
-pub fn main() void {
+pub fn main(init: std.process.Init) void {
+    const io = init.io;
+
     var stdout_buffer: [4096]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+    var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
     const stdout = &stdout_writer.interface;
 
     var stderr_buffer: [4096]u8 = undefined;
-    var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
+    var stderr_writer = std.Io.File.stderr().writer(io, &stderr_buffer);
     const stderr = &stderr_writer.interface;
 
-    const cli = parseArgs(stderr);
+    const cli = parseArgs(init.minimal.args, stderr);
 
     if (cli.project_root) |root| {
-        std.posix.chdir(root) catch {
+        std.process.setCurrentPath(io, root) catch {
             stderr.print("cannot chdir to: {s}\n", .{root}) catch {};
             stderr.flush() catch {};
             std.process.exit(1);
@@ -198,24 +200,24 @@ pub fn main() void {
             stdout.writeAll(usage_text) catch {};
             stdout.flush() catch {};
         },
-        .init => runInit(stdout, stderr, cli.force, cli.workspace),
-        .index => runIndex(stdout, stderr, cli.verbosity),
-        .@"export" => runExport(stdout, stderr, cli.export_format, cli.scope, cli.output, cli.snapshot, cli.include_test_nodes, cli.include_external_nodes),
-        .snapshot => runSnapshot(stdout, stderr, cli.name),
-        .diff => runDiff(stdout, stderr, cli.positional_args[0], cli.positional_args[1]),
-        .serve => runServe(stderr, cli.workspace, cli.verbosity),
-        .status => runStatus(stdout, stderr, cli.workspace),
+        .init => runInit(io, stdout, stderr, cli.force, cli.workspace),
+        .index => runIndex(init.gpa, io, stdout, stderr, cli.verbosity),
+        .@"export" => runExport(init.gpa, io, stdout, stderr, cli.export_format, cli.scope, cli.output, cli.snapshot, cli.include_test_nodes, cli.include_external_nodes),
+        .snapshot => runSnapshot(init.gpa, io, stdout, stderr, cli.name),
+        .diff => runDiff(init.gpa, io, stdout, stderr, cli.positional_args[0], cli.positional_args[1]),
+        .serve => runServe(init.gpa, io, stderr, cli.workspace, cli.verbosity),
+        .status => runStatus(init.gpa, io, stdout, stderr, cli.workspace),
     }
 }
 
-fn runInit(stdout: *std.Io.Writer, stderr: *std.Io.Writer, force: bool, workspace_arg: ?[]const u8) void {
-    const cwd = std.fs.cwd();
+fn runInit(io: std.Io, stdout: *std.Io.Writer, stderr: *std.Io.Writer, force: bool, workspace_arg: ?[]const u8) void {
+    const cwd = std.Io.Dir.cwd();
 
     if (workspace_arg != null) {
         if (force) {
-            cwd.deleteFile("zcodeprism-workspace.zon") catch {};
+            cwd.deleteFile(io, "zcodeprism-workspace.zon") catch {};
         }
-        config.writeDefaultWorkspaceConfig(cwd) catch |err| {
+        config.writeDefaultWorkspaceConfig(io, cwd) catch |err| {
             switch (err) {
                 error.PathAlreadyExists => {
                     stderr.writeAll("workspace already initialized (use --force to reinitialize)\n") catch {};
@@ -233,11 +235,11 @@ fn runInit(stdout: *std.Io.Writer, stderr: *std.Io.Writer, force: bool, workspac
     }
 
     if (force) {
-        cwd.deleteFile(".zcodeprism.zon") catch {};
-        cwd.deleteTree(".zcodeprism") catch {};
+        cwd.deleteFile(io, ".zcodeprism.zon") catch {};
+        cwd.deleteTree(io, ".zcodeprism") catch {};
     }
 
-    config.writeDefaultConfig(cwd) catch |err| {
+    config.writeDefaultConfig(io, cwd) catch |err| {
         switch (err) {
             error.PathAlreadyExists => {
                 stderr.writeAll("already initialized (use --force to reinitialize)\n") catch {};
@@ -250,7 +252,7 @@ fn runInit(stdout: *std.Io.Writer, stderr: *std.Io.Writer, force: bool, workspac
         std.process.exit(1);
     };
 
-    config.createDataDir(cwd) catch |err| {
+    config.createDataDir(io, cwd) catch |err| {
         stderr.print("failed to create data directory: {s}\n", .{@errorName(err)}) catch {};
         stderr.flush() catch {};
         std.process.exit(1);
@@ -260,12 +262,8 @@ fn runInit(stdout: *std.Io.Writer, stderr: *std.Io.Writer, force: bool, workspac
     stdout.flush() catch {};
 }
 
-fn runIndex(stdout: *std.Io.Writer, stderr: *std.Io.Writer, verbosity: u8) void {
-    var gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
-
-    const project_root = std.fs.cwd().realpathAlloc(allocator, ".") catch |err| {
+fn runIndex(allocator: std.mem.Allocator, io: std.Io, stdout: *std.Io.Writer, stderr: *std.Io.Writer, verbosity: u8) void {
+    const project_root = std.Io.Dir.cwd().realPathFileAlloc(io, ".", allocator) catch |err| {
         stderr.print("failed to resolve project root: {s}\n", .{@errorName(err)}) catch {};
         stderr.flush() catch {};
         std.process.exit(1);
@@ -273,7 +271,7 @@ fn runIndex(stdout: *std.Io.Writer, stderr: *std.Io.Writer, verbosity: u8) void 
     defer allocator.free(project_root);
 
     // Load config, fall back to all-defaults if no config file.
-    const cfg = loadConfig(allocator) catch |err| {
+    const cfg = loadConfig(allocator, io) catch |err| {
         stderr.print("failed to load config: {s}\n", .{@errorName(err)}) catch {};
         stderr.flush() catch {};
         std.process.exit(1);
@@ -297,7 +295,7 @@ fn runIndex(stdout: *std.Io.Writer, stderr: *std.Io.Writer, verbosity: u8) void 
     var wl = zcodeprism.lsp.worklist.LspWorklist{};
     defer wl.deinit(allocator);
 
-    const idx_result = indexer.indexDirectory(allocator, project_root, &graph, &wl, .{
+    const idx_result = indexer.indexDirectory(allocator, io, project_root, &graph, &wl, .{
         .exclude_paths = full.exclude_paths orelse config.defaultExcludePaths(),
         .logger = logger,
         .budget_bytes = if (full.memory) |m| if (m.budget_mb) |mb| @as(u64, mb) * 1024 * 1024 else null else null,
@@ -309,11 +307,11 @@ fn runIndex(stdout: *std.Io.Writer, stderr: *std.Io.Writer, verbosity: u8) void 
 
     // LSP enrichment pass.
     var lsp_pool = zcodeprism.lsp.pool.LspPool.init(.{});
-    defer lsp_pool.deinit(allocator);
+    defer lsp_pool.deinit(allocator, io);
 
     var lsp_result = EnrichResult{};
     for (registry.Registry.allLanguages()) |ls| {
-        const result = lsp_enricher.enrich(allocator, &graph, ls, &wl, &lsp_pool, .{
+        const result = lsp_enricher.enrich(allocator, io, &graph, ls, &wl, &lsp_pool, .{
             .logger = logger,
             .project_root = project_root,
         }) catch |err| {
@@ -328,14 +326,14 @@ fn runIndex(stdout: *std.Io.Writer, stderr: *std.Io.Writer, verbosity: u8) void 
     const fmt = if (full.storage) |s| s.format orelse .binary else .binary;
     switch (fmt) {
         .binary => {
-            storage.binary.save(allocator, frozen, ".zcodeprism/graph.bin") catch |err| {
+            storage.binary.save(allocator, io, frozen, ".zcodeprism/graph.bin") catch |err| {
                 stderr.print("failed to save binary graph: {s}\n", .{@errorName(err)}) catch {};
                 stderr.flush() catch {};
                 std.process.exit(1);
             };
         },
         .jsonl => {
-            saveJsonl(allocator, frozen) catch |err| {
+            saveJsonl(allocator, io, frozen) catch |err| {
                 stderr.print("failed to save JSONL graph: {s}\n", .{@errorName(err)}) catch {};
                 stderr.flush() catch {};
                 std.process.exit(1);
@@ -353,6 +351,8 @@ fn runIndex(stdout: *std.Io.Writer, stderr: *std.Io.Writer, verbosity: u8) void 
 }
 
 fn runExport(
+    allocator: std.mem.Allocator,
+    io: std.Io,
     stdout: *std.Io.Writer,
     stderr: *std.Io.Writer,
     format_arg: ?ExportFormat,
@@ -368,12 +368,8 @@ fn runExport(
         std.process.exit(2);
     };
 
-    var gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
-
     var graph = if (snapshot_arg) |tag|
-        snapshot.loadSnapshotGraph(allocator, tag, ".zcodeprism") catch |err| {
+        snapshot.loadSnapshotGraph(allocator, io, tag, ".zcodeprism") catch |err| {
             switch (err) {
                 error.SnapshotNotFound => stderr.print("snapshot not found: {s}\n", .{tag}) catch {},
                 error.InvalidTagName => stderr.print("invalid snapshot tag: {s}\n", .{tag}) catch {},
@@ -383,7 +379,7 @@ fn runExport(
             std.process.exit(1);
         }
     else
-        storage.binary.load(allocator, ".zcodeprism/graph.bin") catch {
+        storage.binary.load(allocator, io, ".zcodeprism/graph.bin") catch {
             stderr.writeAll("failed to load graph (run 'index' first)\n") catch {};
             stderr.flush() catch {};
             std.process.exit(1);
@@ -394,17 +390,17 @@ fn runExport(
         const base = std.fs.path.basename(graph.project_root);
         if (base.len > 0) break :blk base;
         var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
-        const cwd = std.posix.getcwd(&cwd_buf) catch break :blk "project";
-        break :blk std.fs.path.basename(cwd);
+        const n = std.process.currentPath(io, &cwd_buf) catch break :blk "project";
+        break :blk std.fs.path.basename(cwd_buf[0..n]);
     };
 
     const export_frozen = FrozenGraph{ .graph = &graph };
     switch (format) {
         .ctg_fmt => {
-            var out: std.ArrayList(u8) = .{};
+            var out: std.ArrayList(u8) = .empty;
             defer out.deinit(allocator);
 
-            ctg.renderCtg(allocator, export_frozen, .{
+            ctg.renderCtg(allocator, io, export_frozen, .{
                 .project_name = project_name,
                 .scope = scope_arg,
                 .filter = .{
@@ -417,13 +413,13 @@ fn runExport(
                 std.process.exit(1);
             };
 
-            writeOutput(stdout, stderr, output_arg, out.items);
+            writeOutput(io, stdout, stderr, output_arg, out.items);
         },
         .mermaid_fmt => {
-            var out: std.ArrayList(u8) = .{};
+            var out: std.ArrayList(u8) = .empty;
             defer out.deinit(allocator);
 
-            mermaid.renderMermaid(allocator, export_frozen, .{
+            mermaid.renderMermaid(allocator, io, export_frozen, .{
                 .project_name = project_name,
                 .scope = scope_arg,
                 .filter = .{
@@ -436,27 +432,34 @@ fn runExport(
                 std.process.exit(1);
             };
 
-            writeOutput(stdout, stderr, output_arg, out.items);
+            writeOutput(io, stdout, stderr, output_arg, out.items);
         },
         .jsonl_fmt => {
             if (output_arg) |path| {
-                var write_buf: [8192]u8 = undefined;
-                var af = std.fs.cwd().atomicFile(path, .{ .write_buffer = &write_buf }) catch |err| {
+                var af = std.Io.Dir.cwd().createFileAtomic(io, path, .{ .replace = true }) catch |err| {
                     stderr.print("cannot create output file: {s}\n", .{@errorName(err)}) catch {};
                     stderr.flush() catch {};
                     std.process.exit(1);
                 };
-                defer af.deinit();
+                defer af.deinit(io);
+                var write_buf: [8192]u8 = undefined;
+                var af_writer = af.file.writer(io, &write_buf);
                 const export_fg = FrozenGraph{ .graph = &graph };
-                storage.jsonl.exportJsonl(allocator, export_fg, &af.file_writer.interface) catch |err| {
+                storage.jsonl.exportJsonl(allocator, export_fg, &af_writer.interface) catch |err| {
                     stderr.print("export failed: {s}\n", .{@errorName(err)}) catch {};
                     stderr.flush() catch {};
                     std.process.exit(1);
                 };
-                atomicFinishWithSync(&af, stderr);
+                af_writer.interface.flush() catch {};
+                af.file.sync(io) catch {};
+                af.replace(io) catch |err| {
+                    stderr.print("rename failed: {s}\n", .{@errorName(err)}) catch {};
+                    stderr.flush() catch {};
+                    std.process.exit(1);
+                };
             } else {
                 var buf: [8192]u8 = undefined;
-                var writer = std.fs.File.stdout().writer(&buf);
+                var writer = std.Io.File.stdout().writer(io, &buf);
                 const stdout_fg = FrozenGraph{ .graph = &graph };
                 storage.jsonl.exportJsonl(allocator, stdout_fg, &writer.interface) catch |err| {
                     stderr.print("export failed: {s}\n", .{@errorName(err)}) catch {};
@@ -469,57 +472,39 @@ fn runExport(
     }
 }
 
-fn writeOutput(stdout: *std.Io.Writer, stderr: *std.Io.Writer, output_arg: ?[]const u8, data: []const u8) void {
+fn writeOutput(io: std.Io, stdout: *std.Io.Writer, stderr: *std.Io.Writer, output_arg: ?[]const u8, data: []const u8) void {
     if (output_arg) |path| {
-        var write_buf: [8192]u8 = undefined;
-        var af = std.fs.cwd().atomicFile(path, .{ .write_buffer = &write_buf }) catch |err| {
+        var af = std.Io.Dir.cwd().createFileAtomic(io, path, .{ .replace = true }) catch |err| {
             stderr.print("cannot create output file: {s}\n", .{@errorName(err)}) catch {};
             stderr.flush() catch {};
             std.process.exit(1);
         };
-        defer af.deinit();
-        af.file_writer.interface.writeAll(data) catch |err| {
+        defer af.deinit(io);
+        af.file.writeStreamingAll(io, data) catch |err| {
             stderr.print("write failed: {s}\n", .{@errorName(err)}) catch {};
             stderr.flush() catch {};
             std.process.exit(1);
         };
-        atomicFinishWithSync(&af, stderr);
+        af.file.sync(io) catch {};
+        af.replace(io) catch |err| {
+            stderr.print("rename failed: {s}\n", .{@errorName(err)}) catch {};
+            stderr.flush() catch {};
+            std.process.exit(1);
+        };
     } else {
         stdout.writeAll(data) catch {};
         stdout.flush() catch {};
     }
 }
 
-fn atomicFinishWithSync(af: *std.fs.AtomicFile, stderr: *std.Io.Writer) void {
-    af.flush() catch |err| {
-        stderr.print("write failed: {s}\n", .{@errorName(err)}) catch {};
-        stderr.flush() catch {};
-        std.process.exit(1);
-    };
-    af.file_writer.file.sync() catch |err| {
-        stderr.print("sync failed: {s}\n", .{@errorName(err)}) catch {};
-        stderr.flush() catch {};
-        std.process.exit(1);
-    };
-    af.renameIntoPlace() catch |err| {
-        stderr.print("rename failed: {s}\n", .{@errorName(err)}) catch {};
-        stderr.flush() catch {};
-        std.process.exit(1);
-    };
-}
-
-fn runSnapshot(stdout: *std.Io.Writer, stderr: *std.Io.Writer, name_arg: ?[]const u8) void {
+fn runSnapshot(allocator: std.mem.Allocator, io: std.Io, stdout: *std.Io.Writer, stderr: *std.Io.Writer, name_arg: ?[]const u8) void {
     const tag = name_arg orelse {
         stderr.writeAll("snapshot requires --name <tag>\n") catch {};
         stderr.flush() catch {};
         std.process.exit(2);
     };
 
-    var gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
-
-    var graph = storage.binary.load(allocator, ".zcodeprism/graph.bin") catch {
+    var graph = storage.binary.load(allocator, io, ".zcodeprism/graph.bin") catch {
         stderr.writeAll("failed to load graph (run 'index' first)\n") catch {};
         stderr.flush() catch {};
         std.process.exit(1);
@@ -527,7 +512,7 @@ fn runSnapshot(stdout: *std.Io.Writer, stderr: *std.Io.Writer, name_arg: ?[]cons
     defer graph.deinit(allocator);
 
     const snap_fg = FrozenGraph{ .graph = &graph };
-    snapshot.saveSnapshot(allocator, snap_fg, tag, ".zcodeprism") catch |err| {
+    snapshot.saveSnapshot(allocator, io, snap_fg, tag, ".zcodeprism") catch |err| {
         switch (err) {
             error.InvalidTagName => stderr.print("invalid snapshot tag: {s}\n", .{tag}) catch {},
             error.TagTooLong => stderr.print("snapshot tag too long (max {d}): {s}\n", .{ snapshot.MAX_TAG_LENGTH, tag }) catch {},
@@ -541,7 +526,7 @@ fn runSnapshot(stdout: *std.Io.Writer, stderr: *std.Io.Writer, name_arg: ?[]cons
     stdout.flush() catch {};
 }
 
-fn runDiff(stdout: *std.Io.Writer, stderr: *std.Io.Writer, tag_a_arg: ?[]const u8, tag_b_arg: ?[]const u8) void {
+fn runDiff(allocator: std.mem.Allocator, io: std.Io, stdout: *std.Io.Writer, stderr: *std.Io.Writer, tag_a_arg: ?[]const u8, tag_b_arg: ?[]const u8) void {
     const tag_a = tag_a_arg orelse {
         stderr.writeAll("diff requires two snapshot tags: zcodeprism diff <snap-a> <snap-b>\n") catch {};
         stderr.flush() catch {};
@@ -553,11 +538,7 @@ fn runDiff(stdout: *std.Io.Writer, stderr: *std.Io.Writer, tag_a_arg: ?[]const u
         std.process.exit(2);
     };
 
-    var gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
-
-    var graph_a = snapshot.loadSnapshotGraph(allocator, tag_a, ".zcodeprism") catch |err| {
+    var graph_a = snapshot.loadSnapshotGraph(allocator, io, tag_a, ".zcodeprism") catch |err| {
         switch (err) {
             error.SnapshotNotFound => stderr.print("snapshot not found: {s}\n", .{tag_a}) catch {},
             error.InvalidTagName => stderr.print("invalid snapshot tag: {s}\n", .{tag_a}) catch {},
@@ -568,7 +549,7 @@ fn runDiff(stdout: *std.Io.Writer, stderr: *std.Io.Writer, tag_a_arg: ?[]const u
     };
     defer graph_a.deinit(allocator);
 
-    var graph_b = snapshot.loadSnapshotGraph(allocator, tag_b, ".zcodeprism") catch |err| {
+    var graph_b = snapshot.loadSnapshotGraph(allocator, io, tag_b, ".zcodeprism") catch |err| {
         switch (err) {
             error.SnapshotNotFound => stderr.print("snapshot not found: {s}\n", .{tag_b}) catch {},
             error.InvalidTagName => stderr.print("invalid snapshot tag: {s}\n", .{tag_b}) catch {},
@@ -588,7 +569,7 @@ fn runDiff(stdout: *std.Io.Writer, stderr: *std.Io.Writer, tag_a_arg: ?[]const u
     };
     defer report.deinit(allocator);
 
-    var out: std.ArrayList(u8) = .{};
+    var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);
     snapshot_diff.renderDiffReport(allocator, &report, &out) catch |err| {
         stderr.print("render failed: {s}\n", .{@errorName(err)}) catch {};
@@ -600,17 +581,13 @@ fn runDiff(stdout: *std.Io.Writer, stderr: *std.Io.Writer, tag_a_arg: ?[]const u
     stdout.flush() catch {};
 }
 
-fn runServe(stderr: *std.Io.Writer, workspace_arg: ?[]const u8, verbosity: u8) void {
-    stdin_fd = std.fs.File.stdin().handle;
+fn runServe(allocator: std.mem.Allocator, io: std.Io, stderr: *std.Io.Writer, workspace_arg: ?[]const u8, verbosity: u8) void {
+    stdin_fd = std.Io.File.stdin().handle;
     std.posix.sigaction(std.posix.SIG.TERM, &.{
         .handler = .{ .handler = handleSigterm },
         .mask = std.posix.sigemptyset(),
         .flags = 0,
     }, null);
-
-    var gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
 
     const log_level: logging.Level = switch (verbosity) {
         0 => .warn,
@@ -622,7 +599,7 @@ fn runServe(stderr: *std.Io.Writer, workspace_arg: ?[]const u8, verbosity: u8) v
     const logger = text_logger.logger();
 
     // Load config for exclude paths.
-    const cfg = loadConfig(allocator) catch |err| {
+    const cfg = loadConfig(allocator, io) catch |err| {
         stderr.print("failed to load config: {s}\n", .{@errorName(err)}) catch {};
         stderr.flush() catch {};
         std.process.exit(1);
@@ -631,7 +608,7 @@ fn runServe(stderr: *std.Io.Writer, workspace_arg: ?[]const u8, verbosity: u8) v
     const full = config.withDefaults(cfg);
     const exclude_paths = full.exclude_paths orelse config.defaultExcludePaths();
 
-    const project_root = std.fs.cwd().realpathAlloc(allocator, ".") catch |err| {
+    const project_root = std.Io.Dir.cwd().realPathFileAlloc(io, ".", allocator) catch |err| {
         stderr.print("failed to resolve project root: {s}\n", .{@errorName(err)}) catch {};
         stderr.flush() catch {};
         std.process.exit(1);
@@ -639,7 +616,7 @@ fn runServe(stderr: *std.Io.Writer, workspace_arg: ?[]const u8, verbosity: u8) v
     defer allocator.free(project_root);
 
     // Heap-allocate the initial generation so old/new can coexist.
-    const initial_gen = GraphGeneration.create(allocator, 1, .{0} ** types.hash_len) catch {
+    const initial_gen = GraphGeneration.create(allocator, io, 1, .{0} ** types.hash_len) catch {
         stderr.writeAll("out of memory\n") catch {};
         stderr.flush() catch {};
         std.process.exit(1);
@@ -650,9 +627,9 @@ fn runServe(stderr: *std.Io.Writer, workspace_arg: ?[]const u8, verbosity: u8) v
     defer wl.deinit(allocator);
 
     if (workspace_arg) |ws_path| {
-        initial_gen.graph = loadWorkspaceGraph(initial_gen.arena.allocator(), ws_path, stderr);
+        initial_gen.graph = loadWorkspaceGraph(initial_gen.arena.allocator(), io, ws_path, stderr);
     } else {
-        _ = indexer.indexDirectory(allocator, project_root, &initial_gen.graph, &wl, .{
+        _ = indexer.indexDirectory(allocator, io, project_root, &initial_gen.graph, &wl, .{
             .exclude_paths = exclude_paths,
             .logger = logger,
             .budget_bytes = if (full.memory) |m| if (m.budget_mb) |mb| @as(u64, mb) * 1024 * 1024 else null else null,
@@ -666,11 +643,11 @@ fn runServe(stderr: *std.Io.Writer, workspace_arg: ?[]const u8, verbosity: u8) v
 
     // LSP pool shared across re-indexes.
     var lsp_pool = zcodeprism.lsp.pool.LspPool.init(.{});
-    defer lsp_pool.deinit(allocator);
+    defer lsp_pool.deinit(allocator, io);
 
     if (workspace_arg == null) {
         for (registry.Registry.allLanguages()) |ls| {
-            _ = lsp_enricher.enrich(allocator, &initial_gen.graph, ls, &wl, &lsp_pool, .{
+            _ = lsp_enricher.enrich(allocator, io, &initial_gen.graph, ls, &wl, &lsp_pool, .{
                 .logger = logger,
                 .project_root = project_root,
             }) catch {};
@@ -688,11 +665,11 @@ fn runServe(stderr: *std.Io.Writer, workspace_arg: ?[]const u8, verbosity: u8) v
     defer server.deinit();
 
     // Stdout mutex shared between main read loop and watcher thread.
-    var stdout_mutex: std.Thread.Mutex = .{};
+    var stdout_mutex: std.Io.Mutex = .init;
 
     // Determine watch root: for workspace, watch the workspace directory.
     const watch_root = if (workspace_arg) |ws_path|
-        std.fs.cwd().realpathAlloc(allocator, std.fs.path.dirname(ws_path) orelse ".") catch project_root
+        std.Io.Dir.cwd().realPathFileAlloc(io, std.fs.path.dirname(ws_path) orelse ".", allocator) catch project_root
     else
         project_root;
     defer if (workspace_arg != null) allocator.free(watch_root);
@@ -702,6 +679,7 @@ fn runServe(stderr: *std.Io.Writer, workspace_arg: ?[]const u8, verbosity: u8) v
     // Spawn watcher thread.
     const watcher_thread = std.Thread.spawn(.{}, watcherThreadFn, .{
         allocator,
+        io,
         &gen_manager,
         &lsp_pool,
         project_root,
@@ -719,23 +697,24 @@ fn runServe(stderr: *std.Io.Writer, workspace_arg: ?[]const u8, verbosity: u8) v
     };
     defer watcher_thread.join();
 
-    serveStdioLoop(allocator, &server, &stdout_mutex);
+    serveStdioLoop(allocator, io, &server, &stdout_mutex);
 }
 
 fn watcherThreadFn(
     allocator: std.mem.Allocator,
+    io: std.Io,
     gen_manager: *GenerationManager,
     lsp_pool: *zcodeprism.lsp.pool.LspPool,
     project_root: []const u8,
     exclude_paths: []const []const u8,
-    stdout_mutex: *std.Thread.Mutex,
+    stdout_mutex: *std.Io.Mutex,
     logger: logging.Logger,
     workspace_arg: ?[]const u8,
     stderr: *std.Io.Writer,
     watch_root: []const u8,
     budget_bytes: ?u64,
 ) void {
-    var file_watcher = FileWatcher.init(watch_root, allocator, exclude_paths) catch return;
+    var file_watcher = FileWatcher.init(allocator, io, watch_root, exclude_paths) catch return;
     defer file_watcher.deinit(allocator);
 
     var debouncer = Debouncer.init(500);
@@ -743,24 +722,24 @@ fn watcherThreadFn(
 
     while (true) {
         if (!file_watcher.waitForEvents()) break;
-        debouncer.trigger();
+        debouncer.trigger(io);
 
         // Drain additional events during debounce window.
-        while (!debouncer.isReady()) {
-            std.Thread.sleep(@as(u64, debouncer.remainingMs()) * std.time.ns_per_ms);
-            if (debouncer.isReady()) break;
+        while (!debouncer.isReady(io)) {
+            std.Io.sleep(io, .fromNanoseconds(@intCast(@as(i96, debouncer.remainingMs(io)) * std.time.ns_per_ms)), .real) catch break;
+            if (debouncer.isReady(io)) break;
         }
 
         generation_id += 1;
-        const new_gen = GraphGeneration.create(allocator, generation_id, .{0} ** types.hash_len) catch continue;
+        const new_gen = GraphGeneration.create(allocator, io, generation_id, .{0} ** types.hash_len) catch continue;
 
         if (workspace_arg) |ws_path| {
-            new_gen.graph = loadWorkspaceGraph(new_gen.arena.allocator(), ws_path, stderr);
+            new_gen.graph = loadWorkspaceGraph(new_gen.arena.allocator(), io, ws_path, stderr);
         } else {
             var wl = zcodeprism.lsp.worklist.LspWorklist{};
             defer wl.deinit(allocator);
 
-            _ = indexer.indexDirectory(allocator, project_root, &new_gen.graph, &wl, .{
+            _ = indexer.indexDirectory(allocator, io, project_root, &new_gen.graph, &wl, .{
                 .exclude_paths = exclude_paths,
                 .logger = logger,
                 .budget_bytes = budget_bytes,
@@ -770,7 +749,7 @@ fn watcherThreadFn(
             };
 
             for (registry.Registry.allLanguages()) |ls| {
-                _ = lsp_enricher.enrich(allocator, &new_gen.graph, ls, &wl, lsp_pool, .{
+                _ = lsp_enricher.enrich(allocator, io, &new_gen.graph, ls, &wl, lsp_pool, .{
                     .logger = logger,
                     .project_root = project_root,
                 }) catch {};
@@ -782,7 +761,7 @@ fn watcherThreadFn(
         // Acquire a guard on new_gen to keep it alive during notification.
         const new_guard = new_gen.acquire();
 
-        const old_gen = gen_manager.swap(new_gen);
+        const old_gen = gen_manager.swap(io, new_gen);
         if (old_gen.ref_count.load(.monotonic) == 0) {
             old_gen.destroy(allocator);
         }
@@ -800,10 +779,10 @@ fn watcherThreadFn(
         defer allocator.free(notification);
 
         {
-            stdout_mutex.lock();
-            defer stdout_mutex.unlock();
+            stdout_mutex.lockUncancelable(io);
+            defer stdout_mutex.unlock(io);
             var stdout_buffer: [4096]u8 = undefined;
-            var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+            var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
             const stdout = &stdout_writer.interface;
             stdout.writeAll(notification) catch {};
             stdout.writeAll("\n") catch {};
@@ -814,27 +793,27 @@ fn watcherThreadFn(
     }
 }
 
-fn serveStdioLoop(allocator: std.mem.Allocator, server: *mcp.server.Server, stdout_mutex: *std.Thread.Mutex) void {
+fn serveStdioLoop(allocator: std.mem.Allocator, io: std.Io, server: *mcp.server.Server, stdout_mutex: *std.Io.Mutex) void {
     var stdin_buffer: [4096]u8 = undefined;
-    var stdin_reader = std.fs.File.stdin().readerStreaming(&stdin_buffer);
+    var stdin_reader = std.Io.File.stdin().readerStreaming(io, &stdin_buffer);
     const reader = &stdin_reader.interface;
 
     var stdout_buffer: [4096]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+    var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
     const stdout = &stdout_writer.interface;
 
-    var line_buf: std.ArrayList(u8) = .{};
+    var line_buf: std.ArrayList(u8) = .empty;
     defer line_buf.deinit(allocator);
 
     while (true) {
         const line = readLine(reader, &line_buf, allocator) orelse break;
         if (line.len == 0) continue;
 
-        const response = server.handleMessage(allocator, line) catch continue;
+        const response = server.handleMessage(allocator, io, line) catch continue;
         if (response) |resp| {
             defer allocator.free(resp);
-            stdout_mutex.lock();
-            defer stdout_mutex.unlock();
+            stdout_mutex.lockUncancelable(io);
+            defer stdout_mutex.unlock(io);
             stdout.writeAll(resp) catch break;
             stdout.writeAll("\n") catch break;
             stdout.flush() catch break;
@@ -874,42 +853,50 @@ fn readLine(reader: *std.Io.Reader, line_buf: *std.ArrayList(u8), allocator: std
     }
 }
 
-fn saveJsonl(allocator: std.mem.Allocator, fg: FrozenGraph) !void {
-    const file = try std.fs.cwd().createFile(".zcodeprism/graph.jsonl", .{});
-    defer file.close();
+fn saveJsonl(allocator: std.mem.Allocator, io: std.Io, fg: FrozenGraph) !void {
+    const file = try std.Io.Dir.cwd().createFile(io, ".zcodeprism/graph.jsonl", .{});
+    defer file.close(io);
     var buf: [8192]u8 = undefined;
-    var writer = file.writer(&buf);
+    var writer = file.writer(io, &buf);
     try storage.jsonl.exportJsonl(allocator, fg, &writer.interface);
     try writer.interface.flush();
 }
 
 /// Build a unified graph from a workspace config file.
 /// Exits on any error (config, validation, missing project graphs).
-fn loadWorkspaceGraph(allocator: std.mem.Allocator, ws_path: []const u8, stderr: *std.Io.Writer) Graph {
+fn loadWorkspaceGraph(allocator: std.mem.Allocator, io: std.Io, ws_path: []const u8, stderr: *std.Io.Writer) Graph {
     const ws_dir = std.fs.path.dirname(ws_path) orelse ".";
 
-    const file = std.fs.cwd().openFile(ws_path, .{}) catch {
+    const file = std.Io.Dir.cwd().openFile(io, ws_path, .{}) catch {
         stderr.print("cannot open workspace config: {s}\n", .{ws_path}) catch {};
         stderr.flush() catch {};
         std.process.exit(1);
     };
-    defer file.close();
+    defer file.close(io);
 
-    const content = file.readToEndAllocOptions(allocator, 1024 * 1024, null, .of(u8), 0) catch {
+    var read_buf: [4096]u8 = undefined;
+    var fr = file.reader(io, &read_buf);
+    const content = fr.interface.allocRemaining(allocator, .limited(1024 * 1024)) catch {
         stderr.writeAll("failed to read workspace config\n") catch {};
         stderr.flush() catch {};
         std.process.exit(1);
     };
     defer allocator.free(content);
+    const content_z = allocator.dupeZ(u8, content) catch {
+        stderr.writeAll("out of memory\n") catch {};
+        stderr.flush() catch {};
+        std.process.exit(1);
+    };
+    defer allocator.free(content_z);
 
-    const ws = workspace_mod.parseWorkspaceConfig(allocator, content, ws_dir) catch |err| {
+    const ws = workspace_mod.parseWorkspaceConfig(allocator, content_z, ws_dir) catch |err| {
         stderr.print("invalid workspace config: {s}\n", .{@errorName(err)}) catch {};
         stderr.flush() catch {};
         std.process.exit(1);
     };
     defer workspace_mod.freeWorkspace(allocator, &ws);
 
-    workspace_mod.validateWorkspace(&ws, ws_dir) catch |err| {
+    workspace_mod.validateWorkspace(io, &ws, ws_dir) catch |err| {
         stderr.print("workspace validation failed: {s}\n", .{@errorName(err)}) catch {};
         stderr.flush() catch {};
         std.process.exit(1);
@@ -929,7 +916,7 @@ fn loadWorkspaceGraph(allocator: std.mem.Allocator, ws_path: []const u8, stderr:
             stderr.flush() catch {};
             std.process.exit(1);
         };
-        project_graphs[i] = storage.binary.load(allocator, graph_path) catch {
+        project_graphs[i] = storage.binary.load(allocator, io, graph_path) catch {
             stderr.print("failed to load graph for project '{s}' (run 'index' first)\n", .{proj.name}) catch {};
             stderr.flush() catch {};
             std.process.exit(1);
@@ -947,30 +934,30 @@ fn loadWorkspaceGraph(allocator: std.mem.Allocator, ws_path: []const u8, stderr:
     return graph;
 }
 
-fn loadConfig(allocator: std.mem.Allocator) !config.Config {
-    const file = std.fs.cwd().openFile(".zcodeprism.zon", .{}) catch |err| {
+fn loadConfig(allocator: std.mem.Allocator, io: std.Io) !config.Config {
+    const file = std.Io.Dir.cwd().openFile(io, ".zcodeprism.zon", .{}) catch |err| {
         if (err == error.FileNotFound) return config.Config{};
         return err;
     };
-    defer file.close();
+    defer file.close(io);
 
-    const content = file.readToEndAllocOptions(allocator, 1024 * 1024, null, .of(u8), 0) catch |err| {
+    var read_buf: [4096]u8 = undefined;
+    var fr = file.reader(io, &read_buf);
+    const content = fr.interface.allocRemaining(allocator, .limited(1024 * 1024)) catch |err| {
         return err;
     };
     defer allocator.free(content);
+    const content_z = try allocator.dupeZ(u8, content);
+    defer allocator.free(content_z);
 
-    return config.parseFromSlice(allocator, content);
+    return config.parseFromSlice(allocator, content_z);
 }
 
-fn runStatus(stdout: *std.Io.Writer, stderr: *std.Io.Writer, workspace_arg: ?[]const u8) void {
-    var gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
-
+fn runStatus(allocator: std.mem.Allocator, io: std.Io, stdout: *std.Io.Writer, stderr: *std.Io.Writer, workspace_arg: ?[]const u8) void {
     var graph = if (workspace_arg) |ws_path|
-        loadWorkspaceGraph(allocator, ws_path, stderr)
+        loadWorkspaceGraph(allocator, io, ws_path, stderr)
     else
-        storage.binary.load(allocator, ".zcodeprism/graph.bin") catch {
+        storage.binary.load(allocator, io, ".zcodeprism/graph.bin") catch {
             stderr.writeAll("not initialized or not indexed\n") catch {};
             stderr.flush() catch {};
             std.process.exit(1);

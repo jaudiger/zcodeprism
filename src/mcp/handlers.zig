@@ -181,7 +181,7 @@ fn collectReachable(
     out: *std.AutoHashMapUnmanaged(NodeId, void),
 ) !void {
     const Entry = struct { id: NodeId, depth: u32 };
-    var queue = std.ArrayList(Entry){};
+    var queue = std.ArrayList(Entry).empty;
     defer queue.deinit(allocator);
 
     try out.put(allocator, start, {});
@@ -315,15 +315,15 @@ fn writeFullNode(w: JsonWriter, n: *const Node, id: NodeId, project_root: []cons
 
 // -- Source extraction --
 
-fn extractSource(allocator: std.mem.Allocator, project_root: []const u8, file_path: []const u8, line_start: u32, line_end: u32, context_lines: u32, part: []const u8) ?[]const u8 {
-    // file_path may be relative; resolve against project_root.
+fn extractSource(allocator: std.mem.Allocator, io: std.Io, project_root: []const u8, file_path: []const u8, line_start: u32, line_end: u32, context_lines: u32, part: []const u8) ?[]const u8 {
     const abs_path = if (std.fs.path.isAbsolute(file_path))
         file_path
     else blk: {
         break :blk std.fs.path.join(allocator, &.{ project_root, file_path }) catch return null;
     };
     defer if (!std.fs.path.isAbsolute(file_path)) allocator.free(abs_path);
-    const content = source_map.mmapFile(abs_path) catch return null;
+
+    const content = source_map.mmapFile(io, abs_path) catch return null;
     defer source_map.unmapFile(content);
     if (content.len == 0) return null;
 
@@ -379,6 +379,7 @@ fn extractSource(allocator: std.mem.Allocator, project_root: []const u8, file_pa
 /// Returns JSON response bytes, or null if the tool is unknown.
 pub fn handleToolCall(
     allocator: std.mem.Allocator,
+    io: std.Io,
     gen: *GraphGeneration,
     cursor_mgr: *CursorManager,
     tool_name: []const u8,
@@ -389,9 +390,9 @@ pub fn handleToolCall(
     } else if (std.mem.eql(u8, tool_name, "graph.search")) {
         return try handleSearch(allocator, gen, params);
     } else if (std.mem.eql(u8, tool_name, "graph.get_nodes")) {
-        return try handleGetNodes(allocator, gen, params);
+        return try handleGetNodes(allocator, io, gen, params);
     } else if (std.mem.eql(u8, tool_name, "graph.get_source")) {
-        return try handleGetSource(allocator, gen, params);
+        return try handleGetSource(allocator, io, gen, params);
     } else if (std.mem.eql(u8, tool_name, "graph.get_edges")) {
         return try handleGetEdges(allocator, gen, params);
     } else if (std.mem.eql(u8, tool_name, "graph.path")) {
@@ -407,13 +408,13 @@ pub fn handleToolCall(
     } else if (std.mem.eql(u8, tool_name, "explorer.cursor_query")) {
         return try handleCursorQuery(allocator, gen, cursor_mgr, params);
     } else if (std.mem.eql(u8, tool_name, "explorer.diff")) {
-        return try handleDiff(allocator, gen, params);
+        return try handleDiff(allocator, io, gen, params);
     } else if (std.mem.eql(u8, tool_name, "explorer.annotate")) {
         return try handleAnnotate(allocator, cursor_mgr, params);
     } else if (std.mem.eql(u8, tool_name, "explorer.annotations")) {
         return try handleAnnotations(allocator, cursor_mgr, params);
     } else if (std.mem.eql(u8, tool_name, "analysis.duplicates")) {
-        return try handleDuplicates(allocator, gen, params);
+        return try handleDuplicates(allocator, io, gen, params);
     } else if (std.mem.eql(u8, tool_name, "analysis.complexity")) {
         return try handleComplexity(allocator, gen, params);
     } else if (std.mem.eql(u8, tool_name, "analysis.dead_code")) {
@@ -447,7 +448,7 @@ fn handleStats(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?std
         .include_external = include_external,
     }) catch return error.OutOfMemory;
 
-    var aw: std.io.Writer.Allocating = .init(allocator);
+    var aw: std.Io.Writer.Allocating = .init(allocator);
     errdefer aw.deinit();
     var stream: std.json.Stringify = .{ .writer = &aw.writer };
     const w: JsonWriter = .{ .s = &stream };
@@ -542,7 +543,7 @@ fn handleSearch(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?st
     }) catch return error.OutOfMemory;
     defer result.deinit(allocator);
 
-    var aw: std.io.Writer.Allocating = .init(allocator);
+    var aw: std.Io.Writer.Allocating = .init(allocator);
     errdefer aw.deinit();
     var stream: std.json.Stringify = .{ .writer = &aw.writer };
     const w: JsonWriter = .{ .s = &stream };
@@ -565,7 +566,7 @@ fn handleSearch(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?st
 
 // -- graph.get_nodes --
 
-fn handleGetNodes(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?std.json.Value) HandlerError![]const u8 {
+fn handleGetNodes(allocator: std.mem.Allocator, io: std.Io, gen: *GraphGeneration, params: ?std.json.Value) HandlerError![]const u8 {
     const args = getArgs(params);
     const g = &gen.graph;
     const fg = FrozenGraph{ .graph = g };
@@ -578,7 +579,7 @@ fn handleGetNodes(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?
     const result = query_mod.getNodes(allocator, fg, node_ids, .{}) catch return error.OutOfMemory;
     defer result.deinit(allocator);
 
-    var aw: std.io.Writer.Allocating = .init(allocator);
+    var aw: std.Io.Writer.Allocating = .init(allocator);
     errdefer aw.deinit();
     var stream: std.json.Stringify = .{ .writer = &aw.writer };
     const w: JsonWriter = .{ .s = &stream };
@@ -598,7 +599,7 @@ fn handleGetNodes(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?
             } else if (n.file_path) |fp| {
                 const ls = n.line_start orelse 1;
                 const le = n.line_end orelse ls;
-                source_text = extractSource(allocator, g.project_root, fp, ls, le, 0, "full");
+                source_text = extractSource(allocator, io, g.project_root, fp, ls, le, 0, "full");
             }
         }
 
@@ -613,7 +614,7 @@ fn handleGetNodes(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?
 
 // -- graph.get_source --
 
-fn handleGetSource(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?std.json.Value) HandlerError![]const u8 {
+fn handleGetSource(allocator: std.mem.Allocator, io: std.Io, gen: *GraphGeneration, params: ?std.json.Value) HandlerError![]const u8 {
     const args = getArgs(params);
     const g = &gen.graph;
 
@@ -623,7 +624,7 @@ fn handleGetSource(allocator: std.mem.Allocator, gen: *GraphGeneration, params: 
     const context_lines = getOptionalInt(args, "context_lines", 0);
     const part = getOptionalString(args, "part") orelse "full";
 
-    var aw: std.io.Writer.Allocating = .init(allocator);
+    var aw: std.Io.Writer.Allocating = .init(allocator);
     errdefer aw.deinit();
     var stream: std.json.Stringify = .{ .writer = &aw.writer };
     const w: JsonWriter = .{ .s = &stream };
@@ -644,7 +645,7 @@ fn handleGetSource(allocator: std.mem.Allocator, gen: *GraphGeneration, params: 
         } else if (n.file_path) |fp| {
             const ls = n.line_start orelse 1;
             const le = n.line_end orelse ls;
-            const src = extractSource(allocator, g.project_root, fp, ls, le, context_lines, part);
+            const src = extractSource(allocator, io, g.project_root, fp, ls, le, context_lines, part);
             defer if (src) |s| allocator.free(s);
             if (src) |s| {
                 try w.write(s);
@@ -688,7 +689,7 @@ fn handleGetEdges(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?
     }) catch return error.OutOfMemory;
     defer result.deinit(allocator);
 
-    var aw: std.io.Writer.Allocating = .init(allocator);
+    var aw: std.Io.Writer.Allocating = .init(allocator);
     errdefer aw.deinit();
     var stream: std.json.Stringify = .{ .writer = &aw.writer };
     const w: JsonWriter = .{ .s = &stream };
@@ -777,7 +778,7 @@ fn handlePath(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?std.
     }) catch return error.OutOfMemory;
     defer result.deinit(allocator);
 
-    var aw: std.io.Writer.Allocating = .init(allocator);
+    var aw: std.Io.Writer.Allocating = .init(allocator);
     errdefer aw.deinit();
     var stream: std.json.Stringify = .{ .writer = &aw.writer };
     const w: JsonWriter = .{ .s = &stream };
@@ -818,7 +819,7 @@ fn handlePath(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?std.
 }
 
 fn emptyPathsResult(allocator: std.mem.Allocator) HandlerError![]const u8 {
-    var aw: std.io.Writer.Allocating = .init(allocator);
+    var aw: std.Io.Writer.Allocating = .init(allocator);
     errdefer aw.deinit();
     var stream: std.json.Stringify = .{ .writer = &aw.writer };
     const w: JsonWriter = .{ .s = &stream };
@@ -883,7 +884,7 @@ fn handleCursorCreate(allocator: std.mem.Allocator, gen: *GraphGeneration, curso
         .include_external_nodes = getOptionalBool(args, "include_external_nodes", false),
     }) catch return error.OutOfMemory;
 
-    var aw: std.io.Writer.Allocating = .init(allocator);
+    var aw: std.Io.Writer.Allocating = .init(allocator);
     errdefer aw.deinit();
     var stream: std.json.Stringify = .{ .writer = &aw.writer };
     const w: JsonWriter = .{ .s = &stream };
@@ -909,7 +910,7 @@ fn handleCursorMove(allocator: std.mem.Allocator, gen: *GraphGeneration, cursor_
 
     cursor.position = node_id;
 
-    var aw: std.io.Writer.Allocating = .init(allocator);
+    var aw: std.Io.Writer.Allocating = .init(allocator);
     errdefer aw.deinit();
     var stream: std.json.Stringify = .{ .writer = &aw.writer };
     const w: JsonWriter = .{ .s = &stream };
@@ -927,7 +928,7 @@ fn handleCursorClose(allocator: std.mem.Allocator, cursor_mgr: *CursorManager, p
 
     const removed = cursor_mgr.closeCursor(cursor_id);
 
-    var aw: std.io.Writer.Allocating = .init(allocator);
+    var aw: std.Io.Writer.Allocating = .init(allocator);
     errdefer aw.deinit();
     var stream: std.json.Stringify = .{ .writer = &aw.writer };
     const w: JsonWriter = .{ .s = &stream };
@@ -967,10 +968,10 @@ fn handleCursorExpand(allocator: std.mem.Allocator, gen: *GraphGeneration, curso
     const ExpandEdge = struct { from: NodeId, to: NodeId, edge_type: EdgeType, source: EdgeSource };
     const FrontierEntry = struct { id: NodeId, remaining: u32 };
 
-    var collected_edges: std.ArrayList(ExpandEdge) = .{};
+    var collected_edges: std.ArrayList(ExpandEdge) = .empty;
     defer collected_edges.deinit(allocator);
 
-    var frontier: std.ArrayList(FrontierEntry) = .{};
+    var frontier: std.ArrayList(FrontierEntry) = .empty;
     defer frontier.deinit(allocator);
     try frontier.append(allocator, .{ .id = start, .remaining = effective_depth });
 
@@ -1010,7 +1011,7 @@ fn handleCursorExpand(allocator: std.mem.Allocator, gen: *GraphGeneration, curso
         }
     }
 
-    var aw: std.io.Writer.Allocating = .init(allocator);
+    var aw: std.Io.Writer.Allocating = .init(allocator);
     errdefer aw.deinit();
     var stream: std.json.Stringify = .{ .writer = &aw.writer };
     const w: JsonWriter = .{ .s = &stream };
@@ -1100,7 +1101,7 @@ fn handleCursorQuery(allocator: std.mem.Allocator, gen: *GraphGeneration, cursor
     }) catch return error.OutOfMemory;
     defer filtered.deinit(allocator);
 
-    var aw: std.io.Writer.Allocating = .init(allocator);
+    var aw: std.Io.Writer.Allocating = .init(allocator);
     errdefer aw.deinit();
     var stream: std.json.Stringify = .{ .writer = &aw.writer };
     const w: JsonWriter = .{ .s = &stream };
@@ -1174,16 +1175,16 @@ fn multisetJaccard(a: []const u16, b: []const u16) f64 {
     return @as(f64, @floatFromInt(intersection)) / @as(f64, @floatFromInt(union_sum));
 }
 
-fn computeNodeSimilarity(allocator: std.mem.Allocator, g: *const Graph, id_a: NodeId, id_b: NodeId) f64 {
+fn computeNodeSimilarity(allocator: std.mem.Allocator, io: std.Io, g: *const Graph, id_a: NodeId, id_b: NodeId) f64 {
     if (id_a == id_b) return 1.0;
 
     const node_a = g.getNode(id_a) orelse return 0.0;
     const node_b = g.getNode(id_b) orelse return 0.0;
 
     // Both need source to compare structurally
-    const src_a = extractNodeSource(allocator, g, node_a) orelse return 0.0;
+    const src_a = extractNodeSource(allocator, io, g, node_a) orelse return 0.0;
     defer allocator.free(src_a);
-    const src_b = extractNodeSource(allocator, g, node_b) orelse return 0.0;
+    const src_b = extractNodeSource(allocator, io, g, node_b) orelse return 0.0;
     defer allocator.free(src_b);
 
     if (std.mem.eql(u8, src_a, src_b)) return 1.0;
@@ -1211,15 +1212,15 @@ fn computeNodeSimilarity(allocator: std.mem.Allocator, g: *const Graph, id_a: No
     return multisetJaccard(kinds_a, kinds_b);
 }
 
-fn extractNodeSource(allocator: std.mem.Allocator, g: *const Graph, n: *const Node) ?[]const u8 {
+fn extractNodeSource(allocator: std.mem.Allocator, io: std.Io, g: *const Graph, n: *const Node) ?[]const u8 {
     if (n.external != .none) return null;
     const fp = n.file_path orelse return null;
     const ls = n.line_start orelse 1;
     const le = n.line_end orelse ls;
-    return extractSource(allocator, g.project_root, fp, ls, le, 0, "full");
+    return extractSource(allocator, io, g.project_root, fp, ls, le, 0, "full");
 }
 
-fn handleDiff(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?std.json.Value) HandlerError![]const u8 {
+fn handleDiff(allocator: std.mem.Allocator, io: std.Io, gen: *GraphGeneration, params: ?std.json.Value) HandlerError![]const u8 {
     const args = getArgs(params);
     const g = &gen.graph;
 
@@ -1228,7 +1229,7 @@ fn handleDiff(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?std.
 
     if (node_ids.len < 2) return try errorResult(allocator, "need at least 2 node_ids");
 
-    var aw: std.io.Writer.Allocating = .init(allocator);
+    var aw: std.Io.Writer.Allocating = .init(allocator);
     errdefer aw.deinit();
     var stream: std.json.Stringify = .{ .writer = &aw.writer };
     const w: JsonWriter = .{ .s = &stream };
@@ -1250,7 +1251,7 @@ fn handleDiff(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?std.
         for (node_ids) |nid_a| {
             try w.beginArray();
             for (node_ids) |nid_b| {
-                const sim = computeNodeSimilarity(allocator, g, nid_a, nid_b);
+                const sim = computeNodeSimilarity(allocator, io, g, nid_a, nid_b);
                 try w.write(sim);
             }
             try w.endArray();
@@ -1264,7 +1265,7 @@ fn handleDiff(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?std.
     try w.beginArray();
     for (node_ids, 0..) |nid_a, i| {
         for (node_ids[i + 1 ..]) |nid_b| {
-            const sim = computeNodeSimilarity(allocator, g, nid_a, nid_b);
+            const sim = computeNodeSimilarity(allocator, io, g, nid_a, nid_b);
             try w.beginObject();
             try w.fieldNodeIdHex("a", nid_a);
             try w.fieldNodeIdHex("b", nid_b);
@@ -1302,7 +1303,7 @@ fn handleAnnotate(allocator: std.mem.Allocator, cursor_mgr: *CursorManager, para
         cursor.addAnnotation(cursor_mgr.arena.allocator(), nid, duped_tag, duped_note) catch return error.OutOfMemory;
     }
 
-    var aw: std.io.Writer.Allocating = .init(allocator);
+    var aw: std.Io.Writer.Allocating = .init(allocator);
     errdefer aw.deinit();
     var stream: std.json.Stringify = .{ .writer = &aw.writer };
     const w: JsonWriter = .{ .s = &stream };
@@ -1327,7 +1328,7 @@ fn handleAnnotations(allocator: std.mem.Allocator, cursor_mgr: *CursorManager, p
 
     const all_annotations = cursor.getAnnotations();
 
-    var aw: std.io.Writer.Allocating = .init(allocator);
+    var aw: std.Io.Writer.Allocating = .init(allocator);
     errdefer aw.deinit();
     var stream: std.json.Stringify = .{ .writer = &aw.writer };
     const w: JsonWriter = .{ .s = &stream };
@@ -1360,6 +1361,7 @@ fn writeDuplicateGroups(
     w: JsonWriter,
     g: *const Graph,
     allocator: std.mem.Allocator,
+    io: std.Io,
     groups_slice: []const duplicates_mod.DuplicateGroup,
     total_groups: u32,
     include_source: bool,
@@ -1382,7 +1384,7 @@ fn writeDuplicateGroups(
             if (include_source) {
                 try w.field("source");
                 if (n) |node| {
-                    const src = extractNodeSource(allocator, g, node);
+                    const src = extractNodeSource(allocator, io, g, node);
                     defer if (src) |s| allocator.free(s);
                     try w.write(src);
                 } else {
@@ -1398,8 +1400,8 @@ fn writeDuplicateGroups(
 }
 
 /// Extract source, parse the AST, and build a frequency fingerprint for one node.
-fn buildFuzzyCandidate(allocator: std.mem.Allocator, g: *const Graph, nid: NodeId, node: Node, structural_hash: u64) duplicates_mod.FuzzyCandidate {
-    const src = extractNodeSource(allocator, g, &node) orelse
+fn buildFuzzyCandidate(allocator: std.mem.Allocator, io: std.Io, g: *const Graph, nid: NodeId, node: Node, structural_hash: u64) duplicates_mod.FuzzyCandidate {
+    const src = extractNodeSource(allocator, io, g, &node) orelse
         return .{ .node_id = nid, .structural_hash = structural_hash, .fingerprint = .{0} ** 512, .valid = false };
     defer allocator.free(src);
 
@@ -1424,7 +1426,7 @@ fn buildFuzzyCandidate(allocator: std.mem.Allocator, g: *const Graph, nid: NodeI
     return .{ .node_id = nid, .structural_hash = structural_hash, .fingerprint = fp, .valid = true };
 }
 
-fn handleDuplicates(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?std.json.Value) HandlerError![]const u8 {
+fn handleDuplicates(allocator: std.mem.Allocator, io: std.Io, gen: *GraphGeneration, params: ?std.json.Value) HandlerError![]const u8 {
     const args = getArgs(params);
     const g = &gen.graph;
     const fg = FrozenGraph{ .graph = g };
@@ -1436,7 +1438,7 @@ fn handleDuplicates(allocator: std.mem.Allocator, gen: *GraphGeneration, params:
     const offset = getOptionalInt(args, "offset", 0);
     const limit = getOptionalInt(args, "limit", 10);
 
-    var aw: std.io.Writer.Allocating = .init(allocator);
+    var aw: std.Io.Writer.Allocating = .init(allocator);
     errdefer aw.deinit();
     var stream: std.json.Stringify = .{ .writer = &aw.writer };
     const w: JsonWriter = .{ .s = &stream };
@@ -1452,14 +1454,14 @@ fn handleDuplicates(allocator: std.mem.Allocator, gen: *GraphGeneration, params:
             .limit = limit,
         }) catch return error.OutOfMemory;
         defer result.deinit(allocator);
-        try writeDuplicateGroups(w, g, allocator, result.groups, result.total_groups, include_source);
+        try writeDuplicateGroups(w, g, allocator, io, result.groups, result.total_groups, include_source);
     } else {
         // Fuzzy mode: build fingerprinted candidates, delegate clustering to analyzer.
         const lang_filter = if (language_str) |ls| parseLanguage(ls) else null;
         const scope_str = scope;
         const fuzzy_candidate_cap: usize = 300;
 
-        var fuzzy_candidates = std.ArrayList(duplicates_mod.FuzzyCandidate){};
+        var fuzzy_candidates = std.ArrayList(duplicates_mod.FuzzyCandidate).empty;
         defer fuzzy_candidates.deinit(allocator);
 
         for (g.nodes.items, 0..) |n, i| {
@@ -1477,7 +1479,7 @@ fn handleDuplicates(allocator: std.mem.Allocator, gen: *GraphGeneration, params:
             if (m.lines < min_lines) continue;
 
             const nid: NodeId = @enumFromInt(i);
-            try fuzzy_candidates.append(allocator, buildFuzzyCandidate(allocator, g, nid, n, m.structural_hash));
+            try fuzzy_candidates.append(allocator, buildFuzzyCandidate(allocator, io, g, nid, n, m.structural_hash));
         }
 
         const result = duplicates_mod.findFuzzyDuplicates(allocator, fg, fuzzy_candidates.items, .{
@@ -1486,7 +1488,7 @@ fn handleDuplicates(allocator: std.mem.Allocator, gen: *GraphGeneration, params:
             .limit = limit,
         }) catch return error.OutOfMemory;
         defer result.deinit(allocator);
-        try writeDuplicateGroups(w, g, allocator, result.groups, result.total_groups, include_source);
+        try writeDuplicateGroups(w, g, allocator, io, result.groups, result.total_groups, include_source);
     }
 
     try w.endObject();
@@ -1515,7 +1517,7 @@ fn handleComplexity(allocator: std.mem.Allocator, gen: *GraphGeneration, params:
     }) catch return error.OutOfMemory;
     defer result.deinit(allocator);
 
-    var aw: std.io.Writer.Allocating = .init(allocator);
+    var aw: std.Io.Writer.Allocating = .init(allocator);
     errdefer aw.deinit();
     var stream: std.json.Stringify = .{ .writer = &aw.writer };
     const w: JsonWriter = .{ .s = &stream };
@@ -1564,7 +1566,7 @@ fn handleDeadCode(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?
     }) catch return error.OutOfMemory;
     defer result.deinit(allocator);
 
-    var aw: std.io.Writer.Allocating = .init(allocator);
+    var aw: std.Io.Writer.Allocating = .init(allocator);
     errdefer aw.deinit();
     var stream: std.json.Stringify = .{ .writer = &aw.writer };
     const w: JsonWriter = .{ .s = &stream };
@@ -1609,7 +1611,7 @@ fn handleDependencyCycles(allocator: std.mem.Allocator, gen: *GraphGeneration, p
     }) catch return error.OutOfMemory;
     defer result.deinit(allocator);
 
-    var aw: std.io.Writer.Allocating = .init(allocator);
+    var aw: std.Io.Writer.Allocating = .init(allocator);
     errdefer aw.deinit();
     var stream: std.json.Stringify = .{ .writer = &aw.writer };
     const w: JsonWriter = .{ .s = &stream };
@@ -1663,7 +1665,7 @@ fn handleCoupling(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?
     }) catch return error.OutOfMemory;
     defer result.deinit(allocator);
 
-    var aw: std.io.Writer.Allocating = .init(allocator);
+    var aw: std.Io.Writer.Allocating = .init(allocator);
     errdefer aw.deinit();
     var stream: std.json.Stringify = .{ .writer = &aw.writer };
     const w: JsonWriter = .{ .s = &stream };
@@ -1711,7 +1713,7 @@ fn handleImpact(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?st
     }) catch return error.OutOfMemory;
     defer result.deinit(allocator);
 
-    var aw: std.io.Writer.Allocating = .init(allocator);
+    var aw: std.Io.Writer.Allocating = .init(allocator);
     errdefer aw.deinit();
     var stream: std.json.Stringify = .{ .writer = &aw.writer };
     const w: JsonWriter = .{ .s = &stream };
@@ -1758,7 +1760,7 @@ fn handleImpact(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?st
 // -- Error result helper --
 
 fn errorResult(allocator: std.mem.Allocator, message: []const u8) HandlerError![]const u8 {
-    var aw: std.io.Writer.Allocating = .init(allocator);
+    var aw: std.Io.Writer.Allocating = .init(allocator);
     errdefer aw.deinit();
     var stream: std.json.Stringify = .{ .writer = &aw.writer };
     const w: JsonWriter = .{ .s = &stream };

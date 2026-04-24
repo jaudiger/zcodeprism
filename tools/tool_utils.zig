@@ -38,7 +38,7 @@ pub const CommonFlags = struct {
     lsp: bool,
 
     pub fn init() CommonFlags {
-        return .{ .exclude = .{}, .verbosity = 0, .lsp = true };
+        return .{ .exclude = .empty, .verbosity = 0, .lsp = true };
     }
 
     pub fn deinit(self: *CommonFlags, allocator: std.mem.Allocator) void {
@@ -95,6 +95,7 @@ pub fn parseCommonFlag(
 /// Run LSP enrichment over all registered languages and print a summary line.
 pub fn runLspEnrichment(
     allocator: std.mem.Allocator,
+    io: std.Io,
     graph: *zcodeprism.Graph,
     wl: *zcodeprism.lsp.worklist.LspWorklist,
     log: logging.Logger,
@@ -103,11 +104,11 @@ pub fn runLspEnrichment(
     const Registry = zcodeprism.registry.Registry;
     const EnrichResult = zcodeprism.language_support.EnrichResult;
     var lsp_pool = zcodeprism.lsp.pool.LspPool.init(.{});
-    defer lsp_pool.deinit(allocator);
+    defer lsp_pool.deinit(allocator, io);
     var result = EnrichResult{};
 
     for (Registry.allLanguages()) |ls| {
-        const r = try zcodeprism.lsp.enricher.enrich(allocator, graph, ls, wl, &lsp_pool, .{ .logger = log });
+        const r = try zcodeprism.lsp.enricher.enrich(allocator, io, graph, ls, wl, &lsp_pool, .{ .logger = log });
         result.accumulate(r);
     }
 

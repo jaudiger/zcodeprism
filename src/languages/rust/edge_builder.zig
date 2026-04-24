@@ -46,6 +46,7 @@ const ScanContext = struct {
     phantom_mgr: *const PhantomManager,
     type_env: *const TypeEnv,
     wl: *LspWorklist,
+    io: std.Io,
     log: Logger,
     /// NodeId of the impl target type when this function is an impl method; null otherwise.
     self_type_id: ?NodeId = null,
@@ -54,6 +55,7 @@ const ScanContext = struct {
 fn addResolvedEdges(allocator: std.mem.Allocator, sctx: *const ScanContext, target_file_id: NodeId, chain: []const []const u8, is_call: bool) !bool {
     const rctx = shared_resolve.ResolveContext{
         .graph_index = sctx.graph_index,
+        .io = sctx.io,
         .log = sctx.log,
         .resolve_return_type = cf.resolveReturnTypeScope,
         .find_in_type_scope = findMethodInImplBlocks,
@@ -64,6 +66,7 @@ fn addResolvedEdges(allocator: std.mem.Allocator, sctx: *const ScanContext, targ
 fn resolveOriginCall(allocator: std.mem.Allocator, sctx: *const ScanContext, origin: cf.SymbolOrigin, call_chain: []const []const u8, is_call: bool) !bool {
     const rctx = shared_resolve.ResolveContext{
         .graph_index = sctx.graph_index,
+        .io = sctx.io,
         .log = sctx.log,
         .resolve_return_type = cf.resolveReturnTypeScope,
         .find_in_type_scope = findMethodInImplBlocks,
@@ -74,6 +77,7 @@ fn resolveOriginCall(allocator: std.mem.Allocator, sctx: *const ScanContext, ori
 /// Walk the AST to discover edges (calls, uses_type, implements).
 pub fn walkForEdges(
     allocator: std.mem.Allocator,
+    io: std.Io,
     graph: *Graph,
     source: []const u8,
     root: ts.Node,
@@ -90,13 +94,13 @@ pub fn walkForEdges(
         const kid = child.kindId();
 
         if (kid == k.function_item) {
-            try processFunction(allocator, graph, source, child, k, edge_ctx, graph_index, phantom_mgr, wl, log, null);
+            try processFunction(allocator, io, graph, source, child, k, edge_ctx, graph_index, phantom_mgr, wl, log, null);
         } else if (kid == k.impl_item) {
-            try processImpl(allocator, graph, source, child, k, edge_ctx, graph_index, phantom_mgr, wl, log);
+            try processImpl(allocator, io, graph, source, child, k, edge_ctx, graph_index, phantom_mgr, wl, log);
         } else if (kid == k.mod_item) {
-            try processInlineMod(allocator, graph, source, child, k, edge_ctx, graph_index, phantom_mgr, wl, log);
+            try processInlineMod(allocator, io, graph, source, child, k, edge_ctx, graph_index, phantom_mgr, wl, log);
         } else if (kid == k.struct_item or kid == k.enum_item or kid == k.union_item) {
-            try processStructOrEnum(allocator, graph, source, child, k, edge_ctx, graph_index, phantom_mgr, wl, log);
+            try processStructOrEnum(allocator, io, graph, source, child, k, edge_ctx, graph_index, phantom_mgr, wl, log);
         }
     }
 }
@@ -105,6 +109,7 @@ pub fn walkForEdges(
 /// Process a function_item: scan its body for call expressions and type references.
 fn processFunction(
     allocator: std.mem.Allocator,
+    io: std.Io,
     graph: *Graph,
     source: []const u8,
     fn_node: ts.Node,
@@ -123,7 +128,7 @@ fn processFunction(
 
     var type_env = TypeEnv{};
     defer type_env.deinit(allocator);
-    try buildTypeEnv(allocator, graph, source, fn_node, caller_id, caller_parent_id, edge_ctx, k, graph_index, self_type_id, &type_env);
+    try buildTypeEnv(allocator, io, graph, source, fn_node, caller_id, caller_parent_id, edge_ctx, k, graph_index, self_type_id, &type_env);
 
     const sctx = ScanContext{
         .graph = graph,
@@ -137,6 +142,7 @@ fn processFunction(
         .phantom_mgr = phantom_mgr,
         .type_env = &type_env,
         .wl = wl,
+        .io = io,
         .log = log,
         .self_type_id = self_type_id,
     };
@@ -155,6 +161,7 @@ fn processFunction(
 /// Build TypeEnv for a single function: binds self/Self, parameters, and block-local variables.
 fn buildTypeEnv(
     allocator: std.mem.Allocator,
+    io: std.Io,
     graph: *const Graph,
     source: []const u8,
     fn_node: ts.Node,
@@ -176,7 +183,7 @@ fn buildTypeEnv(
     while (i < fn_node.childCount()) : (i += 1) {
         const child = fn_node.child(i) orelse continue;
         if (child.kindId() == k.block) {
-            try buildTypeEnvFromBlock(allocator, graph, source, child, caller_parent_id, edge_ctx, k, graph_index, type_env);
+            try buildTypeEnvFromBlock(allocator, io, graph, source, child, caller_parent_id, edge_ctx, k, graph_index, type_env);
             break;
         }
     }
@@ -237,6 +244,7 @@ fn buildTypeEnvFromParams(
 /// Walk a block recursively, binding let declarations into TypeEnv for cross-file and local types.
 fn buildTypeEnvFromBlock(
     allocator: std.mem.Allocator,
+    io: std.Io,
     graph: *const Graph,
     source: []const u8,
     node: ts.Node,
@@ -256,7 +264,7 @@ fn buildTypeEnvFromBlock(
 
             // Import-qualified RHS -> cross_file binding.
             if (cf.findImportQualifiedRoot(source, child, edge_ctx, k)) |target_file| {
-                const resolved = cf.resolveVarTargetThroughReturnType(graph, source, child, edge_ctx, k, graph_index, Logger.noop) orelse target_file;
+                const resolved = cf.resolveVarTargetThroughReturnType(io, graph, source, child, edge_ctx, k, graph_index, Logger.noop) orelse target_file;
                 try type_env.bindCrossFile(allocator, var_name, resolved);
                 continue;
             }
@@ -282,7 +290,7 @@ fn buildTypeEnvFromBlock(
         }
 
         if (kid != k.function_item) {
-            try buildTypeEnvFromBlock(allocator, graph, source, child, caller_parent_id, edge_ctx, k, graph_index, type_env);
+            try buildTypeEnvFromBlock(allocator, io, graph, source, child, caller_parent_id, edge_ctx, k, graph_index, type_env);
         }
     }
 }
@@ -290,6 +298,7 @@ fn buildTypeEnvFromBlock(
 /// Process an impl_item: recurse into its methods and create implements edges.
 fn processImpl(
     allocator: std.mem.Allocator,
+    io: std.Io,
     graph: *Graph,
     source: []const u8,
     impl_node: ts.Node,
@@ -340,7 +349,7 @@ fn processImpl(
             while (j < child.childCount()) : (j += 1) {
                 const decl = child.child(j) orelse continue;
                 if (decl.kindId() == k.function_item) {
-                    try processFunction(allocator, graph, source, decl, k, edge_ctx, graph_index, phantom_mgr, wl, log, impl_self_type_id);
+                    try processFunction(allocator, io, graph, source, decl, k, edge_ctx, graph_index, phantom_mgr, wl, log, impl_self_type_id);
                 }
             }
         }
@@ -350,6 +359,7 @@ fn processImpl(
 /// Process an inline mod_item: recurse into its declaration_list.
 fn processInlineMod(
     allocator: std.mem.Allocator,
+    io: std.Io,
     graph: *Graph,
     source: []const u8,
     mod_node: ts.Node,
@@ -369,13 +379,13 @@ fn processInlineMod(
                 const decl = child.child(j) orelse continue;
                 const kid = decl.kindId();
                 if (kid == k.function_item) {
-                    try processFunction(allocator, graph, source, decl, k, edge_ctx, graph_index, phantom_mgr, wl, log, null);
+                    try processFunction(allocator, io, graph, source, decl, k, edge_ctx, graph_index, phantom_mgr, wl, log, null);
                 } else if (kid == k.impl_item) {
-                    try processImpl(allocator, graph, source, decl, k, edge_ctx, graph_index, phantom_mgr, wl, log);
+                    try processImpl(allocator, io, graph, source, decl, k, edge_ctx, graph_index, phantom_mgr, wl, log);
                 } else if (kid == k.mod_item) {
-                    try processInlineMod(allocator, graph, source, decl, k, edge_ctx, graph_index, phantom_mgr, wl, log);
+                    try processInlineMod(allocator, io, graph, source, decl, k, edge_ctx, graph_index, phantom_mgr, wl, log);
                 } else if (kid == k.struct_item or kid == k.enum_item or kid == k.union_item) {
-                    try processStructOrEnum(allocator, graph, source, decl, k, edge_ctx, graph_index, phantom_mgr, wl, log);
+                    try processStructOrEnum(allocator, io, graph, source, decl, k, edge_ctx, graph_index, phantom_mgr, wl, log);
                 }
             }
         }
@@ -385,6 +395,7 @@ fn processInlineMod(
 /// Scan struct/enum/union field declarations for type references.
 fn processStructOrEnum(
     allocator: std.mem.Allocator,
+    io: std.Io,
     graph: *Graph,
     source: []const u8,
     item_node: ts.Node,
@@ -407,7 +418,7 @@ fn processStructOrEnum(
             kid == k.ordered_field_declaration_list or
             kid == k.enum_variant_list)
         {
-            try scanFieldTypesRecursive(allocator, graph, source, child, owner_id, k, edge_ctx, graph_index, phantom_mgr, wl, log);
+            try scanFieldTypesRecursive(allocator, io, graph, source, child, owner_id, k, edge_ctx, graph_index, phantom_mgr, wl, log);
         }
     }
 }
@@ -426,6 +437,7 @@ fn findTypeName(source: []const u8, node: ts.Node, k: *const KindIds) ?[]const u
 
 fn scanFieldTypesRecursive(
     allocator: std.mem.Allocator,
+    io: std.Io,
     graph: *Graph,
     source: []const u8,
     node: ts.Node,
@@ -462,15 +474,16 @@ fn scanFieldTypesRecursive(
                 }
             }
         } else if (kid == k.scoped_type_identifier) {
-            try resolveScopedFieldType(allocator, graph, source, child, owner_id, k, edge_ctx, graph_index, wl, log);
+            try resolveScopedFieldType(allocator, io, graph, source, child, owner_id, k, edge_ctx, graph_index, wl, log);
         } else if (kid != k.attribute_item) {
-            try scanFieldTypesRecursive(allocator, graph, source, child, owner_id, k, edge_ctx, graph_index, phantom_mgr, wl, log);
+            try scanFieldTypesRecursive(allocator, io, graph, source, child, owner_id, k, edge_ctx, graph_index, phantom_mgr, wl, log);
         }
     }
 }
 
 fn resolveScopedFieldType(
     allocator: std.mem.Allocator,
+    io: std.Io,
     graph: *Graph,
     source: []const u8,
     scoped_node: ts.Node,
@@ -521,6 +534,7 @@ fn resolveScopedFieldType(
 
     const rctx = shared_resolve.ResolveContext{
         .graph_index = graph_index,
+        .io = io,
         .log = log,
         .resolve_return_type = cf.resolveReturnTypeScope,
         .find_in_type_scope = findMethodInImplBlocks,

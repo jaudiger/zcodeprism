@@ -29,20 +29,21 @@ pub fn validateTag(tag: []const u8) SnapshotError!void {
 /// Save graph as binary under storage_path/snapshots/<tag>.bin.
 pub fn saveSnapshot(
     allocator: std.mem.Allocator,
+    io: std.Io,
     fg: FrozenGraph,
     tag: []const u8,
     storage_path: []const u8,
 ) !void {
     try validateTag(tag);
 
-    var base = std.fs.cwd().openDir(storage_path, .{}) catch |err| return err;
-    defer base.close();
-    base.makeDir("snapshots") catch |err| switch (err) {
+    var base = std.Io.Dir.cwd().openDir(io, storage_path, .{}) catch |err| return err;
+    defer base.close(io);
+    base.createDir(io, "snapshots", .default_dir) catch |err| switch (err) {
         error.PathAlreadyExists => {},
         else => return err,
     };
 
-    var path_buf: std.ArrayList(u8) = .{};
+    var path_buf: std.ArrayList(u8) = .empty;
     defer path_buf.deinit(allocator);
     try path_buf.appendSlice(allocator, storage_path);
     try path_buf.append(allocator, '/');
@@ -50,18 +51,19 @@ pub fn saveSnapshot(
     try path_buf.appendSlice(allocator, tag);
     try path_buf.appendSlice(allocator, ".bin");
 
-    try binary.save(allocator, fg, path_buf.items);
+    try binary.save(allocator, io, fg, path_buf.items);
 }
 
 /// Load a snapshot graph by tag from storage_path/snapshots/<tag>.bin.
 pub fn loadSnapshotGraph(
     allocator: std.mem.Allocator,
+    io: std.Io,
     tag: []const u8,
     storage_path: []const u8,
 ) !Graph {
     try validateTag(tag);
 
-    var path_buf: std.ArrayList(u8) = .{};
+    var path_buf: std.ArrayList(u8) = .empty;
     defer path_buf.deinit(allocator);
     try path_buf.appendSlice(allocator, storage_path);
     try path_buf.append(allocator, '/');
@@ -69,7 +71,7 @@ pub fn loadSnapshotGraph(
     try path_buf.appendSlice(allocator, tag);
     try path_buf.appendSlice(allocator, ".bin");
 
-    return binary.load(allocator, path_buf.items) catch |err| switch (err) {
+    return binary.load(allocator, io, path_buf.items) catch |err| switch (err) {
         error.FileNotFound => return error.SnapshotNotFound,
         else => return err,
     };

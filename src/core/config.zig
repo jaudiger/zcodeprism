@@ -45,7 +45,7 @@ pub const ParseError = error{
 
 /// Parse a `.zcodeprism.zon` file from its raw text content.
 pub fn parseFromSlice(allocator: std.mem.Allocator, source: [:0]const u8) ParseError!Config {
-    return std.zon.parse.fromSlice(Config, allocator, source, null, .{
+    return std.zon.parse.fromSliceAlloc(Config, allocator, source, null, .{
         .ignore_unknown_fields = true,
     }) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
@@ -83,24 +83,24 @@ const default_config_content = @embedFile("default_config.zon");
 const default_workspace_content = @embedFile("default_workspace.zon");
 
 /// Write the default `.zcodeprism.zon` config file into `dir`.
-pub fn writeDefaultConfig(dir: std.fs.Dir) !void {
-    const file = try dir.createFile(".zcodeprism.zon", .{ .exclusive = true });
-    defer file.close();
-    try file.writeAll(default_config_content);
-    try file.sync();
+pub fn writeDefaultConfig(io: std.Io, dir: std.Io.Dir) !void {
+    const file = try dir.createFile(io, ".zcodeprism.zon", .{ .exclusive = true });
+    defer file.close(io);
+    try file.writeStreamingAll(io, default_config_content);
+    try file.sync(io);
 }
 
 /// Write the default `zcodeprism-workspace.zon` workspace config into `dir`.
-pub fn writeDefaultWorkspaceConfig(dir: std.fs.Dir) !void {
-    const file = try dir.createFile("zcodeprism-workspace.zon", .{ .exclusive = true });
-    defer file.close();
-    try file.writeAll(default_workspace_content);
-    try file.sync();
+pub fn writeDefaultWorkspaceConfig(io: std.Io, dir: std.Io.Dir) !void {
+    const file = try dir.createFile(io, "zcodeprism-workspace.zon", .{ .exclusive = true });
+    defer file.close(io);
+    try file.writeStreamingAll(io, default_workspace_content);
+    try file.sync(io);
 }
 
 /// Create the `.zcodeprism/` data directory inside `dir`.
-pub fn createDataDir(dir: std.fs.Dir) !void {
-    dir.makeDir(".zcodeprism") catch |err| switch (err) {
+pub fn createDataDir(io: std.Io, dir: std.Io.Dir) !void {
+    dir.createDir(io, ".zcodeprism", .default_dir) catch |err| switch (err) {
         error.PathAlreadyExists => {},
         else => return err,
     };

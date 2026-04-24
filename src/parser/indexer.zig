@@ -91,6 +91,7 @@ const FileInfo = struct {
 /// before their importers. After all files are processed, the graph is frozen.
 pub fn indexDirectory(
     allocator: std.mem.Allocator,
+    io: std.Io,
     project_root: []const u8,
     graph: *Graph,
     out_worklist: ?*LspWorklist,
@@ -99,18 +100,18 @@ pub fn indexDirectory(
     var result = IndexResult{};
     const log = options.logger.withScope("indexer");
 
-    var file_entries = std.ArrayList(FileEntry){};
+    var file_entries: std.ArrayList(FileEntry) = .empty;
     defer file_entries.deinit(allocator);
 
-    try discoverFiles(allocator, project_root, &file_entries, options, &result, log);
+    try discoverFiles(allocator, io, project_root, &file_entries, options, &result, log);
 
-    log.info("discovered files", &.{
+    log.info(io, "discovered files", &.{
         Field.uint("count", file_entries.items.len),
         Field.string("root", project_root),
     });
 
     if (file_entries.items.len == 0) {
-        log.debug("no files to index", &.{});
+        log.debug(io, "no files to index", &.{});
         _ = try graph.freeze(allocator);
         return result;
     }
@@ -136,8 +137,8 @@ pub fn indexDirectory(
     };
     for (all_langs, 0..) |ls, lang_idx| {
         const parse_config_fn = ls.parseBuildConfigFn orelse continue;
-        if (!hasBuildFile(project_root, ls.build_files)) continue;
-        build_configs[lang_idx] = try parse_config_fn(allocator, project_root, log);
+        if (!hasBuildFile(io, project_root, ls.build_files)) continue;
+        build_configs[lang_idx] = try parse_config_fn(allocator, io, project_root, log);
     }
 
     // Transfer all paths and content to graph ownership in one batch.
@@ -160,10 +161,10 @@ pub fn indexDirectory(
         try buildModuleNodes(allocator, graph, root_dir_id, bc, &module_file_map);
     }
 
-    var file_infos = std.ArrayList(FileInfo){};
+    var file_infos = std.ArrayList(FileInfo).empty;
     defer file_infos.deinit(allocator);
 
-    try parseFiles(allocator, graph, file_entries.items, &dir_map, root_dir_id, options.incremental, &file_infos, &result, log);
+    try parseFiles(allocator, io, graph, file_entries.items, &dir_map, root_dir_id, options.incremental, &file_infos, &result, log);
 
     // Build graph indexes once for the complete graph.
     var graph_index = try GraphIndex.build(allocator, graph.nodes.items);
@@ -179,10 +180,10 @@ pub fn indexDirectory(
         relpath_map.putAssumeCapacity(key, i);
     }
 
-    log.debug("resolving cross-file edges", &.{Field.uint("file_count", file_infos.items.len)});
+    log.debug(io, "resolving cross-file edges", &.{Field.uint("file_count", file_infos.items.len)});
     try resolveImportEdges(allocator, graph, file_infos.items, &relpath_map);
 
-    log.debug("resolving phantom nodes", &.{Field.uint("file_count", file_infos.items.len)});
+    log.debug(io, "resolving phantom nodes", &.{Field.uint("file_count", file_infos.items.len)});
     var phantom = PhantomManager.init(graph);
     defer phantom.deinit(allocator);
 
@@ -214,13 +215,13 @@ pub fn indexDirectory(
         }
     }
 
-    log.debug("building edges", &.{Field.uint("file_count", file_infos.items.len)});
-    buildCrossFileEdges(allocator, graph, file_infos.items, &graph_index, &phantom, wl, log);
+    log.debug(io, "building edges", &.{Field.uint("file_count", file_infos.items.len)});
+    buildCrossFileEdges(allocator, io, graph, file_infos.items, &graph_index, &phantom, wl, log);
 
-    try resolveCrossLanguageEdges(allocator, graph, log);
+    try resolveCrossLanguageEdges(allocator, io, graph, log);
 
     if (wl.count() > 0) {
-        log.info("worklist entries collected", &.{Field.uint("count", wl.count())});
+        log.info(io, "worklist entries collected", &.{Field.uint("count", wl.count())});
     }
 
     if (module_file_map.count() > 0) {
@@ -231,9 +232,9 @@ pub fn indexDirectory(
     const file_sources = try buildFileSources(allocator, file_infos.items);
     defer allocator.free(file_sources);
 
-    try enrichment.enrichPreFreeze(allocator, graph, file_sources, .{ .logger = log });
+    try enrichment.enrichPreFreeze(allocator, io, graph, file_sources, .{ .logger = log });
 
-    log.info("indexing complete", &.{
+    log.info(io, "indexing complete", &.{
         Field.uint("files_indexed", result.files_indexed),
         Field.uint("files_skipped", result.files_skipped),
         Field.uint("files_errored", result.files_errored),
@@ -243,7 +244,7 @@ pub fn indexDirectory(
 
     _ = try graph.freeze(allocator);
 
-    try enrichment.enrichPostFreeze(allocator, graph, .{ .logger = log });
+    try enrichment.enrichPostFreeze(allocator, io, graph, .{ .logger = log });
 
     // Append hover entries for Zig function nodes that still need error set inference.
     // Runs after enrichPreFreeze and enrichPostFreeze so AST-extracted error sets are
@@ -272,35 +273,38 @@ pub fn indexDirectory(
 /// `FileEntry` per file to `entries`. Updates `result` error counters.
 fn discoverFiles(
     allocator: std.mem.Allocator,
+    io: std.Io,
     project_root: []const u8,
     entries: *std.ArrayList(FileEntry),
     options: IndexOptions,
     result: *IndexResult,
     log: Logger,
 ) !void {
-    var dir = try std.fs.openDirAbsolute(project_root, .{ .iterate = true });
-    defer dir.close();
+    var dir = try std.Io.Dir.openDirAbsolute(io, project_root, .{ .iterate = true });
+    defer dir.close(io);
 
     var walker = try dir.walk(allocator);
     defer walker.deinit();
 
     var cumulative_bytes: u64 = 0;
 
-    while (try walker.next()) |entry| {
+    while (try walker.next(io)) |entry| {
         if (entry.kind != .file) continue;
         const ext = std.fs.path.extension(entry.path);
         const file_lang = Registry.getByExtension(ext) orelse continue;
         if (isExcluded(entry.path, options.exclude_paths)) continue;
 
-        const file = dir.openFile(entry.path, .{}) catch {
-            log.warn("file read error", &.{Field.string("path", entry.path)});
+        const file = dir.openFile(io, entry.path, .{}) catch {
+            log.warn(io, "file read error", &.{Field.string("path", entry.path)});
             result.files_errored += 1;
             continue;
         };
-        defer file.close();
-        const content = file.readToEndAlloc(allocator, max_source_bytes) catch |err| {
+        defer file.close(io);
+        var rbuf: [4096]u8 = undefined;
+        var freader = file.reader(io, &rbuf);
+        const content = freader.interface.allocRemaining(allocator, .limited(max_source_bytes)) catch |err| {
             const reason = if (err == error.StreamTooLong) "exceeds 10 MiB read limit" else @errorName(err);
-            log.warn("skipping file", &.{
+            log.warn(io, "skipping file", &.{
                 Field.string("path", entry.path),
                 Field.string("reason", reason),
             });
@@ -312,7 +316,7 @@ fn discoverFiles(
         cumulative_bytes += content.len;
         if (options.budget_bytes) |budget| {
             if (cumulative_bytes > budget) {
-                log.warn("memory budget exceeded, stopping discovery", &.{});
+                log.warn(io, "memory budget exceeded, stopping discovery", &.{});
                 allocator.free(content);
                 break;
             }
@@ -356,7 +360,7 @@ fn buildDirectoryNodes(
     }
 
     // Sort unique paths so parents are created before children.
-    var sorted_dirs = std.ArrayList([]const u8){};
+    var sorted_dirs = std.ArrayList([]const u8).empty;
     defer sorted_dirs.deinit(allocator);
     try sorted_dirs.ensureTotalCapacity(allocator, @intCast(dir_set.count()));
     {
@@ -455,6 +459,7 @@ fn buildModuleNodes(
 /// to the graph before this function is called.
 fn parseFiles(
     allocator: std.mem.Allocator,
+    io: std.Io,
     graph: *Graph,
     entries: []const FileEntry,
     dir_map: *const std.StringHashMapUnmanaged(NodeId),
@@ -470,7 +475,7 @@ fn parseFiles(
                 const existing = graph.nodes.items[existing_idx];
                 if (existing.content_hash) |old_hash| {
                     if (std.mem.eql(u8, &old_hash, &fe.content_hash)) {
-                        log.debug("skipping unchanged file", &.{Field.string("path", fe.rel_path)});
+                        log.debug(io, "skipping unchanged file", &.{Field.string("path", fe.rel_path)});
                         result.files_skipped += 1;
                         continue;
                     }
@@ -480,9 +485,9 @@ fn parseFiles(
 
         const before_count = graph.nodeCount();
 
-        log.debug("parsing file", &.{Field.string("path", fe.rel_path)});
-        fe.lang_support.parseFn(allocator, fe.content, graph, fe.rel_path, log) catch {
-            log.warn("file parse error", &.{Field.string("path", fe.rel_path)});
+        log.debug(io, "parsing file", &.{Field.string("path", fe.rel_path)});
+        fe.lang_support.parseFn(allocator, io, fe.content, graph, fe.rel_path, log) catch {
+            log.warn(io, "file parse error", &.{Field.string("path", fe.rel_path)});
             result.files_errored += 1;
             continue;
         };
@@ -501,7 +506,7 @@ fn parseFiles(
             }
 
             if (graph.nodeCount() == before_count + 1) {
-                log.trace("file produced no nodes", &.{Field.string("path", fe.rel_path)});
+                log.trace(io, "file produced no nodes", &.{Field.string("path", fe.rel_path)});
             }
 
             try infos.append(allocator, .{
@@ -595,6 +600,7 @@ fn resolvePhantomNodes(
 /// are appended to `wl`.
 fn buildCrossFileEdges(
     allocator: std.mem.Allocator,
+    io: std.Io,
     graph: *Graph,
     infos: []const FileInfo,
     graph_index: *GraphIndex,
@@ -608,8 +614,8 @@ fn buildCrossFileEdges(
     for (infos) |fi| {
         const build_edges = fi.lang_support.buildEdgesFn orelse continue;
         const file_node = graph.nodes.items[fi.node_idx];
-        build_edges(allocator, fi.source, graph, fi.node_idx, fi.scope_end, file_node.file_path, graph_index, phantom, &node_type_map, wl, log) catch |err| {
-            log.warn("edge building failed", &.{
+        build_edges(allocator, io, fi.source, graph, fi.node_idx, fi.scope_end, file_node.file_path, graph_index, phantom, &node_type_map, wl, log) catch |err| {
+            log.warn(io, "edge building failed", &.{
                 Field.string("path", file_node.file_path orelse "?"),
                 Field.string("error", @errorName(err)),
             });
@@ -620,6 +626,7 @@ fn buildCrossFileEdges(
 /// Match FFI prototypes to definitions across languages by convention and symbol name.
 fn resolveCrossLanguageEdges(
     allocator: std.mem.Allocator,
+    io: std.Io,
     graph: *Graph,
     log: Logger,
 ) !void {
@@ -651,7 +658,7 @@ fn resolveCrossLanguageEdges(
         if (!isFfiDefinition(n)) continue;
         const key = FfiKey{ .name = n.name, .convention = conv };
         const gop = try defn_map.getOrPut(allocator, key);
-        if (!gop.found_existing) gop.value_ptr.* = .{};
+        if (!gop.found_existing) gop.value_ptr.* = .empty;
         try gop.value_ptr.append(allocator, idx);
     }
 
@@ -679,7 +686,7 @@ fn resolveCrossLanguageEdges(
     }
 
     if (edges_added > 0) {
-        log.info("cross-language FFI edges", &.{Field.uint("count", edges_added)});
+        log.info(io, "cross-language FFI edges", &.{Field.uint("count", edges_added)});
     }
 }
 
@@ -866,7 +873,7 @@ fn topoSortFiles(allocator: std.mem.Allocator, entries: []FileEntry) !void {
         for (adj) |*a| a.deinit(allocator);
         allocator.free(adj);
     }
-    for (adj) |*a| a.* = .{};
+    for (adj) |*a| a.* = .empty;
 
     try buildDepGraph(allocator, entries, &relpath_map, in_degree, adj);
 
@@ -884,13 +891,13 @@ fn topoSortFiles(allocator: std.mem.Allocator, entries: []FileEntry) !void {
 
 /// Returns true when at least one of the given build file names exists
 /// directly under `project_root`.
-fn hasBuildFile(project_root: []const u8, build_files: []const []const u8) bool {
-    const dir = std.fs.openDirAbsolute(project_root, .{}) catch return false;
+fn hasBuildFile(io: std.Io, project_root: []const u8, build_files: []const []const u8) bool {
+    const dir = std.Io.Dir.openDirAbsolute(io, project_root, .{}) catch return false;
     // dir is a copy of the handle struct, not a pointer; closing is fine.
     var d = dir;
-    defer d.close();
+    defer d.close(io);
     for (build_files) |name| {
-        d.access(name, .{}) catch continue;
+        d.access(io, name, .{}) catch continue;
         return true;
     }
     return false;

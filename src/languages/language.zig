@@ -90,4 +90,4 @@ pub const ResolveImportPathFn = *const fn (buf: []u8, importer_path: []const u8,
 /// Callback that parses a build manifest file at the given project root
 /// and returns extracted dependency names in a `BuildConfig`.
 /// The returned config is allocator-owned; caller must call `deinit`.
-pub const ParseBuildConfigFn = *const fn (allocator: std.mem.Allocator, project_root: []const u8, logger: logging.Logger) error{OutOfMemory}!BuildConfig;
+pub const ParseBuildConfigFn = *const fn (allocator: std.mem.Allocator, io: std.Io, project_root: []const u8, logger: logging.Logger) error{OutOfMemory}!BuildConfig;

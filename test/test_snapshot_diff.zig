@@ -222,11 +222,11 @@ test "diff output is deterministic" {
     defer report2.deinit(allocator);
 
     // Render both
-    var out1: std.ArrayList(u8) = .{};
+    var out1: std.ArrayList(u8) = .empty;
     defer out1.deinit(allocator);
     try snapshot_diff.renderDiffReport(allocator, &report1, &out1);
 
-    var out2: std.ArrayList(u8) = .{};
+    var out2: std.ArrayList(u8) = .empty;
     defer out2.deinit(allocator);
     try snapshot_diff.renderDiffReport(allocator, &report2, &out2);
 

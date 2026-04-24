@@ -120,8 +120,8 @@ pub fn resolveImportPath(buf: []u8, importer_path: []const u8, import_path: []co
 ///
 /// Returns an empty `BuildConfig` if the files are missing or unreadable.
 /// The caller owns the returned data via `allocator`.
-pub fn parseBuildConfig(allocator: std.mem.Allocator, project_root: []const u8, log: Logger) error{OutOfMemory}!BuildConfig {
-    const info = build_parser.parseBuildFiles(allocator, project_root, log) catch return .{};
+pub fn parseBuildConfig(allocator: std.mem.Allocator, io: std.Io, project_root: []const u8, log: Logger) error{OutOfMemory}!BuildConfig {
+    const info = build_parser.parseBuildFiles(allocator, io, project_root, log) catch return .{};
     defer {
         // Free fields we do not transfer to BuildConfig.
         if (info.targets) |targets| {
@@ -287,6 +287,7 @@ pub fn resolvePhantoms(
 /// phantom nodes by querying hover at their usage sites.
 pub fn enrichWithLsp(
     allocator: std.mem.Allocator,
+    io: std.Io,
     graph: *Graph,
     client: *LspClient,
     wl: *const LspWorklist,
@@ -298,9 +299,9 @@ pub fn enrichWithLsp(
     var file_map = try enrich_helpers.buildFileNodeMap(allocator, graph);
     defer file_map.deinit(allocator);
 
-    try enrich_helpers.dispatchWorklist(allocator, graph, client, wl.items(), &file_map, &result, &handleZigHover, logger);
-    try enrich_helpers.runDeadCodeReferencesPass(allocator, graph, client, &file_map, &result, logger);
-    try enrich_helpers.enrichPhantoms(allocator, graph, client, wl.phantomHovers(), &result, logger);
+    try enrich_helpers.dispatchWorklist(allocator, io, graph, client, wl.items(), &file_map, &result, &handleZigHover, logger);
+    try enrich_helpers.runDeadCodeReferencesPass(allocator, io, graph, client, &file_map, &result, logger);
+    try enrich_helpers.enrichPhantoms(allocator, io, graph, client, wl.phantomHovers(), &result, logger);
 
     return result;
 }
@@ -434,7 +435,7 @@ fn resolveStdPhantoms(
     const k = parse_context.KindIds.init(ts_language);
 
     const end = @min(file_end_idx, graph.nodes.items.len);
-    var fn_ranges = std.ArrayList(FnRange){};
+    var fn_ranges = std.ArrayList(FnRange).empty;
     defer fn_ranges.deinit(allocator);
     for (graph.nodes.items[file_idx..end], file_idx..) |n, idx| {
         if (n.kind != .function) continue;

@@ -68,14 +68,14 @@ pub const Logger = struct {
 
     /// Dispatch table for a concrete logger backend.
     pub const VTable = struct {
-        log: *const fn (ptr: ?*anyopaque, level: Level, scope: []const u8, msg: []const u8, fields: []const Field) void,
+        log: *const fn (ptr: ?*anyopaque, io: std.Io, level: Level, scope: []const u8, msg: []const u8, fields: []const Field) void,
     };
 
     const noop_vtable = VTable{
         .log = &noopLog,
     };
 
-    fn noopLog(_: ?*anyopaque, _: Level, _: []const u8, _: []const u8, _: []const Field) void {}
+    fn noopLog(_: ?*anyopaque, _: std.Io, _: Level, _: []const u8, _: []const u8, _: []const Field) void {}
 
     /// A logger that discards all messages.
     /// All convenience methods short-circuit because `min_level` is maxInt(u8).
@@ -97,34 +97,34 @@ pub const Logger = struct {
         };
     }
 
-    fn dispatch(self: Logger, level: Level, msg: []const u8, fields: []const Field) void {
+    fn dispatch(self: Logger, io: std.Io, level: Level, msg: []const u8, fields: []const Field) void {
         if (@intFromEnum(level) < self.min_level) return;
-        self.vtable.log(self.ptr, level, self.scope, msg, fields);
+        self.vtable.log(self.ptr, io, level, self.scope, msg, fields);
     }
 
     /// Emit a trace-level log message (most verbose).
-    pub fn trace(self: Logger, msg: []const u8, fields: []const Field) void {
-        self.dispatch(.trace, msg, fields);
+    pub fn trace(self: Logger, io: std.Io, msg: []const u8, fields: []const Field) void {
+        self.dispatch(io, .trace, msg, fields);
     }
 
     /// Emit a debug-level log message.
-    pub fn debug(self: Logger, msg: []const u8, fields: []const Field) void {
-        self.dispatch(.debug, msg, fields);
+    pub fn debug(self: Logger, io: std.Io, msg: []const u8, fields: []const Field) void {
+        self.dispatch(io, .debug, msg, fields);
     }
 
     /// Emit an info-level log message.
-    pub fn info(self: Logger, msg: []const u8, fields: []const Field) void {
-        self.dispatch(.info, msg, fields);
+    pub fn info(self: Logger, io: std.Io, msg: []const u8, fields: []const Field) void {
+        self.dispatch(io, .info, msg, fields);
     }
 
     /// Emit a warn-level log message.
-    pub fn warn(self: Logger, msg: []const u8, fields: []const Field) void {
-        self.dispatch(.warn, msg, fields);
+    pub fn warn(self: Logger, io: std.Io, msg: []const u8, fields: []const Field) void {
+        self.dispatch(io, .warn, msg, fields);
     }
 
     /// Emit an error-level log message (least verbose).
-    pub fn err(self: Logger, msg: []const u8, fields: []const Field) void {
-        self.dispatch(.err, msg, fields);
+    pub fn err(self: Logger, io: std.Io, msg: []const u8, fields: []const Field) void {
+        self.dispatch(io, .err, msg, fields);
     }
 };
 
@@ -155,13 +155,14 @@ pub const TextStderrLogger = struct {
         };
     }
 
-    fn logImpl(_: ?*anyopaque, level: Level, scope: []const u8, msg: []const u8, fields: []const Field) void {
+    fn logImpl(_: ?*anyopaque, io: std.Io, level: Level, scope: []const u8, msg: []const u8, fields: []const Field) void {
         var stderr_buf: [4096]u8 = undefined;
-        var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
+        var stderr_writer = std.Io.File.stderr().writer(io, &stderr_buf);
         const w = &stderr_writer.interface;
 
         // Timestamp.
-        const epoch = std.time.timestamp();
+        const ts = std.Io.Timestamp.now(io, .real);
+        const epoch: i64 = @intCast(@divTrunc(ts.nanoseconds, std.time.ns_per_s));
         const es = std.time.epoch.EpochSeconds{ .secs = @intCast(@max(0, epoch)) };
         const day = es.getEpochDay();
         const yd = day.calculateYearDay();
@@ -255,11 +256,11 @@ test "Field constructors create correct fields" {
 test "Logger.noop does not crash on any method" {
     // Act: call every level, none should crash
     const log = Logger.noop;
-    log.trace("msg", &.{});
-    log.debug("msg", &.{});
-    log.info("msg", &.{});
-    log.warn("msg", &.{});
-    log.err("msg", &.{});
+    log.trace(std.testing.io, "msg", &.{});
+    log.debug(std.testing.io, "msg", &.{});
+    log.info(std.testing.io, "msg", &.{});
+    log.warn(std.testing.io, "msg", &.{});
+    log.err(std.testing.io, "msg", &.{});
 }
 
 test "Logger.noop has maxInt min_level" {
@@ -286,7 +287,7 @@ test "Logger filters by min_level" {
 
     const spy_vtable = Logger.VTable{
         .log = &struct {
-            fn logFn(ptr: ?*anyopaque, _: Level, _: []const u8, _: []const u8, _: []const Field) void {
+            fn logFn(ptr: ?*anyopaque, _: std.Io, _: Level, _: []const u8, _: []const u8, _: []const Field) void {
                 const count: *usize = @ptrCast(@alignCast(ptr.?));
                 count.* += 1;
             }
@@ -300,11 +301,11 @@ test "Logger filters by min_level" {
     };
 
     // Act
-    log.trace("filtered", &.{});
-    log.debug("filtered", &.{});
-    log.info("filtered", &.{});
-    log.warn("passed", &.{});
-    log.err("passed", &.{});
+    log.trace(std.testing.io, "filtered", &.{});
+    log.debug(std.testing.io, "filtered", &.{});
+    log.info(std.testing.io, "filtered", &.{});
+    log.warn(std.testing.io, "passed", &.{});
+    log.err(std.testing.io, "passed", &.{});
 
     // Assert: only warn and err get through
     try std.testing.expectEqual(@as(usize, 2), call_count);
