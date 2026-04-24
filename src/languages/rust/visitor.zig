@@ -260,7 +260,7 @@ fn findBlockChild(parent: ts.Node, k: *const KindIds) ?ts.Node {
 /// #[test] attribute, and creates the appropriate node.
 fn processFunctionItem(allocator: std.mem.Allocator, io: std.Io, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
     const name = ast.getIdentifierName(ctx.source, ts_node, ctx.k) orelse {
-        ctx.log.trace(io,"skipping function: no identifier", &.{});
+        ctx.log.trace(io, "skipping function: no identifier", &.{});
         return;
     };
 
@@ -317,7 +317,7 @@ fn processFunctionItem(allocator: std.mem.Allocator, io: std.Io, ctx: *const Vis
 /// Process a function_signature_item (in trait bodies).
 fn processFunctionSignatureItem(allocator: std.mem.Allocator, io: std.Io, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
     const name = ast.getIdentifierName(ctx.source, ts_node, ctx.k) orelse {
-        ctx.log.trace(io,"skipping fn signature: no identifier", &.{});
+        ctx.log.trace(io, "skipping fn signature: no identifier", &.{});
         return;
     };
 
@@ -381,7 +381,7 @@ fn emitParameterNodes(allocator: std.mem.Allocator, io: std.Io, ctx: *const Visi
 /// Process a struct_item.
 fn processStructItem(allocator: std.mem.Allocator, io: std.Io, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
     const name = ast.getTypeIdentifierName(ctx.source, ts_node, ctx.k) orelse {
-        ctx.log.trace(io,"skipping struct: no type_identifier", &.{});
+        ctx.log.trace(io, "skipping struct: no type_identifier", &.{});
         return;
     };
 
@@ -415,7 +415,7 @@ fn processStructItem(allocator: std.mem.Allocator, io: std.Io, ctx: *const Visit
 /// Process an enum_item.
 fn processEnumItem(allocator: std.mem.Allocator, io: std.Io, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
     const name = ast.getTypeIdentifierName(ctx.source, ts_node, ctx.k) orelse {
-        ctx.log.trace(io,"skipping enum: no type_identifier", &.{});
+        ctx.log.trace(io, "skipping enum: no type_identifier", &.{});
         return;
     };
 
@@ -449,7 +449,7 @@ fn processEnumItem(allocator: std.mem.Allocator, io: std.Io, ctx: *const Visitor
 /// Process a union_item.
 fn processUnionItem(allocator: std.mem.Allocator, io: std.Io, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
     const name = ast.getTypeIdentifierName(ctx.source, ts_node, ctx.k) orelse {
-        ctx.log.trace(io,"skipping union: no type_identifier", &.{});
+        ctx.log.trace(io, "skipping union: no type_identifier", &.{});
         return;
     };
 
@@ -483,7 +483,7 @@ fn processUnionItem(allocator: std.mem.Allocator, io: std.Io, ctx: *const Visito
 /// Process a trait_item.
 fn processTraitItem(allocator: std.mem.Allocator, io: std.Io, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
     const name = ast.getTypeIdentifierName(ctx.source, ts_node, ctx.k) orelse {
-        ctx.log.trace(io,"skipping trait: no type_identifier", &.{});
+        ctx.log.trace(io, "skipping trait: no type_identifier", &.{});
         return;
     };
 
@@ -516,7 +516,7 @@ fn processTraitItem(allocator: std.mem.Allocator, io: std.Io, ctx: *const Visito
 /// Process an impl_item. Creates a type_def node with sub_kind=.impl_block.
 fn processImplItem(allocator: std.mem.Allocator, io: std.Io, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
     const impl_info = ast.getImplInfo(ctx.source, ts_node, ctx.k) orelse {
-        ctx.log.trace(io,"skipping impl: cannot determine target", &.{});
+        ctx.log.trace(io, "skipping impl: cannot determine target", &.{});
         return;
     };
 
@@ -546,7 +546,7 @@ fn processImplItem(allocator: std.mem.Allocator, io: std.Io, ctx: *const Visitor
 /// Process a const_item.
 fn processConstItem(allocator: std.mem.Allocator, io: std.Io, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
     const name = ast.getIdentifierName(ctx.source, ts_node, ctx.k) orelse {
-        ctx.log.trace(io,"skipping const: no identifier", &.{});
+        ctx.log.trace(io, "skipping const: no identifier", &.{});
         return;
     };
 
@@ -573,7 +573,7 @@ fn processConstItem(allocator: std.mem.Allocator, io: std.Io, ctx: *const Visito
 /// Process a static_item.
 fn processStaticItem(allocator: std.mem.Allocator, io: std.Io, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
     const name = ast.getIdentifierName(ctx.source, ts_node, ctx.k) orelse {
-        ctx.log.trace(io,"skipping static: no identifier", &.{});
+        ctx.log.trace(io, "skipping static: no identifier", &.{});
         return;
     };
 
@@ -600,7 +600,7 @@ fn processStaticItem(allocator: std.mem.Allocator, io: std.Io, ctx: *const Visit
 /// Process a type_item (type alias).
 fn processTypeItem(allocator: std.mem.Allocator, io: std.Io, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
     const name = ast.getTypeIdentifierName(ctx.source, ts_node, ctx.k) orelse {
-        ctx.log.trace(io,"skipping type alias: no type_identifier", &.{});
+        ctx.log.trace(io, "skipping type alias: no type_identifier", &.{});
         return;
     };
 
@@ -630,7 +630,7 @@ fn processTypeItem(allocator: std.mem.Allocator, io: std.Io, ctx: *const Visitor
 /// which makes the macro crate-public in Rust.
 fn processMacroDefinition(allocator: std.mem.Allocator, io: std.Io, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
     const name = ast.getIdentifierName(ctx.source, ts_node, ctx.k) orelse {
-        ctx.log.trace(io,"skipping macro: no identifier", &.{});
+        ctx.log.trace(io, "skipping macro: no identifier", &.{});
         return;
     };
 
@@ -663,7 +663,7 @@ fn processMacroDefinition(allocator: std.mem.Allocator, io: std.Io, ctx: *const 
 /// import_decl node.
 fn processModItem(allocator: std.mem.Allocator, io: std.Io, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
     const name = ast.getIdentifierName(ctx.source, ts_node, ctx.k) orelse {
-        ctx.log.trace(io,"skipping mod: no identifier", &.{});
+        ctx.log.trace(io, "skipping mod: no identifier", &.{});
         return;
     };
 

@@ -209,7 +209,7 @@ fn extractErrorSetNames(allocator: std.mem.Allocator, g: *Graph, source: []const
 /// Recurses into container bodies for nested declarations.
 fn processVariableDecl(allocator: std.mem.Allocator, io: std.Io, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
     const name = ast.getIdentifierName(ctx.source, ts_node, ctx.k) orelse {
-        ctx.log.trace(io,"skipping variable: no identifier", &.{});
+        ctx.log.trace(io, "skipping variable: no identifier", &.{});
         return;
     };
     const visibility = ast.detectVisibility(ts_node, ctx.k);
@@ -223,7 +223,7 @@ fn processVariableDecl(allocator: std.mem.Allocator, io: std.Io, ctx: *const Vis
     if (kind == .constant) {
         // Skip @This() aliases.
         if (ast.isThisBuiltin(ctx.source, ts_node, ctx.k)) {
-            ctx.log.trace(io,"skipping @This() alias", &.{Field.string("name", name)});
+            ctx.log.trace(io, "skipping @This() alias", &.{Field.string("name", name)});
             return;
         }
 
@@ -232,7 +232,7 @@ fn processVariableDecl(allocator: std.mem.Allocator, io: std.Io, ctx: *const Vis
         if (ast.getFieldExprRootAndLeaf(ctx.source, ts_node, ctx.k)) |info| {
             if (std.mem.eql(u8, info.leaf, name) and visibility == .private) {
                 if (isImportSibling(ctx.g, parent_id, info.root)) {
-                    ctx.log.trace(io,"skipping private re-export", &.{Field.string("name", name)});
+                    ctx.log.trace(io, "skipping private re-export", &.{Field.string("name", name)});
                     return;
                 }
             }
@@ -392,7 +392,7 @@ fn hasAnonymousChild(node: ts.Node, kind_id: u16) bool {
 /// Recurses into the block body to discover inner type definitions.
 fn processFunctionDecl(allocator: std.mem.Allocator, io: std.Io, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
     const name = ast.getIdentifierName(ctx.source, ts_node, ctx.k) orelse {
-        ctx.log.trace(io,"skipping function: no identifier", &.{});
+        ctx.log.trace(io, "skipping function: no identifier", &.{});
         return;
     };
     const visibility = ast.detectVisibility(ts_node, ctx.k);
@@ -444,7 +444,7 @@ fn processFunctionDecl(allocator: std.mem.Allocator, io: std.Io, ctx: *const Vis
             }
             return;
         } else {
-            ctx.log.debug(io,"type-returning function: body not found", &.{Field.string("name", name)});
+            ctx.log.debug(io, "type-returning function: body not found", &.{Field.string("name", name)});
         }
     }
 
@@ -626,7 +626,7 @@ fn discoverInnerTypes(allocator: std.mem.Allocator, io: std.Io, ctx: *const Visi
 /// Fields are always private. Skips unnamed fields.
 fn processContainerField(allocator: std.mem.Allocator, io: std.Io, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
     const name = ast.getIdentifierName(ctx.source, ts_node, ctx.k) orelse {
-        ctx.log.trace(io,"skipping field: no identifier", &.{});
+        ctx.log.trace(io, "skipping field: no identifier", &.{});
         return;
     };
     const doc = ast.collectDocComment(ctx.source, ts_node, ctx.k);

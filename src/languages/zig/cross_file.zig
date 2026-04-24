@@ -172,7 +172,7 @@ pub fn buildImportMap(allocator: std.mem.Allocator, io: std.Io, g: *const Graph,
 
         // Extract import path from AST.
         const import_path = extractImportPath(source, child, k) orelse {
-            log.trace(io,"import path extraction failed", &.{});
+            log.trace(io, "import path extraction failed", &.{});
             continue;
         };
 
@@ -187,7 +187,7 @@ pub fn buildImportMap(allocator: std.mem.Allocator, io: std.Io, g: *const Graph,
             entry.chain_len = ext_len;
             try ctx.imports.append(allocator, entry);
         } else {
-            log.trace(io,"import target file not found", &.{Field.string("path", import_path)});
+            log.trace(io, "import target file not found", &.{Field.string("path", import_path)});
         }
     }
 
@@ -410,7 +410,7 @@ pub fn resolveVarTargetThroughReturnType(
     }
 
     if (chain_len == 0) {
-        log.trace(io,"var target: chain extraction failed", &.{});
+        log.trace(io, "var target: chain extraction failed", &.{});
         return null;
     }
 
