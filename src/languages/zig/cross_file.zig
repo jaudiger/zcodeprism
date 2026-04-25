@@ -150,7 +150,7 @@ fn findStringContent(source: []const u8, node: ts.Node, k: *const KindIds) ?[]co
 /// For each declaration classified as import_decl, extracts the import path, resolves
 /// it to a target file NodeId via `file_index`, and records the binding with its
 /// extraction chain. Logs a warning when the import map reaches capacity.
-pub fn buildImportMap(allocator: std.mem.Allocator, io: std.Io, g: *const Graph, source: []const u8, root: ts.Node, ctx: *EdgeContext, file_index: *const FileIndex, importer_path: ?[]const u8, k: *const KindIds, log: Logger) !void {
+pub fn buildImportMap(allocator: std.mem.Allocator, g: *const Graph, source: []const u8, root: ts.Node, ctx: *EdgeContext, file_index: *const FileIndex, importer_path: ?[]const u8, k: *const KindIds, log: Logger) !void {
     var i: u32 = 0;
     while (i < root.childCount()) : (i += 1) {
         const child = root.child(i) orelse continue;
@@ -172,7 +172,7 @@ pub fn buildImportMap(allocator: std.mem.Allocator, io: std.Io, g: *const Graph,
 
         // Extract import path from AST.
         const import_path = extractImportPath(source, child, k) orelse {
-            log.trace(io, "import path extraction failed", &.{});
+            log.trace("import path extraction failed", &.{});
             continue;
         };
 
@@ -187,7 +187,7 @@ pub fn buildImportMap(allocator: std.mem.Allocator, io: std.Io, g: *const Graph,
             entry.chain_len = ext_len;
             try ctx.imports.append(allocator, entry);
         } else {
-            log.trace(io, "import target file not found", &.{Field.string("path", import_path)});
+            log.trace("import target file not found", &.{Field.string("path", import_path)});
         }
     }
 
@@ -373,7 +373,6 @@ fn findImportInFile(g: *const Graph, file_id: NodeId, import_name: []const u8, g
 /// Returns the resolved file NodeId, or null if resolution fails (caller should
 /// fall back to the original import target).
 pub fn resolveVarTargetThroughReturnType(
-    io: std.Io,
     g: *const Graph,
     source: []const u8,
     var_decl: ts.Node,
@@ -410,7 +409,7 @@ pub fn resolveVarTargetThroughReturnType(
     }
 
     if (chain_len == 0) {
-        log.trace(io, "var target: chain extraction failed", &.{});
+        log.trace("var target: chain extraction failed", &.{});
         return null;
     }
 

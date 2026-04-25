@@ -97,7 +97,7 @@ pub fn main(init: std.process.Init) !void {
     var graph = Graph.init(std.fs.path.dirname(abs_path) orelse abs_path);
     defer graph.deinit(allocator);
 
-    var text_logger = logging.TextStderrLogger.init(tool_utils.verbosityToLevel(verbosity));
+    var text_logger = logging.TextStderrLogger.init(io, tool_utils.verbosityToLevel(verbosity));
     const log = if (verbosity > 0) text_logger.logger() else logging.Logger.noop;
 
     parseFn(allocator, io, source, &graph, null, log) catch |err| {

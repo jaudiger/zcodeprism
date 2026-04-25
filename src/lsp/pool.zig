@@ -64,7 +64,7 @@ pub const LspConnection = struct {
             defer allocator.free(abs_path);
 
             const source = std.Io.Dir.openFileAbsolute(io, abs_path, .{}) catch {
-                log.debug(io, "could not open file", &.{Field.string("path", abs_path)});
+                log.debug("could not open file", &.{Field.string("path", abs_path)});
                 continue;
             };
             defer source.close(io);

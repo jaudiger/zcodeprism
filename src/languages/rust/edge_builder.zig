@@ -264,7 +264,7 @@ fn buildTypeEnvFromBlock(
 
             // Import-qualified RHS -> cross_file binding.
             if (cf.findImportQualifiedRoot(source, child, edge_ctx, k)) |target_file| {
-                const resolved = cf.resolveVarTargetThroughReturnType(io, graph, source, child, edge_ctx, k, graph_index, Logger.noop) orelse target_file;
+                const resolved = cf.resolveVarTargetThroughReturnType(graph, source, child, edge_ctx, k, graph_index, Logger.noop) orelse target_file;
                 try type_env.bindCrossFile(allocator, var_name, resolved);
                 continue;
             }

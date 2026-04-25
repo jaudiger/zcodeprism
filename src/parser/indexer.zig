@@ -105,13 +105,13 @@ pub fn indexDirectory(
 
     try discoverFiles(allocator, io, project_root, &file_entries, options, &result, log);
 
-    log.info(io, "discovered files", &.{
+    log.info("discovered files", &.{
         Field.uint("count", file_entries.items.len),
         Field.string("root", project_root),
     });
 
     if (file_entries.items.len == 0) {
-        log.debug(io, "no files to index", &.{});
+        log.debug("no files to index", &.{});
         _ = try graph.freeze(allocator);
         return result;
     }
@@ -180,10 +180,10 @@ pub fn indexDirectory(
         relpath_map.putAssumeCapacity(key, i);
     }
 
-    log.debug(io, "resolving cross-file edges", &.{Field.uint("file_count", file_infos.items.len)});
+    log.debug("resolving cross-file edges", &.{Field.uint("file_count", file_infos.items.len)});
     try resolveImportEdges(allocator, graph, file_infos.items, &relpath_map);
 
-    log.debug(io, "resolving phantom nodes", &.{Field.uint("file_count", file_infos.items.len)});
+    log.debug("resolving phantom nodes", &.{Field.uint("file_count", file_infos.items.len)});
     var phantom = PhantomManager.init(graph);
     defer phantom.deinit(allocator);
 
@@ -215,13 +215,13 @@ pub fn indexDirectory(
         }
     }
 
-    log.debug(io, "building edges", &.{Field.uint("file_count", file_infos.items.len)});
+    log.debug("building edges", &.{Field.uint("file_count", file_infos.items.len)});
     buildCrossFileEdges(allocator, io, graph, file_infos.items, &graph_index, &phantom, wl, log);
 
-    try resolveCrossLanguageEdges(allocator, io, graph, log);
+    try resolveCrossLanguageEdges(allocator, graph, log);
 
     if (wl.count() > 0) {
-        log.info(io, "worklist entries collected", &.{Field.uint("count", wl.count())});
+        log.info("worklist entries collected", &.{Field.uint("count", wl.count())});
     }
 
     if (module_file_map.count() > 0) {
@@ -232,9 +232,9 @@ pub fn indexDirectory(
     const file_sources = try buildFileSources(allocator, file_infos.items);
     defer allocator.free(file_sources);
 
-    try enrichment.enrichPreFreeze(allocator, io, graph, file_sources, .{ .logger = log });
+    try enrichment.enrichPreFreeze(allocator, graph, file_sources, .{ .logger = log });
 
-    log.info(io, "indexing complete", &.{
+    log.info("indexing complete", &.{
         Field.uint("files_indexed", result.files_indexed),
         Field.uint("files_skipped", result.files_skipped),
         Field.uint("files_errored", result.files_errored),
@@ -244,7 +244,7 @@ pub fn indexDirectory(
 
     _ = try graph.freeze(allocator);
 
-    try enrichment.enrichPostFreeze(allocator, io, graph, .{ .logger = log });
+    try enrichment.enrichPostFreeze(allocator, graph, .{ .logger = log });
 
     // Append hover entries for Zig function nodes that still need error set inference.
     // Runs after enrichPreFreeze and enrichPostFreeze so AST-extracted error sets are
@@ -295,7 +295,7 @@ fn discoverFiles(
         if (isExcluded(entry.path, options.exclude_paths)) continue;
 
         const file = dir.openFile(io, entry.path, .{}) catch {
-            log.warn(io, "file read error", &.{Field.string("path", entry.path)});
+            log.warn("file read error", &.{Field.string("path", entry.path)});
             result.files_errored += 1;
             continue;
         };
@@ -304,7 +304,7 @@ fn discoverFiles(
         var freader = file.reader(io, &rbuf);
         const content = freader.interface.allocRemaining(allocator, .limited(max_source_bytes)) catch |err| {
             const reason = if (err == error.StreamTooLong) "exceeds 10 MiB read limit" else @errorName(err);
-            log.warn(io, "skipping file", &.{
+            log.warn("skipping file", &.{
                 Field.string("path", entry.path),
                 Field.string("reason", reason),
             });
@@ -316,7 +316,7 @@ fn discoverFiles(
         cumulative_bytes += content.len;
         if (options.budget_bytes) |budget| {
             if (cumulative_bytes > budget) {
-                log.warn(io, "memory budget exceeded, stopping discovery", &.{});
+                log.warn("memory budget exceeded, stopping discovery", &.{});
                 allocator.free(content);
                 break;
             }
@@ -475,7 +475,7 @@ fn parseFiles(
                 const existing = graph.nodes.items[existing_idx];
                 if (existing.content_hash) |old_hash| {
                     if (std.mem.eql(u8, &old_hash, &fe.content_hash)) {
-                        log.debug(io, "skipping unchanged file", &.{Field.string("path", fe.rel_path)});
+                        log.debug("skipping unchanged file", &.{Field.string("path", fe.rel_path)});
                         result.files_skipped += 1;
                         continue;
                     }
@@ -485,9 +485,9 @@ fn parseFiles(
 
         const before_count = graph.nodeCount();
 
-        log.debug(io, "parsing file", &.{Field.string("path", fe.rel_path)});
+        log.debug("parsing file", &.{Field.string("path", fe.rel_path)});
         fe.lang_support.parseFn(allocator, io, fe.content, graph, fe.rel_path, log) catch {
-            log.warn(io, "file parse error", &.{Field.string("path", fe.rel_path)});
+            log.warn("file parse error", &.{Field.string("path", fe.rel_path)});
             result.files_errored += 1;
             continue;
         };
@@ -506,7 +506,7 @@ fn parseFiles(
             }
 
             if (graph.nodeCount() == before_count + 1) {
-                log.trace(io, "file produced no nodes", &.{Field.string("path", fe.rel_path)});
+                log.trace("file produced no nodes", &.{Field.string("path", fe.rel_path)});
             }
 
             try infos.append(allocator, .{
@@ -615,7 +615,7 @@ fn buildCrossFileEdges(
         const build_edges = fi.lang_support.buildEdgesFn orelse continue;
         const file_node = graph.nodes.items[fi.node_idx];
         build_edges(allocator, io, fi.source, graph, fi.node_idx, fi.scope_end, file_node.file_path, graph_index, phantom, &node_type_map, wl, log) catch |err| {
-            log.warn(io, "edge building failed", &.{
+            log.warn("edge building failed", &.{
                 Field.string("path", file_node.file_path orelse "?"),
                 Field.string("error", @errorName(err)),
             });
@@ -626,7 +626,6 @@ fn buildCrossFileEdges(
 /// Match FFI prototypes to definitions across languages by convention and symbol name.
 fn resolveCrossLanguageEdges(
     allocator: std.mem.Allocator,
-    io: std.Io,
     graph: *Graph,
     log: Logger,
 ) !void {
@@ -686,7 +685,7 @@ fn resolveCrossLanguageEdges(
     }
 
     if (edges_added > 0) {
-        log.info(io, "cross-language FFI edges", &.{Field.uint("count", edges_added)});
+        log.info("cross-language FFI edges", &.{Field.uint("count", edges_added)});
     }
 }
 

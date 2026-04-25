@@ -133,7 +133,7 @@ pub fn main(init: std.process.Init) !void {
     };
     defer allocator.free(input_path);
 
-    var text_logger = logging.TextStderrLogger.init(tool_utils.verbosityToLevel(common_flags.verbosity));
+    var text_logger = logging.TextStderrLogger.init(io, tool_utils.verbosityToLevel(common_flags.verbosity));
     const log = if (common_flags.verbosity > 0) text_logger.logger() else logging.Logger.noop;
 
     // Determine whether the input is a directory or a regular file.

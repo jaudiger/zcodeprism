@@ -177,7 +177,7 @@ pub const LspClient = struct {
             defer allocator.free(body);
 
             drained += 1;
-            logger.trace(io, "LSP warmup: received notification", &.{
+            logger.trace("LSP warmup: received notification", &.{
                 Field.uint("n", @as(u64, drained)),
             });
 

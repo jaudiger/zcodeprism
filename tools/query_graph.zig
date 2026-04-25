@@ -335,7 +335,7 @@ pub fn main(init: std.process.Init) !void {
     };
     defer allocator.free(dir_path);
 
-    var text_logger = logging.TextStderrLogger.init(tool_utils.verbosityToLevel(flags.common.verbosity));
+    var text_logger = logging.TextStderrLogger.init(io, tool_utils.verbosityToLevel(flags.common.verbosity));
     const log = if (flags.common.verbosity > 0) text_logger.logger() else logging.Logger.noop;
 
     var graph = Graph.init(dir_path);

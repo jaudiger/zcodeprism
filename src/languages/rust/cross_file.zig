@@ -72,11 +72,11 @@ pub fn buildImportMap(
         if (std.mem.eql(u8, n.name, sig) and !std.mem.startsWith(u8, sig, "use ") and !std.mem.startsWith(u8, sig, "pub use ")) {
             if (resolveModTarget(file_index, importer_path, n.name)) |target_id| {
                 try ctx.imports.append(allocator, .{ .name = n.name, .target = target_id });
-                log.trace(io, "import map: mod resolved", &.{
+                log.trace("import map: mod resolved", &.{
                     Field.string("name", n.name),
                 });
             } else {
-                log.trace(io, "import map: mod target not found", &.{
+                log.trace("import map: mod target not found", &.{
                     Field.string("name", n.name),
                 });
             }
@@ -107,7 +107,7 @@ pub fn buildImportMap(
     // Bind "super" to the parent module file for inline super:: qualified calls.
     if (resolveParentFile(file_index, importer_path)) |parent_id| {
         try ctx.imports.append(allocator, .{ .name = "super", .target = parent_id });
-        log.trace(io, "import map: super resolved", &.{});
+        log.trace("import map: super resolved", &.{});
     }
 
     // Resolve deferred glob imports. All explicit imports were processed above,
@@ -128,7 +128,7 @@ pub fn buildImportMap(
         }
     }
     if (ctx.glob_targets.items.len > 0) {
-        log.trace(io, "import map: resolved glob imports", &.{
+        log.trace("import map: resolved glob imports", &.{
             Field.uint("count", ctx.glob_targets.items.len),
         });
     }
@@ -213,7 +213,7 @@ fn resolveUseNode(
         const root_id: NodeId = if (work.len > 0 and std.mem.eql(u8, work[0], "super")) blk: {
             work = work[1..];
             break :blk resolveParentFile(&graph_index.files, importer_path) orelse {
-                log.trace(io, "import map: glob parent not found", &.{});
+                log.trace("import map: glob parent not found", &.{});
                 return;
             };
         } else if (work.len > 0) blk: {
@@ -222,18 +222,18 @@ fn resolveUseNode(
             break :blk ctx.findImportTarget(module_name) orelse
                 graph_index.files.findByName(module_name) orelse
                 resolveModuleByConvention(&graph_index.files, module_name) orelse {
-                log.trace(io, "import map: glob module not found", &.{
+                log.trace("import map: glob module not found", &.{
                     Field.string("module", module_name),
                 });
                 return;
             };
         } else {
-            log.trace(io, "import map: skipping bare glob import", &.{});
+            log.trace("import map: skipping bare glob import", &.{});
             return;
         };
 
         const target = walkScopePath(g, &graph_index.scope, root_id, work) orelse {
-            log.trace(io, "import map: glob inner scope not found", &.{});
+            log.trace("import map: glob inner scope not found", &.{});
             return;
         };
         try ctx.glob_targets.append(allocator, .{ .target = target, .is_public = is_public });
@@ -299,7 +299,7 @@ fn resolveAndAddEntry(
         if (work.len == 0) return;
 
         const parent_id = resolveParentFile(file_index, importer_path) orelse {
-            log.trace(io, "use super: parent file not found", &.{});
+            log.trace("use super: parent file not found", &.{});
             return;
         };
 
@@ -310,7 +310,7 @@ fn resolveAndAddEntry(
         }
         entry.chain_len = chain_len;
         try ctx.imports.append(allocator, entry);
-        log.trace(io, "import map: use super resolved", &.{
+        log.trace("import map: use super resolved", &.{
             Field.string("binding", binding_name),
         });
         return;
@@ -322,7 +322,7 @@ fn resolveAndAddEntry(
     const target_file_id = ctx.findImportTarget(module_name) orelse
         file_index.findByName(module_name) orelse
         resolveModuleByConvention(file_index, module_name) orelse {
-        log.trace(io, "use: module not found", &.{
+        log.trace("use: module not found", &.{
             Field.string("module", module_name),
         });
         return;
@@ -340,7 +340,7 @@ fn resolveAndAddEntry(
         }
         entry.chain_len = copy_len;
         try ctx.imports.append(allocator, entry);
-        log.trace(io, "import map: use resolved via re-export", &.{
+        log.trace("import map: use resolved via re-export", &.{
             Field.string("binding", binding_name),
         });
     } else {
@@ -352,7 +352,7 @@ fn resolveAndAddEntry(
         }
         entry.chain_len = chain_len;
         try ctx.imports.append(allocator, entry);
-        log.trace(io, "import map: use resolved", &.{
+        log.trace("import map: use resolved", &.{
             Field.string("binding", binding_name),
         });
     }
@@ -442,7 +442,6 @@ fn resolveModuleByConvention(file_index: *const FileIndex, module_name: []const 
 /// including brace groups, aliases, and nested groups.
 pub fn buildExportEdges(
     allocator: std.mem.Allocator,
-    io: std.Io,
     g: *Graph,
     ctx: *const EdgeContext,
     graph_index: *const GraphIndex,
@@ -462,7 +461,7 @@ pub fn buildExportEdges(
             .target_id = target,
             .edge_type = .exports,
         });
-        log.trace(io, "export edge emitted", &.{Field.string("binding", entry.name)});
+        log.trace("export edge emitted", &.{Field.string("binding", entry.name)});
     }
 }
 
@@ -480,7 +479,7 @@ fn resolveReExport(
     depth: usize,
 ) ?ReExportResult {
     if (depth >= max_reexport_depth) {
-        log.warn(io, "re-export chain exceeded max depth", &.{
+        log.warn("re-export chain exceeded max depth", &.{
             Field.string("symbol", symbol_name),
             Field.uint("depth", depth),
         });
@@ -800,7 +799,6 @@ fn findImportInFile(g: *const Graph, file_id: NodeId, import_name: []const u8, g
 /// full chain, walks it in the target file to locate the called function, then
 /// resolves that function's return type to find the file containing the result type.
 pub fn resolveVarTargetThroughReturnType(
-    io: std.Io,
     g: *const Graph,
     source: []const u8,
     let_node: ts.Node,
@@ -841,7 +839,7 @@ pub fn resolveVarTargetThroughReturnType(
     }
 
     if (chain_len == 0) {
-        log.trace(io, "var target: chain extraction failed", &.{});
+        log.trace("var target: chain extraction failed", &.{});
         return null;
     }
 

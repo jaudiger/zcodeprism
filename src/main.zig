@@ -286,7 +286,7 @@ fn runIndex(allocator: std.mem.Allocator, io: std.Io, stdout: *std.Io.Writer, st
         2 => .debug,
         else => .trace,
     };
-    var text_logger = logging.TextStderrLogger.init(log_level);
+    var text_logger = logging.TextStderrLogger.init(io, log_level);
     const logger = text_logger.logger();
 
     var graph = Graph.init(project_root);
@@ -595,7 +595,7 @@ fn runServe(allocator: std.mem.Allocator, io: std.Io, stderr: *std.Io.Writer, wo
         2 => .debug,
         else => .trace,
     };
-    var text_logger = logging.TextStderrLogger.init(log_level);
+    var text_logger = logging.TextStderrLogger.init(io, log_level);
     const logger = text_logger.logger();
 
     // Load config for exclude paths.

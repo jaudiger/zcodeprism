@@ -158,7 +158,7 @@ pub fn dispatchWorklist(
                         result.definition_successes += 1;
                         result.worklist_resolved += 1;
                         const target_name = if (graph.getNode(target_id)) |n| n.name else "?";
-                        logger.debug(io, "promoted call edge via definition", &.{
+                        logger.debug("promoted call edge via definition", &.{
                             Field.string("hint", entry.hint_name orelse "?"),
                             Field.string("target", target_name),
                         });
@@ -194,7 +194,7 @@ pub fn dispatchWorklist(
                 if (src_idx >= graph.nodes.items.len) continue;
                 result.hover_queries += 1;
                 const hover = (client.textDocumentHover(allocator, io, uri, entry.line, entry.col) catch {
-                    logger.debug(io, "hover query failed", &.{Field.string("hint", entry.hint_name orelse "?")});
+                    logger.debug("hover query failed", &.{Field.string("hint", entry.hint_name orelse "?")});
                     continue;
                 }) orelse continue;
                 defer protocol.freeHover(allocator, hover);
@@ -294,7 +294,7 @@ pub fn runDeadCodeReferencesPass(
         }
         if (resolved_any) {
             result.reference_successes += 1;
-            logger.debug(io, "confirmed live node via references", &.{
+            logger.debug("confirmed live node via references", &.{
                 Field.string("name", node.name),
             });
         }
@@ -333,7 +333,7 @@ pub fn enrichPhantoms(
             entry.line,
             entry.col,
         ) catch {
-            logger.debug(io, "phantom hover failed", &.{
+            logger.debug("phantom hover failed", &.{
                 Field.string("hint", entry.hint_name orelse "?"),
             });
             result.phantoms_remaining += 1;
@@ -369,7 +369,7 @@ pub fn enrichPhantoms(
         if (enriched) {
             result.phantoms_enriched += 1;
             result.hover_successes += 1;
-            logger.debug(io, "enriched phantom", &.{
+            logger.debug("enriched phantom", &.{
                 Field.string("hint", entry.hint_name orelse "?"),
             });
         } else {

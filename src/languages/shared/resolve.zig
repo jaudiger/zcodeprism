@@ -84,7 +84,7 @@ pub fn resolveQualifiedCall(
         }
 
         const resolved_id = matched_id orelse {
-            rctx.log.trace(rctx.io, "qualified call: segment not found", &.{Field.string("segment", segment)});
+            rctx.log.trace("qualified call: segment not found", &.{Field.string("segment", segment)});
             return count;
         };
 
@@ -104,7 +104,7 @@ pub fn resolveQualifiedCall(
                 current_scope_id = return_type_id;
                 continue;
             }
-            rctx.log.trace(rctx.io, "qualified call: return type unresolvable", &.{});
+            rctx.log.trace("qualified call: return type unresolvable", &.{});
             return count;
         } else {
             const is_type = resolved_node.kind.isTypeContainer();

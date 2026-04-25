@@ -34,7 +34,6 @@ pub const EnrichmentOptions = struct {
 /// Idempotent. Call after all nodes exist, before freeze().
 pub fn enrichPreFreeze(
     allocator: std.mem.Allocator,
-    io: std.Io,
     graph: *Graph,
     file_sources: []const FileSource,
     options: EnrichmentOptions,
@@ -45,14 +44,13 @@ pub fn enrichPreFreeze(
     for (file_sources) |fs| {
         source_metrics.computeAllSourceMetrics(graph, fs.source, fs.node_idx, fs.scope_end);
     }
-    log.debug(io, "source metrics computed", &.{Field.uint("files", file_sources.len)});
+    log.debug("source metrics computed", &.{Field.uint("files", file_sources.len)});
 }
 
 /// Post-freeze pass: fan_in, fan_out, and error set propagation.
 /// Idempotent.
 pub fn enrichPostFreeze(
     allocator: std.mem.Allocator,
-    io: std.Io,
     graph: *Graph,
     options: EnrichmentOptions,
 ) !void {
@@ -60,9 +58,9 @@ pub fn enrichPostFreeze(
 
     fan_metrics.computeFanOut(graph);
     fan_metrics.computeFanIn(graph);
-    log.debug(io, "fan metrics computed", &.{});
+    log.debug("fan metrics computed", &.{});
 
-    try error_sets.propagateErrorSets(allocator, io, graph, log);
+    try error_sets.propagateErrorSets(allocator, graph, log);
 }
 
 test {

@@ -55,7 +55,7 @@ pub fn enrich(
     };
 
     const conn = pool.acquire(allocator, io, language_support_val.language, &lsp_config, root, log) catch {
-        log.warn(io, "LSP: failed to acquire connection", &.{Field.string("server", lsp_config.server_name)});
+        log.warn("LSP: failed to acquire connection", &.{Field.string("server", lsp_config.server_name)});
         return .{};
     };
     defer pool.release(io, language_support_val.language);
@@ -65,7 +65,7 @@ pub fn enrich(
         conn.openAllFiles(allocator, io, graph, lang_id, root, log);
 
         const warmup = conn.client.drainNotifications(allocator, io, options.warmup_timeout_ms, log);
-        log.debug(io, "LSP warmup", &.{
+        log.debug("LSP warmup", &.{
             Field.uint("notifications", @as(u64, warmup.notifications_drained)),
             Field.uint("ms", warmup.elapsed_ms),
             Field.boolean("ready", warmup.ready_signal),
@@ -76,7 +76,7 @@ pub fn enrich(
     var result = try enrich_fn(allocator, io, graph, &conn.client, wl, log);
     result.warmup_ms = warmup_elapsed;
 
-    log.info(io, "LSP enrichment complete", &.{
+    log.info("LSP enrichment complete", &.{
         Field.uint("worklist_resolved", @as(u64, result.worklist_resolved)),
         Field.uint("worklist_total", @as(u64, result.worklist_total)),
         Field.uint("phantoms_remaining", @as(u64, result.phantoms_remaining)),
@@ -85,7 +85,7 @@ pub fn enrich(
         Field.uint("errors_inferred", @as(u64, result.errors_inferred)),
         Field.uint("phantoms_enriched", @as(u64, result.phantoms_enriched)),
     });
-    log.debug(io, "LSP enrichment queries", &.{
+    log.debug("LSP enrichment queries", &.{
         Field.uint("definition_queries", @as(u64, result.definition_queries)),
         Field.uint("definition_successes", @as(u64, result.definition_successes)),
         Field.uint("type_definition_queries", @as(u64, result.type_definition_queries)),
@@ -98,13 +98,13 @@ pub fn enrich(
 
     // Re-freeze to rebuild adjacency with any new edges.
     _ = graph.freeze(allocator) catch {
-        log.warn(io, "LSP: re-freeze failed", &.{});
+        log.warn("LSP: re-freeze failed", &.{});
         return result;
     };
 
     // Re-run post-freeze enrichment.
-    enrichment.enrichPostFreeze(allocator, io, graph, .{ .logger = log }) catch {
-        log.warn(io, "LSP: post-freeze enrichment failed", &.{});
+    enrichment.enrichPostFreeze(allocator, graph, .{ .logger = log }) catch {
+        log.warn("LSP: post-freeze enrichment failed", &.{});
     };
 
     return result;

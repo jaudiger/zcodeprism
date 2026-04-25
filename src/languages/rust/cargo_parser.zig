@@ -68,7 +68,7 @@ pub const CargoInfo = struct {
 
 /// Parse a Cargo.toml content string and extract package, dependency, target,
 /// and workspace information.
-pub fn parseCargoToml(allocator: Allocator, io: std.Io, content: []const u8, log: Logger) !CargoInfo {
+pub fn parseCargoToml(allocator: Allocator, content: []const u8, log: Logger) !CargoInfo {
     var result: CargoInfo = .{};
     errdefer result.deinit(allocator);
 
@@ -219,7 +219,7 @@ pub fn parseCargoToml(allocator: Allocator, io: std.Io, content: []const u8, log
         result.lib_target = .{ .name = lib_name, .path = lib_path };
     }
 
-    log.debug(io, "parsed Cargo.toml", &.{
+    log.debug("parsed Cargo.toml", &.{
         logging.Field.string("package", result.package_name orelse "(none)"),
         logging.Field.uint("deps", if (result.dependencies) |d| d.len else 0),
     });
@@ -334,7 +334,7 @@ pub fn parseCargoManifest(allocator: Allocator, io: std.Io, project_root: []cons
     const content = reader.interface.allocRemaining(allocator, .limited(max_manifest_bytes)) catch return .{};
     defer allocator.free(content);
 
-    return parseCargoToml(allocator, io, content, log);
+    return parseCargoToml(allocator, content, log);
 }
 
 test "parseCargoToml extracts package and dependencies" {
@@ -354,7 +354,7 @@ test "parseCargoToml extracts package and dependencies" {
     ;
 
     // Act
-    const info = try parseCargoToml(allocator, std.testing.io, content, Logger.noop);
+    const info = try parseCargoToml(allocator, content, Logger.noop);
     defer info.deinit(allocator);
 
     // Assert
@@ -374,7 +374,7 @@ test "parseCargoToml handles empty and missing sections" {
     const allocator = std.testing.allocator;
 
     // Act: empty content
-    const empty_info = try parseCargoToml(allocator, std.testing.io, "", Logger.noop);
+    const empty_info = try parseCargoToml(allocator, "", Logger.noop);
     defer empty_info.deinit(allocator);
 
     // Assert: all fields null
@@ -387,7 +387,7 @@ test "parseCargoToml handles empty and missing sections" {
         \\name = "bare"
         \\version = "1.0.0"
     ;
-    const pkg_info = try parseCargoToml(allocator, std.testing.io, pkg_only, Logger.noop);
+    const pkg_info = try parseCargoToml(allocator, pkg_only, Logger.noop);
     defer pkg_info.deinit(allocator);
 
     // Assert

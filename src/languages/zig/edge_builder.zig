@@ -240,7 +240,7 @@ fn buildTypeEnvFromBlock(
 
             // Import-qualified RHS -> cross_file binding.
             if (cf.findImportQualifiedRoot(source, child, ctx, k)) |target_file_id| {
-                const resolved = cf.resolveVarTargetThroughReturnType(io, g, source, child, ctx, k, graph_index, Logger.noop) orelse target_file_id;
+                const resolved = cf.resolveVarTargetThroughReturnType(g, source, child, ctx, k, graph_index, Logger.noop) orelse target_file_id;
                 try type_env.bindCrossFile(allocator, var_name, resolved);
                 continue;
             }
@@ -414,7 +414,7 @@ fn walkForEdgesInner(allocator: std.mem.Allocator, io: std.Io, g: *Graph, source
                 try processDeclarationEdges(allocator, io, g, source, ts_node, fn_id, ctx, k, graph_index, phantom_mgr, field_types, wl, log);
                 try processParameterTypeEdges(allocator, g, source, ts_node, fn_id, ctx, k, graph_index, phantom_mgr, field_types, wl, log);
             } else {
-                log.trace(io, "function not found in graph", &.{
+                log.trace("function not found in graph", &.{
                     Field.string("name", name),
                     Field.uint("line", decl_line),
                 });
@@ -425,7 +425,7 @@ fn walkForEdgesInner(allocator: std.mem.Allocator, io: std.Io, g: *Graph, source
         if (findTestByName(g, test_name, ctx.scope_start, ctx.scope_end)) |test_id| {
             try processDeclarationEdges(allocator, io, g, source, ts_node, test_id, ctx, k, graph_index, phantom_mgr, field_types, wl, log);
         } else {
-            log.trace(io, "test not found in graph", &.{Field.string("name", test_name)});
+            log.trace("test not found in graph", &.{Field.string("name", test_name)});
         }
     } else if (kid == k.struct_declaration or kid == k.enum_declaration or kid == k.union_declaration) {
         const parent = ts_node.parent();
@@ -438,7 +438,7 @@ fn walkForEdgesInner(allocator: std.mem.Allocator, io: std.Io, g: *Graph, source
             if (findFunctionByNameAndLine(g, n, decl_line, ctx.scope_start, ctx.scope_end)) |container_id| {
                 try processContainerFieldEdges(allocator, g, source, ts_node, container_id, ctx, k, graph_index, phantom_mgr, field_types, wl, log);
             } else {
-                log.trace(io, "container not found in graph", &.{
+                log.trace("container not found in graph", &.{
                     Field.string("name", n),
                     Field.uint("line", decl_line),
                 });
@@ -486,7 +486,7 @@ fn scanNodeForTypeRefs(allocator: std.mem.Allocator, sctx: *const ScanContext, n
 /// at nested function or test declaration boundaries.
 fn scanBodyForEdges(allocator: std.mem.Allocator, sctx: *const ScanContext, ts_node: ts.Node, depth: u32) !void {
     if (depth >= cf.max_ast_scan_depth) {
-        sctx.log.trace(sctx.io, "scan depth cap reached", &.{Field.uint("depth", depth)});
+        sctx.log.trace("scan depth cap reached", &.{Field.uint("depth", depth)});
         return;
     }
     const kid = ts_node.kindId();
@@ -552,7 +552,7 @@ fn handleCall(allocator: std.mem.Allocator, sctx: *const ScanContext, call_node:
                     });
                 }
             } else {
-                sctx.log.trace(sctx.io, "bare call unresolved", &.{Field.string("callee", callee_name)});
+                sctx.log.trace("bare call unresolved", &.{Field.string("callee", callee_name)});
                 const pos = call_node.startPoint();
                 try sctx.wl.append(allocator, .{
                     .source_node_id = sctx.caller_id,
@@ -626,7 +626,7 @@ fn handleCall(allocator: std.mem.Allocator, sctx: *const ScanContext, call_node:
                             });
                         }
                     } else {
-                        sctx.log.trace(sctx.io, "qualified call unresolved", &.{
+                        sctx.log.trace("qualified call unresolved", &.{
                             Field.string("root", root_name),
                             Field.string("leaf", leaf_name),
                         });
