@@ -2,6 +2,7 @@
     .name = .zcodeprism,
     .version = "0.1.0",
     .fingerprint = 0x1f7cbe99c0dea17,
+    .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .@"tree-sitter" = .{
             .url = "git+https://github.com/tree-sitter/zig-tree-sitter#0cf58172e61f6fdd16f681cde42b4acb531a23db",
