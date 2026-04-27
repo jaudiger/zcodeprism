@@ -1,4 +1,4 @@
-//! ZCodePrism -- a Zig 0.15 library that ingests a local codebase, builds a
+//! ZCodePrism -- a Zig library that ingests a local codebase, builds a
 //! semantic code graph, and exposes it for exploration by LLMs and humans.
 //!
 //! This root module re-exports every public sub-module so that downstream
