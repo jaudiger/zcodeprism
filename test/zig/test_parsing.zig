@@ -2033,7 +2033,7 @@ test "anonymous struct with type annotation creates accesses_field edge" {
     var g = Graph.init("/tmp/project");
     defer g.deinit(std.testing.allocator);
 
-    // Act: file_struct.zig has `var c: Self = .{ .value = v, .name = "anon" }; return c.value`
+    // Act: file_struct.zig has `const c: Self = .{ .value = v, .name = "anon" }; return c.value`
     try parseWithEdges(std.testing.allocator, fixtures.zig.file_struct, &g);
 
     var anon_init_id: ?NodeId = null;

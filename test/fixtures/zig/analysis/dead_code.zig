@@ -51,7 +51,7 @@ pub fn useCounter() u32 {
 test "local struct method called within test" {
     var c = Counter{ .value = 0, .limit = 5, .label = "test" };
     c = c.increment();
-    _ = c;
+    try std.testing.expect(c.value == 1);
 }
 
 const ItemData = struct {

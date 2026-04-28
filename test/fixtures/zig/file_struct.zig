@@ -24,7 +24,7 @@ pub fn isValid(self: Self) bool {
 
 /// Initialise via anonymous struct literal with explicit type annotation.
 pub fn anonymousInit(v: i32) i32 {
-    var c: Self = .{ .value = v, .name = "anon" };
+    const c: Self = .{ .value = v, .name = "anon" };
     return c.value;
 }
 
