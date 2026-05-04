@@ -141,13 +141,11 @@ pub fn indexDirectory(
         build_configs[lang_idx] = try parse_config_fn(allocator, io, project_root, log);
     }
 
-    // Transfer all paths and content to graph ownership in one batch.
-    // After this loop the graph is the sole owner; no separate cleanup
-    // defer is needed and no per-entry ownership flag is required.
+    // Transfer paths and content to graph ownership. owned_buffers capacity
+    // was reserved by ensureCapacity above; registration is infallible.
     for (file_entries.items) |fe| {
-        try graph.addOwnedBuffer(allocator, fe.rel_path);
-        errdefer allocator.free(fe.content);
-        try graph.addOwnedBuffer(allocator, fe.content);
+        graph.owned_buffers.appendAssumeCapacity(graph_mod.OwnedBuffer.fromSlice(u8, fe.rel_path));
+        graph.owned_buffers.appendAssumeCapacity(graph_mod.OwnedBuffer.fromSlice(u8, fe.content));
     }
 
     var dir_map = std.StringHashMapUnmanaged(NodeId){};

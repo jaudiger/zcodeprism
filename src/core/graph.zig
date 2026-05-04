@@ -119,11 +119,12 @@ pub const Graph = struct {
         if (stored.signature) |sig| {
             if (std.mem.indexOfAny(u8, sig, "\n\r") != null) {
                 const normalized = try collapseWhitespace(allocator, sig);
-                self.addOwnedBuffer(allocator, normalized) catch |err| {
-                    allocator.free(normalized);
-                    return err;
-                };
+                errdefer allocator.free(normalized);
+                try self.owned_buffers.ensureUnusedCapacity(allocator, 1);
                 stored.signature = normalized;
+                try self.nodes.append(allocator, stored);
+                self.owned_buffers.appendAssumeCapacity(OwnedBuffer.fromSlice(u8, normalized));
+                return id;
             }
         }
         try self.nodes.append(allocator, stored);
