@@ -170,6 +170,37 @@ pub const EnrichResult = struct {
         self.phantoms_remaining += other.phantoms_remaining;
         if (other.warmup_ms > self.warmup_ms) self.warmup_ms = other.warmup_ms;
     }
+
+    /// Write a human-readable enrichment summary to `writer`.
+    /// Writes nothing when all observable counters are zero.
+    pub fn format(self: EnrichResult, writer: *std.Io.Writer) !void {
+        const fields = .{
+            .{ self.edges_promoted, "edges promoted" },
+            .{ self.edges_added, "edges added" },
+            .{ self.errors_inferred, "errors inferred" },
+            .{ self.phantoms_enriched, "phantoms enriched" },
+        };
+
+        var has_any = false;
+        inline for (fields) |f| {
+            if (f[0] > 0) has_any = true;
+        }
+        if (!has_any) return;
+
+        try writer.writeAll("LSP enrichment:");
+        var first = true;
+        inline for (fields) |f| {
+            if (f[0] > 0) {
+                try writer.print("{s}{} {s}", .{
+                    if (first) @as([]const u8, " ") else @as([]const u8, ", "),
+                    f[0],
+                    f[1],
+                });
+                first = false;
+            }
+        }
+        try writer.writeAll("\n");
+    }
 };
 
 /// Language-specific callback that queries an LSP client and enriches

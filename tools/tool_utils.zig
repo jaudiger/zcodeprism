@@ -112,34 +112,5 @@ pub fn runLspEnrichment(
         result.accumulate(r);
     }
 
-    printEnrichSummary(stdout, result);
-}
-
-fn printEnrichSummary(stdout: *std.Io.Writer, result: zcodeprism.language_support.EnrichResult) void {
-    const fields = .{
-        .{ result.edges_promoted, "edges promoted" },
-        .{ result.edges_added, "edges added" },
-        .{ result.errors_inferred, "errors inferred" },
-        .{ result.phantoms_enriched, "phantoms enriched" },
-    };
-
-    var has_any = false;
-    inline for (fields) |f| {
-        if (f[0] > 0) has_any = true;
-    }
-    if (!has_any) return;
-
-    stdout.writeAll("LSP enrichment:") catch return;
-    var first = true;
-    inline for (fields) |f| {
-        if (f[0] > 0) {
-            stdout.print("{s}{} {s}", .{
-                if (first) @as([]const u8, " ") else @as([]const u8, ", "),
-                f[0],
-                f[1],
-            }) catch return;
-            first = false;
-        }
-    }
-    stdout.writeAll("\n") catch {};
+    result.format(stdout) catch {};
 }

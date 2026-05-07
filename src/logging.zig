@@ -131,10 +131,13 @@ pub const Logger = struct {
 /// Concrete logger backend that writes structured text lines to stderr.
 ///
 /// Output format: `YYYY-MM-DDTHH:MM:SSZ LEVEL [scope] message key=val ...`
-/// Uses a fixed 4096-byte stack buffer; messages exceeding that are truncated.
+/// Messages longer than 4096 bytes are truncated.
+/// Thread-safe: a per-instance mutex serializes concurrent log calls.
 pub const TextStderrLogger = struct {
     io: std.Io,
     min_level: Level,
+    buf: [4096]u8 = undefined,
+    mutex: std.Io.Mutex = .init,
 
     const vtable = Logger.VTable{
         .log = &logImpl,
@@ -157,14 +160,14 @@ pub const TextStderrLogger = struct {
     }
 
     fn logImpl(ptr: ?*anyopaque, level: Level, scope: []const u8, msg: []const u8, fields: []const Field) void {
-        const self: *const TextStderrLogger = @ptrCast(@alignCast(ptr.?));
-        const io = self.io;
-        var stderr_buf: [4096]u8 = undefined;
-        var stderr_writer = std.Io.File.stderr().writer(io, &stderr_buf);
+        const self: *TextStderrLogger = @ptrCast(@alignCast(ptr.?));
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        var stderr_writer = std.Io.File.stderr().writer(self.io, &self.buf);
         const w = &stderr_writer.interface;
 
         // Timestamp.
-        const ts = std.Io.Timestamp.now(io, .real);
+        const ts = std.Io.Timestamp.now(self.io, .real);
         const epoch: i64 = @intCast(@divTrunc(ts.nanoseconds, std.time.ns_per_s));
         const es = std.time.epoch.EpochSeconds{ .secs = @intCast(@max(0, epoch)) };
         const day = es.getEpochDay();

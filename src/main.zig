@@ -91,8 +91,11 @@ const CliArgs = struct {
     workspace: ?[]const u8 = null,
     include_test_nodes: bool = false,
     include_external_nodes: bool = false,
-    positional_args: [2]?[]const u8 = .{ null, null },
-    positional_count: usize = 0,
+    positionals: []const []const u8 = &.{},
+
+    fn deinit(self: CliArgs, allocator: std.mem.Allocator) void {
+        allocator.free(self.positionals);
+    }
 };
 
 fn requireArg(args: *std.process.Args.Iterator, flag: []const u8, stderr: *std.Io.Writer) []const u8 {
@@ -103,8 +106,9 @@ fn requireArg(args: *std.process.Args.Iterator, flag: []const u8, stderr: *std.I
     };
 }
 
-fn parseArgs(args_src: std.process.Args, stderr: *std.Io.Writer) CliArgs {
+fn parseArgs(allocator: std.mem.Allocator, args_src: std.process.Args, stderr: *std.Io.Writer) CliArgs {
     var cli = CliArgs{};
+    var positionals: std.ArrayList([]const u8) = .empty;
     var args = args_src.iterate();
     _ = args.next();
 
@@ -154,13 +158,21 @@ fn parseArgs(args_src: std.process.Args, stderr: *std.Io.Writer) CliArgs {
                     stderr.flush() catch {};
                     std.process.exit(2);
                 };
-            } else if (cli.positional_count < 2) {
-                cli.positional_args[cli.positional_count] = arg;
-                cli.positional_count += 1;
+            } else {
+                positionals.append(allocator, arg) catch {
+                    stderr.writeAll("out of memory\n") catch {};
+                    stderr.flush() catch {};
+                    std.process.exit(1);
+                };
             }
         }
     }
 
+    cli.positionals = positionals.toOwnedSlice(allocator) catch {
+        stderr.writeAll("out of memory\n") catch {};
+        stderr.flush() catch {};
+        std.process.exit(1);
+    };
     return cli;
 }
 
@@ -175,7 +187,8 @@ pub fn main(init: std.process.Init) void {
     var stderr_writer = std.Io.File.stderr().writer(io, &stderr_buffer);
     const stderr = &stderr_writer.interface;
 
-    const cli = parseArgs(init.minimal.args, stderr);
+    const cli = parseArgs(init.gpa, init.minimal.args, stderr);
+    defer cli.deinit(init.gpa);
 
     if (cli.project_root) |root| {
         std.process.setCurrentPath(io, root) catch {
@@ -204,7 +217,7 @@ pub fn main(init: std.process.Init) void {
         .index => runIndex(init.gpa, io, stdout, stderr, cli.verbosity),
         .@"export" => runExport(init.gpa, io, stdout, stderr, cli.export_format, cli.scope, cli.output, cli.snapshot, cli.include_test_nodes, cli.include_external_nodes),
         .snapshot => runSnapshot(init.gpa, io, stdout, stderr, cli.name),
-        .diff => runDiff(init.gpa, io, stdout, stderr, cli.positional_args[0], cli.positional_args[1]),
+        .diff => runDiff(init.gpa, io, stdout, stderr, cli.positionals),
         .serve => runServe(init.gpa, io, stderr, cli.workspace, cli.verbosity),
         .status => runStatus(init.gpa, io, stdout, stderr, cli.workspace),
     }
@@ -346,7 +359,7 @@ fn runIndex(allocator: std.mem.Allocator, io: std.Io, stdout: *std.Io.Writer, st
         graph.nodeCount(),
         graph.edgeCount(),
     }) catch {};
-    printEnrichSummary(stdout, lsp_result);
+    lsp_result.format(stdout) catch {};
     stdout.flush() catch {};
 }
 
@@ -511,17 +524,14 @@ fn runSnapshot(allocator: std.mem.Allocator, io: std.Io, stdout: *std.Io.Writer,
     stdout.flush() catch {};
 }
 
-fn runDiff(allocator: std.mem.Allocator, io: std.Io, stdout: *std.Io.Writer, stderr: *std.Io.Writer, tag_a_arg: ?[]const u8, tag_b_arg: ?[]const u8) void {
-    const tag_a = tag_a_arg orelse {
+fn runDiff(allocator: std.mem.Allocator, io: std.Io, stdout: *std.Io.Writer, stderr: *std.Io.Writer, positionals: []const []const u8) void {
+    if (positionals.len != 2) {
         stderr.writeAll("diff requires two snapshot tags: zcodeprism diff <snap-a> <snap-b>\n") catch {};
         stderr.flush() catch {};
         std.process.exit(2);
-    };
-    const tag_b = tag_b_arg orelse {
-        stderr.writeAll("diff requires two snapshot tags: zcodeprism diff <snap-a> <snap-b>\n") catch {};
-        stderr.flush() catch {};
-        std.process.exit(2);
-    };
+    }
+    const tag_a = positionals[0];
+    const tag_b = positionals[1];
 
     var graph_a = snapshot.loadSnapshotGraph(allocator, io, tag_a, ".zcodeprism") catch |err| {
         switch (err) {
@@ -990,31 +1000,3 @@ fn runStatus(allocator: std.mem.Allocator, io: std.Io, stdout: *std.Io.Writer, s
     stdout.flush() catch {};
 }
 
-fn printEnrichSummary(stdout: *std.Io.Writer, result: EnrichResult) void {
-    const fields = .{
-        .{ result.edges_promoted, "edges promoted" },
-        .{ result.edges_added, "edges added" },
-        .{ result.errors_inferred, "errors inferred" },
-        .{ result.phantoms_enriched, "phantoms enriched" },
-    };
-
-    var has_any = false;
-    inline for (fields) |f| {
-        if (f[0] > 0) has_any = true;
-    }
-    if (!has_any) return;
-
-    stdout.writeAll("LSP enrichment:") catch return;
-    var first = true;
-    inline for (fields) |f| {
-        if (f[0] > 0) {
-            stdout.print("{s}{} {s}", .{
-                if (first) @as([]const u8, " ") else @as([]const u8, ", "),
-                f[0],
-                f[1],
-            }) catch return;
-            first = false;
-        }
-    }
-    stdout.writeAll("\n") catch {};
-}
