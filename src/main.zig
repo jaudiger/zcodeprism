@@ -436,24 +436,21 @@ fn runExport(
         },
         .jsonl_fmt => {
             if (output_arg) |path| {
-                var af = std.Io.Dir.cwd().createFileAtomic(io, path, .{ .replace = true }) catch |err| {
+                var write_buf: [8192]u8 = undefined;
+                var aw = storage.atomic_file.AtomicWriter.init(io, std.Io.Dir.cwd(), path, &write_buf) catch |err| {
                     stderr.print("cannot create output file: {s}\n", .{@errorName(err)}) catch {};
                     stderr.flush() catch {};
                     std.process.exit(1);
                 };
-                defer af.deinit(io);
-                var write_buf: [8192]u8 = undefined;
-                var af_writer = af.file.writer(io, &write_buf);
+                defer aw.deinit(io);
                 const export_fg = FrozenGraph{ .graph = &graph };
-                storage.jsonl.exportJsonl(allocator, export_fg, &af_writer.interface) catch |err| {
+                storage.jsonl.exportJsonl(allocator, export_fg, aw.writer()) catch |err| {
                     stderr.print("export failed: {s}\n", .{@errorName(err)}) catch {};
                     stderr.flush() catch {};
                     std.process.exit(1);
                 };
-                af_writer.interface.flush() catch {};
-                af.file.sync(io) catch {};
-                af.replace(io) catch |err| {
-                    stderr.print("rename failed: {s}\n", .{@errorName(err)}) catch {};
+                aw.commit(io) catch |err| {
+                    stderr.print("write failed: {s}\n", .{@errorName(err)}) catch {};
                     stderr.flush() catch {};
                     std.process.exit(1);
                 };
@@ -474,20 +471,8 @@ fn runExport(
 
 fn writeOutput(io: std.Io, stdout: *std.Io.Writer, stderr: *std.Io.Writer, output_arg: ?[]const u8, data: []const u8) void {
     if (output_arg) |path| {
-        var af = std.Io.Dir.cwd().createFileAtomic(io, path, .{ .replace = true }) catch |err| {
-            stderr.print("cannot create output file: {s}\n", .{@errorName(err)}) catch {};
-            stderr.flush() catch {};
-            std.process.exit(1);
-        };
-        defer af.deinit(io);
-        af.file.writeStreamingAll(io, data) catch |err| {
+        storage.atomic_file.writeAtomic(io, std.Io.Dir.cwd(), path, data) catch |err| {
             stderr.print("write failed: {s}\n", .{@errorName(err)}) catch {};
-            stderr.flush() catch {};
-            std.process.exit(1);
-        };
-        af.file.sync(io) catch {};
-        af.replace(io) catch |err| {
-            stderr.print("rename failed: {s}\n", .{@errorName(err)}) catch {};
             stderr.flush() catch {};
             std.process.exit(1);
         };
@@ -854,12 +839,11 @@ fn readLine(reader: *std.Io.Reader, line_buf: *std.ArrayList(u8), allocator: std
 }
 
 fn saveJsonl(allocator: std.mem.Allocator, io: std.Io, fg: FrozenGraph) !void {
-    const file = try std.Io.Dir.cwd().createFile(io, ".zcodeprism/graph.jsonl", .{});
-    defer file.close(io);
-    var buf: [8192]u8 = undefined;
-    var writer = file.writer(io, &buf);
-    try storage.jsonl.exportJsonl(allocator, fg, &writer.interface);
-    try writer.interface.flush();
+    var write_buf: [8192]u8 = undefined;
+    var aw = try storage.atomic_file.AtomicWriter.init(io, std.Io.Dir.cwd(), ".zcodeprism/graph.jsonl", &write_buf);
+    defer aw.deinit(io);
+    try storage.jsonl.exportJsonl(allocator, fg, aw.writer());
+    try aw.commit(io);
 }
 
 /// Build a unified graph from a workspace config file.

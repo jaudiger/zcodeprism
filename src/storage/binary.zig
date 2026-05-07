@@ -1,4 +1,5 @@
 const std = @import("std");
+const atomic_file = @import("atomic_file.zig");
 const graph_mod = @import("../core/graph.zig");
 const node_mod = @import("../core/node.zig");
 const edge_mod = @import("../core/edge.zig");
@@ -94,23 +95,27 @@ const NodeRefs = struct {
     visibility: StringRef,
 };
 
-const StringTableBuilder = struct {
-    bytes: std.ArrayList(u8) = .empty,
-    index: std.StringHashMapUnmanaged(StringRef) = .{},
+const StringTable = struct {
+    bytes: std.ArrayList(u8),
+    index: std.array_hash_map.String(StringRef),
 
-    fn deinit(self: *StringTableBuilder, allocator: std.mem.Allocator) void {
+    fn init(allocator: std.mem.Allocator, capacity: usize) !StringTable {
+        var bytes: std.ArrayList(u8) = .empty;
+        try bytes.ensureTotalCapacity(allocator, capacity);
+        return .{
+            .bytes = bytes,
+            .index = .empty,
+        };
+    }
+
+    fn deinit(self: *StringTable, allocator: std.mem.Allocator) void {
         self.index.deinit(allocator);
         self.bytes.deinit(allocator);
     }
 
-    /// Pre-allocate bytes capacity so that intern() never reallocates the byte
-    /// buffer, keeping StringHashMap keys (slices into bytes.items) stable.
-    fn ensureBytesCapacity(self: *StringTableBuilder, allocator: std.mem.Allocator, capacity: usize) !void {
-        try self.bytes.ensureTotalCapacity(allocator, capacity);
-    }
-
-    fn intern(self: *StringTableBuilder, allocator: std.mem.Allocator, str: []const u8) !StringRef {
+    fn intern(self: *StringTable, allocator: std.mem.Allocator, str: []const u8) !StringRef {
         if (self.index.get(str)) |cached| return cached;
+        std.debug.assert(self.bytes.items.len + str.len <= self.bytes.capacity);
         const offset: u32 = @intCast(self.bytes.items.len);
         self.bytes.appendSliceAssumeCapacity(str);
         const ref = StringRef{ .offset = offset, .len = @intCast(str.len) };
@@ -118,7 +123,7 @@ const StringTableBuilder = struct {
         return ref;
     }
 
-    fn internOptional(self: *StringTableBuilder, allocator: std.mem.Allocator, str: ?[]const u8) !StringRef {
+    fn internOptional(self: *StringTable, allocator: std.mem.Allocator, str: ?[]const u8) !StringRef {
         if (str) |s| return self.intern(allocator, s);
         return .{ .offset = 0, .len = 0 };
     }
@@ -214,25 +219,53 @@ fn validateStringRef(st_data: []const u8, ref: StringRef) error{InvalidFormat}!v
     if (end > st_data.len) return error.InvalidFormat;
 }
 
+const Layout = struct {
+    node_count: usize,
+    edge_count: usize,
+    string_table_size: usize,
+    node_table_offset: usize,
+    edge_table_offset: usize,
+    metrics_table_offset: usize,
+    string_table_offset: usize,
+    total_size: usize,
+
+    fn compute(node_count: usize, edge_count: usize, string_table_size: usize) Layout {
+        const nto = HEADER_SIZE;
+        const eto = alignTo8(nto + node_count * NODE_RECORD_SIZE);
+        const mto = alignTo8(eto + edge_count * EDGE_RECORD_SIZE);
+        const sto = alignTo8(mto + node_count * METRICS_RECORD_SIZE);
+        return .{
+            .node_count = node_count,
+            .edge_count = edge_count,
+            .string_table_size = string_table_size,
+            .node_table_offset = nto,
+            .edge_table_offset = eto,
+            .metrics_table_offset = mto,
+            .string_table_offset = sto,
+            .total_size = sto + string_table_size,
+        };
+    }
+
+    fn verify(self: Layout, buf_len: usize) void {
+        std.debug.assert(self.total_size == buf_len);
+        std.debug.assert(self.node_table_offset + self.node_count * NODE_RECORD_SIZE <= self.edge_table_offset);
+        std.debug.assert(self.edge_table_offset + self.edge_count * EDGE_RECORD_SIZE <= self.metrics_table_offset);
+        std.debug.assert(self.metrics_table_offset + self.node_count * METRICS_RECORD_SIZE <= self.string_table_offset);
+        std.debug.assert(self.string_table_offset + self.string_table_size == self.total_size);
+    }
+};
+
 /// Serialize a graph to the binary storage format and write it to `path`.
-///
-/// Uses the MAF pattern: measures string table sizes, allocates a single
-/// output buffer, fills all table sections, then writes the file atomically.
 /// The caller owns `g`; this function does not modify it.
 pub fn save(allocator: std.mem.Allocator, io: std.Io, fg: FrozenGraph, path: []const u8) !void {
     const g = fg.graph;
-    // Measure: build string table, compute refs per node
-    var stb = StringTableBuilder{};
-    defer stb.deinit(allocator);
-
     const nc = g.nodeCount();
     const ec = g.edgeCount();
 
     const node_refs = try allocator.alloc(NodeRefs, if (nc > 0) nc else 1);
     defer allocator.free(node_refs);
 
-    // Pre-compute upper bound on string table bytes for stable dedup pointers.
-    // Includes enum tag names (interned, so the overhead is small).
+    // Measure: upper bound on string table bytes for stable dedup pointers.
     var total_string_bytes: usize = 0;
     for (g.nodes.items) |n| {
         total_string_bytes += n.name.len;
@@ -255,10 +288,12 @@ pub fn save(allocator: std.mem.Allocator, io: std.Io, fg: FrozenGraph, path: []c
         total_string_bytes += @tagName(e.source).len;
     }
     total_string_bytes += g.project_root.len;
-    try stb.ensureBytesCapacity(allocator, total_string_bytes);
+
+    var st = try StringTable.init(allocator, total_string_bytes);
+    defer st.deinit(allocator);
 
     const project_root_ref = if (g.project_root.len > 0)
-        try stb.intern(allocator, g.project_root)
+        try st.intern(allocator, g.project_root)
     else
         StringRef{ .offset = 0, .len = 0 };
 
@@ -268,69 +303,59 @@ pub fn save(allocator: std.mem.Allocator, io: std.Io, fg: FrozenGraph, path: []c
             else => null,
         };
         node_refs[i] = .{
-            .name = try stb.intern(allocator, n.name),
-            .file_path = try stb.internOptional(allocator, n.file_path),
-            .signature = try stb.internOptional(allocator, n.signature),
-            .doc = try stb.internOptional(allocator, n.doc),
-            .ext_version = try stb.internOptional(allocator, ext_version),
+            .name = try st.intern(allocator, n.name),
+            .file_path = try st.internOptional(allocator, n.file_path),
+            .signature = try st.internOptional(allocator, n.signature),
+            .doc = try st.internOptional(allocator, n.doc),
+            .ext_version = try st.internOptional(allocator, ext_version),
             .lang_meta = blk: {
                 var meta_buf: [256]u8 = undefined;
                 const meta_len = n.lang_meta.encodeBinary(&meta_buf);
-                break :blk if (meta_len > 0) try stb.intern(allocator, meta_buf[0..meta_len]) else .{ .offset = 0, .len = 0 };
+                break :blk if (meta_len > 0) try st.intern(allocator, meta_buf[0..meta_len]) else .{ .offset = 0, .len = 0 };
             },
-            .kind = try stb.intern(allocator, @tagName(n.kind)),
-            .language = if (n.language) |l| try stb.intern(allocator, @tagName(l)) else .{ .offset = 0, .len = 0 },
-            .visibility = try stb.intern(allocator, @tagName(n.visibility)),
+            .kind = try st.intern(allocator, @tagName(n.kind)),
+            .language = if (n.language) |l| try st.intern(allocator, @tagName(l)) else .{ .offset = 0, .len = 0 },
+            .visibility = try st.intern(allocator, @tagName(n.visibility)),
         };
     }
 
-    // Intern edge enum names into the string table before computing offsets.
     const edge_refs = try allocator.alloc([2]StringRef, if (ec > 0) ec else 1);
     defer allocator.free(edge_refs);
     for (g.edges.items, 0..) |e, i| {
         edge_refs[i] = .{
-            try stb.intern(allocator, @tagName(e.edge_type)),
-            try stb.intern(allocator, @tagName(e.source)),
+            try st.intern(allocator, @tagName(e.edge_type)),
+            try st.intern(allocator, @tagName(e.source)),
         };
     }
 
-    // Compute table offsets with 8-byte alignment
-    const node_table_offset = HEADER_SIZE;
-    const node_table_size = nc * NODE_RECORD_SIZE;
-    const edge_table_offset = alignTo8(node_table_offset + node_table_size);
-    const edge_table_size = ec * EDGE_RECORD_SIZE;
-    const metrics_table_offset = alignTo8(edge_table_offset + edge_table_size);
-    const metrics_table_size = nc * METRICS_RECORD_SIZE;
-    const string_table_offset = alignTo8(metrics_table_offset + metrics_table_size);
-    const string_table_size = stb.bytes.items.len;
-    const total_size = string_table_offset + string_table_size;
+    const layout = Layout.compute(nc, ec, st.bytes.items.len);
 
     // Allocate
-    const buf = try allocator.alloc(u8, if (total_size > 0) total_size else HEADER_SIZE);
+    const buf = try allocator.alloc(u8, layout.total_size);
     defer allocator.free(buf);
-    // Zero only table regions (header is fully written, string table is fully copied)
-    if (string_table_offset > node_table_offset) {
-        @memset(buf[node_table_offset..string_table_offset], 0);
-    }
 
-    // Fill
+    // Zero the alignment-padding gaps between table sections.
+    @memset(buf[layout.node_table_offset + nc * NODE_RECORD_SIZE .. layout.edge_table_offset], 0);
+    @memset(buf[layout.edge_table_offset + ec * EDGE_RECORD_SIZE .. layout.metrics_table_offset], 0);
+    @memset(buf[layout.metrics_table_offset + nc * METRICS_RECORD_SIZE .. layout.string_table_offset], 0);
 
-    // Header
+    // Fill: header
     writeHeader(buf, .{
         .node_count = @intCast(nc),
         .edge_count = @intCast(ec),
-        .node_table_offset = @intCast(node_table_offset),
-        .edge_table_offset = @intCast(edge_table_offset),
-        .metrics_table_offset = @intCast(metrics_table_offset),
-        .string_table_offset = @intCast(string_table_offset),
-        .string_table_size = @intCast(string_table_size),
+        .node_table_offset = @intCast(layout.node_table_offset),
+        .edge_table_offset = @intCast(layout.edge_table_offset),
+        .metrics_table_offset = @intCast(layout.metrics_table_offset),
+        .string_table_offset = @intCast(layout.string_table_offset),
+        .string_table_size = @intCast(layout.string_table_size),
         .project_root = project_root_ref,
     });
 
-    // Node records
+    // Fill: node records
     for (g.nodes.items, 0..) |n, i| {
-        const base = node_table_offset + i * NODE_RECORD_SIZE;
+        const base = layout.node_table_offset + i * NODE_RECORD_SIZE;
         const refs = node_refs[i];
+        @memset(buf[base..][0..NODE_RECORD_SIZE], 0);
 
         // [0..8] id
         std.mem.writeInt(u64, buf[base..][0..8], @intFromEnum(n.id), .little);
@@ -370,12 +395,10 @@ pub fn save(allocator: std.mem.Allocator, io: std.Io, fg: FrozenGraph, path: []c
         if (n.col_start != null) flags |= FLAG_HAS_COL_START;
         if (n.col_end != null) flags |= FLAG_HAS_COL_END;
         buf[base + 33] = flags;
-        // [34..36] padding already zero
         // [36..52] content_hash
         if (n.content_hash) |ch| {
             @memcpy(buf[base + 36 ..][0..types.hash_len], &ch);
         }
-        // [52..56] padding already zero
         // [56..128] 9 string refs
         writeStringRef(buf, base + 56, refs.kind);
         writeStringRef(buf, base + 64, refs.language);
@@ -388,34 +411,33 @@ pub fn save(allocator: std.mem.Allocator, io: std.Io, fg: FrozenGraph, path: []c
         writeStringRef(buf, base + 120, refs.lang_meta);
     }
 
-    // Edge records
+    // Fill: edge records
     for (g.edges.items, 0..) |e, i| {
-        const base = edge_table_offset + i * EDGE_RECORD_SIZE;
+        const base = layout.edge_table_offset + i * EDGE_RECORD_SIZE;
         std.mem.writeInt(u64, buf[base..][0..8], @intFromEnum(e.source_id), .little);
         std.mem.writeInt(u64, buf[base + 8 ..][0..8], @intFromEnum(e.target_id), .little);
         writeStringRef(buf, base + 16, edge_refs[i][0]);
         writeStringRef(buf, base + 24, edge_refs[i][1]);
     }
 
-    // Metrics records (one per node, same index)
+    // Fill: metrics records (zero for nodes without metrics)
     for (g.nodes.items, 0..) |n, i| {
+        const base = layout.metrics_table_offset + i * METRICS_RECORD_SIZE;
         if (n.metrics) |m| {
-            const base = metrics_table_offset + i * METRICS_RECORD_SIZE;
             m.encodeBinary(buf[base..][0..Metrics.BINARY_SIZE]);
+        } else {
+            @memset(buf[base..][0..METRICS_RECORD_SIZE], 0);
         }
     }
 
-    // String table
-    if (string_table_size > 0) {
-        @memcpy(buf[string_table_offset..][0..string_table_size], stb.bytes.items);
+    // Fill: string table
+    if (layout.string_table_size > 0) {
+        @memcpy(buf[layout.string_table_offset..][0..layout.string_table_size], st.bytes.items);
     }
 
-    // Atomic write: createFileAtomic, write, sync, replace.
-    var af = try std.Io.Dir.cwd().createFileAtomic(io, path, .{ .replace = true });
-    defer af.deinit(io);
-    try af.file.writeStreamingAll(io, buf);
-    try af.file.sync(io);
-    try af.replace(io);
+    layout.verify(buf.len);
+
+    try atomic_file.writeAtomic(io, std.Io.Dir.cwd(), path, buf);
 }
 
 /// Deserialize a graph from a binary file at `path`.
@@ -597,6 +619,75 @@ pub fn append(allocator: std.mem.Allocator, io: std.Io, fg: FrozenGraph, path: [
     // Full save (compaction)
     const existing_fg = try existing.freeze(allocator);
     try save(allocator, io, existing_fg, path);
+}
+
+test "Layout.compute produces deterministic offsets" {
+    // Arrange / Act
+    const a = Layout.compute(3, 2, 100);
+    const b = Layout.compute(3, 2, 100);
+
+    // Assert
+    try std.testing.expectEqual(a.node_table_offset, b.node_table_offset);
+    try std.testing.expectEqual(a.edge_table_offset, b.edge_table_offset);
+    try std.testing.expectEqual(a.total_size, b.total_size);
+}
+
+test "Layout.compute aligns each table to 8 bytes" {
+    // Arrange / Act
+    const layout = Layout.compute(1, 1, 7);
+
+    // Assert: all offsets are multiples of 8
+    try std.testing.expectEqual(@as(usize, 0), layout.node_table_offset % 8);
+    try std.testing.expectEqual(@as(usize, 0), layout.edge_table_offset % 8);
+    try std.testing.expectEqual(@as(usize, 0), layout.metrics_table_offset % 8);
+    try std.testing.expectEqual(@as(usize, 0), layout.string_table_offset % 8);
+}
+
+test "Layout.verify passes for a correctly sized buffer" {
+    // Arrange
+    const layout = Layout.compute(2, 1, 50);
+    const buf = try std.testing.allocator.alloc(u8, layout.total_size);
+    defer std.testing.allocator.free(buf);
+
+    // Act / Assert: no assertion fires
+    layout.verify(buf.len);
+}
+
+test "StringTable.intern deduplicates strings" {
+    // Arrange
+    var st = try StringTable.init(std.testing.allocator, 32);
+    defer st.deinit(std.testing.allocator);
+
+    // Act
+    const r1 = try st.intern(std.testing.allocator, "hello");
+    const r2 = try st.intern(std.testing.allocator, "hello");
+
+    // Assert: same ref, bytes written only once
+    try std.testing.expectEqual(r1.offset, r2.offset);
+    try std.testing.expectEqual(r1.len, r2.len);
+    try std.testing.expectEqual(@as(usize, 5), st.bytes.items.len);
+}
+
+test "StringTable iteration order matches insertion order" {
+    // Arrange
+    var st = try StringTable.init(std.testing.allocator, 9);
+    defer st.deinit(std.testing.allocator);
+
+    _ = try st.intern(std.testing.allocator, "aaa");
+    _ = try st.intern(std.testing.allocator, "bbb");
+    _ = try st.intern(std.testing.allocator, "ccc");
+
+    // Act: iterate the index
+    var it = st.index.iterator();
+    const first = it.next().?.key_ptr.*;
+    const second = it.next().?.key_ptr.*;
+    const third = it.next().?.key_ptr.*;
+    try std.testing.expect(it.next() == null);
+
+    // Assert: insertion order is preserved
+    try std.testing.expectEqualStrings("aaa", first);
+    try std.testing.expectEqualStrings("bbb", second);
+    try std.testing.expectEqualStrings("ccc", third);
 }
 
 /// Build a test graph with 3 diverse nodes and 2 edges for use in tests.

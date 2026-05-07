@@ -182,6 +182,7 @@ test {
     _ = @import("render/ctg_sections.zig");
     _ = @import("render/mermaid.zig");
     _ = @import("render/mermaid_sections.zig");
+    _ = @import("storage/atomic_file.zig");
     _ = @import("storage/storage.zig");
     _ = @import("watcher/watcher_mod.zig");
 }

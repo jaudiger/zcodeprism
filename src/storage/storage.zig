@@ -1,5 +1,8 @@
 const std = @import("std");
 
+/// Crash-safe atomic file write with parent-directory fsync.
+pub const atomic_file = @import("atomic_file.zig");
+
 /// Snapshot save/load and source-hash computation.
 pub const snapshot = @import("snapshot.zig");
 
