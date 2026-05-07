@@ -14,29 +14,58 @@ const LangMeta = lang.LangMeta;
 const Logger = logging.Logger;
 const Field = logging.Field;
 
+/// Per-function accumulator maintained during propagation.
+/// `slices` is the ordered array registered in graph.owned_buffers.
+/// `members` keys are slices into graph-owned storage and must not be freed here.
+const ErrorSetEntry = struct {
+    slices: []const []const u8,
+    members: std.StringHashMapUnmanaged(void),
+
+    fn deinit(self: *ErrorSetEntry, allocator: std.mem.Allocator) void {
+        self.members.deinit(allocator);
+    }
+};
+
 /// Propagate error sets along call edges to a fixed point. For each
 /// function that calls another, the callee's error_set_names merge into
 /// the caller's inferred_errors. Iterates until no new errors are added
 /// or max_rounds is reached.
 pub fn propagateErrorSets(allocator: std.mem.Allocator, graph: *Graph, logger: Logger) !void {
-    // Build a map from function NodeId to its error set names, seeded
-    // by uses_type edges pointing at error_def nodes.
-    var fn_errors = std.AutoHashMapUnmanaged(NodeId, []const []const u8){};
-    defer fn_errors.deinit(allocator);
+    var fn_errors = std.AutoHashMapUnmanaged(NodeId, ErrorSetEntry){};
+    defer {
+        var it = fn_errors.iterator();
+        while (it.next()) |entry| {
+            entry.value_ptr.deinit(allocator);
+        }
+        fn_errors.deinit(allocator);
+    }
 
+    // Seed fn_errors from error_def nodes and their uses_type callers.
     for (graph.nodes.items, 0..) |n, i| {
         if (n.kind != .error_def) continue;
         if (n.lang_meta != .zig) continue;
         const names = n.lang_meta.zig.error_set_names orelse continue;
 
-        // Walk uses_type edges where this error_def is the target.
         for (graph.edges.items) |e| {
             if (e.edge_type != .uses_type) continue;
             if (e.target_id != @as(NodeId, @enumFromInt(i))) continue;
             const src_idx = @intFromEnum(e.source_id);
             if (src_idx >= graph.nodes.items.len) continue;
             if (graph.nodes.items[src_idx].kind != .function) continue;
-            try fn_errors.put(allocator, e.source_id, names);
+
+            const gop = try fn_errors.getOrPut(allocator, e.source_id);
+            if (!gop.found_existing) {
+                var members = std.StringHashMapUnmanaged(void){};
+                errdefer members.deinit(allocator);
+                for (names) |name| {
+                    try members.put(allocator, name, {});
+                }
+                gop.value_ptr.* = .{ .slices = names, .members = members };
+            } else {
+                // Union additional names from a second error_def on the
+                // same function.
+                try mergeIntoEntry(allocator, graph, gop.value_ptr, names);
+            }
         }
     }
 
@@ -53,21 +82,23 @@ pub fn propagateErrorSets(allocator: std.mem.Allocator, graph: *Graph, logger: L
 
         for (graph.edges.items) |e| {
             if (e.edge_type != .calls) continue;
-            const callee_errors = fn_errors.get(e.target_id) orelse continue;
+            // Capture before getOrPut may rehash fn_errors.
+            const callee_slices = (fn_errors.getPtr(e.target_id) orelse continue).slices;
             const gop = try fn_errors.getOrPut(allocator, e.source_id);
             if (!gop.found_existing) {
-                gop.value_ptr.* = callee_errors;
+                // First time caller is encountered: seed from callee.
+                var members = std.StringHashMapUnmanaged(void){};
+                errdefer members.deinit(allocator);
+                for (callee_slices) |name| {
+                    try members.put(allocator, name, {});
+                }
+                gop.value_ptr.* = .{ .slices = callee_slices, .members = members };
                 changed = true;
             } else {
-                const existing = gop.value_ptr.*;
-                if (!isSubset(callee_errors, existing)) {
-                    const merged = try mergeErrorSets(allocator, existing, callee_errors);
-                    try graph.addOwnedBuffer(allocator, merged.flat_buf);
-                    errdefer allocator.free(merged.slices);
-                    try graph.addOwnedSlice(allocator, []const u8, merged.slices);
-                    gop.value_ptr.* = merged.slices;
-                    changed = true;
-                }
+                // Try to merge callee names into caller.
+                const prev_len = gop.value_ptr.slices.len;
+                try mergeIntoEntry(allocator, graph, gop.value_ptr, callee_slices);
+                if (gop.value_ptr.slices.len != prev_len) changed = true;
             }
         }
 
@@ -83,7 +114,7 @@ pub fn propagateErrorSets(allocator: std.mem.Allocator, graph: *Graph, logger: L
         if (idx >= graph.nodes.items.len) continue;
         var n = &graph.nodes.items[idx];
         if (n.lang_meta != .zig) continue;
-        n.lang_meta.zig.inferred_errors = entry.value_ptr.*;
+        n.lang_meta.zig.inferred_errors = entry.value_ptr.slices;
     }
 }
 
@@ -93,97 +124,69 @@ const ParsedNames = struct {
     flat_buf: []const u8,
 };
 
-/// True if every name in needle appears in haystack.
-fn isSubset(needle: []const []const u8, haystack: []const []const u8) bool {
-    for (needle) |n| {
-        var found = false;
-        for (haystack) |h| {
-            if (std.mem.eql(u8, n, h)) {
-                found = true;
-                break;
-            }
+/// Extend `entry` with names from `new_names` that are not already members.
+/// Allocates a new merged ParsedNames registered on the graph if any new
+/// names are found.
+fn mergeIntoEntry(allocator: std.mem.Allocator, graph: *Graph, entry: *ErrorSetEntry, new_names: []const []const u8) !void {
+    var additions: std.ArrayList([]const u8) = .empty;
+    defer additions.deinit(allocator);
+
+    for (new_names) |name| {
+        if (!entry.members.contains(name)) {
+            try additions.append(allocator, name);
         }
-        if (!found) return false;
     }
-    return true;
+    if (additions.items.len == 0) return;
+
+    const merged = try buildMergedNames(allocator, entry.slices, additions.items);
+    try graph.addOwnedBuffer(allocator, merged.flat_buf);
+    errdefer allocator.free(merged.slices);
+    try graph.addOwnedSlice(allocator, []const u8, merged.slices);
+
+    // Update members with keys from the new buffer's tail slice.
+    const old_len = entry.slices.len;
+    for (merged.slices[old_len..]) |s| {
+        try entry.members.put(allocator, s, {});
+    }
+    entry.slices = merged.slices;
 }
 
-/// Union two error name sets into a new ParsedNames. Caller must register
-/// the returned buffers in graph.owned_buffers.
-fn mergeErrorSets(allocator: std.mem.Allocator, a: []const []const u8, b: []const []const u8) !ParsedNames {
-    var count: usize = a.len;
-    var extra_len: usize = 0;
-    for (b) |name| {
-        var dup = false;
-        for (a) |existing| {
-            if (std.mem.eql(u8, name, existing)) {
-                dup = true;
-                break;
-            }
-        }
-        if (!dup) {
-            count += 1;
-            extra_len += name.len;
-        }
-    }
+/// MAF-build a new ParsedNames by appending `additions` after `base`.
+/// The returned flat_buf and slices must be registered on the graph by
+/// the caller.
+fn buildMergedNames(allocator: std.mem.Allocator, base: []const []const u8, additions: []const []const u8) !ParsedNames {
+    // Measure
+    var flat_len: usize = 0;
+    for (base) |name| flat_len += name.len;
+    for (additions) |name| flat_len += name.len;
 
-    if (count == a.len) {
-        return .{ .slices = a, .flat_buf = &.{} };
-    }
+    const count = base.len + additions.len;
 
-    var flat_len: usize = extra_len;
-    for (a) |name| flat_len += name.len;
-
+    // Allocate
     const flat_buf = try allocator.alloc(u8, flat_len);
     errdefer allocator.free(flat_buf);
     const slices = try allocator.alloc([]const u8, count);
     errdefer allocator.free(slices);
 
+    // Fill
     var pos: usize = 0;
     var si: usize = 0;
-    for (a) |name| {
+    for (base) |name| {
         @memcpy(flat_buf[pos..][0..name.len], name);
         slices[si] = flat_buf[pos..][0..name.len];
         pos += name.len;
         si += 1;
     }
-    for (b) |name| {
-        var dup = false;
-        for (a) |existing| {
-            if (std.mem.eql(u8, name, existing)) {
-                dup = true;
-                break;
-            }
-        }
-        if (!dup) {
-            @memcpy(flat_buf[pos..][0..name.len], name);
-            slices[si] = flat_buf[pos..][0..name.len];
-            pos += name.len;
-            si += 1;
-        }
+    for (additions) |name| {
+        @memcpy(flat_buf[pos..][0..name.len], name);
+        slices[si] = flat_buf[pos..][0..name.len];
+        pos += name.len;
+        si += 1;
     }
     std.debug.assert(pos == flat_len);
     std.debug.assert(si == count);
 
     return .{ .slices = slices, .flat_buf = flat_buf };
-}
-
-test "isSubset returns true when all names present" {
-    // Arrange
-    const a: []const []const u8 = &.{"Foo"};
-    const b: []const []const u8 = &.{ "Foo", "Bar" };
-
-    // Assert
-    try std.testing.expect(isSubset(a, b));
-}
-
-test "isSubset returns false when name missing" {
-    // Arrange
-    const a: []const []const u8 = &.{ "Foo", "Baz" };
-    const b: []const []const u8 = &.{"Foo"};
-
-    // Assert
-    try std.testing.expect(!isSubset(a, b));
 }
 
 test "propagation: direct, multi-hop, union, and no-call boundary" {
@@ -273,4 +276,134 @@ test "propagation: direct, multi-hop, union, and no-call boundary" {
         @as(?[]const []const u8, null),
         g.nodes.items[@intFromEnum(fn_g)].lang_meta.zig.inferred_errors,
     );
+}
+
+test "propagation: union of two error_def seeds on the same function" {
+    // Arrange
+    const allocator = std.testing.allocator;
+    var g = Graph.init("/tmp/test");
+    defer g.deinit(allocator);
+
+    const err_a = try g.addNode(allocator, .{
+        .id = .root,
+        .name = "ErrA",
+        .kind = .error_def,
+        .language = .zig,
+        .lang_meta = .{ .zig = .{ .error_set_names = &.{"A"} } },
+    });
+    const err_b = try g.addNode(allocator, .{
+        .id = .root,
+        .name = "ErrB",
+        .kind = .error_def,
+        .language = .zig,
+        .lang_meta = .{ .zig = .{ .error_set_names = &.{"B"} } },
+    });
+    const fn_x = try g.addNode(allocator, .{ .id = .root, .name = "fnX", .kind = .function, .language = .zig, .lang_meta = .{ .zig = .{} } });
+    _ = try g.addEdgeIfNew(allocator, .{ .source_id = fn_x, .target_id = err_a, .edge_type = .uses_type });
+    _ = try g.addEdgeIfNew(allocator, .{ .source_id = fn_x, .target_id = err_b, .edge_type = .uses_type });
+
+    // Act
+    try propagateErrorSets(allocator, &g, Logger.noop);
+
+    // Assert
+    const errors = g.nodes.items[@intFromEnum(fn_x)].lang_meta.zig.inferred_errors.?;
+    try std.testing.expectEqual(@as(usize, 2), errors.len);
+}
+
+test "propagation: caller already has all callee errors makes no copy" {
+    // Arrange
+    const allocator = std.testing.allocator;
+    var g = Graph.init("/tmp/test");
+    defer g.deinit(allocator);
+
+    const err_xy = try g.addNode(allocator, .{
+        .id = .root,
+        .name = "ErrXY",
+        .kind = .error_def,
+        .language = .zig,
+        .lang_meta = .{ .zig = .{ .error_set_names = &.{ "X", "Y" } } },
+    });
+    const err_x = try g.addNode(allocator, .{
+        .id = .root,
+        .name = "ErrX",
+        .kind = .error_def,
+        .language = .zig,
+        .lang_meta = .{ .zig = .{ .error_set_names = &.{"X"} } },
+    });
+    const fn_a = try g.addNode(allocator, .{ .id = .root, .name = "fnA", .kind = .function, .language = .zig, .lang_meta = .{ .zig = .{} } });
+    const fn_b = try g.addNode(allocator, .{ .id = .root, .name = "fnB", .kind = .function, .language = .zig, .lang_meta = .{ .zig = .{} } });
+    _ = try g.addEdgeIfNew(allocator, .{ .source_id = fn_a, .target_id = err_x, .edge_type = .uses_type });
+    _ = try g.addEdgeIfNew(allocator, .{ .source_id = fn_b, .target_id = err_xy, .edge_type = .uses_type });
+    _ = try g.addEdgeIfNew(allocator, .{ .source_id = fn_b, .target_id = fn_a, .edge_type = .calls });
+
+    // Act
+    try propagateErrorSets(allocator, &g, Logger.noop);
+
+    // Assert: fn_b already had X from its own seed; calling fn_a adds nothing
+    const b_errors = g.nodes.items[@intFromEnum(fn_b)].lang_meta.zig.inferred_errors.?;
+    try std.testing.expectEqual(@as(usize, 2), b_errors.len);
+}
+
+test "propagation: deduplicates names across multiple call hops" {
+    // Arrange: fn_a declares {X}, fn_b calls fn_a AND has uses_type -> err_x
+    // (same X). fn_b should end up with exactly one X, not two.
+    const allocator = std.testing.allocator;
+    var g = Graph.init("/tmp/test");
+    defer g.deinit(allocator);
+
+    const err_x = try g.addNode(allocator, .{
+        .id = .root,
+        .name = "ErrX",
+        .kind = .error_def,
+        .language = .zig,
+        .lang_meta = .{ .zig = .{ .error_set_names = &.{"X"} } },
+    });
+    const fn_a = try g.addNode(allocator, .{ .id = .root, .name = "fnA", .kind = .function, .language = .zig, .lang_meta = .{ .zig = .{} } });
+    const fn_b = try g.addNode(allocator, .{ .id = .root, .name = "fnB", .kind = .function, .language = .zig, .lang_meta = .{ .zig = .{} } });
+    _ = try g.addEdgeIfNew(allocator, .{ .source_id = fn_a, .target_id = err_x, .edge_type = .uses_type });
+    _ = try g.addEdgeIfNew(allocator, .{ .source_id = fn_b, .target_id = err_x, .edge_type = .uses_type });
+    _ = try g.addEdgeIfNew(allocator, .{ .source_id = fn_b, .target_id = fn_a, .edge_type = .calls });
+
+    // Act
+    try propagateErrorSets(allocator, &g, Logger.noop);
+
+    // Assert
+    const b_errors = g.nodes.items[@intFromEnum(fn_b)].lang_meta.zig.inferred_errors.?;
+    try std.testing.expectEqual(@as(usize, 1), b_errors.len);
+}
+
+test "propagation: large fan-in does not duplicate" {
+    // Arrange: 30 callers all call fn_a which has {E1..E10}
+    const allocator = std.testing.allocator;
+    var g = Graph.init("/tmp/test");
+    defer g.deinit(allocator);
+
+    const err_def = try g.addNode(allocator, .{
+        .id = .root,
+        .name = "BigErr",
+        .kind = .error_def,
+        .language = .zig,
+        .lang_meta = .{ .zig = .{ .error_set_names = &.{ "E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9", "E10" } } },
+    });
+    const fn_a = try g.addNode(allocator, .{ .id = .root, .name = "fnA", .kind = .function, .language = .zig, .lang_meta = .{ .zig = .{} } });
+    _ = try g.addEdgeIfNew(allocator, .{ .source_id = fn_a, .target_id = err_def, .edge_type = .uses_type });
+
+    var callers: [30]NodeId = undefined;
+    for (&callers, 0..) |*c, i| {
+        var name_buf: [8]u8 = undefined;
+        const name = std.fmt.bufPrint(&name_buf, "caller{d}", .{i}) catch unreachable;
+        const owned_name = try allocator.dupe(u8, name);
+        defer allocator.free(owned_name);
+        c.* = try g.addNode(allocator, .{ .id = .root, .name = owned_name, .kind = .function, .language = .zig, .lang_meta = .{ .zig = .{} } });
+        _ = try g.addEdgeIfNew(allocator, .{ .source_id = c.*, .target_id = fn_a, .edge_type = .calls });
+    }
+
+    // Act
+    try propagateErrorSets(allocator, &g, Logger.noop);
+
+    // Assert: every caller has exactly 10 errors, no duplicates
+    for (callers) |c| {
+        const errors = g.nodes.items[@intFromEnum(c)].lang_meta.zig.inferred_errors.?;
+        try std.testing.expectEqual(@as(usize, 10), errors.len);
+    }
 }

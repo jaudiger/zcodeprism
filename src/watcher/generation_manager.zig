@@ -4,8 +4,6 @@ const generation_mod = @import("../core/generation.zig");
 const GraphGeneration = generation_mod.GraphGeneration;
 
 /// Thread-safe manager for the current GraphGeneration pointer.
-/// Uses a mutex to prevent the acquire-before-swap race where a reader
-/// could load the pointer without also incrementing the ref count.
 pub const GenerationManager = struct {
     current: *GraphGeneration,
     mutex: std.Io.Mutex,
@@ -17,9 +15,7 @@ pub const GenerationManager = struct {
         };
     }
 
-    /// Acquire the current generation under the mutex. Increments ref count
-    /// before releasing the mutex, so the generation cannot be freed between
-    /// pointer load and ref count increment.
+    /// Acquire the current generation under the mutex.
     pub fn acquireCurrent(self: *GenerationManager, io: std.Io) GraphGeneration.Guard {
         self.mutex.lockUncancelable(io);
         defer self.mutex.unlock(io);
@@ -27,8 +23,7 @@ pub const GenerationManager = struct {
     }
 
     /// Swap in a new generation. Returns the old generation pointer.
-    /// The old generation's ref count is not touched here; existing guards
-    /// will release it when they deinit.
+    /// The old generation's ref count is not touched.
     pub fn swap(self: *GenerationManager, io: std.Io, new_gen: *GraphGeneration) *GraphGeneration {
         self.mutex.lockUncancelable(io);
         defer self.mutex.unlock(io);
@@ -60,7 +55,7 @@ test "acquireCurrent increments ref count" {
     const guard = mgr.acquireCurrent(std.testing.io);
 
     // Assert
-    try std.testing.expectEqual(@as(u32, 1), gen.ref_count.load(.monotonic));
+    try std.testing.expectEqual(@as(u32, 1), gen.ref_count.count());
 
     // Cleanup
     guard.deinit();

@@ -747,7 +747,7 @@ fn watcherThreadFn(
         const new_guard = new_gen.acquire();
 
         const old_gen = gen_manager.swap(io, new_gen);
-        if (old_gen.ref_count.load(.monotonic) == 0) {
+        if (old_gen.ref_count.loadForReclaim() == 0) {
             old_gen.destroy(allocator);
         }
 

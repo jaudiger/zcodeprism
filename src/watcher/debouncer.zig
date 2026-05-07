@@ -1,7 +1,7 @@
 const std = @import("std");
 
 /// Debounces file system events by requiring a quiet period before
-/// signaling readiness. Thread-safe through atomic operations.
+/// signaling readiness. `last_event_ns == 0` is the no-event sentinel.
 pub const Debouncer = struct {
     delay_ns: i64,
     last_event_ns: std.atomic.Value(i64),

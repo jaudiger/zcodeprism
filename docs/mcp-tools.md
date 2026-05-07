@@ -5,7 +5,10 @@ protocol version `2025-11-25`). It advertises a single capability:
 `tools` (with `listChanged: false`).
 
 The server handles `initialize`, `ping`, `tools/list`, and `tools/call`.
-Notifications (messages without an `id` field) are silently ignored.
+Notifications (messages without an `id` field) are silently ignored and
+produce no response. Requests with an explicit `"id": null` are valid and
+receive a response with `"id": null`. Parse errors and Invalid Request
+errors return a response with `"id": null` per JSON-RPC 2.0 section 5.1.
 
 **20 tools across 3 namespaces, all read-only.**
 

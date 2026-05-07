@@ -44,47 +44,47 @@ pub const Server = struct {
     /// or null for notifications. Caller owns returned slice.
     pub fn handleMessage(self: *Server, allocator: std.mem.Allocator, io: std.Io, input: []const u8) ServerError!?[]const u8 {
         var parsed = jsonrpc.parseRequest(allocator, input) catch |err| switch (err) {
-            error.InvalidJson => return try buildErrorResponse(allocator, .none, jsonrpc.parse_error, "Parse error"),
-            error.InvalidRequest => return try buildErrorResponse(allocator, .none, jsonrpc.invalid_request, "Invalid Request"),
+            error.InvalidJson => return try buildErrorResponse(allocator, .null_id, jsonrpc.parse_error, "Parse error"),
+            error.InvalidRequest => return try buildErrorResponse(allocator, .null_id, jsonrpc.invalid_request, "Invalid Request"),
         };
         defer parsed.deinit();
         const req = parsed.value;
 
-        if (req.id == .none) return null;
+        const id = req.id orelse return null;
 
         const guard = self.gen_manager.acquireCurrent(io);
         defer guard.deinit();
 
         if (std.mem.eql(u8, req.method, "initialize")) {
-            return try buildSuccessResponse(allocator, req.id, protocol.InitializeResult{});
+            return try buildSuccessResponse(allocator, id, protocol.InitializeResult{});
         } else if (std.mem.eql(u8, req.method, "ping")) {
-            return try buildSuccessResponse(allocator, req.id, struct {}{});
+            return try buildSuccessResponse(allocator, id, struct {}{});
         } else if (std.mem.eql(u8, req.method, "tools/list")) {
-            return try buildToolsListResponse(allocator, req.id, self.dispatcher.listTools());
+            return try buildToolsListResponse(allocator, id, self.dispatcher.listTools());
         } else if (std.mem.eql(u8, req.method, "tools/call")) {
-            return try self.handleToolCall(allocator, io, req, guard.gen);
+            return try self.handleToolCall(allocator, io, req, id, guard.gen);
         } else {
-            return try buildErrorResponse(allocator, req.id, jsonrpc.method_not_found, "Method not found");
+            return try buildErrorResponse(allocator, id, jsonrpc.method_not_found, "Method not found");
         }
     }
 
-    fn handleToolCall(self: *Server, allocator: std.mem.Allocator, io: std.Io, req: jsonrpc.Request, gen: *GraphGeneration) ServerError![]const u8 {
+    fn handleToolCall(self: *Server, allocator: std.mem.Allocator, io: std.Io, req: jsonrpc.Request, id: jsonrpc.RequestId, gen: *GraphGeneration) ServerError![]const u8 {
         const params_obj = if (req.params) |p| (if (p == .object) p.object else null) else null;
         const tool_name = if (params_obj) |obj| (if (obj.get("name")) |v| (if (v == .string) v.string else null) else null) else null;
 
         if (tool_name == null) {
-            return try buildErrorResponse(allocator, req.id, jsonrpc.invalid_params, "Missing tool name");
+            return try buildErrorResponse(allocator, id, jsonrpc.invalid_params, "Missing tool name");
         }
 
         const content_json = handlers.handleToolCall(allocator, io, gen, &self.cursor_manager, tool_name.?, req.params) catch
-            return try buildErrorResponse(allocator, req.id, jsonrpc.internal_error, "Handler error");
+            return try buildErrorResponse(allocator, id, jsonrpc.internal_error, "Handler error");
 
         if (content_json) |json| {
             defer allocator.free(json);
-            return try buildToolCallResponse(allocator, req.id, json);
+            return try buildToolCallResponse(allocator, id, json);
         }
 
-        return try buildErrorResponse(allocator, req.id, jsonrpc.method_not_found, "Unknown tool");
+        return try buildErrorResponse(allocator, id, jsonrpc.method_not_found, "Unknown tool");
     }
 
     /// Wraps raw handler JSON into the full JSON-RPC + MCP content envelope.
@@ -115,9 +115,9 @@ pub const Server = struct {
 
     fn writeId(w: JsonWriter, id: jsonrpc.RequestId) error{OutOfMemory}!void {
         switch (id) {
+            .null_id => try w.write(null),
             .integer => |n| try w.write(n),
             .string => |str| try w.write(str),
-            .none => try w.write(null),
         }
     }
 

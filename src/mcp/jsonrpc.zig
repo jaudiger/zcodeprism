@@ -8,16 +8,17 @@ pub const method_not_found: i32 = -32601;
 pub const invalid_params: i32 = -32602;
 pub const internal_error: i32 = -32603;
 
-/// JSON-RPC request id: integer, string, or absent (notification).
+/// JSON-RPC 2.0 request id: null, integer, or string.
 pub const RequestId = union(enum) {
+    null_id,
     integer: i64,
     string: []const u8,
-    none,
 };
 
 /// A parsed JSON-RPC 2.0 request.
+/// `id` is null when the id field is absent (notification).
 pub const Request = struct {
-    id: RequestId,
+    id: ?RequestId,
     method: []const u8,
     params: ?std.json.Value,
 };
@@ -74,12 +75,16 @@ pub fn parseRequest(allocator: std.mem.Allocator, input: []const u8) ParseError!
         return ParseError.InvalidRequest;
     }
 
-    // Extract id.
-    const id: RequestId = if (obj.get("id")) |id_val| switch (id_val) {
-        .integer => |n| .{ .integer = n },
-        .string => |s| .{ .string = s },
-        else => .none,
-    } else .none;
+    // Absent id = notification; JSON null = .null_id; other kinds are invalid.
+    const id: ?RequestId = if (obj.get("id")) |id_val| switch (id_val) {
+        .integer => |n| RequestId{ .integer = n },
+        .string => |s| RequestId{ .string = s },
+        .null => RequestId.null_id,
+        else => {
+            parsed.deinit();
+            return ParseError.InvalidRequest;
+        },
+    } else null;
 
     const params: ?std.json.Value = obj.get("params");
 

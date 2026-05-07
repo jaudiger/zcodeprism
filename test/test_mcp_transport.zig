@@ -36,7 +36,8 @@ test "parses valid request" {
     const req = parsed.value;
 
     // Assert
-    try std.testing.expectEqual(jsonrpc.RequestId{ .integer = 1 }, req.id);
+    const id = req.id.?;
+    try std.testing.expectEqual(jsonrpc.RequestId{ .integer = 1 }, id);
     try std.testing.expectEqualStrings("tools/list", req.method);
     try std.testing.expect(req.params != null);
 }
@@ -54,7 +55,8 @@ test "parses request without params" {
     const req = parsed.value;
 
     // Assert
-    try std.testing.expectEqual(jsonrpc.RequestId{ .integer = 1 }, req.id);
+    const id = req.id.?;
+    try std.testing.expectEqual(jsonrpc.RequestId{ .integer = 1 }, id);
     try std.testing.expectEqualStrings("tools/list", req.method);
     try std.testing.expect(req.params == null);
 }
@@ -212,7 +214,7 @@ test "handles integer id" {
     try std.testing.expectEqual(@as(i64, 42), id_val.integer);
 }
 
-test "handles null id (notification)" {
+test "notifications without id field produce no response" {
     // Arrange
     const allocator = std.testing.allocator;
     const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
@@ -229,8 +231,156 @@ test "handles null id (notification)" {
     // Act
     const response_bytes = try srv.handleMessage(allocator, std.testing.io, input);
 
-    // Assert: notifications produce no response
+    // Assert
     try std.testing.expect(response_bytes == null);
+}
+
+test "requests with explicit id null produce a response with id null" {
+    // Arrange
+    const allocator = std.testing.allocator;
+    const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
+    defer gen.destroy(allocator);
+    const guard = gen.acquire();
+    defer guard.deinit();
+    var mgr: GenerationManager = undefined;
+    var srv = makeTestServer(gen, &mgr);
+    defer srv.deinit();
+    const input =
+        \\{"jsonrpc":"2.0","id":null,"method":"tools/list"}
+    ;
+
+    // Act
+    const response_bytes = try srv.handleMessage(allocator, std.testing.io, input);
+    defer if (response_bytes) |b| allocator.free(b);
+
+    // Assert
+    try std.testing.expect(response_bytes != null);
+    const parsed = try parseJsonResponse(allocator, response_bytes.?);
+    defer parsed.deinit();
+    const id_val = parsed.value.object.get("id").?;
+    try std.testing.expect(id_val == .null);
+}
+
+test "parse error response carries null id" {
+    // Arrange
+    const allocator = std.testing.allocator;
+    const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
+    defer gen.destroy(allocator);
+    const guard = gen.acquire();
+    defer guard.deinit();
+    var mgr: GenerationManager = undefined;
+    var srv = makeTestServer(gen, &mgr);
+    defer srv.deinit();
+
+    // Act
+    const response_bytes = try srv.handleMessage(allocator, std.testing.io, "{{{");
+    defer if (response_bytes) |b| allocator.free(b);
+
+    // Assert
+    try std.testing.expect(response_bytes != null);
+    const parsed = try parseJsonResponse(allocator, response_bytes.?);
+    defer parsed.deinit();
+    const id_val = parsed.value.object.get("id").?;
+    try std.testing.expect(id_val == .null);
+    const err_obj = parsed.value.object.get("error").?;
+    try std.testing.expectEqual(@as(i64, jsonrpc.parse_error), err_obj.object.get("code").?.integer);
+}
+
+test "invalid-request response carries null id" {
+    // Arrange
+    const allocator = std.testing.allocator;
+    const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
+    defer gen.destroy(allocator);
+    const guard = gen.acquire();
+    defer guard.deinit();
+    var mgr: GenerationManager = undefined;
+    var srv = makeTestServer(gen, &mgr);
+    defer srv.deinit();
+    const input =
+        \\{"id":1,"method":"foo"}
+    ;
+
+    // Act
+    const response_bytes = try srv.handleMessage(allocator, std.testing.io, input);
+    defer if (response_bytes) |b| allocator.free(b);
+
+    // Assert
+    try std.testing.expect(response_bytes != null);
+    const parsed = try parseJsonResponse(allocator, response_bytes.?);
+    defer parsed.deinit();
+    const id_val = parsed.value.object.get("id").?;
+    try std.testing.expect(id_val == .null);
+    const err_obj = parsed.value.object.get("error").?;
+    try std.testing.expectEqual(@as(i64, jsonrpc.invalid_request), err_obj.object.get("code").?.integer);
+}
+
+test "id with array value is invalid request" {
+    // Arrange
+    const allocator = std.testing.allocator;
+    const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
+    defer gen.destroy(allocator);
+    const guard = gen.acquire();
+    defer guard.deinit();
+    var mgr: GenerationManager = undefined;
+    var srv = makeTestServer(gen, &mgr);
+    defer srv.deinit();
+    const input =
+        \\{"jsonrpc":"2.0","id":[1,2],"method":"tools/list"}
+    ;
+
+    // Act
+    const response_bytes = try srv.handleMessage(allocator, std.testing.io, input);
+    defer if (response_bytes) |b| allocator.free(b);
+
+    // Assert
+    try std.testing.expect(response_bytes != null);
+    const parsed = try parseJsonResponse(allocator, response_bytes.?);
+    defer parsed.deinit();
+    const err_obj = parsed.value.object.get("error").?;
+    try std.testing.expectEqual(@as(i64, jsonrpc.invalid_request), err_obj.object.get("code").?.integer);
+}
+
+test "id with boolean value is invalid request" {
+    // Arrange
+    const allocator = std.testing.allocator;
+    const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
+    defer gen.destroy(allocator);
+    const guard = gen.acquire();
+    defer guard.deinit();
+    var mgr: GenerationManager = undefined;
+    var srv = makeTestServer(gen, &mgr);
+    defer srv.deinit();
+    const input =
+        \\{"jsonrpc":"2.0","id":true,"method":"tools/list"}
+    ;
+
+    // Act
+    const response_bytes = try srv.handleMessage(allocator, std.testing.io, input);
+    defer if (response_bytes) |b| allocator.free(b);
+
+    // Assert
+    try std.testing.expect(response_bytes != null);
+    const parsed = try parseJsonResponse(allocator, response_bytes.?);
+    defer parsed.deinit();
+    const err_obj = parsed.value.object.get("error").?;
+    try std.testing.expectEqual(@as(i64, jsonrpc.invalid_request), err_obj.object.get("code").?.integer);
+}
+
+test "parses request with explicit null id" {
+    // Arrange
+    const allocator = std.testing.allocator;
+    const input =
+        \\{"jsonrpc":"2.0","id":null,"method":"tools/list"}
+    ;
+
+    // Act
+    var parsed = try jsonrpc.parseRequest(allocator, input);
+    defer parsed.deinit();
+    const req = parsed.value;
+
+    // Assert
+    const id = req.id.?;
+    try std.testing.expectEqual(jsonrpc.RequestId.null_id, id);
 }
 
 // ---------------------------------------------------------------
@@ -451,7 +601,7 @@ test "server acquires generation on request" {
     var mgr: GenerationManager = undefined;
     var srv = makeTestServer(gen, &mgr);
     defer srv.deinit();
-    const before = gen.ref_count.load(.monotonic);
+    const before = gen.ref_count.count();
     const input =
         \\{"jsonrpc":"2.0","id":1,"method":"tools/list"}
     ;
@@ -461,7 +611,7 @@ test "server acquires generation on request" {
     defer if (response_bytes) |b| allocator.free(b);
 
     // Assert: ref_count unchanged means acquire+release paired correctly
-    const after = gen.ref_count.load(.monotonic);
+    const after = gen.ref_count.count();
     try std.testing.expectEqual(before, after);
 }
 
@@ -475,7 +625,7 @@ test "server releases generation after response" {
     var mgr: GenerationManager = undefined;
     var srv = makeTestServer(gen, &mgr);
     defer srv.deinit();
-    const baseline = gen.ref_count.load(.monotonic);
+    const baseline = gen.ref_count.count();
 
     // Act: send multiple requests
     const input =
@@ -489,6 +639,6 @@ test "server releases generation after response" {
     defer if (r3) |b| allocator.free(b);
 
     // Assert: ref_count stable after all requests
-    const after = gen.ref_count.load(.monotonic);
+    const after = gen.ref_count.count();
     try std.testing.expectEqual(baseline, after);
 }

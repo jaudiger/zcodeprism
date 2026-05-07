@@ -1,8 +1,10 @@
 const std = @import("std");
 const graph_mod = @import("graph.zig");
 const types = @import("types.zig");
+const refcount_mod = @import("refcount.zig");
 
 const Graph = graph_mod.Graph;
+const RefCount = refcount_mod.RefCount;
 
 /// A versioned snapshot of the code graph with reference counting.
 /// Heap-allocated via `create`. The caller is responsible for calling
@@ -10,7 +12,7 @@ const Graph = graph_mod.Graph;
 pub const GraphGeneration = struct {
     graph: Graph,
     arena: std.heap.ArenaAllocator,
-    ref_count: std.atomic.Value(u32),
+    ref_count: RefCount,
     source_hash: types.ContentHash,
     generation_id: u64,
     indexed_at: i128,
@@ -22,7 +24,7 @@ pub const GraphGeneration = struct {
         gen.* = .{
             .graph = Graph.init(""),
             .arena = arena,
-            .ref_count = std.atomic.Value(u32).init(0),
+            .ref_count = RefCount.init(0),
             .source_hash = source_hash,
             .generation_id = generation_id,
             .indexed_at = std.Io.Timestamp.now(io, .real).nanoseconds,
@@ -43,15 +45,13 @@ pub const GraphGeneration = struct {
         gen: *GraphGeneration,
 
         pub fn deinit(self: Guard) void {
-            const prev = self.gen.ref_count.fetchSub(1, .monotonic);
-            std.debug.assert(prev > 0);
+            self.gen.ref_count.release();
         }
     };
 
     /// Increment the reference count and return a guard that will release it.
     pub fn acquire(self: *GraphGeneration) Guard {
-        const prev = self.ref_count.fetchAdd(1, .monotonic);
-        std.debug.assert(prev != std.math.maxInt(u32));
+        self.ref_count.acquire();
         return .{ .gen = self };
     }
 };
@@ -65,7 +65,7 @@ test "acquire increments refcount" {
     const guard = gen.acquire();
 
     // Assert
-    try std.testing.expectEqual(@as(u32, 1), gen.ref_count.load(.monotonic));
+    try std.testing.expectEqual(@as(u32, 1), gen.ref_count.count());
 
     // Cleanup
     guard.deinit();
@@ -82,7 +82,7 @@ test "guard deinit decrements refcount" {
     g2.deinit();
 
     // Assert
-    try std.testing.expectEqual(@as(u32, 1), gen.ref_count.load(.monotonic));
+    try std.testing.expectEqual(@as(u32, 1), gen.ref_count.count());
 
     // Cleanup
     g1.deinit();
@@ -99,14 +99,14 @@ test "multiple acquires and releases" {
     const g3 = gen.acquire();
 
     // Assert
-    try std.testing.expectEqual(@as(u32, 3), gen.ref_count.load(.monotonic));
+    try std.testing.expectEqual(@as(u32, 3), gen.ref_count.count());
 
     g3.deinit();
-    try std.testing.expectEqual(@as(u32, 2), gen.ref_count.load(.monotonic));
+    try std.testing.expectEqual(@as(u32, 2), gen.ref_count.count());
     g2.deinit();
-    try std.testing.expectEqual(@as(u32, 1), gen.ref_count.load(.monotonic));
+    try std.testing.expectEqual(@as(u32, 1), gen.ref_count.count());
     g1.deinit();
-    try std.testing.expectEqual(@as(u32, 0), gen.ref_count.load(.monotonic));
+    try std.testing.expectEqual(@as(u32, 0), gen.ref_count.count());
 }
 
 test "generation_id is set" {
