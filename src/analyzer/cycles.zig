@@ -3,6 +3,7 @@ const graph_mod = @import("../core/graph.zig");
 const types = @import("../core/types.zig");
 const node_mod = @import("../core/node.zig");
 const scope_mod = @import("../core/scope.zig");
+const filter = @import("filter.zig");
 
 const Graph = graph_mod.Graph;
 const FrozenGraph = graph_mod.FrozenGraph;
@@ -13,7 +14,7 @@ const NodeKind = types.NodeKind;
 const EdgeType = types.EdgeType;
 const Language = types.Language;
 const Scope = scope_mod.Scope;
-const UNDEFINED: u32 = std.math.maxInt(u32);
+const undefined_index: u32 = std.math.maxInt(u32);
 
 pub const CycleNode = struct {
     node_id: NodeId,
@@ -62,9 +63,7 @@ pub fn findCycles(allocator: std.mem.Allocator, fg: FrozenGraph, options: CycleO
             if (options.language) |lf| {
                 if (n.language == null or n.language.? != lf) continue;
             }
-            if (scope_filter) |sf| {
-                if (!sf.matches(n.file_path orelse "")) continue;
-            }
+            if (!filter.passesScope(scope_filter, n.file_path)) continue;
             const dense: u32 = @intCast(file_nodes.items.len);
             try node_to_dense.put(allocator, @as(u64, i), dense);
             try file_nodes.append(allocator, @enumFromInt(i));
@@ -88,7 +87,7 @@ pub fn findCycles(allocator: std.mem.Allocator, fg: FrozenGraph, options: CycleO
     defer tarjan.deinit(allocator);
 
     for (0..file_count) |i| {
-        if (tarjan.index_of[@intCast(i)] == UNDEFINED) {
+        if (tarjan.index_of[@intCast(i)] == undefined_index) {
             try tarjan.strongConnect(allocator, @intCast(i), adj);
         }
     }
@@ -125,18 +124,18 @@ pub fn findCycles(allocator: std.mem.Allocator, fg: FrozenGraph, options: CycleO
 // -- File-owner map --
 
 /// Flat array mapping node index -> owning file node index (u32).
-/// Nodes without a file ancestor get `maxInt(u32)`.
+/// Nodes without a file ancestor get undefined_index.
 fn buildFileOwnerMap(allocator: std.mem.Allocator, g: *const Graph) ![]u32 {
     const n = g.nodes.items.len;
     const map = try allocator.alloc(u32, n);
-    @memset(map, std.math.maxInt(u32));
+    @memset(map, undefined_index);
 
     for (g.nodes.items, 0..) |node, i| {
         if (node.kind == .file) map[i] = @intCast(i);
     }
 
     for (g.nodes.items, 0..) |node, i| {
-        if (map[i] != std.math.maxInt(u32)) continue;
+        if (map[i] != undefined_index) continue;
         const pid = node.parent_id orelse continue;
         const pi = @intFromEnum(pid);
         if (pi < n) map[i] = map[pi];
@@ -184,7 +183,7 @@ fn buildFileAdjacency(
             const tgt_idx = @intFromEnum(edge.target_id);
             if (tgt_idx >= file_of.len) continue;
             const tgt_file_raw = file_of[tgt_idx];
-            if (tgt_file_raw == std.math.maxInt(u32)) continue;
+            if (tgt_file_raw == undefined_index) continue;
             const tgt_dense = node_to_dense.get(tgt_file_raw) orelse continue;
             if (tgt_dense == src_dense) continue;
 
@@ -239,7 +238,7 @@ const TarjanState = struct {
 
     fn init(allocator: std.mem.Allocator, n: u32) !TarjanState {
         const index_of = try allocator.alloc(u32, n);
-        @memset(index_of, UNDEFINED);
+        @memset(index_of, undefined_index);
         const lowlink = try allocator.alloc(u32, n);
         @memset(lowlink, 0);
         const on_stack = try allocator.alloc(bool, n);
@@ -285,7 +284,7 @@ const TarjanState = struct {
                 const w = adj.neighbors[frame.edge_pos];
                 frame.edge_pos += 1;
 
-                if (self.index_of[w] == UNDEFINED) {
+                if (self.index_of[w] == undefined_index) {
                     self.index_of[w] = self.counter;
                     self.lowlink[w] = self.counter;
                     self.counter += 1;

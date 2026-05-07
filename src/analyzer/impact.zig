@@ -33,6 +33,9 @@ pub const ImpactAnalysisOptions = struct {
 };
 
 /// Compute the combined reverse-impact set for one or more seed nodes.
+/// The result includes all nodes that transitively call/use the seeds (up to
+/// max_depth semantic-edge hops) and, when include_parent_chain is set, the
+/// owning file/module ancestors of every impacted node.
 pub fn analyzeImpact(allocator: std.mem.Allocator, fg: FrozenGraph, node_ids: []const NodeId, options: ImpactAnalysisOptions) !ImpactAnalysis {
     const g = fg.graph;
     if (node_ids.len == 0) return .{ .total_impacted = 0, .dependents = &.{} };
@@ -57,41 +60,40 @@ pub fn analyzeImpact(allocator: std.mem.Allocator, fg: FrozenGraph, node_ids: []
         }
     }
 
-    // Reverse BFS following incoming calls/uses_type edges.
+    // Reverse BFS following incoming semantic edges.
     var front: usize = 0;
     while (front < queue.items.len) {
         const entry = queue.items[front];
         front += 1;
 
-        if (entry.depth >= options.max_depth) continue;
+        if (entry.depth < options.max_depth) {
+            const in_edges = g.inEdges(@enumFromInt(entry.node));
+            for (in_edges) |eid| {
+                const edge = g.edges.items[@intFromEnum(eid)];
 
-        const in_edges = g.inEdges(@enumFromInt(entry.node));
-        for (in_edges) |eid| {
-            const edge = g.edges.items[@intFromEnum(eid)];
-
-            var allowed = false;
-            for (allowed_types) |et| {
-                if (edge.edge_type == et) {
-                    allowed = true;
-                    break;
+                var allowed = false;
+                for (allowed_types) |et| {
+                    if (edge.edge_type == et) {
+                        allowed = true;
+                        break;
+                    }
                 }
+                if (!allowed) continue;
+
+                const source_raw = @intFromEnum(edge.source_id);
+                if (visited.contains(source_raw)) continue;
+
+                try visited.put(allocator, source_raw, {});
+                try queue.append(allocator, .{ .node = source_raw, .depth = entry.depth + 1 });
             }
-            if (!allowed) continue;
-
-            const source_raw = @intFromEnum(edge.source_id);
-            if (visited.contains(source_raw)) continue;
-
-            try visited.put(allocator, source_raw, {});
-            try queue.append(allocator, .{ .node = source_raw, .depth = entry.depth + 1 });
         }
     }
 
-    // Remove seed nodes from the result set.
+    // Remove seed nodes from the impact set.
     for (node_ids) |nid| {
         _ = visited.remove(@intFromEnum(nid));
     }
 
-    // Walk up parent chains for every impacted node so callers see the owning file/module too.
     if (options.include_parent_chain) {
         var keys_buf = try allocator.alloc(u64, visited.count());
         defer allocator.free(keys_buf);
@@ -102,7 +104,7 @@ pub fn analyzeImpact(allocator: std.mem.Allocator, fg: FrozenGraph, node_ids: []
             ki += 1;
         }
         for (keys_buf[0..ki]) |raw| {
-            var parent_opt = if (g.getNode(@enumFromInt(raw))) |n| n.parent_id else null;
+            var parent_opt: ?NodeId = if (g.getNode(@enumFromInt(raw))) |n| n.parent_id else null;
             while (parent_opt) |pid| {
                 if (pid == .root) break;
                 const praw = @intFromEnum(pid);
@@ -113,7 +115,10 @@ pub fn analyzeImpact(allocator: std.mem.Allocator, fg: FrozenGraph, node_ids: []
                         break;
                     }
                 }
-                if (!is_seed) _ = try visited.getOrPut(allocator, praw);
+                if (!is_seed) {
+                    const gop = try visited.getOrPut(allocator, praw);
+                    if (gop.found_existing) break;
+                }
                 parent_opt = if (g.getNode(pid)) |pn| pn.parent_id else null;
             }
         }
@@ -129,7 +134,7 @@ pub fn analyzeImpact(allocator: std.mem.Allocator, fg: FrozenGraph, node_ids: []
     var it = visited.iterator();
     while (it.next()) |entry| {
         const id: NodeId = @enumFromInt(entry.key_ptr.*);
-        const n = g.getNode(id) orelse continue;
+        const n = g.getNode(id).?;
         dependents[pos] = .{
             .node_id = id,
             .name = n.name,
@@ -138,9 +143,11 @@ pub fn analyzeImpact(allocator: std.mem.Allocator, fg: FrozenGraph, node_ids: []
         };
         pos += 1;
     }
+    std.debug.assert(pos == count);
+    errdefer comptime unreachable;
 
     return .{
-        .total_impacted = @intCast(pos),
-        .dependents = dependents[0..pos],
+        .total_impacted = @intCast(count),
+        .dependents = dependents,
     };
 }

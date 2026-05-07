@@ -3,6 +3,7 @@ const graph_mod = @import("../core/graph.zig");
 const types = @import("../core/types.zig");
 const node_mod = @import("../core/node.zig");
 const scope_mod = @import("../core/scope.zig");
+const filter = @import("filter.zig");
 
 const Graph = graph_mod.Graph;
 const FrozenGraph = graph_mod.FrozenGraph;
@@ -77,10 +78,7 @@ pub fn findCoupling(allocator: std.mem.Allocator, fg: FrozenGraph, options: Coup
             if (unit_a_node.language == null or unit_a_node.language.? != lf) continue;
         }
 
-        if (scope_filter) |sf| {
-            const path_a = unit_a_node.file_path orelse continue;
-            if (!sf.matches(path_a)) continue;
-        }
+        if (!filter.passesScope(scope_filter, unit_a_node.file_path)) continue;
 
         const key = packPair(@min(source_unit, target_unit), @max(source_unit, target_unit));
 

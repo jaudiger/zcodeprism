@@ -69,6 +69,7 @@ pub const Graph = struct {
         // Free owned buffers first -- node name/doc/signature slices
         // may point into these, so they must outlive the node array.
         for (self.owned_buffers.items) |ob| {
+            if (ob.len == 0) continue;
             allocator.rawFree(ob.ptr[0..ob.len], ob.alignment, @returnAddress());
         }
         self.owned_buffers.deinit(allocator);
@@ -121,12 +122,16 @@ pub const Graph = struct {
         if (stored.signature) |sig| {
             if (std.mem.indexOfAny(u8, sig, "\n\r") != null) {
                 const normalized = try collapseWhitespace(allocator, sig);
-                errdefer allocator.free(normalized);
-                try self.owned_buffers.ensureUnusedCapacity(allocator, 1);
-                stored.signature = normalized;
-                try self.nodes.append(allocator, stored);
-                self.owned_buffers.appendAssumeCapacity(OwnedBuffer.fromSlice(u8, normalized));
-                return id;
+                if (normalized.len == 0) {
+                    stored.signature = null;
+                } else {
+                    errdefer allocator.free(normalized);
+                    try self.owned_buffers.ensureUnusedCapacity(allocator, 1);
+                    stored.signature = normalized;
+                    try self.nodes.append(allocator, stored);
+                    self.owned_buffers.appendAssumeCapacity(OwnedBuffer.fromSlice(u8, normalized));
+                    return id;
+                }
             }
         }
         try self.nodes.append(allocator, stored);

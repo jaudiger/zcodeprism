@@ -3,6 +3,7 @@ const graph_mod = @import("../core/graph.zig");
 const types = @import("../core/types.zig");
 const node_mod = @import("../core/node.zig");
 const scope_mod = @import("../core/scope.zig");
+const filter = @import("filter.zig");
 const pagination = @import("pagination.zig");
 
 const Graph = graph_mod.Graph;
@@ -66,115 +67,73 @@ pub fn findDuplicates(allocator: std.mem.Allocator, fg: FrozenGraph, options: Du
     const g = fg.graph;
     const scope_filter: ?Scope = if (options.scope) |s| Scope.parse(s) else null;
 
-    // Count how many qualifying functions share each hash.
-    var counts = std.AutoHashMapUnmanaged(u64, u32){};
-    defer counts.deinit(allocator);
+    var arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
 
-    for (g.nodes.items) |n| {
-        if (n.kind != .function) continue;
-        if (n.external != .none) continue;
-        if (options.language) |lf| {
-            if (n.language == null or n.language.? != lf) continue;
-        }
-        if (scope_filter) |sf| {
-            if (!sf.matches(n.file_path orelse continue)) continue;
-        }
-        const m = n.metrics orelse continue;
-        if (m.structural_hash == 0) continue;
-        if (m.lines < options.min_lines) continue;
-
-        const gop = try counts.getOrPut(allocator, m.structural_hash);
-        if (!gop.found_existing) gop.value_ptr.* = 0;
-        gop.value_ptr.* += 1;
-    }
-
-    // Determine how many hashes have 2+ members.
-    var group_count: usize = 0;
-    var it = counts.iterator();
-    while (it.next()) |entry| {
-        if (entry.value_ptr.* >= 2) group_count += 1;
-    }
-
-    if (group_count == 0) return .{ .total_groups = 0, .groups = &.{} };
-
-    // Allocate group array and per-group member arrays.
-    const groups = try allocator.alloc(DuplicateGroup, group_count);
-    errdefer {
-        for (groups[0..group_count]) |gr| {
-            allocator.free(gr.members);
-        }
-        allocator.free(groups);
-    }
-
-    var gi: usize = 0;
-    it = counts.iterator();
-    while (it.next()) |entry| {
-        const cnt = entry.value_ptr.*;
-        if (cnt < 2) continue;
-        const members = try allocator.alloc(DuplicateMember, cnt);
-        groups[gi] = .{ .structural_hash = entry.key_ptr.*, .similarity = 1.0, .members = members };
-        // Reset to reuse as fill cursor below.
-        entry.value_ptr.* = 0;
-        gi += 1;
-    }
-    std.debug.assert(gi == group_count);
-
-    // Map each qualifying hash to its group index.
-    var hash_to_group = std.AutoHashMapUnmanaged(u64, usize){};
-    defer hash_to_group.deinit(allocator);
-    try hash_to_group.ensureTotalCapacity(allocator, @intCast(group_count));
-    for (groups, 0..) |gr, idx| {
-        hash_to_group.putAssumeCapacity(gr.structural_hash, idx);
-    }
-
-    // Fill member arrays.
+    // Single pass: map hash -> list of qualifying node indices.
+    var hash_map = std.AutoHashMapUnmanaged(u64, std.ArrayList(u64)){};
     for (g.nodes.items, 0..) |n, i| {
         if (n.kind != .function) continue;
         if (n.external != .none) continue;
         if (options.language) |lf| {
             if (n.language == null or n.language.? != lf) continue;
         }
-        if (scope_filter) |sf| {
-            if (!sf.matches(n.file_path orelse continue)) continue;
-        }
+        if (!filter.passesScope(scope_filter, n.file_path)) continue;
         const m = n.metrics orelse continue;
         if (m.structural_hash == 0) continue;
         if (m.lines < options.min_lines) continue;
 
-        const gidx = hash_to_group.get(m.structural_hash) orelse continue;
-        const pos_ptr = counts.getPtr(m.structural_hash).?;
-        const pos = pos_ptr.*;
-        const members: []DuplicateMember = @constCast(groups[gidx].members);
-        members[pos] = .{
-            .node_id = @enumFromInt(i),
-            .name = n.name,
-            .file_path = n.file_path,
-        };
-        pos_ptr.* += 1;
+        const gop = try hash_map.getOrPut(a, m.structural_hash);
+        if (!gop.found_existing) gop.value_ptr.* = .empty;
+        try gop.value_ptr.append(a, @as(u64, i));
     }
 
-    std.mem.sort(DuplicateGroup, groups, {}, struct {
-        fn lessThan(_: void, a: DuplicateGroup, b: DuplicateGroup) bool {
-            return a.members.len > b.members.len;
+    // Collect multi-member groups into a flat sortable list.
+    const GroupBuild = struct { hash: u64, indices: []u64 };
+    var group_list = std.ArrayList(GroupBuild).empty;
+    var hit = hash_map.iterator();
+    while (hit.next()) |entry| {
+        if (entry.value_ptr.items.len < 2) continue;
+        try group_list.append(a, .{
+            .hash = entry.key_ptr.*,
+            .indices = entry.value_ptr.items,
+        });
+    }
+
+    std.mem.sort(GroupBuild, group_list.items, {}, struct {
+        fn lt(_: void, x: GroupBuild, y: GroupBuild) bool {
+            return x.indices.len > y.indices.len;
         }
-    }.lessThan);
+    }.lt);
 
-    const total: u32 = @intCast(group_count);
+    const total: u32 = @intCast(group_list.items.len);
     const pg = pagination.paginate(total, options.offset, options.limit);
+    if (pg.len == 0) return .{ .total_groups = total, .groups = &.{} };
 
-    if (pg.len == 0) {
-        for (groups) |gr| allocator.free(gr.members);
+    // Materialize member slices only for the page window.
+    const groups = try allocator.alloc(DuplicateGroup, pg.len);
+    var materialized: usize = 0;
+    errdefer {
+        for (groups[0..materialized]) |gr| allocator.free(gr.members);
         allocator.free(groups);
-        return .{ .total_groups = total, .groups = &.{} };
     }
 
-    const page = try allocator.alloc(DuplicateGroup, pg.len);
-    @memcpy(page, groups[pg.start .. pg.start + pg.len]);
-    // Free the non-page groups' member slices; page entries borrow the same slices.
-    for (groups[0..pg.start]) |gr| allocator.free(gr.members);
-    for (groups[pg.start + pg.len .. total]) |gr| allocator.free(gr.members);
-    allocator.free(groups);
-    return .{ .total_groups = total, .groups = page };
+    for (group_list.items[pg.start .. pg.start + pg.len], 0..) |gb, gi| {
+        const members = try allocator.alloc(DuplicateMember, gb.indices.len);
+        for (gb.indices, 0..) |idx, mi| {
+            const n = &g.nodes.items[idx];
+            members[mi] = .{
+                .node_id = @enumFromInt(idx),
+                .name = n.name,
+                .file_path = n.file_path,
+            };
+        }
+        groups[gi] = .{ .structural_hash = gb.hash, .similarity = 1.0, .members = members };
+        materialized += 1;
+    }
+    errdefer comptime unreachable;
+    return .{ .total_groups = total, .groups = groups };
 }
 
 /// Cluster pre-fingerprinted candidates by Jaccard similarity using union-find.
@@ -183,21 +142,22 @@ pub fn findFuzzyDuplicates(allocator: std.mem.Allocator, fg: FrozenGraph, candid
     const nc = candidates.len;
     if (nc == 0) return .{ .total_groups = 0, .groups = &.{} };
 
-    const parents = try allocator.alloc(usize, nc);
-    defer allocator.free(parents);
+    var arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    const parents = try a.alloc(usize, nc);
     for (0..nc) |i| parents[i] = i;
 
-    const min_sim_arr = try allocator.alloc(f64, nc);
-    defer allocator.free(min_sim_arr);
+    const min_sim_arr = try a.alloc(f64, nc);
     @memset(min_sim_arr, 1.0);
 
     // Pre-merge candidates with identical structural hashes (exact duplicates).
     var hash_rep = std.AutoHashMapUnmanaged(u64, usize){};
-    defer hash_rep.deinit(allocator);
     for (0..nc) |i| {
         const h = candidates[i].structural_hash;
         if (h == 0) continue;
-        const gop = try hash_rep.getOrPut(allocator, h);
+        const gop = try hash_rep.getOrPut(a, h);
         if (gop.found_existing) {
             const ri = unionFindRoot(parents, gop.value_ptr.*);
             const rj = unionFindRoot(parents, i);
@@ -226,59 +186,58 @@ pub fn findFuzzyDuplicates(allocator: std.mem.Allocator, fg: FrozenGraph, candid
         }
     }
 
-    // Collect groups: map root -> list of member indices.
+    // Map root -> member NodeId list.
     var group_map = std.AutoHashMapUnmanaged(usize, std.ArrayList(NodeId)){};
-    defer {
-        var it = group_map.iterator();
-        while (it.next()) |entry| entry.value_ptr.deinit(allocator);
-        group_map.deinit(allocator);
-    }
     for (0..nc) |i| {
         const root = unionFindRoot(parents, i);
-        const gop = try group_map.getOrPut(allocator, root);
+        const gop = try group_map.getOrPut(a, root);
         if (!gop.found_existing) gop.value_ptr.* = .empty;
-        try gop.value_ptr.append(allocator, candidates[i].node_id);
+        try gop.value_ptr.append(a, candidates[i].node_id);
     }
 
-    // Build sorted group list (only multi-member groups).
-    var fuzzy_groups = std.ArrayList(DuplicateGroup).empty;
-    defer fuzzy_groups.deinit(allocator);
+    // Collect multi-member groups into a flat sortable list.
+    const FuzzyGroupBuild = struct { root: usize, node_ids: []const NodeId, sim: f64 };
+    var group_list = std.ArrayList(FuzzyGroupBuild).empty;
     var gmap_it = group_map.iterator();
     while (gmap_it.next()) |entry| {
-        const members_list = entry.value_ptr;
-        if (members_list.items.len < 2) continue;
+        if (entry.value_ptr.items.len < 2) continue;
         const root = entry.key_ptr.*;
-        const members = try allocator.alloc(DuplicateMember, members_list.items.len);
-        for (members_list.items, 0..) |nid, mi| {
-            const n = g.getNode(nid) orelse continue;
-            members[mi] = .{ .node_id = nid, .name = n.name, .file_path = n.file_path };
-        }
-        try fuzzy_groups.append(allocator, .{
-            .structural_hash = 0,
-            .similarity = min_sim_arr[root],
-            .members = members,
+        try group_list.append(a, .{
+            .root = root,
+            .node_ids = entry.value_ptr.items,
+            .sim = min_sim_arr[root],
         });
     }
-    std.mem.sort(DuplicateGroup, fuzzy_groups.items, {}, struct {
-        fn lt(_: void, a: DuplicateGroup, b: DuplicateGroup) bool {
-            return a.members.len > b.members.len;
+
+    std.mem.sort(FuzzyGroupBuild, group_list.items, {}, struct {
+        fn lt(_: void, x: FuzzyGroupBuild, y: FuzzyGroupBuild) bool {
+            return x.node_ids.len > y.node_ids.len;
         }
     }.lt);
 
-    const total: u32 = @intCast(fuzzy_groups.items.len);
+    const total: u32 = @intCast(group_list.items.len);
     const pg = pagination.paginate(total, options.offset, options.limit);
+    if (pg.len == 0) return .{ .total_groups = total, .groups = &.{} };
 
-    if (pg.len == 0) {
-        for (fuzzy_groups.items) |gr| allocator.free(gr.members);
-        return .{ .total_groups = total, .groups = &.{} };
+    // Materialize member slices only for the page window.
+    const groups = try allocator.alloc(DuplicateGroup, pg.len);
+    var materialized: usize = 0;
+    errdefer {
+        for (groups[0..materialized]) |gr| allocator.free(gr.members);
+        allocator.free(groups);
     }
 
-    const page = try allocator.alloc(DuplicateGroup, pg.len);
-    @memcpy(page, fuzzy_groups.items[pg.start .. pg.start + pg.len]);
-    // Free the non-page groups' member slices; page entries borrow the same slices.
-    for (fuzzy_groups.items[0..pg.start]) |gr| allocator.free(gr.members);
-    for (fuzzy_groups.items[pg.start + pg.len .. total]) |gr| allocator.free(gr.members);
-    return .{ .total_groups = total, .groups = page };
+    for (group_list.items[pg.start .. pg.start + pg.len], 0..) |gb, gi| {
+        const members = try allocator.alloc(DuplicateMember, gb.node_ids.len);
+        for (gb.node_ids, 0..) |nid, mi| {
+            const n = g.getNode(nid).?;
+            members[mi] = .{ .node_id = nid, .name = n.name, .file_path = n.file_path };
+        }
+        groups[gi] = .{ .structural_hash = 0, .similarity = gb.sim, .members = members };
+        materialized += 1;
+    }
+    errdefer comptime unreachable;
+    return .{ .total_groups = total, .groups = groups };
 }
 
 /// Multiset Jaccard similarity over two pre-computed frequency arrays.

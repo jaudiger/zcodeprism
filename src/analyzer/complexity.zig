@@ -3,6 +3,7 @@ const graph_mod = @import("../core/graph.zig");
 const types = @import("../core/types.zig");
 const node_mod = @import("../core/node.zig");
 const scope_mod = @import("../core/scope.zig");
+const filter = @import("filter.zig");
 
 const Graph = graph_mod.Graph;
 const FrozenGraph = graph_mod.FrozenGraph;
@@ -55,9 +56,7 @@ pub fn findComplex(allocator: std.mem.Allocator, fg: FrozenGraph, options: Compl
         const m = n.metrics orelse continue;
         if (options.kind != .file and m.complexity == 0) continue;
 
-        if (scope_filter) |sf| {
-            if (!sf.matches(n.file_path orelse continue)) continue;
-        }
+        if (!filter.passesScope(scope_filter, n.file_path)) continue;
 
         const score: u16 = if (options.kind == .file)
             @intCast(@min(m.lines, std.math.maxInt(u16)))

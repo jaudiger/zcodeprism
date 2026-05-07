@@ -4,6 +4,7 @@ const types = @import("../core/types.zig");
 const node_mod = @import("../core/node.zig");
 const scope_mod = @import("../core/scope.zig");
 const lang_meta_mod = @import("../core/lang_meta.zig");
+const filter = @import("filter.zig");
 const pagination = @import("pagination.zig");
 
 const Graph = graph_mod.Graph;
@@ -73,9 +74,7 @@ pub fn findDeadCode(allocator: std.mem.Allocator, fg: FrozenGraph, options: Dead
         if (n.external != .none) continue;
         if (!options.include_public and n.visibility == .public) continue;
 
-        if (scope_filter) |sf| {
-            if (!sf.matches(n.file_path orelse continue)) continue;
-        }
+        if (!filter.passesScope(scope_filter, n.file_path)) continue;
 
         const node_id: NodeId = @enumFromInt(i);
         const in_edges = g.inEdges(node_id);
