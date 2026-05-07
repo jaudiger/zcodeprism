@@ -11,6 +11,7 @@ const pc = @import("parse_context.zig");
 const phantom_mod = @import("../../core/phantom.zig");
 const shared_resolve = @import("../shared/resolve.zig");
 const shared_lookup = @import("../shared/lookup.zig");
+const shared_scan = @import("../shared/scan.zig");
 const type_env_mod = @import("../shared/type_env.zig");
 const worklist_mod = @import("../../lsp/worklist.zig");
 
@@ -37,21 +38,49 @@ const TypeEnv = type_env_mod.TypeEnv;
 pub const NodeTypeMap = std.AutoHashMapUnmanaged(NodeId, NodeId);
 
 /// Bundles all state needed to scan a single function or test body for edges.
+/// Common fields live in base; Zig-specific extras (field_types, k) are direct.
 const ScanContext = struct {
-    g: *Graph,
-    source: []const u8,
-    caller_id: NodeId,
-    caller_parent_id: ?NodeId,
-    fn_decl_node: ts.Node,
-    edge_ctx: *const EdgeContext,
+    base: shared_scan.BaseScanContext,
     k: *const KindIds,
-    type_env: *const TypeEnv,
-    graph_index: *const GraphIndex,
-    phantom_mgr: *const PhantomManager,
     field_types: *const NodeTypeMap,
-    wl: *LspWorklist,
-    io: std.Io,
-    log: Logger,
+
+    pub fn isBoundary(self: *const @This(), node: ts.Node) bool {
+        const kid = node.kindId();
+        return kid == self.k.function_declaration or kid == self.k.test_declaration;
+    }
+
+    pub fn dispatch(self: *const @This(), allocator: std.mem.Allocator, node: ts.Node, depth: u32) !void {
+        _ = depth;
+        const kid = node.kindId();
+        if (kid == self.k.call_expression) {
+            try handleCall(allocator, self, node);
+        } else if (kid == self.k.field_expression) {
+            const parent = node.parent();
+            const is_call_fn_ref = if (parent) |p| p.kindId() == self.k.call_expression and blk: {
+                break :blk if (p.namedChild(0)) |first|
+                    first.startByte() == node.startByte() and first.endByte() == node.endByte()
+                else
+                    false;
+            } else false;
+            if (!is_call_fn_ref) {
+                if (node.namedChildCount() < 2) {
+                    try handleBareEnumLiteral(allocator, self, node);
+                } else {
+                    try handleFieldAccess(allocator, self, node);
+                }
+            }
+        } else if (kid == self.k.identifier or kid == self.k.property_identifier) {
+            try handleTypeRef(allocator, self, node);
+        } else if (kid == self.k.variable_declaration) {
+            const is_named_literal = extractStructLiteralType(self.base.source, node) != null;
+            const is_anon_literal = !is_named_literal and hasAnonymousStructLiteralRHS(self.base.source, node);
+            if (is_named_literal or is_anon_literal) {
+                try handleStructLiteral(allocator, self, node);
+            }
+        } else if (kid == self.k.return_expression) {
+            try handleReturnStructLiteral(allocator, self, node);
+        }
+    }
 };
 
 /// Build TypeEnv and run a single-pass body scan for the matched declaration.
@@ -70,36 +99,45 @@ fn processDeclarationEdges(
     wl: *LspWorklist,
     log: Logger,
 ) !void {
-    const caller_parent_id: ?NodeId = caller_id;
+    const caller_parent_id = shared_scan.BaseScanContext.parentOf(g, caller_id);
 
     var type_env = TypeEnv{};
     defer type_env.deinit(allocator);
     try buildTypeEnv(allocator, io, g, source, ts_node, caller_id, caller_parent_id, ctx, k, graph_index, field_types, &type_env);
 
     const sctx = ScanContext{
-        .g = g,
-        .source = source,
-        .caller_id = caller_id,
-        .caller_parent_id = caller_parent_id,
-        .fn_decl_node = ts_node,
-        .edge_ctx = ctx,
+        .base = .{
+            .graph = g,
+            .source = source,
+            .caller_id = caller_id,
+            .caller_parent_id = caller_parent_id,
+            .fn_node = ts_node,
+            .edge_ctx = ctx,
+            .type_env = &type_env,
+            .graph_index = graph_index,
+            .phantom_mgr = phantom_mgr,
+            .wl = wl,
+            .io = io,
+            .log = log,
+            .resolve = .{
+                .graph_index = graph_index,
+                .io = io,
+                .log = log,
+                .resolve_return_type = cf.resolveReturnTypeScope,
+                .find_in_type_scope = null,
+            },
+        },
         .k = k,
-        .type_env = &type_env,
-        .graph_index = graph_index,
-        .phantom_mgr = phantom_mgr,
         .field_types = field_types,
-        .wl = wl,
-        .io = io,
-        .log = log,
     };
 
-    try scanSignatureForTypeRefs(allocator, &sctx, ts_node);
+    try scanSignatureForTypeRefs(allocator, &sctx);
 
     var bi: u32 = 0;
     while (bi < ts_node.childCount()) : (bi += 1) {
         const child = ts_node.child(bi) orelse continue;
         if (child.kindId() == k.block) {
-            try scanBodyForEdges(allocator, &sctx, child, 0);
+            try shared_scan.walkBody(ScanContext, allocator, &sctx, child, 0);
             break;
         }
     }
@@ -121,7 +159,6 @@ fn buildTypeEnv(
     field_types: *const NodeTypeMap,
     type_env: *TypeEnv,
 ) !void {
-    // Bind "self" and any @This() aliases to the enclosing type node.
     if (g.getNode(caller_id)) |caller_node| {
         if (caller_node.parent_id) |parent_id| {
             try type_env.bindLocal(allocator, "self", parent_id);
@@ -139,11 +176,8 @@ fn buildTypeEnv(
 
     try buildTypeEnvFromParams(allocator, g, source, fn_decl_node, caller_parent_id, ctx, k, graph_index, type_env);
 
-    // Bind the function's return type so that anonymous struct literals in return
-    // position can emit accesses_field edges during the block pre-scan.
     const return_type_id: ?NodeId = blk: {
         if (cf.resolveReturnTypeScope(g, caller_id, graph_index)) |rt| break :blk rt;
-        // @This() return type: the function returns its containing type.
         if (g.getNode(caller_id)) |fn_node| {
             if (fn_node.signature) |sig| {
                 if (std.mem.indexOf(u8, sig, "@This()") != null) break :blk fn_node.parent_id;
@@ -192,7 +226,6 @@ fn buildTypeEnvFromParams(
             if (std.mem.eql(u8, name, "self")) continue;
             const type_node = param.namedChild(1) orelse continue;
 
-            // Cross-file: import-qualified type chain.
             var chain: [cf.max_chain_depth][]const u8 = undefined;
             const chain_len = extractParamTypeChain(source, type_node, &chain, k);
             if (chain_len >= 2) {
@@ -202,7 +235,6 @@ fn buildTypeEnvFromParams(
                 }
             }
 
-            // Local: bare type name resolved at bind time.
             const base = unwrapTypeNode(type_node, k);
             if (base.kindId() == k.identifier) {
                 const type_name = ts_api.nodeText(source, base);
@@ -238,14 +270,12 @@ fn buildTypeEnvFromBlock(
         if (kid == k.variable_declaration) {
             const var_name = ast.getIdentifierName(source, child, k) orelse continue;
 
-            // Import-qualified RHS -> cross_file binding.
             if (cf.findImportQualifiedRoot(source, child, ctx, k)) |target_file_id| {
                 const resolved = cf.resolveVarTargetThroughReturnType(g, source, child, ctx, k, graph_index, Logger.noop) orelse target_file_id;
                 try type_env.bindCrossFile(allocator, var_name, resolved);
                 continue;
             }
 
-            // Resolve type: prefer explicit annotation, fall back to named struct literal RHS.
             const resolved_type_name: ?[]const u8 = blk: {
                 if (extractAnnotationTypeNode(child, k)) |ann| {
                     const base = unwrapTypeNode(ann, k);
@@ -254,7 +284,6 @@ fn buildTypeEnvFromBlock(
                 break :blk extractStructLiteralType(source, child);
             };
             if (resolved_type_name) |type_name| {
-                // type_env.local has Self/@This() aliases already; graph lookup covers other types.
                 const type_id = type_env.local.get(type_name) orelse
                     findTypeByNameScoped(g, type_name, ctx.scope_start, ctx.scope_end, caller_parent_id, &graph_index.scope);
                 if (type_id) |tid| {
@@ -263,7 +292,6 @@ fn buildTypeEnvFromBlock(
                 continue;
             }
 
-            // Call expression RHS -> bind variable to the callee's return type.
             if (findVarDeclCallExpr(child, k)) |call_expr| {
                 if (resolveCallResultType(g, source, call_expr, type_env, ctx.scope_start, ctx.scope_end, caller_parent_id, k, graph_index)) |type_id| {
                     try type_env.bindLocal(allocator, var_name, type_id);
@@ -272,12 +300,8 @@ fn buildTypeEnvFromBlock(
             continue;
         }
 
-        // Stop at nested function/test declaration boundaries.
         if (kid == k.function_declaration or kid == k.test_declaration) continue;
 
-        // If-capture: propagate type bindings from condition to capture name.
-        // Handles bare identifiers (if (opt) |val|) and field expressions
-        // (if (self.field) |val|) by traversing through the field_types map.
         if (kid == k.if_statement or kid == k.if_expression) {
             var cond_ident: ?[]const u8 = null;
             var cond_chain: [cf.max_chain_depth][]const u8 = undefined;
@@ -344,10 +368,8 @@ fn processParameterTypeEdges(
     _ = log;
     _ = phantom_mgr;
 
-    // Find parameter graph nodes (children of fn_id with kind .parameter).
     const param_children = graph_index.scope.childrenOf(fn_id);
 
-    // Walk the AST parameters list in parallel with graph parameter nodes.
     var pi: u32 = 0;
     while (pi < fn_decl_node.childCount()) : (pi += 1) {
         const params_node = fn_decl_node.child(pi) orelse continue;
@@ -363,7 +385,6 @@ fn processParameterTypeEdges(
                 continue;
             };
 
-            // Find the corresponding graph parameter node.
             const param_node_id: ?NodeId = blk: {
                 while (param_graph_idx < param_children.len) {
                     const ci = param_children[param_graph_idx];
@@ -378,7 +399,6 @@ fn processParameterTypeEdges(
             };
             const param_id = param_node_id orelse continue;
 
-            // Resolve the type annotation to a graph type node.
             const base = unwrapTypeNode(type_node, k);
             if (base.kindId() == k.identifier) {
                 const type_name = ts_api.nodeText(source, base);
@@ -454,13 +474,11 @@ fn walkForEdgesInner(allocator: std.mem.Allocator, io: std.Io, g: *Graph, source
 }
 
 /// Emit uses_type edges for type identifiers in the function signature (parameters and
-/// return type). Walks all non-block children of the declaration node so that types
-/// named in parameter annotations and the return type generate the same uses_type edges
-/// they would if encountered inside the body.
-fn scanSignatureForTypeRefs(allocator: std.mem.Allocator, sctx: *const ScanContext, fn_decl_node: ts.Node) !void {
+/// return type). Skips block children.
+fn scanSignatureForTypeRefs(allocator: std.mem.Allocator, sctx: *const ScanContext) !void {
     var i: u32 = 0;
-    while (i < fn_decl_node.childCount()) : (i += 1) {
-        const child = fn_decl_node.child(i) orelse continue;
+    while (i < sctx.base.fn_node.childCount()) : (i += 1) {
+        const child = sctx.base.fn_node.child(i) orelse continue;
         if (child.kindId() == sctx.k.block) continue;
         try scanNodeForTypeRefs(allocator, sctx, child);
     }
@@ -481,169 +499,77 @@ fn scanNodeForTypeRefs(allocator: std.mem.Allocator, sctx: *const ScanContext, n
     }
 }
 
-/// Single recursive pass over a function body emitting all edge kinds.
-/// Handles call_expression, field_expression, type identifiers, and stops
-/// at nested function or test declaration boundaries.
-fn scanBodyForEdges(allocator: std.mem.Allocator, sctx: *const ScanContext, ts_node: ts.Node, depth: u32) !void {
-    if (depth >= cf.max_ast_scan_depth) {
-        sctx.log.trace("scan depth cap reached", &.{Field.uint("depth", depth)});
-        return;
-    }
-    const kid = ts_node.kindId();
-
-    // Stop at nested function/test scope boundaries encountered during recursion.
-    if (kid == sctx.k.function_declaration or kid == sctx.k.test_declaration) return;
-
-    if (kid == sctx.k.call_expression) {
-        try handleCall(allocator, sctx, ts_node);
-    } else if (kid == sctx.k.field_expression) {
-        // Skip field_expressions that are the fn_ref of a call (handled by handleCall).
-        const parent = ts_node.parent();
-        const is_call_fn_ref = if (parent) |p| p.kindId() == sctx.k.call_expression and blk: {
-            break :blk if (p.namedChild(0)) |first|
-                first.startByte() == ts_node.startByte() and first.endByte() == ts_node.endByte()
-            else
-                false;
-        } else false;
-        if (!is_call_fn_ref) {
-            if (ts_node.namedChildCount() < 2) {
-                try handleBareEnumLiteral(allocator, sctx, ts_node);
-            } else {
-                try handleFieldAccess(allocator, sctx, ts_node);
-            }
-        }
-    } else if (kid == sctx.k.identifier or kid == sctx.k.property_identifier) {
-        try handleTypeRef(allocator, sctx, ts_node);
-    } else if (kid == sctx.k.variable_declaration) {
-        const is_named_literal = extractStructLiteralType(sctx.source, ts_node) != null;
-        const is_anon_literal = !is_named_literal and hasAnonymousStructLiteralRHS(sctx.source, ts_node);
-        if (is_named_literal or is_anon_literal) {
-            try handleStructLiteral(allocator, sctx, ts_node);
-        }
-    } else if (kid == sctx.k.return_expression) {
-        try handleReturnStructLiteral(allocator, sctx, ts_node);
-    }
-
-    var i: u32 = 0;
-    while (i < ts_node.childCount()) : (i += 1) {
-        const child = ts_node.child(i) orelse continue;
-        try scanBodyForEdges(allocator, sctx, child, depth + 1);
-    }
-}
-
 /// Emit calls edges for a call_expression node.
 fn handleCall(allocator: std.mem.Allocator, sctx: *const ScanContext, call_node: ts.Node) !void {
     const fn_ref = call_node.namedChild(0) orelse return;
-    const ref = extractCallFnRef(sctx.source, fn_ref, sctx.k) orelse return;
+    const ref = extractCallFnRef(sctx.base.source, fn_ref, sctx.k) orelse return;
     switch (ref) {
         .bare => |callee_name| {
-            if (findFunctionByNameScoped(sctx.g, callee_name, sctx.edge_ctx.scope_start, sctx.edge_ctx.scope_end, sctx.caller_parent_id, &sctx.graph_index.scope)) |callee_id| {
-                _ = try sctx.g.addEdgeIfNew(allocator, .{ .source_id = sctx.caller_id, .target_id = callee_id, .edge_type = .calls });
-            } else if (sctx.edge_ctx.findImportOrigin(callee_name)) |origin| {
-                if (origin.chain.len == 0 or !try resolveOriginCall(allocator, sctx, origin, &.{}, true)) {
+            if (findFunctionByNameScoped(sctx.base.graph, callee_name, sctx.base.edge_ctx.scope_start, sctx.base.edge_ctx.scope_end, sctx.base.caller_parent_id, &sctx.base.graph_index.scope)) |callee_id| {
+                _ = try sctx.base.graph.addEdgeIfNew(allocator, .{ .source_id = sctx.base.caller_id, .target_id = callee_id, .edge_type = .calls });
+            } else if (sctx.base.edge_ctx.findImportOrigin(callee_name)) |origin| {
+                if (origin.chain.len == 0 or !try sctx.base.resolveOriginCall(allocator, origin, &.{}, true)) {
                     const pos = call_node.startPoint();
-                    try sctx.wl.append(allocator, .{
-                        .source_node_id = sctx.caller_id,
-                        .file_path = if (sctx.g.getNode(sctx.caller_id)) |n| n.file_path orelse "" else "",
-                        .line = pos.row,
-                        .col = pos.column,
-                        .query_kind = .definition,
-                        .hint_name = callee_name,
-                    });
+                    try sctx.base.appendWorklist(allocator, pos, .definition, callee_name);
                 }
             } else {
-                sctx.log.trace("bare call unresolved", &.{Field.string("callee", callee_name)});
+                sctx.base.log.trace("bare call unresolved", &.{Field.string("callee", callee_name)});
                 const pos = call_node.startPoint();
-                try sctx.wl.append(allocator, .{
-                    .source_node_id = sctx.caller_id,
-                    .file_path = if (sctx.g.getNode(sctx.caller_id)) |n| n.file_path orelse "" else "",
-                    .line = pos.row,
-                    .col = pos.column,
-                    .query_kind = .definition,
-                    .hint_name = callee_name,
-                });
+                try sctx.base.appendWorklist(allocator, pos, .definition, callee_name);
             }
         },
         .qualified => |field_expr| {
             var chain: [cf.max_chain_depth][]const u8 = undefined;
-            const chain_len = cf.collectFieldExprChain(sctx.source, field_expr, &chain, sctx.k);
+            const chain_len = cf.collectFieldExprChain(sctx.base.source, field_expr, &chain, sctx.k);
 
             if (chain_len >= 2) {
                 const root_name = chain[0];
                 const leaf_name = chain[chain_len - 1];
 
-                const resolved_via_origin = if (sctx.edge_ctx.findImportOrigin(root_name)) |origin|
-                    try resolveOriginCall(allocator, sctx, origin, chain[1..chain_len], true)
+                const resolved_via_origin = if (sctx.base.edge_ctx.findImportOrigin(root_name)) |origin|
+                    try sctx.base.resolveOriginCall(allocator, origin, chain[1..chain_len], true)
                 else
                     false;
 
-                const resolved_via_cross = !resolved_via_origin and if (sctx.type_env.cross_file.get(root_name)) |target_file_id|
-                    try addResolvedEdges(allocator, sctx, target_file_id, chain[1..chain_len], true)
+                const resolved_via_cross = !resolved_via_origin and if (sctx.base.type_env.cross_file.get(root_name)) |target_file_id|
+                    try sctx.base.addResolvedEdges(allocator, target_file_id, chain[1..chain_len], true)
                 else
                     false;
 
                 if (resolved_via_origin or resolved_via_cross) {
                     // Resolved, nothing more to do.
-                } else if (sctx.type_env.local.get(root_name)) |type_id| {
+                } else if (sctx.base.type_env.local.get(root_name)) |type_id| {
                     if (!try resolveLocalChain(allocator, sctx, type_id, chain[1..chain_len])) {
-                        if (findFunctionByNameScoped(sctx.g, leaf_name, sctx.edge_ctx.scope_start, sctx.edge_ctx.scope_end, sctx.caller_parent_id, &sctx.graph_index.scope)) |callee_id| {
-                            _ = try sctx.g.addEdgeIfNew(allocator, .{ .source_id = sctx.caller_id, .target_id = callee_id, .edge_type = .calls });
+                        if (findFunctionByNameScoped(sctx.base.graph, leaf_name, sctx.base.edge_ctx.scope_start, sctx.base.edge_ctx.scope_end, sctx.base.caller_parent_id, &sctx.base.graph_index.scope)) |callee_id| {
+                            _ = try sctx.base.graph.addEdgeIfNew(allocator, .{ .source_id = sctx.base.caller_id, .target_id = callee_id, .edge_type = .calls });
                         } else {
                             const pos = leafIdentifierPos(field_expr, call_node, sctx.k);
-                            try sctx.wl.append(allocator, .{
-                                .source_node_id = sctx.caller_id,
-                                .file_path = if (sctx.g.getNode(sctx.caller_id)) |n| n.file_path orelse "" else "",
-                                .line = pos.row,
-                                .col = pos.column,
-                                .query_kind = .definition,
-                                .hint_name = leaf_name,
-                            });
+                            try sctx.base.appendWorklist(allocator, pos, .definition, leaf_name);
                         }
                     }
-                } else if (sctx.type_env.findParamOrigin(root_name)) |origin| {
-                    if (!try resolveOriginCall(allocator, sctx, origin, chain[1..chain_len], true)) {
+                } else if (sctx.base.type_env.findParamOrigin(root_name)) |origin| {
+                    if (!try sctx.base.resolveOriginCall(allocator, origin, chain[1..chain_len], true)) {
                         const pos = leafIdentifierPos(field_expr, call_node, sctx.k);
-                        try sctx.wl.append(allocator, .{
-                            .source_node_id = sctx.caller_id,
-                            .file_path = if (sctx.g.getNode(sctx.caller_id)) |n| n.file_path orelse "" else "",
-                            .line = pos.row,
-                            .col = pos.column,
-                            .query_kind = .definition,
-                            .hint_name = leaf_name,
-                        });
+                        try sctx.base.appendWorklist(allocator, pos, .definition, leaf_name);
                     }
                 } else {
-                    if (findTypeByNameScoped(sctx.g, root_name, sctx.edge_ctx.scope_start, sctx.edge_ctx.scope_end, sctx.caller_parent_id, &sctx.graph_index.scope)) |type_id| {
+                    if (findTypeByNameScoped(sctx.base.graph, root_name, sctx.base.edge_ctx.scope_start, sctx.base.edge_ctx.scope_end, sctx.base.caller_parent_id, &sctx.base.graph_index.scope)) |type_id| {
                         if (!try resolveLocalChain(allocator, sctx, type_id, chain[1..chain_len])) {
                             const pos = leafIdentifierPos(field_expr, call_node, sctx.k);
-                            try sctx.wl.append(allocator, .{
-                                .source_node_id = sctx.caller_id,
-                                .file_path = if (sctx.g.getNode(sctx.caller_id)) |n| n.file_path orelse "" else "",
-                                .line = pos.row,
-                                .col = pos.column,
-                                .query_kind = .definition,
-                                .hint_name = leaf_name,
-                            });
+                            try sctx.base.appendWorklist(allocator, pos, .definition, leaf_name);
                         }
                     } else {
-                        sctx.log.trace("qualified call unresolved", &.{
+                        sctx.base.log.trace("qualified call unresolved", &.{
                             Field.string("root", root_name),
                             Field.string("leaf", leaf_name),
                         });
                         const pos = leafIdentifierPos(field_expr, call_node, sctx.k);
-                        try sctx.wl.append(allocator, .{
-                            .source_node_id = sctx.caller_id,
-                            .file_path = if (sctx.g.getNode(sctx.caller_id)) |n| n.file_path orelse "" else "",
-                            .line = pos.row,
-                            .col = pos.column,
-                            .query_kind = .definition,
-                            .hint_name = leaf_name,
-                        });
+                        try sctx.base.appendWorklist(allocator, pos, .definition, leaf_name);
                     }
                 }
             } else if (chain_len == 1) {
-                if (findFunctionByNameScoped(sctx.g, chain[0], sctx.edge_ctx.scope_start, sctx.edge_ctx.scope_end, sctx.caller_parent_id, &sctx.graph_index.scope)) |callee_id| {
-                    _ = try sctx.g.addEdgeIfNew(allocator, .{ .source_id = sctx.caller_id, .target_id = callee_id, .edge_type = .calls });
+                if (findFunctionByNameScoped(sctx.base.graph, chain[0], sctx.base.edge_ctx.scope_start, sctx.base.edge_ctx.scope_end, sctx.base.caller_parent_id, &sctx.base.graph_index.scope)) |callee_id| {
+                    _ = try sctx.base.graph.addEdgeIfNew(allocator, .{ .source_id = sctx.base.caller_id, .target_id = callee_id, .edge_type = .calls });
                 }
             }
         },
@@ -654,30 +580,21 @@ fn handleCall(allocator: std.mem.Allocator, sctx: *const ScanContext, call_node:
 /// Appends a type_definition worklist entry when the receiver type is unknown.
 fn handleFieldAccess(allocator: std.mem.Allocator, sctx: *const ScanContext, field_expr: ts.Node) !void {
     var chain: [cf.max_chain_depth][]const u8 = undefined;
-    const chain_len = cf.collectFieldExprChain(sctx.source, field_expr, &chain, sctx.k);
+    const chain_len = cf.collectFieldExprChain(sctx.base.source, field_expr, &chain, sctx.k);
     if (chain_len < 2) return;
     const root_name = chain[0];
     const field_name = chain[chain_len - 1];
-    const type_id = sctx.type_env.local.get(root_name) orelse {
-        // Receiver type is unknown (inferred variable, comptime result).
+    const type_id = sctx.base.type_env.local.get(root_name) orelse {
         const pos = field_expr.startPoint();
-        try sctx.wl.append(allocator, .{
-            .source_node_id = sctx.caller_id,
-            .file_path = if (sctx.g.getNode(sctx.caller_id)) |n| n.file_path orelse "" else "",
-            .line = pos.row,
-            .col = pos.column,
-            .query_kind = .type_definition,
-            .hint_name = root_name,
-        });
+        try sctx.base.appendWorklist(allocator, pos, .type_definition, root_name);
         return;
     };
-    // For multi-level chains like self.settings.timeout, traverse intermediates.
     const target_type_id = if (chain_len > 2)
-        resolveChainToType(sctx.g, type_id, chain[1 .. chain_len - 1], sctx.field_types, &sctx.graph_index.scope) orelse return
+        resolveChainToType(sctx.base.graph, type_id, chain[1 .. chain_len - 1], sctx.field_types, &sctx.base.graph_index.scope) orelse return
     else
         type_id;
-    if (findFieldByName(sctx.g, target_type_id, field_name, &sctx.graph_index.scope)) |field_id| {
-        _ = try sctx.g.addEdgeIfNew(allocator, .{ .source_id = sctx.caller_id, .target_id = field_id, .edge_type = .accesses_field });
+    if (findFieldByName(sctx.base.graph, target_type_id, field_name, &sctx.base.graph_index.scope)) |field_id| {
+        _ = try sctx.base.graph.addEdgeIfNew(allocator, .{ .source_id = sctx.base.caller_id, .target_id = field_id, .edge_type = .accesses_field });
     }
 }
 
@@ -688,24 +605,17 @@ fn handleBareEnumLiteral(allocator: std.mem.Allocator, sctx: *const ScanContext,
     const name_node = field_expr.namedChild(0) orelse return;
     const nk = name_node.kindId();
     if (nk != sctx.k.identifier and nk != sctx.k.property_identifier) return;
-    const variant_name = ts_api.nodeText(sctx.source, name_node);
+    const variant_name = ts_api.nodeText(sctx.base.source, name_node);
 
     if (inferExpectedType(sctx, field_expr)) |type_id| {
-        if (findFieldByName(sctx.g, type_id, variant_name, &sctx.graph_index.scope)) |field_id| {
-            _ = try sctx.g.addEdgeIfNew(allocator, .{ .source_id = sctx.caller_id, .target_id = field_id, .edge_type = .accesses_field });
+        if (findFieldByName(sctx.base.graph, type_id, variant_name, &sctx.base.graph_index.scope)) |field_id| {
+            _ = try sctx.base.graph.addEdgeIfNew(allocator, .{ .source_id = sctx.base.caller_id, .target_id = field_id, .edge_type = .accesses_field });
             return;
         }
     }
 
     const pos = field_expr.startPoint();
-    try sctx.wl.append(allocator, .{
-        .source_node_id = sctx.caller_id,
-        .file_path = if (sctx.g.getNode(sctx.caller_id)) |n| n.file_path orelse "" else "",
-        .line = pos.row,
-        .col = pos.column,
-        .query_kind = .type_definition,
-        .hint_name = variant_name,
-    });
+    try sctx.base.appendWorklist(allocator, pos, .type_definition, variant_name);
 }
 
 /// Walk up from a bare enum literal to determine the expected type from context.
@@ -721,16 +631,16 @@ fn inferExpectedType(sctx: *const ScanContext, field_expr: ts.Node) ?NodeId {
         return inferTypeFromSwitchOperand(sctx, parent);
     }
     if (pk == sctx.k.return_expression) {
-        return sctx.type_env.local.get("_return");
+        return sctx.base.type_env.local.get("_return");
     }
     if (pk == sctx.k.variable_declaration) {
-        const var_name = ast.getIdentifierName(sctx.source, parent, sctx.k) orelse return null;
-        return sctx.type_env.local.get(var_name);
+        const var_name = ast.getIdentifierName(sctx.base.source, parent, sctx.k) orelse return null;
+        return sctx.base.type_env.local.get(var_name);
     }
     if (pk == sctx.k.expression_statement) {
         const lhs = parent.child(0) orelse return null;
         if (lhs.kindId() != sctx.k.identifier) return null;
-        return sctx.type_env.local.get(ts_api.nodeText(sctx.source, lhs));
+        return sctx.base.type_env.local.get(ts_api.nodeText(sctx.base.source, lhs));
     }
     if (pk == sctx.k.arguments) {
         return inferTypeFromCallArg(sctx, parent, field_expr);
@@ -774,7 +684,6 @@ fn inferTypeFromCallArg(sctx: *const ScanContext, args_node: ts.Node, enum_liter
     if (call_node.kindId() != sctx.k.call_expression) return null;
     const fn_ref = call_node.namedChild(0) orelse return null;
 
-    // Determine if this is a method call (field_expression) to offset for implicit self.
     const is_method = fn_ref.kindId() == sctx.k.field_expression;
     const callee_id = resolveCalleeNodeId(sctx, fn_ref) orelse return null;
     const param_offset: u32 = if (is_method) 1 else 0;
@@ -786,14 +695,14 @@ fn inferTypeFromCallArg(sctx: *const ScanContext, args_node: ts.Node, enum_liter
 /// (resolve root via type_env, find field, look up field type).
 fn resolveExprType(sctx: *const ScanContext, expr: ts.Node) ?NodeId {
     if (expr.kindId() == sctx.k.identifier) {
-        return sctx.type_env.local.get(ts_api.nodeText(sctx.source, expr));
+        return sctx.base.type_env.local.get(ts_api.nodeText(sctx.base.source, expr));
     }
     if (expr.kindId() == sctx.k.field_expression) {
         var chain: [cf.max_chain_depth][]const u8 = undefined;
-        const chain_len = cf.collectFieldExprChain(sctx.source, expr, &chain, sctx.k);
+        const chain_len = cf.collectFieldExprChain(sctx.base.source, expr, &chain, sctx.k);
         if (chain_len >= 2) {
-            const root_type_id = sctx.type_env.local.get(chain[0]) orelse return null;
-            const field_id = findFieldByName(sctx.g, root_type_id, chain[chain_len - 1], &sctx.graph_index.scope) orelse return null;
+            const root_type_id = sctx.base.type_env.local.get(chain[0]) orelse return null;
+            const field_id = findFieldByName(sctx.base.graph, root_type_id, chain[chain_len - 1], &sctx.base.graph_index.scope) orelse return null;
             return sctx.field_types.get(field_id);
         }
     }
@@ -802,20 +711,20 @@ fn resolveExprType(sctx: *const ScanContext, expr: ts.Node) ?NodeId {
 
 /// Resolve a call_expression's fn_ref to the callee's graph node ID.
 fn resolveCalleeNodeId(sctx: *const ScanContext, fn_ref: ts.Node) ?NodeId {
-    const ref = extractCallFnRef(sctx.source, fn_ref, sctx.k) orelse return null;
+    const ref = extractCallFnRef(sctx.base.source, fn_ref, sctx.k) orelse return null;
     switch (ref) {
         .bare => |callee_name| {
-            return findFunctionByNameScoped(sctx.g, callee_name, sctx.edge_ctx.scope_start, sctx.edge_ctx.scope_end, sctx.caller_parent_id, &sctx.graph_index.scope);
+            return findFunctionByNameScoped(sctx.base.graph, callee_name, sctx.base.edge_ctx.scope_start, sctx.base.edge_ctx.scope_end, sctx.base.caller_parent_id, &sctx.base.graph_index.scope);
         },
         .qualified => |field_expr| {
             var chain: [cf.max_chain_depth][]const u8 = undefined;
-            const chain_len = cf.collectFieldExprChain(sctx.source, field_expr, &chain, sctx.k);
+            const chain_len = cf.collectFieldExprChain(sctx.base.source, field_expr, &chain, sctx.k);
             if (chain_len >= 2) {
                 const root_name = chain[0];
                 const leaf_name = chain[chain_len - 1];
-                if (sctx.type_env.local.get(root_name)) |type_id| {
-                    for (sctx.graph_index.scope.childrenOf(type_id)) |child_idx| {
-                        const n = sctx.g.nodes.items[child_idx];
+                if (sctx.base.type_env.local.get(root_name)) |type_id| {
+                    for (sctx.base.graph_index.scope.childrenOf(type_id)) |child_idx| {
+                        const n = sctx.base.graph.nodes.items[child_idx];
                         if (n.kind == .function and std.mem.eql(u8, n.name, leaf_name)) {
                             return @enumFromInt(child_idx);
                         }
@@ -830,10 +739,10 @@ fn resolveCalleeNodeId(sctx: *const ScanContext, fn_ref: ts.Node) ?NodeId {
 /// Resolve the Nth parameter's type via graph traversal. Walks the callee's
 /// `.parameter` children (via ScopeIndex) and looks up the type in NodeTypeMap.
 fn resolveParamType(sctx: *const ScanContext, callee_id: NodeId, param_index: u32) ?NodeId {
-    const children = sctx.graph_index.scope.childrenOf(callee_id);
+    const children = sctx.base.graph_index.scope.childrenOf(callee_id);
     var pi: u32 = 0;
     for (children) |ci| {
-        const n = sctx.g.nodes.items[ci];
+        const n = sctx.base.graph.nodes.items[ci];
         if (n.kind != .parameter) continue;
         if (pi == param_index) {
             return sctx.field_types.get(@enumFromInt(ci));
@@ -845,71 +754,49 @@ fn resolveParamType(sctx: *const ScanContext, callee_id: NodeId, param_index: u3
 
 /// Emit uses_type for an identifier that resolves to a type in scope or cross-file.
 fn handleTypeRef(allocator: std.mem.Allocator, sctx: *const ScanContext, id_node: ts.Node) !void {
-    const name = ts_api.nodeText(sctx.source, id_node);
+    const name = ts_api.nodeText(sctx.base.source, id_node);
     const target_id =
-        findTypeByNameScoped(sctx.g, name, sctx.edge_ctx.scope_start, sctx.edge_ctx.scope_end, sctx.caller_parent_id, &sctx.graph_index.scope) orelse
-        findTypeCrossFile(sctx.g, name, sctx.edge_ctx, &sctx.graph_index.scope, sctx.phantom_mgr) orelse
+        findTypeByNameScoped(sctx.base.graph, name, sctx.base.edge_ctx.scope_start, sctx.base.edge_ctx.scope_end, sctx.base.caller_parent_id, &sctx.base.graph_index.scope) orelse
+        findTypeCrossFile(sctx.base.graph, name, sctx.base.edge_ctx, &sctx.base.graph_index.scope, sctx.base.phantom_mgr) orelse
         return;
-    const target_node = sctx.g.getNode(target_id);
-    const is_own_child = if (target_node) |tn| tn.parent_id != null and tn.parent_id.? == sctx.caller_id else false;
+    const target_node = sctx.base.graph.getNode(target_id);
+    const is_own_child = if (target_node) |tn| tn.parent_id != null and tn.parent_id.? == sctx.base.caller_id else false;
     if (!is_own_child) {
-        _ = try sctx.g.addEdgeIfNew(allocator, .{ .source_id = sctx.caller_id, .target_id = target_id, .edge_type = .uses_type });
+        _ = try sctx.base.graph.addEdgeIfNew(allocator, .{ .source_id = sctx.base.caller_id, .target_id = target_id, .edge_type = .uses_type });
     }
 }
 
 /// Emit uses_type and accesses_field for a variable_declaration whose RHS is a struct literal.
 /// The type binding was established by buildTypeEnvFromBlock; we look it up here by variable name.
 fn handleStructLiteral(allocator: std.mem.Allocator, sctx: *const ScanContext, var_decl: ts.Node) !void {
-    const var_name = ast.getIdentifierName(sctx.source, var_decl, sctx.k) orelse return;
-    const type_id = sctx.type_env.local.get(var_name) orelse return;
-    _ = try sctx.g.addEdgeIfNew(allocator, .{ .source_id = sctx.caller_id, .target_id = type_id, .edge_type = .uses_type });
+    const var_name = ast.getIdentifierName(sctx.base.source, var_decl, sctx.k) orelse return;
+    const type_id = sctx.base.type_env.local.get(var_name) orelse return;
+    _ = try sctx.base.graph.addEdgeIfNew(allocator, .{ .source_id = sctx.base.caller_id, .target_id = type_id, .edge_type = .uses_type });
     var fields: [max_struct_fields][]const u8 = undefined;
-    const field_count = collectStructLiteralFields(sctx.source, var_decl, &fields);
+    const field_count = collectStructLiteralFields(sctx.base.source, var_decl, &fields);
     for (fields[0..field_count]) |field_name| {
-        if (findFieldByName(sctx.g, type_id, field_name, &sctx.graph_index.scope)) |field_id| {
-            _ = try sctx.g.addEdgeIfNew(allocator, .{ .source_id = sctx.caller_id, .target_id = field_id, .edge_type = .accesses_field });
+        if (findFieldByName(sctx.base.graph, type_id, field_name, &sctx.base.graph_index.scope)) |field_id| {
+            _ = try sctx.base.graph.addEdgeIfNew(allocator, .{ .source_id = sctx.base.caller_id, .target_id = field_id, .edge_type = .accesses_field });
         }
     }
 }
 
 /// Emit uses_type and accesses_field for an anonymous struct literal in return position.
 fn handleReturnStructLiteral(allocator: std.mem.Allocator, sctx: *const ScanContext, return_node: ts.Node) !void {
-    const return_type_id = sctx.type_env.local.get("_return") orelse return;
+    const return_type_id = sctx.base.type_env.local.get("_return") orelse return;
     const ret_expr = return_node.namedChild(0) orelse return;
     const s = ret_expr.startByte();
     const e = ret_expr.endByte();
-    if (s >= e or e > sctx.source.len) return;
-    if (!textStartsWithAnonLiteral(sctx.source[s..e])) return;
-    _ = try sctx.g.addEdgeIfNew(allocator, .{ .source_id = sctx.caller_id, .target_id = return_type_id, .edge_type = .uses_type });
+    if (s >= e or e > sctx.base.source.len) return;
+    if (!textStartsWithAnonLiteral(sctx.base.source[s..e])) return;
+    _ = try sctx.base.graph.addEdgeIfNew(allocator, .{ .source_id = sctx.base.caller_id, .target_id = return_type_id, .edge_type = .uses_type });
     var fields: [max_struct_fields][]const u8 = undefined;
-    const field_count = collectStructLiteralFields(sctx.source, return_node, &fields);
+    const field_count = collectStructLiteralFields(sctx.base.source, return_node, &fields);
     for (fields[0..field_count]) |field_name| {
-        if (findFieldByName(sctx.g, return_type_id, field_name, &sctx.graph_index.scope)) |field_id| {
-            _ = try sctx.g.addEdgeIfNew(allocator, .{ .source_id = sctx.caller_id, .target_id = field_id, .edge_type = .accesses_field });
+        if (findFieldByName(sctx.base.graph, return_type_id, field_name, &sctx.base.graph_index.scope)) |field_id| {
+            _ = try sctx.base.graph.addEdgeIfNew(allocator, .{ .source_id = sctx.base.caller_id, .target_id = field_id, .edge_type = .accesses_field });
         }
     }
-}
-
-fn resolveOriginCall(allocator: std.mem.Allocator, sctx: *const ScanContext, origin: cf.SymbolOrigin, call_chain: []const []const u8, is_call: bool) !bool {
-    const rctx = shared_resolve.ResolveContext{
-        .graph_index = sctx.graph_index,
-        .io = sctx.io,
-        .log = sctx.log,
-        .resolve_return_type = cf.resolveReturnTypeScope,
-        .find_in_type_scope = null,
-    };
-    return try shared_resolve.resolveOriginCall(allocator, sctx.g, sctx.caller_id, origin, call_chain, is_call, &rctx);
-}
-
-fn addResolvedEdges(allocator: std.mem.Allocator, sctx: *const ScanContext, target_file_id: NodeId, chain: []const []const u8, is_call: bool) !bool {
-    const rctx = shared_resolve.ResolveContext{
-        .graph_index = sctx.graph_index,
-        .io = sctx.io,
-        .log = sctx.log,
-        .resolve_return_type = cf.resolveReturnTypeScope,
-        .find_in_type_scope = null,
-    };
-    return try shared_resolve.addResolvedEdges(allocator, sctx.g, sctx.caller_id, target_file_id, chain, is_call, &rctx);
 }
 
 /// Traverse a chain starting from a known type scope, following field -> type
@@ -924,12 +811,12 @@ fn resolveLocalChain(
     var current_scope = start_type_id;
     for (chain, 0..) |segment, seg_idx| {
         const is_last = seg_idx == chain.len - 1;
-        const matched_id = findChildByName(sctx.g, &sctx.graph_index.scope, current_scope, segment) orelse return false;
-        const matched_node = sctx.g.nodes.items[@intFromEnum(matched_id)];
+        const matched_id = findChildByName(sctx.base.graph, &sctx.base.graph_index.scope, current_scope, segment) orelse return false;
+        const matched_node = sctx.base.graph.nodes.items[@intFromEnum(matched_id)];
 
         if (is_last and matched_node.kind == .function) {
-            _ = try sctx.g.addEdgeIfNew(allocator, .{
-                .source_id = sctx.caller_id,
+            _ = try sctx.base.graph.addEdgeIfNew(allocator, .{
+                .source_id = sctx.base.caller_id,
                 .target_id = matched_id,
                 .edge_type = .calls,
             });
@@ -941,13 +828,12 @@ fn resolveLocalChain(
         } else if (matched_node.kind == .field) {
             current_scope = sctx.field_types.get(matched_id) orelse return false;
         } else if (matched_node.kind == .function) {
-            // Mid-chain function call: follow its return type.
-            _ = try sctx.g.addEdgeIfNew(allocator, .{
-                .source_id = sctx.caller_id,
+            _ = try sctx.base.graph.addEdgeIfNew(allocator, .{
+                .source_id = sctx.base.caller_id,
                 .target_id = matched_id,
                 .edge_type = .calls,
             });
-            current_scope = cf.resolveReturnTypeScope(sctx.g, matched_id, sctx.graph_index) orelse return false;
+            current_scope = cf.resolveReturnTypeScope(sctx.base.graph, matched_id, sctx.base.graph_index) orelse return false;
         } else if (matched_node.kind == .constant) {
             current_scope = matched_id;
         } else {
@@ -1137,7 +1023,6 @@ fn findVarDeclCallExpr(var_decl: ts.Node, k: *const KindIds) ?ts.Node {
     while (i < var_decl.namedChildCount()) : (i += 1) {
         const child = var_decl.namedChild(i) orelse continue;
         const kid = child.kindId();
-        // Skip the variable name identifier.
         if (!past_name and kid == k.identifier) {
             past_name = true;
             continue;
@@ -1178,7 +1063,6 @@ fn resolveCallResultType(
         const name = ts_api.nodeText(source, fn_ref);
         fn_id = findFunctionByNameScoped(g, name, scope_start, scope_end, caller_parent_id, &graph_index.scope);
     } else if (ref_kid == k.field_expression) {
-        // obj.method() -> look up obj type, find method, get return type.
         var chain: [cf.max_chain_depth][]const u8 = undefined;
         const chain_len = cf.collectFieldExprChain(source, fn_ref, &chain, k);
         if (chain_len >= 2) {
@@ -1200,7 +1084,6 @@ fn resolveCallResultType(
 
     if (cf.resolveReturnTypeScope(g, fid, graph_index)) |ret_id| return ret_id;
 
-    // @This() return type: the function returns its containing type.
     if (g.getNode(fid)) |fn_node| {
         if (fn_node.signature) |sig| {
             if (std.mem.indexOf(u8, sig, "@This()") != null) return fn_node.parent_id;
@@ -1370,8 +1253,6 @@ fn scanFieldTypeNode(allocator: std.mem.Allocator, fctx: *const FieldScanContext
         try handleFieldQualifiedType(allocator, fctx, node);
         return;
     }
-    // Recurse into all children: handles pointer_type, optional_type, error_union_type,
-    // slice_type, function_type, nested container declarations, and any future wrappers.
     var i: u32 = 0;
     while (i < node.childCount()) : (i += 1) {
         const child = node.child(i) orelse continue;
