@@ -12,6 +12,7 @@ pub const Annotation = struct {
 
 /// Per-session cursor tracking position and user annotations.
 pub const Cursor = struct {
+    allocator: std.mem.Allocator,
     position: NodeId,
     annotations: std.ArrayList(Annotation),
     scope: ?[]const u8,
@@ -19,8 +20,9 @@ pub const Cursor = struct {
     include_external_nodes: bool,
 
     /// Create a cursor at the given node position.
-    pub fn init(position: NodeId) Cursor {
+    pub fn init(allocator: std.mem.Allocator, position: NodeId) Cursor {
         return .{
+            .allocator = allocator,
             .position = position,
             .annotations = .empty,
             .scope = null,
@@ -30,8 +32,8 @@ pub const Cursor = struct {
     }
 
     /// Append an annotation for `node_id` to this cursor's session.
-    pub fn addAnnotation(self: *Cursor, allocator: std.mem.Allocator, node_id: NodeId, tag: []const u8, note: ?[]const u8) !void {
-        try self.annotations.append(allocator, .{
+    pub fn addAnnotation(self: *Cursor, node_id: NodeId, tag: []const u8, note: ?[]const u8) !void {
+        try self.annotations.append(self.allocator, .{
             .node_id = node_id,
             .tag = tag,
             .note = note,

@@ -18,7 +18,7 @@ const appendNum = common.appendNum;
 const edgeTypeName = common.edgeTypeName;
 const edgeTypeSortKey = common.edgeTypeSortKey;
 const prefixOrder = common.prefixOrder;
-const findFileId = common.findFileId;
+const renderEntityLine = common.renderEntityLine;
 const ChildrenIndex = common.ChildrenIndex;
 const PhantomNodeInfo = common.PhantomNodeInfo;
 
@@ -62,25 +62,7 @@ pub fn renderTypesSection(
     if (type_indices.len == 0) return;
     try out.appendSlice(allocator, "[types]\n");
     for (type_indices) |si| {
-        const n = ctx.g.nodes.items[si];
-        const id = ctx.ids[si].?;
-        const file_id = findFileId(ctx.g, n, ctx.ids);
-
-        try out.appendSlice(allocator, id.prefix);
-        try appendNum(out, allocator, id.num, ctx.num_buf);
-        try out.append(allocator, ' ');
-        try out.appendSlice(allocator, n.name);
-        if (file_id) |fid| {
-            try out.appendSlice(allocator, " f:");
-            try appendNum(out, allocator, fid, ctx.num_buf);
-            try out.append(allocator, ':');
-            try appendNum(out, allocator, n.line_start orelse 0, ctx.num_buf);
-        }
-        if (n.visibility == .public) {
-            try out.appendSlice(allocator, " pub");
-        }
-        try out.append(allocator, '\n');
-
+        try renderEntityLine(out, allocator, ctx, si, .{});
         try renderContainerChildren(out, allocator, ctx.g, si, children_index);
     }
 }
@@ -100,25 +82,7 @@ pub fn renderUnionsSection(
     if (union_indices.len == 0) return;
     try out.appendSlice(allocator, "[unions]\n");
     for (union_indices) |ui| {
-        const n = ctx.g.nodes.items[ui];
-        const id = ctx.ids[ui].?;
-        const file_id = findFileId(ctx.g, n, ctx.ids);
-
-        try out.appendSlice(allocator, id.prefix);
-        try appendNum(out, allocator, id.num, ctx.num_buf);
-        try out.append(allocator, ' ');
-        try out.appendSlice(allocator, n.name);
-        if (file_id) |fid| {
-            try out.appendSlice(allocator, " f:");
-            try appendNum(out, allocator, fid, ctx.num_buf);
-            try out.append(allocator, ':');
-            try appendNum(out, allocator, n.line_start orelse 0, ctx.num_buf);
-        }
-        if (n.visibility == .public) {
-            try out.appendSlice(allocator, " pub");
-        }
-        try out.append(allocator, '\n');
-
+        try renderEntityLine(out, allocator, ctx, ui, .{});
         try renderContainerChildren(out, allocator, ctx.g, ui, children_index);
     }
 }
@@ -180,24 +144,7 @@ pub fn renderEnumsSection(
     if (enum_indices.len == 0) return;
     try out.appendSlice(allocator, "[enums]\n");
     for (enum_indices) |ei| {
-        const n = ctx.g.nodes.items[ei];
-        const id = ctx.ids[ei].?;
-        const file_id = findFileId(ctx.g, n, ctx.ids);
-
-        try out.appendSlice(allocator, id.prefix);
-        try appendNum(out, allocator, id.num, ctx.num_buf);
-        try out.append(allocator, ' ');
-        try out.appendSlice(allocator, n.name);
-        if (file_id) |fid| {
-            try out.appendSlice(allocator, " f:");
-            try appendNum(out, allocator, fid, ctx.num_buf);
-            try out.append(allocator, ':');
-            try appendNum(out, allocator, n.line_start orelse 0, ctx.num_buf);
-        }
-        if (n.visibility == .public) {
-            try out.appendSlice(allocator, " pub");
-        }
-        try out.append(allocator, '\n');
+        try renderEntityLine(out, allocator, ctx, ei, .{});
     }
 }
 
@@ -215,26 +162,7 @@ pub fn renderFunctionsSection(
     if (fn_indices.len == 0) return;
     try out.appendSlice(allocator, "[functions]\n");
     for (fn_indices) |fi| {
-        const n = ctx.g.nodes.items[fi];
-        const id = ctx.ids[fi].?;
-        const file_id = findFileId(ctx.g, n, ctx.ids);
-
-        try out.appendSlice(allocator, id.prefix);
-        try appendNum(out, allocator, id.num, ctx.num_buf);
-        try out.append(allocator, ' ');
-        try out.appendSlice(allocator, n.name);
-        try out.appendSlice(allocator, "()");
-
-        if (file_id) |fid| {
-            try out.appendSlice(allocator, " f:");
-            try appendNum(out, allocator, fid, ctx.num_buf);
-            try out.append(allocator, ':');
-            try appendNum(out, allocator, n.line_start orelse 0, ctx.num_buf);
-        }
-        if (n.visibility == .public) {
-            try out.appendSlice(allocator, " pub");
-        }
-        try out.append(allocator, '\n');
+        try renderEntityLine(out, allocator, ctx, fi, .{ .name_suffix = "()" });
     }
 }
 
@@ -250,25 +178,7 @@ pub fn renderConstantsSection(
     if (const_indices.len == 0) return;
     try out.appendSlice(allocator, "[constants]\n");
     for (const_indices) |ci| {
-        const n = ctx.g.nodes.items[ci];
-        const id = ctx.ids[ci].?;
-        const file_id = findFileId(ctx.g, n, ctx.ids);
-
-        try out.appendSlice(allocator, id.prefix);
-        try appendNum(out, allocator, id.num, ctx.num_buf);
-        try out.append(allocator, ' ');
-        try out.appendSlice(allocator, n.name);
-
-        if (file_id) |fid| {
-            try out.appendSlice(allocator, " f:");
-            try appendNum(out, allocator, fid, ctx.num_buf);
-            try out.append(allocator, ':');
-            try appendNum(out, allocator, n.line_start orelse 0, ctx.num_buf);
-        }
-        if (n.visibility == .public) {
-            try out.appendSlice(allocator, " pub");
-        }
-        try out.append(allocator, '\n');
+        try renderEntityLine(out, allocator, ctx, ci, .{});
     }
 }
 
@@ -285,21 +195,7 @@ pub fn renderErrorsSection(
     if (err_indices.len == 0) return;
     try out.appendSlice(allocator, "[errors]\n");
     for (err_indices) |ei| {
-        const n = ctx.g.nodes.items[ei];
-        const id = ctx.ids[ei].?;
-        const file_id = findFileId(ctx.g, n, ctx.ids);
-
-        try out.appendSlice(allocator, id.prefix);
-        try appendNum(out, allocator, id.num, ctx.num_buf);
-        try out.append(allocator, ' ');
-        try out.appendSlice(allocator, n.name);
-        if (file_id) |fid| {
-            try out.appendSlice(allocator, " f:");
-            try appendNum(out, allocator, fid, ctx.num_buf);
-            try out.append(allocator, ':');
-            try appendNum(out, allocator, n.line_start orelse 0, ctx.num_buf);
-        }
-        try out.append(allocator, '\n');
+        try renderEntityLine(out, allocator, ctx, ei, .{ .show_visibility = false });
     }
 }
 
@@ -316,28 +212,11 @@ pub fn renderTestsSection(
     if (test_indices.len == 0) return;
     try out.appendSlice(allocator, "[tests]\n");
     for (test_indices) |ti| {
-        const n = ctx.g.nodes.items[ti];
-        const id = ctx.ids[ti].?;
-        const file_id = findFileId(ctx.g, n, ctx.ids);
-
-        try out.appendSlice(allocator, id.prefix);
-        try appendNum(out, allocator, id.num, ctx.num_buf);
-        try out.appendSlice(allocator, " \"");
-        try out.appendSlice(allocator, n.name);
-        try out.append(allocator, '"');
-        if (file_id) |fid| {
-            try out.appendSlice(allocator, " f:");
-            try appendNum(out, allocator, fid, ctx.num_buf);
-            try out.append(allocator, ':');
-            try appendNum(out, allocator, n.line_start orelse 0, ctx.num_buf);
-        }
-        const lines = if (n.line_end != null and n.line_start != null and n.line_end.? >= n.line_start.?)
-            n.line_end.? - n.line_start.? + 1
-        else
-            0;
-        try out.append(allocator, ' ');
-        try appendNum(out, allocator, lines, ctx.num_buf);
-        try out.appendSlice(allocator, "L\n");
+        try renderEntityLine(out, allocator, ctx, ti, .{
+            .quote_name = true,
+            .show_visibility = false,
+            .show_line_count = true,
+        });
     }
 }
 

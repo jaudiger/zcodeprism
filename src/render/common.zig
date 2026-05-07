@@ -193,6 +193,63 @@ pub fn findFileId(g: *const Graph, n: Node, ids: []const ?IdEntry) ?u32 {
     return null;
 }
 
+/// Per-kind formatting options for a CTG entity line.
+pub const EntityLineConfig = struct {
+    /// Appended to the entity name before the location reference.
+    name_suffix: []const u8 = "",
+    /// When true, the name is surrounded by double-quote characters.
+    quote_name: bool = false,
+    /// When false, the visibility marker is omitted.
+    show_visibility: bool = true,
+    /// When true, the line ends with " <lines>L\n" rather than plain "\n".
+    show_line_count: bool = false,
+};
+
+/// Emit a single CTG entity line: id + name (optionally quoted/suffixed) +
+/// location reference + optional visibility + line terminator.
+pub fn renderEntityLine(
+    out: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    ctx: *const SectionCtx,
+    idx: usize,
+    config: EntityLineConfig,
+) !void {
+    const n = ctx.g.nodes.items[idx];
+    const id = ctx.ids[idx].?;
+    const file_id = findFileId(ctx.g, n, ctx.ids);
+
+    try out.appendSlice(allocator, id.prefix);
+    try appendNum(out, allocator, id.num, ctx.num_buf);
+    try out.append(allocator, ' ');
+    if (config.quote_name) try out.append(allocator, '"');
+    try out.appendSlice(allocator, n.name);
+    if (config.quote_name) try out.append(allocator, '"');
+    try out.appendSlice(allocator, config.name_suffix);
+
+    if (file_id) |fid| {
+        try out.appendSlice(allocator, " f:");
+        try appendNum(out, allocator, fid, ctx.num_buf);
+        try out.append(allocator, ':');
+        try appendNum(out, allocator, n.line_start orelse 0, ctx.num_buf);
+    }
+
+    if (config.show_visibility and n.visibility == .public) {
+        try out.appendSlice(allocator, " pub");
+    }
+
+    if (config.show_line_count) {
+        const lines: usize = if (n.line_end != null and n.line_start != null and n.line_end.? >= n.line_start.?)
+            n.line_end.? - n.line_start.? + 1
+        else
+            0;
+        try out.append(allocator, ' ');
+        try appendNum(out, allocator, lines, ctx.num_buf);
+        try out.appendSlice(allocator, "L\n");
+    } else {
+        try out.append(allocator, '\n');
+    }
+}
+
 /// Recursively collects phantom child nodes under a parent, building
 /// dot-separated qualified paths. Each path
 /// string is heap-allocated and owned by the symbols list.

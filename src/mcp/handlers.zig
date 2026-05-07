@@ -1300,7 +1300,7 @@ fn handleAnnotate(allocator: std.mem.Allocator, cursor_mgr: *CursorManager, para
     const duped_note: ?[]const u8 = if (note) |n| arena_alloc.dupe(u8, n) catch return error.OutOfMemory else null;
 
     for (node_ids) |nid| {
-        cursor.addAnnotation(cursor_mgr.arena.allocator(), nid, duped_tag, duped_note) catch return error.OutOfMemory;
+        cursor.addAnnotation(nid, duped_tag, duped_note) catch return error.OutOfMemory;
     }
 
     var aw: std.Io.Writer.Allocating = .init(allocator);
