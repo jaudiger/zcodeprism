@@ -146,7 +146,7 @@ pub const LspPool = struct {
 
         const conn = try allocator.create(LspConnection);
         conn.* = .{
-            .client = LspClient.init(logger),
+            .client = LspClient.init(allocator, logger),
             .language = language,
             .state = .ready,
             .last_activity_ns = std.Io.Timestamp.now(io, .awake).nanoseconds,
@@ -257,7 +257,7 @@ test "LspConnection.touch updates last_activity" {
     // Arrange
     const allocator = std.testing.allocator;
     var conn = LspConnection{
-        .client = LspClient.init(Logger.noop),
+        .client = LspClient.init(std.testing.allocator, Logger.noop),
         .language = .zig,
         .state = .ready,
         .last_activity_ns = 0,
@@ -276,7 +276,7 @@ test "LspConnection tracks opened files" {
     // Arrange
     const allocator = std.testing.allocator;
     var conn = LspConnection{
-        .client = LspClient.init(Logger.noop),
+        .client = LspClient.init(std.testing.allocator, Logger.noop),
         .language = .zig,
         .state = .ready,
         .last_activity_ns = 0,
@@ -310,7 +310,7 @@ test "LspConnection closeFile on unknown uri is no-op" {
     // Arrange
     const allocator = std.testing.allocator;
     var conn = LspConnection{
-        .client = LspClient.init(Logger.noop),
+        .client = LspClient.init(std.testing.allocator, Logger.noop),
         .language = .zig,
         .state = .ready,
         .last_activity_ns = 0,
