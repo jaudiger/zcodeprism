@@ -21,63 +21,43 @@ pub const NameIndex = struct {
     /// Build the name index from a node array using the MAF pattern.
     /// `offset` is the index of the first node to include.
     pub fn build(allocator: std.mem.Allocator, nodes: []const Node, offset: usize) !NameIndex {
-        // Measure: count nodes per name.
-        var name_counts = std.StringHashMapUnmanaged(u32){};
-        defer name_counts.deinit(allocator);
+        // Single map reused across three passes: count, prefix-sum, fill.
+        var map = std.StringHashMapUnmanaged(Range){};
+        errdefer map.deinit(allocator);
+
+        // Count pass: accumulate node count in range.len; range.start stays 0.
         var total: usize = 0;
         for (nodes[offset..]) |n| {
             if (n.name.len == 0) continue;
-            const gop = try name_counts.getOrPut(allocator, n.name);
-            if (!gop.found_existing) gop.value_ptr.* = 0;
-            gop.value_ptr.* += 1;
+            const gop = try map.getOrPut(allocator, n.name);
+            if (!gop.found_existing) gop.value_ptr.* = .{ .start = 0, .len = 0 };
+            gop.value_ptr.len += 1;
             total += 1;
         }
         if (total == 0) return .{};
 
-        // Allocate: single storage array for all entries.
+        // Allocate storage for all entries in one shot.
         const storage = try allocator.alloc(u64, total);
         errdefer allocator.free(storage);
 
-        // Compute offsets: each name gets a contiguous slice.
-        var offsets = std.StringHashMapUnmanaged(u32){};
-        defer offsets.deinit(allocator);
+        // Prefix-sum pass: convert len (count) into start offset, reset len to 0.
         {
             var running: u32 = 0;
-            var it = name_counts.iterator();
+            var it = map.iterator();
             while (it.next()) |entry| {
-                try offsets.put(allocator, entry.key_ptr.*, running);
-                running += entry.value_ptr.*;
+                const count = entry.value_ptr.len;
+                entry.value_ptr.start = running;
+                entry.value_ptr.len = 0;
+                running += count;
             }
         }
 
-        // Fill: populate storage with node indices.
-        var write_pos = std.StringHashMapUnmanaged(u32){};
-        defer write_pos.deinit(allocator);
-        {
-            var it = offsets.iterator();
-            while (it.next()) |entry| {
-                try write_pos.put(allocator, entry.key_ptr.*, entry.value_ptr.*);
-            }
-        }
+        // Fill pass: write node indices into storage; len tracks write position.
         for (nodes[offset..], offset..) |n, i| {
             if (n.name.len == 0) continue;
-            if (write_pos.getPtr(n.name)) |pos| {
-                storage[pos.*] = i;
-                pos.* += 1;
-            }
-        }
-
-        // Build the final map with Range values.
-        var map = std.StringHashMapUnmanaged(Range){};
-        errdefer map.deinit(allocator);
-        {
-            var it = offsets.iterator();
-            while (it.next()) |entry| {
-                const name = entry.key_ptr.*;
-                const start = entry.value_ptr.*;
-                const count = name_counts.get(name).?;
-                try map.put(allocator, name, .{ .start = start, .len = count });
-            }
+            const range = map.getPtr(n.name).?;
+            storage[range.start + range.len] = i;
+            range.len += 1;
         }
 
         return .{ .map = map, .storage = storage };

@@ -40,7 +40,6 @@ fn buildProjectGraph(allocator: std.mem.Allocator, root: []const u8, file_name: 
         .kind = .file,
         .language = .zig,
         .file_path = file_name,
-        .parent_id = .root,
         .visibility = .public,
     });
 
@@ -69,7 +68,6 @@ fn buildGraphWithEdge(allocator: std.mem.Allocator, root: []const u8) !Graph {
         .kind = .file,
         .language = .zig,
         .file_path = "src/lib.zig",
-        .parent_id = .root,
         .visibility = .public,
     });
 

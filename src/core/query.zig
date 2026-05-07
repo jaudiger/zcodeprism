@@ -551,36 +551,21 @@ pub fn computeStats(allocator: std.mem.Allocator, fg: FrozenGraph, options: Stat
 
 /// Return the ancestor chain from a node up to the root.
 /// The result is ordered from immediate parent to root.
-/// Caller owns the returned slice.
+/// Caller owns the returned slice; returns a literal empty slice (not heap-allocated)
+/// when there are no ancestors.
 pub fn getAncestors(allocator: std.mem.Allocator, fg: FrozenGraph, node_id: NodeId) ![]NodeId {
     const g = fg.graph;
-    // Measure
-    var count: usize = 0;
-    {
-        var current = node_id;
-        for (0..100) |_| {
-            current = g.getParent(current) orelse break;
-            count += 1;
-        }
-    }
+    var ancestors = std.ArrayList(NodeId).empty;
+    defer ancestors.deinit(allocator);
 
-    if (count == 0) return &.{};
-
-    // Allocate
-    const result = try allocator.alloc(NodeId, count);
-    errdefer comptime unreachable;
-
-    // Fill
     var current = node_id;
-    var pos: usize = 0;
-    for (0..100) |_| {
-        current = g.getParent(current) orelse break;
-        result[pos] = current;
-        pos += 1;
+    while (g.getParent(current)) |pid| {
+        try ancestors.append(allocator, pid);
+        current = pid;
     }
-    std.debug.assert(pos == count);
 
-    return result;
+    if (ancestors.items.len == 0) return &.{};
+    return ancestors.toOwnedSlice(allocator);
 }
 
 /// Compute the transitive reverse-impact set: all nodes that

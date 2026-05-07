@@ -5,6 +5,7 @@ const edge_mod = @import("edge.zig");
 
 const NodeId = types.NodeId;
 const EdgeId = types.EdgeId;
+const Direction = types.Direction;
 const Node = node_mod.Node;
 const Edge = edge_mod.Edge;
 
@@ -67,6 +68,47 @@ pub const Adjacency = struct {
         if (idx >= self.children_spans.len) return &.{};
         const span = self.children_spans[idx];
         return self.children_storage[span.offset..][0..span.len];
+    }
+
+    /// Collect neighbor node ids reachable from `node_id` in the given direction.
+    /// `.out` yields targets of outgoing edges, `.in` yields sources of incoming
+    /// edges, `.both` yields the union. The caller owns the returned slice and
+    /// must free it with `allocator.free()`, even when the slice is empty.
+    /// Uses the MAF pattern internally.
+    pub fn neighbors(
+        self: *const Adjacency,
+        allocator: std.mem.Allocator,
+        edges: []const Edge,
+        node_id: NodeId,
+        direction: Direction,
+    ) ![]NodeId {
+        // Measure
+        const count: usize = switch (direction) {
+            .out => self.outEdges(node_id).len,
+            .in => self.inEdges(node_id).len,
+            .both => self.outEdges(node_id).len + self.inEdges(node_id).len,
+        };
+
+        // Allocate
+        const result = try allocator.alloc(NodeId, count);
+        errdefer allocator.free(result);
+
+        // Fill
+        var pos: usize = 0;
+        if (direction == .out or direction == .both) {
+            for (self.outEdges(node_id)) |eid| {
+                result[pos] = edges[@intFromEnum(eid)].target_id;
+                pos += 1;
+            }
+        }
+        if (direction == .in or direction == .both) {
+            for (self.inEdges(node_id)) |eid| {
+                result[pos] = edges[@intFromEnum(eid)].source_id;
+                pos += 1;
+            }
+        }
+        std.debug.assert(pos == count);
+        return result;
     }
 
     /// Frees all six backing slices and poisons the struct.

@@ -116,6 +116,8 @@ pub const Graph = struct {
         const id: NodeId = @enumFromInt(self.nodes.items.len);
         var stored = node;
         stored.id = id;
+        // parent_id must be strictly less than the child's own id by construction.
+        if (stored.parent_id) |pid| std.debug.assert(@intFromEnum(pid) < @intFromEnum(id));
         if (stored.signature) |sig| {
             if (std.mem.indexOfAny(u8, sig, "\n\r") != null) {
                 const normalized = try collapseWhitespace(allocator, sig);
@@ -250,50 +252,22 @@ pub const Graph = struct {
     /// edges, `.both` yields the union. Requires freeze(); returns an empty
     /// (but allocated) slice if the adjacency index is absent.
     /// The caller owns the returned slice and must free it with `allocator.free()`,
-    /// even when the slice is empty. Uses the MAF pattern internally.
+    /// even when the slice is empty.
     pub fn neighbors(self: *const Graph, allocator: std.mem.Allocator, node_id: NodeId, direction: Direction) ![]NodeId {
         const adj = self.adjacency orelse return try allocator.alloc(NodeId, 0);
-
-        // Measure
-        var count: usize = 0;
-        switch (direction) {
-            .out => count = adj.outEdges(node_id).len,
-            .in => count = adj.inEdges(node_id).len,
-            .both => count = adj.outEdges(node_id).len + adj.inEdges(node_id).len,
-        }
-
-        // Allocate
-        const result = try allocator.alloc(NodeId, count);
-        errdefer allocator.free(result);
-
-        // Fill
-        var pos: usize = 0;
-        if (direction == .out or direction == .both) {
-            for (adj.outEdges(node_id)) |eid| {
-                result[pos] = self.edges.items[@intFromEnum(eid)].target_id;
-                pos += 1;
-            }
-        }
-        if (direction == .in or direction == .both) {
-            for (adj.inEdges(node_id)) |eid| {
-                result[pos] = self.edges.items[@intFromEnum(eid)].source_id;
-                pos += 1;
-            }
-        }
-        std.debug.assert(pos == count);
-        return result;
+        return adj.neighbors(allocator, self.edges.items, node_id, direction);
     }
 
     /// Walk the parent chain from node_id to find the containing file node.
+    /// Terminates by construction: parent_id is always strictly less than the
+    /// node's own id, so the walk strictly decreases toward zero.
     pub fn findContainingFile(self: *const Graph, node_id: NodeId) ?NodeId {
         var current = node_id;
-        var hops: usize = 0;
-        while (hops < 100) : (hops += 1) {
+        while (true) {
             const node = self.getNode(current) orelse return null;
             if (node.kind == .file) return current;
             current = node.parent_id orelse return null;
         }
-        return null;
     }
 
     /// Find a type container child among the given child indices matching name.
@@ -345,37 +319,7 @@ pub const FrozenGraph = struct {
     }
 
     pub fn neighbors(self: FrozenGraph, allocator: std.mem.Allocator, node_id: NodeId, direction: Direction) ![]NodeId {
-        const adj = self.graph.adjacency.?;
-        const g = self.graph;
-
-        // Measure
-        var count: usize = 0;
-        switch (direction) {
-            .out => count = adj.outEdges(node_id).len,
-            .in => count = adj.inEdges(node_id).len,
-            .both => count = adj.outEdges(node_id).len + adj.inEdges(node_id).len,
-        }
-
-        // Allocate
-        const result = try allocator.alloc(NodeId, count);
-        errdefer allocator.free(result);
-
-        // Fill
-        var pos: usize = 0;
-        if (direction == .out or direction == .both) {
-            for (adj.outEdges(node_id)) |eid| {
-                result[pos] = g.edges.items[@intFromEnum(eid)].target_id;
-                pos += 1;
-            }
-        }
-        if (direction == .in or direction == .both) {
-            for (adj.inEdges(node_id)) |eid| {
-                result[pos] = g.edges.items[@intFromEnum(eid)].source_id;
-                pos += 1;
-            }
-        }
-        std.debug.assert(pos == count);
-        return result;
+        return self.graph.adjacency.?.neighbors(allocator, self.graph.edges.items, node_id, direction);
     }
 
     pub fn findContainingFile(self: FrozenGraph, node_id: NodeId) ?NodeId {
