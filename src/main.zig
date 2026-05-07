@@ -60,42 +60,64 @@ const usage_text =
 var stdin_fd: std.posix.fd_t = 0;
 
 fn handleSigterm(_: std.c.SIG) callconv(.c) void {
-    // Close stdin to unblock the read loop (read retries on EINTR).
     _ = std.c.close(stdin_fd);
 }
 
-const ExportFormat = enum { ctg_fmt, mermaid_fmt, jsonl_fmt };
+const ExportFormat = enum { ctg, mermaid, jsonl };
 
-const Command = enum {
-    init,
+const InitArgs = struct {
+    force: bool = false,
+    workspace: ?[]const u8 = null,
+};
+
+const ExportArgs = struct {
+    format: ExportFormat,
+    scope: ?[]const u8 = null,
+    output: ?[]const u8 = null,
+    snapshot: ?[]const u8 = null,
+    include_test_nodes: bool = false,
+    include_external_nodes: bool = false,
+};
+
+const SnapshotArgs = struct {
+    name: []const u8,
+};
+
+const DiffArgs = struct {
+    tag_a: []const u8,
+    tag_b: []const u8,
+};
+
+const ServeArgs = struct {
+    workspace: ?[]const u8 = null,
+};
+
+const StatusArgs = struct {
+    workspace: ?[]const u8 = null,
+};
+
+const Command = union(enum) {
+    init: InitArgs,
     index,
-    @"export",
-    snapshot,
-    diff,
-    serve,
-    status,
+    @"export": ExportArgs,
+    snapshot: SnapshotArgs,
+    diff: DiffArgs,
+    serve: ServeArgs,
+    status: StatusArgs,
     help,
     version,
 };
 
 const CliArgs = struct {
-    command: ?Command = null,
-    force: bool = false,
-    verbosity: u8 = 0,
     project_root: ?[]const u8 = null,
-    export_format: ?ExportFormat = null,
-    scope: ?[]const u8 = null,
-    output: ?[]const u8 = null,
-    name: ?[]const u8 = null,
-    snapshot: ?[]const u8 = null,
-    workspace: ?[]const u8 = null,
-    include_test_nodes: bool = false,
-    include_external_nodes: bool = false,
-    positionals: []const []const u8 = &.{},
+    verbosity: u8 = 0,
+    command: Command,
+};
 
-    fn deinit(self: CliArgs, allocator: std.mem.Allocator) void {
-        allocator.free(self.positionals);
-    }
+const ParseCtx = struct {
+    project_root: ?[]const u8 = null,
+    verbosity: u8 = 0,
+    stderr: *std.Io.Writer,
 };
 
 fn requireArg(args: *std.process.Args.Iterator, flag: []const u8, stderr: *std.Io.Writer) []const u8 {
@@ -106,74 +128,210 @@ fn requireArg(args: *std.process.Args.Iterator, flag: []const u8, stderr: *std.I
     };
 }
 
-fn parseArgs(allocator: std.mem.Allocator, args_src: std.process.Args, stderr: *std.Io.Writer) CliArgs {
-    var cli = CliArgs{};
-    var positionals: std.ArrayList([]const u8) = .empty;
+fn parseGlobalFlag(arg: []const u8, args: *std.process.Args.Iterator, ctx: *ParseCtx) bool {
+    if (std.mem.eql(u8, arg, "--project-root")) {
+        ctx.project_root = requireArg(args, "--project-root", ctx.stderr);
+        return true;
+    }
+    if (std.mem.startsWith(u8, arg, "-v")) {
+        var count: u8 = 0;
+        for (arg[1..]) |c| {
+            if (c == 'v') count += 1 else break;
+        }
+        ctx.verbosity = @max(ctx.verbosity, count);
+        return true;
+    }
+    return false;
+}
+
+fn parseInit(args: *std.process.Args.Iterator, ctx: *ParseCtx) InitArgs {
+    var force = false;
+    var workspace: ?[]const u8 = null;
+    while (args.next()) |arg| {
+        if (parseGlobalFlag(arg, args, ctx)) continue;
+        if (std.mem.eql(u8, arg, "--force")) {
+            force = true;
+        } else if (std.mem.eql(u8, arg, "--workspace")) {
+            workspace = requireArg(args, "--workspace", ctx.stderr);
+        } else {
+            ctx.stderr.print("unknown option for init: {s}\n", .{arg}) catch {};
+            ctx.stderr.flush() catch {};
+            std.process.exit(2);
+        }
+    }
+    return .{ .force = force, .workspace = workspace };
+}
+
+fn parseIndex(args: *std.process.Args.Iterator, ctx: *ParseCtx) void {
+    while (args.next()) |arg| {
+        if (parseGlobalFlag(arg, args, ctx)) continue;
+        ctx.stderr.print("unknown option for index: {s}\n", .{arg}) catch {};
+        ctx.stderr.flush() catch {};
+        std.process.exit(2);
+    }
+}
+
+fn parseExport(args: *std.process.Args.Iterator, ctx: *ParseCtx) ExportArgs {
+    var format: ?ExportFormat = null;
+    var scope: ?[]const u8 = null;
+    var output: ?[]const u8 = null;
+    var snap: ?[]const u8 = null;
+    var include_test_nodes = false;
+    var include_external_nodes = false;
+    while (args.next()) |arg| {
+        if (parseGlobalFlag(arg, args, ctx)) continue;
+        if (std.mem.eql(u8, arg, "--ctg")) {
+            format = .ctg;
+        } else if (std.mem.eql(u8, arg, "--mermaid")) {
+            format = .mermaid;
+        } else if (std.mem.eql(u8, arg, "--jsonl")) {
+            format = .jsonl;
+        } else if (std.mem.eql(u8, arg, "--scope")) {
+            scope = requireArg(args, "--scope", ctx.stderr);
+        } else if (std.mem.eql(u8, arg, "--output")) {
+            output = requireArg(args, "--output", ctx.stderr);
+        } else if (std.mem.eql(u8, arg, "--snapshot")) {
+            snap = requireArg(args, "--snapshot", ctx.stderr);
+        } else if (std.mem.eql(u8, arg, "--test-nodes")) {
+            include_test_nodes = true;
+        } else if (std.mem.eql(u8, arg, "--external-nodes")) {
+            include_external_nodes = true;
+        } else {
+            ctx.stderr.print("unknown option for export: {s}\n", .{arg}) catch {};
+            ctx.stderr.flush() catch {};
+            std.process.exit(2);
+        }
+    }
+    const fmt = format orelse {
+        ctx.stderr.writeAll("export requires a format flag: --ctg, --mermaid, or --jsonl\n") catch {};
+        ctx.stderr.flush() catch {};
+        std.process.exit(2);
+    };
+    return .{
+        .format = fmt,
+        .scope = scope,
+        .output = output,
+        .snapshot = snap,
+        .include_test_nodes = include_test_nodes,
+        .include_external_nodes = include_external_nodes,
+    };
+}
+
+fn parseSnapshot(args: *std.process.Args.Iterator, ctx: *ParseCtx) SnapshotArgs {
+    var name: ?[]const u8 = null;
+    while (args.next()) |arg| {
+        if (parseGlobalFlag(arg, args, ctx)) continue;
+        if (std.mem.eql(u8, arg, "--name")) {
+            name = requireArg(args, "--name", ctx.stderr);
+        } else {
+            ctx.stderr.print("unknown option for snapshot: {s}\n", .{arg}) catch {};
+            ctx.stderr.flush() catch {};
+            std.process.exit(2);
+        }
+    }
+    const tag = name orelse {
+        ctx.stderr.writeAll("snapshot requires --name <tag>\n") catch {};
+        ctx.stderr.flush() catch {};
+        std.process.exit(2);
+    };
+    return .{ .name = tag };
+}
+
+fn parseDiff(args: *std.process.Args.Iterator, ctx: *ParseCtx) DiffArgs {
+    var tag_a: ?[]const u8 = null;
+    var tag_b: ?[]const u8 = null;
+    var count: usize = 0;
+    while (args.next()) |arg| {
+        if (parseGlobalFlag(arg, args, ctx)) continue;
+        if (arg.len > 0 and arg[0] == '-') {
+            ctx.stderr.print("unknown option for diff: {s}\n", .{arg}) catch {};
+            ctx.stderr.flush() catch {};
+            std.process.exit(2);
+        }
+        count += 1;
+        if (count == 1) tag_a = arg;
+        if (count == 2) tag_b = arg;
+    }
+    if (count != 2) {
+        ctx.stderr.writeAll("diff requires two snapshot tags: zcodeprism diff <snap-a> <snap-b>\n") catch {};
+        ctx.stderr.flush() catch {};
+        std.process.exit(2);
+    }
+    return .{ .tag_a = tag_a.?, .tag_b = tag_b.? };
+}
+
+fn parseServe(args: *std.process.Args.Iterator, ctx: *ParseCtx) ServeArgs {
+    var workspace: ?[]const u8 = null;
+    while (args.next()) |arg| {
+        if (parseGlobalFlag(arg, args, ctx)) continue;
+        if (std.mem.eql(u8, arg, "--workspace")) {
+            workspace = requireArg(args, "--workspace", ctx.stderr);
+        } else {
+            ctx.stderr.print("unknown option for serve: {s}\n", .{arg}) catch {};
+            ctx.stderr.flush() catch {};
+            std.process.exit(2);
+        }
+    }
+    return .{ .workspace = workspace };
+}
+
+fn parseStatus(args: *std.process.Args.Iterator, ctx: *ParseCtx) StatusArgs {
+    var workspace: ?[]const u8 = null;
+    while (args.next()) |arg| {
+        if (parseGlobalFlag(arg, args, ctx)) continue;
+        if (std.mem.eql(u8, arg, "--workspace")) {
+            workspace = requireArg(args, "--workspace", ctx.stderr);
+        } else {
+            ctx.stderr.print("unknown option for status: {s}\n", .{arg}) catch {};
+            ctx.stderr.flush() catch {};
+            std.process.exit(2);
+        }
+    }
+    return .{ .workspace = workspace };
+}
+
+fn parseArgs(args_src: std.process.Args, stderr: *std.Io.Writer) CliArgs {
+    var ctx = ParseCtx{ .stderr = stderr };
     var args = args_src.iterate();
     _ = args.next();
 
     while (args.next()) |arg| {
-        if (std.mem.eql(u8, arg, "--project-root")) {
-            cli.project_root = requireArg(&args, "--project-root", stderr);
-        } else if (std.mem.eql(u8, arg, "--version")) {
-            cli.command = .version;
+        if (std.mem.eql(u8, arg, "--version")) {
+            return .{ .project_root = ctx.project_root, .verbosity = ctx.verbosity, .command = .version };
         } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
-            cli.command = .help;
-        } else if (std.mem.eql(u8, arg, "--force")) {
-            cli.force = true;
-        } else if (std.mem.eql(u8, arg, "--name")) {
-            cli.name = requireArg(&args, "--name", stderr);
-        } else if (std.mem.eql(u8, arg, "--workspace")) {
-            cli.workspace = requireArg(&args, "--workspace", stderr);
-        } else if (std.mem.eql(u8, arg, "--snapshot")) {
-            cli.snapshot = requireArg(&args, "--snapshot", stderr);
-        } else if (std.mem.eql(u8, arg, "--ctg")) {
-            cli.export_format = .ctg_fmt;
-        } else if (std.mem.eql(u8, arg, "--mermaid")) {
-            cli.export_format = .mermaid_fmt;
-        } else if (std.mem.eql(u8, arg, "--jsonl")) {
-            cli.export_format = .jsonl_fmt;
-        } else if (std.mem.eql(u8, arg, "--scope")) {
-            cli.scope = requireArg(&args, "--scope", stderr);
-        } else if (std.mem.eql(u8, arg, "--output")) {
-            cli.output = requireArg(&args, "--output", stderr);
-        } else if (std.mem.eql(u8, arg, "--test-nodes")) {
-            cli.include_test_nodes = true;
-        } else if (std.mem.eql(u8, arg, "--external-nodes")) {
-            cli.include_external_nodes = true;
-        } else if (std.mem.startsWith(u8, arg, "-v")) {
-            var count: u8 = 0;
-            for (arg[1..]) |c| {
-                if (c == 'v') count += 1 else break;
-            }
-            cli.verbosity = @max(cli.verbosity, count);
-        } else if (arg[0] == '-') {
+            return .{ .project_root = ctx.project_root, .verbosity = ctx.verbosity, .command = .help };
+        } else if (parseGlobalFlag(arg, &args, &ctx)) {
+            // consumed
+        } else if (arg.len > 0 and arg[0] == '-') {
             stderr.print("unknown option: {s}\n", .{arg}) catch {};
             stderr.flush() catch {};
             std.process.exit(2);
         } else {
-            if (cli.command == null) {
-                cli.command = std.meta.stringToEnum(Command, arg) orelse {
-                    stderr.print("unknown command: {s}\n", .{arg}) catch {};
-                    stderr.flush() catch {};
-                    std.process.exit(2);
-                };
-            } else {
-                positionals.append(allocator, arg) catch {
-                    stderr.writeAll("out of memory\n") catch {};
-                    stderr.flush() catch {};
-                    std.process.exit(1);
-                };
-            }
+            const Tag = std.meta.Tag(Command);
+            const cmd_tag = std.meta.stringToEnum(Tag, arg) orelse {
+                stderr.print("unknown command: {s}\n", .{arg}) catch {};
+                stderr.flush() catch {};
+                std.process.exit(2);
+            };
+            const cmd: Command = switch (cmd_tag) {
+                .init => .{ .init = parseInit(&args, &ctx) },
+                .index => blk: {
+                    parseIndex(&args, &ctx);
+                    break :blk .index;
+                },
+                .@"export" => .{ .@"export" = parseExport(&args, &ctx) },
+                .snapshot => .{ .snapshot = parseSnapshot(&args, &ctx) },
+                .diff => .{ .diff = parseDiff(&args, &ctx) },
+                .serve => .{ .serve = parseServe(&args, &ctx) },
+                .status => .{ .status = parseStatus(&args, &ctx) },
+                .help => .help,
+                .version => .version,
+            };
+            return .{ .project_root = ctx.project_root, .verbosity = ctx.verbosity, .command = cmd };
         }
     }
 
-    cli.positionals = positionals.toOwnedSlice(allocator) catch {
-        stderr.writeAll("out of memory\n") catch {};
-        stderr.flush() catch {};
-        std.process.exit(1);
-    };
-    return cli;
+    return .{ .project_root = ctx.project_root, .verbosity = ctx.verbosity, .command = .help };
 }
 
 pub fn main(init: std.process.Init) void {
@@ -187,8 +345,7 @@ pub fn main(init: std.process.Init) void {
     var stderr_writer = std.Io.File.stderr().writer(io, &stderr_buffer);
     const stderr = &stderr_writer.interface;
 
-    const cli = parseArgs(init.gpa, init.minimal.args, stderr);
-    defer cli.deinit(init.gpa);
+    const cli = parseArgs(init.minimal.args, stderr);
 
     if (cli.project_root) |root| {
         std.process.setCurrentPath(io, root) catch {
@@ -198,13 +355,7 @@ pub fn main(init: std.process.Init) void {
         };
     }
 
-    const cmd = cli.command orelse {
-        stdout.writeAll(usage_text) catch {};
-        stdout.flush() catch {};
-        return;
-    };
-
-    switch (cmd) {
+    switch (cli.command) {
         .version => {
             stdout.writeAll(version_string) catch {};
             stdout.flush() catch {};
@@ -213,21 +364,21 @@ pub fn main(init: std.process.Init) void {
             stdout.writeAll(usage_text) catch {};
             stdout.flush() catch {};
         },
-        .init => runInit(io, stdout, stderr, cli.force, cli.workspace),
+        .init => |args| runInit(io, stdout, stderr, args),
         .index => runIndex(init.gpa, io, stdout, stderr, cli.verbosity),
-        .@"export" => runExport(init.gpa, io, stdout, stderr, cli.export_format, cli.scope, cli.output, cli.snapshot, cli.include_test_nodes, cli.include_external_nodes),
-        .snapshot => runSnapshot(init.gpa, io, stdout, stderr, cli.name),
-        .diff => runDiff(init.gpa, io, stdout, stderr, cli.positionals),
-        .serve => runServe(init.gpa, io, stderr, cli.workspace, cli.verbosity),
-        .status => runStatus(init.gpa, io, stdout, stderr, cli.workspace),
+        .@"export" => |args| runExport(init.gpa, io, stdout, stderr, args),
+        .snapshot => |args| runSnapshot(init.gpa, io, stdout, stderr, args.name),
+        .diff => |args| runDiff(init.gpa, io, stdout, stderr, args.tag_a, args.tag_b),
+        .serve => |args| runServe(init.gpa, io, stderr, args.workspace, cli.verbosity),
+        .status => |args| runStatus(init.gpa, io, stdout, stderr, args.workspace),
     }
 }
 
-fn runInit(io: std.Io, stdout: *std.Io.Writer, stderr: *std.Io.Writer, force: bool, workspace_arg: ?[]const u8) void {
+fn runInit(io: std.Io, stdout: *std.Io.Writer, stderr: *std.Io.Writer, args: InitArgs) void {
     const cwd = std.Io.Dir.cwd();
 
-    if (workspace_arg != null) {
-        if (force) {
+    if (args.workspace != null) {
+        if (args.force) {
             cwd.deleteFile(io, "zcodeprism-workspace.zon") catch {};
         }
         config.writeDefaultWorkspaceConfig(io, cwd) catch |err| {
@@ -247,7 +398,7 @@ fn runInit(io: std.Io, stdout: *std.Io.Writer, stderr: *std.Io.Writer, force: bo
         return;
     }
 
-    if (force) {
+    if (args.force) {
         cwd.deleteFile(io, ".zcodeprism.zon") catch {};
         cwd.deleteTree(io, ".zcodeprism") catch {};
     }
@@ -292,7 +443,6 @@ fn runIndex(allocator: std.mem.Allocator, io: std.Io, stdout: *std.Io.Writer, st
     defer config.deinit(cfg, allocator);
     const full = config.withDefaults(cfg);
 
-    // Set up logger based on verbosity.
     const log_level: logging.Level = switch (verbosity) {
         0 => .warn,
         1 => .info,
@@ -368,20 +518,9 @@ fn runExport(
     io: std.Io,
     stdout: *std.Io.Writer,
     stderr: *std.Io.Writer,
-    format_arg: ?ExportFormat,
-    scope_arg: ?[]const u8,
-    output_arg: ?[]const u8,
-    snapshot_arg: ?[]const u8,
-    include_test_nodes: bool,
-    include_external_nodes: bool,
+    args: ExportArgs,
 ) void {
-    const format = format_arg orelse {
-        stderr.writeAll("export requires a format flag: --ctg, --mermaid, or --jsonl\n") catch {};
-        stderr.flush() catch {};
-        std.process.exit(2);
-    };
-
-    var graph = if (snapshot_arg) |tag|
+    var graph = if (args.snapshot) |tag|
         snapshot.loadSnapshotGraph(allocator, io, tag, ".zcodeprism") catch |err| {
             switch (err) {
                 error.SnapshotNotFound => stderr.print("snapshot not found: {s}\n", .{tag}) catch {},
@@ -408,17 +547,17 @@ fn runExport(
     };
 
     const export_frozen = FrozenGraph{ .graph = &graph };
-    switch (format) {
-        .ctg_fmt => {
+    switch (args.format) {
+        .ctg => {
             var out: std.ArrayList(u8) = .empty;
             defer out.deinit(allocator);
 
             ctg.renderCtg(allocator, io, export_frozen, .{
                 .project_name = project_name,
-                .scope = scope_arg,
+                .scope = args.scope,
                 .filter = .{
-                    .include_test_nodes = include_test_nodes,
-                    .include_external_nodes = include_external_nodes,
+                    .include_test_nodes = args.include_test_nodes,
+                    .include_external_nodes = args.include_external_nodes,
                 },
             }, &out) catch |err| {
                 stderr.print("render failed: {s}\n", .{@errorName(err)}) catch {};
@@ -426,18 +565,18 @@ fn runExport(
                 std.process.exit(1);
             };
 
-            writeOutput(io, stdout, stderr, output_arg, out.items);
+            writeOutput(io, stdout, stderr, args.output, out.items);
         },
-        .mermaid_fmt => {
+        .mermaid => {
             var out: std.ArrayList(u8) = .empty;
             defer out.deinit(allocator);
 
             mermaid.renderMermaid(allocator, io, export_frozen, .{
                 .project_name = project_name,
-                .scope = scope_arg,
+                .scope = args.scope,
                 .filter = .{
-                    .include_test_nodes = include_test_nodes,
-                    .include_external_nodes = include_external_nodes,
+                    .include_test_nodes = args.include_test_nodes,
+                    .include_external_nodes = args.include_external_nodes,
                 },
             }, &out) catch |err| {
                 stderr.print("render failed: {s}\n", .{@errorName(err)}) catch {};
@@ -445,10 +584,10 @@ fn runExport(
                 std.process.exit(1);
             };
 
-            writeOutput(io, stdout, stderr, output_arg, out.items);
+            writeOutput(io, stdout, stderr, args.output, out.items);
         },
-        .jsonl_fmt => {
-            if (output_arg) |path| {
+        .jsonl => {
+            if (args.output) |path| {
                 var write_buf: [8192]u8 = undefined;
                 var aw = storage.atomic_file.AtomicWriter.init(io, std.Io.Dir.cwd(), path, &write_buf) catch |err| {
                     stderr.print("cannot create output file: {s}\n", .{@errorName(err)}) catch {};
@@ -495,13 +634,7 @@ fn writeOutput(io: std.Io, stdout: *std.Io.Writer, stderr: *std.Io.Writer, outpu
     }
 }
 
-fn runSnapshot(allocator: std.mem.Allocator, io: std.Io, stdout: *std.Io.Writer, stderr: *std.Io.Writer, name_arg: ?[]const u8) void {
-    const tag = name_arg orelse {
-        stderr.writeAll("snapshot requires --name <tag>\n") catch {};
-        stderr.flush() catch {};
-        std.process.exit(2);
-    };
-
+fn runSnapshot(allocator: std.mem.Allocator, io: std.Io, stdout: *std.Io.Writer, stderr: *std.Io.Writer, name: []const u8) void {
     var graph = storage.binary.load(allocator, io, ".zcodeprism/graph.bin") catch {
         stderr.writeAll("failed to load graph (run 'index' first)\n") catch {};
         stderr.flush() catch {};
@@ -510,29 +643,21 @@ fn runSnapshot(allocator: std.mem.Allocator, io: std.Io, stdout: *std.Io.Writer,
     defer graph.deinit(allocator);
 
     const snap_fg = FrozenGraph{ .graph = &graph };
-    snapshot.saveSnapshot(allocator, io, snap_fg, tag, ".zcodeprism") catch |err| {
+    snapshot.saveSnapshot(allocator, io, snap_fg, name, ".zcodeprism") catch |err| {
         switch (err) {
-            error.InvalidTagName => stderr.print("invalid snapshot tag: {s}\n", .{tag}) catch {},
-            error.TagTooLong => stderr.print("snapshot tag too long (max {d}): {s}\n", .{ snapshot.MAX_TAG_LENGTH, tag }) catch {},
+            error.InvalidTagName => stderr.print("invalid snapshot tag: {s}\n", .{name}) catch {},
+            error.TagTooLong => stderr.print("snapshot tag too long (max {d}): {s}\n", .{ snapshot.MAX_TAG_LENGTH, name }) catch {},
             else => stderr.print("failed to save snapshot: {s}\n", .{@errorName(err)}) catch {},
         }
         stderr.flush() catch {};
         std.process.exit(1);
     };
 
-    stdout.print("snapshot saved: {s}\n", .{tag}) catch {};
+    stdout.print("snapshot saved: {s}\n", .{name}) catch {};
     stdout.flush() catch {};
 }
 
-fn runDiff(allocator: std.mem.Allocator, io: std.Io, stdout: *std.Io.Writer, stderr: *std.Io.Writer, positionals: []const []const u8) void {
-    if (positionals.len != 2) {
-        stderr.writeAll("diff requires two snapshot tags: zcodeprism diff <snap-a> <snap-b>\n") catch {};
-        stderr.flush() catch {};
-        std.process.exit(2);
-    }
-    const tag_a = positionals[0];
-    const tag_b = positionals[1];
-
+fn runDiff(allocator: std.mem.Allocator, io: std.Io, stdout: *std.Io.Writer, stderr: *std.Io.Writer, tag_a: []const u8, tag_b: []const u8) void {
     var graph_a = snapshot.loadSnapshotGraph(allocator, io, tag_a, ".zcodeprism") catch |err| {
         switch (err) {
             error.SnapshotNotFound => stderr.print("snapshot not found: {s}\n", .{tag_a}) catch {},
@@ -999,4 +1124,3 @@ fn runStatus(allocator: std.mem.Allocator, io: std.Io, stdout: *std.Io.Writer, s
     ) catch {};
     stdout.flush() catch {};
 }
-
