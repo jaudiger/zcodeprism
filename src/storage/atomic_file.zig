@@ -2,7 +2,7 @@ const std = @import("std");
 
 fn syncParentDir(io: std.Io, dir: std.Io.Dir, sub_path: []const u8) !void {
     const parent = std.fs.path.dirname(sub_path) orelse ".";
-    var parent_dir = try dir.openDir(io, parent, .{});
+    var parent_dir = try dir.openDir(io, parent, .{ .iterate = true });
     defer parent_dir.close(io);
     const dir_file = std.Io.File{
         .handle = parent_dir.handle,
