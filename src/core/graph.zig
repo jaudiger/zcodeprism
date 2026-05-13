@@ -123,6 +123,7 @@ pub const Graph = struct {
             if (std.mem.indexOfAny(u8, sig, "\n\r") != null) {
                 const normalized = try collapseWhitespace(allocator, sig);
                 if (normalized.len == 0) {
+                    allocator.free(normalized);
                     stored.signature = null;
                 } else {
                     errdefer allocator.free(normalized);
