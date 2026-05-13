@@ -7,8 +7,8 @@ const Graph = graph_mod.Graph;
 const RefCount = refcount_mod.RefCount;
 
 /// A versioned snapshot of the code graph with reference counting.
-/// Heap-allocated via `create`. The caller is responsible for calling
-/// `destroy` once all guards have been released (ref_count == 0).
+/// Heap-allocated via `create` with one outstanding reference. Destroyed
+/// when the last reference is dropped via `release` or `Guard.deinit`.
 pub const GraphGeneration = struct {
     graph: Graph,
     arena: std.heap.ArenaAllocator,
@@ -16,36 +16,41 @@ pub const GraphGeneration = struct {
     source_hash: types.ContentHash,
     generation_id: u64,
     indexed_at: i128,
+    allocator: std.mem.Allocator,
 
-    /// Heap-allocate a new generation.
+    /// Heap-allocate a new generation with an initial reference count of 1.
     pub fn create(allocator: std.mem.Allocator, io: std.Io, generation_id: u64, source_hash: types.ContentHash) !*GraphGeneration {
         const gen = try allocator.create(GraphGeneration);
-        const arena = std.heap.ArenaAllocator.init(allocator);
         gen.* = .{
             .graph = Graph.init(""),
-            .arena = arena,
-            .ref_count = RefCount.init(0),
+            .arena = std.heap.ArenaAllocator.init(allocator),
+            .ref_count = RefCount.init(1),
             .source_hash = source_hash,
             .generation_id = generation_id,
             .indexed_at = std.Io.Timestamp.now(io, .real).nanoseconds,
+            .allocator = allocator,
         };
         return gen;
     }
 
-    /// Free the generation's graph, arena, and struct. Only safe when
-    /// ref_count is 0 (all guards have been released).
-    pub fn destroy(self: *GraphGeneration, allocator: std.mem.Allocator) void {
+    /// Drop one reference; destroys the generation on the last release.
+    pub fn release(self: *GraphGeneration) void {
+        if (self.ref_count.release()) self.destroyInternal();
+    }
+
+    fn destroyInternal(self: *GraphGeneration) void {
+        const allocator = self.allocator;
         self.graph.deinit(self.arena.allocator());
         self.arena.deinit();
         allocator.destroy(self);
     }
 
-    /// RAII guard that decrements the reference count on deinit.
+    /// RAII guard that releases one reference on deinit.
     pub const Guard = struct {
         gen: *GraphGeneration,
 
         pub fn deinit(self: Guard) void {
-            self.gen.ref_count.release();
+            self.gen.release();
         }
     };
 
@@ -59,13 +64,13 @@ pub const GraphGeneration = struct {
 test "acquire increments refcount" {
     // Arrange
     const gen = try GraphGeneration.create(std.testing.allocator, std.testing.io, 1, "abcdef1234567890".*);
-    defer gen.destroy(std.testing.allocator);
+    defer gen.release();
 
     // Act
     const guard = gen.acquire();
 
     // Assert
-    try std.testing.expectEqual(@as(u32, 1), gen.ref_count.count());
+    try std.testing.expectEqual(@as(u32, 2), gen.ref_count.count());
 
     // Cleanup
     guard.deinit();
@@ -74,7 +79,7 @@ test "acquire increments refcount" {
 test "guard deinit decrements refcount" {
     // Arrange
     const gen = try GraphGeneration.create(std.testing.allocator, std.testing.io, 1, "abcdef1234567890".*);
-    defer gen.destroy(std.testing.allocator);
+    defer gen.release();
     const g1 = gen.acquire();
     const g2 = gen.acquire();
 
@@ -82,7 +87,7 @@ test "guard deinit decrements refcount" {
     g2.deinit();
 
     // Assert
-    try std.testing.expectEqual(@as(u32, 1), gen.ref_count.count());
+    try std.testing.expectEqual(@as(u32, 2), gen.ref_count.count());
 
     // Cleanup
     g1.deinit();
@@ -91,7 +96,7 @@ test "guard deinit decrements refcount" {
 test "multiple acquires and releases" {
     // Arrange
     const gen = try GraphGeneration.create(std.testing.allocator, std.testing.io, 1, "abcdef1234567890".*);
-    defer gen.destroy(std.testing.allocator);
+    defer gen.release();
 
     // Act
     const g1 = gen.acquire();
@@ -99,20 +104,20 @@ test "multiple acquires and releases" {
     const g3 = gen.acquire();
 
     // Assert
-    try std.testing.expectEqual(@as(u32, 3), gen.ref_count.count());
+    try std.testing.expectEqual(@as(u32, 4), gen.ref_count.count());
 
     g3.deinit();
-    try std.testing.expectEqual(@as(u32, 2), gen.ref_count.count());
+    try std.testing.expectEqual(@as(u32, 3), gen.ref_count.count());
     g2.deinit();
-    try std.testing.expectEqual(@as(u32, 1), gen.ref_count.count());
+    try std.testing.expectEqual(@as(u32, 2), gen.ref_count.count());
     g1.deinit();
-    try std.testing.expectEqual(@as(u32, 0), gen.ref_count.count());
+    try std.testing.expectEqual(@as(u32, 1), gen.ref_count.count());
 }
 
 test "generation_id is set" {
     // Arrange
     const gen = try GraphGeneration.create(std.testing.allocator, std.testing.io, 42, "abcdef1234567890".*);
-    defer gen.destroy(std.testing.allocator);
+    defer gen.release();
     const guard = gen.acquire();
     defer guard.deinit();
 

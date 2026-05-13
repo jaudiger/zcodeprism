@@ -101,7 +101,7 @@ test "stats returns file count, function count, languages, and externals" {
     defer allocator.free(project_root);
 
     const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
-    defer gen.destroy(allocator);
+    defer gen.release();
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), std.testing.io, project_root, &gen.graph, null, .{});
     const guard = gen.acquire();
@@ -147,7 +147,7 @@ test "stats with scope restricts to one file" {
     defer allocator.free(project_root);
 
     const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
-    defer gen.destroy(allocator);
+    defer gen.release();
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), std.testing.io, project_root, &gen.graph, null, .{});
     const guard = gen.acquire();
@@ -174,7 +174,7 @@ test "stats on empty graph" {
     // Arrange
     const allocator = std.testing.allocator;
     const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
-    defer gen.destroy(allocator);
+    defer gen.release();
     _ = try gen.graph.freeze(gen.arena.allocator());
     const guard = gen.acquire();
     defer guard.deinit();
@@ -209,7 +209,7 @@ test "search returns matching nodes with metadata" {
     defer allocator.free(project_root);
 
     const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
-    defer gen.destroy(allocator);
+    defer gen.release();
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), std.testing.io, project_root, &gen.graph, null, .{});
     const guard = gen.acquire();
@@ -249,7 +249,7 @@ test "search with kind filter returns only that kind" {
     defer allocator.free(project_root);
 
     const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
-    defer gen.destroy(allocator);
+    defer gen.release();
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), std.testing.io, project_root, &gen.graph, null, .{});
     const guard = gen.acquire();
@@ -284,7 +284,7 @@ test "search with no results returns zero matches" {
     defer allocator.free(project_root);
 
     const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
-    defer gen.destroy(allocator);
+    defer gen.release();
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), std.testing.io, project_root, &gen.graph, null, .{});
     const guard = gen.acquire();
@@ -320,7 +320,7 @@ test "get_nodes returns all fields for a single id" {
     defer allocator.free(project_root);
 
     const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
-    defer gen.destroy(allocator);
+    defer gen.release();
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), std.testing.io, project_root, &gen.graph, null, .{});
     const guard = gen.acquire();
@@ -367,7 +367,7 @@ test "get_nodes with array of ids" {
     defer allocator.free(project_root);
 
     const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
-    defer gen.destroy(allocator);
+    defer gen.release();
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), std.testing.io, project_root, &gen.graph, null, .{});
     const guard = gen.acquire();
@@ -408,7 +408,7 @@ test "get_nodes with include_source true" {
     defer allocator.free(project_root);
 
     const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
-    defer gen.destroy(allocator);
+    defer gen.release();
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), std.testing.io, project_root, &gen.graph, null, .{});
     const guard = gen.acquire();
@@ -447,7 +447,7 @@ test "get_nodes for phantom node has external and null source" {
     defer allocator.free(project_root);
 
     const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
-    defer gen.destroy(allocator);
+    defer gen.release();
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), std.testing.io, project_root, &gen.graph, null, .{});
     const guard = gen.acquire();
@@ -495,7 +495,7 @@ test "get_nodes with non-existent id" {
     defer allocator.free(project_root);
 
     const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
-    defer gen.destroy(allocator);
+    defer gen.release();
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), std.testing.io, project_root, &gen.graph, null, .{});
     const guard = gen.acquire();
@@ -533,7 +533,7 @@ test "get_nodes string id equals single-element array" {
     defer allocator.free(project_root);
 
     const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
-    defer gen.destroy(allocator);
+    defer gen.release();
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), std.testing.io, project_root, &gen.graph, null, .{});
     const guard = gen.acquire();
@@ -585,7 +585,7 @@ test "get_source full returns non-empty source" {
     defer allocator.free(project_root);
 
     const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
-    defer gen.destroy(allocator);
+    defer gen.release();
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), std.testing.io, project_root, &gen.graph, null, .{});
     const guard = gen.acquire();
@@ -626,7 +626,7 @@ test "get_source signature is shorter than full" {
     defer allocator.free(project_root);
 
     const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
-    defer gen.destroy(allocator);
+    defer gen.release();
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), std.testing.io, project_root, &gen.graph, null, .{});
     const guard = gen.acquire();
@@ -674,7 +674,7 @@ test "get_source body does not start with function keyword" {
     defer allocator.free(project_root);
 
     const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
-    defer gen.destroy(allocator);
+    defer gen.release();
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), std.testing.io, project_root, &gen.graph, null, .{});
     const guard = gen.acquire();
@@ -715,7 +715,7 @@ test "get_source with context_lines is at least as long as without" {
     defer allocator.free(project_root);
 
     const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
-    defer gen.destroy(allocator);
+    defer gen.release();
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), std.testing.io, project_root, &gen.graph, null, .{});
     const guard = gen.acquire();
@@ -763,7 +763,7 @@ test "get_source for phantom node returns null source" {
     defer allocator.free(project_root);
 
     const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
-    defer gen.destroy(allocator);
+    defer gen.release();
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), std.testing.io, project_root, &gen.graph, null, .{});
     const guard = gen.acquire();
@@ -809,7 +809,7 @@ test "get_source for file node returns file content" {
     defer allocator.free(project_root);
 
     const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
-    defer gen.destroy(allocator);
+    defer gen.release();
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), std.testing.io, project_root, &gen.graph, null, .{});
     const guard = gen.acquire();
@@ -853,7 +853,7 @@ test "get_edges out direction" {
     defer allocator.free(project_root);
 
     const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
-    defer gen.destroy(allocator);
+    defer gen.release();
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), std.testing.io, project_root, &gen.graph, null, .{});
     const guard = gen.acquire();
@@ -895,7 +895,7 @@ test "get_edges in direction" {
     defer allocator.free(project_root);
 
     const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
-    defer gen.destroy(allocator);
+    defer gen.release();
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), std.testing.io, project_root, &gen.graph, null, .{});
     const guard = gen.acquire();
@@ -937,7 +937,7 @@ test "get_edges both has at least as many as out only" {
     defer allocator.free(project_root);
 
     const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
-    defer gen.destroy(allocator);
+    defer gen.release();
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), std.testing.io, project_root, &gen.graph, null, .{});
     const guard = gen.acquire();
@@ -985,7 +985,7 @@ test "get_edges with type filter and connected node info" {
     defer allocator.free(project_root);
 
     const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
-    defer gen.destroy(allocator);
+    defer gen.release();
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), std.testing.io, project_root, &gen.graph, null, .{});
     const guard = gen.acquire();
@@ -1033,7 +1033,7 @@ test "get_edges for isolated node returns empty" {
     defer allocator.free(project_root);
 
     const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
-    defer gen.destroy(allocator);
+    defer gen.release();
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), std.testing.io, project_root, &gen.graph, null, .{});
     const guard = gen.acquire();
@@ -1093,7 +1093,7 @@ test "path between connected nodes returns non-empty" {
     defer allocator.free(project_root);
 
     const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
-    defer gen.destroy(allocator);
+    defer gen.release();
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), std.testing.io, project_root, &gen.graph, null, .{});
     const guard = gen.acquire();
@@ -1134,7 +1134,7 @@ test "path between unconnected nodes returns empty" {
     defer allocator.free(project_root);
 
     const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
-    defer gen.destroy(allocator);
+    defer gen.release();
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), std.testing.io, project_root, &gen.graph, null, .{});
     const guard = gen.acquire();
@@ -1175,7 +1175,7 @@ test "path with max_depth zero returns empty" {
     defer allocator.free(project_root);
 
     const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
-    defer gen.destroy(allocator);
+    defer gen.release();
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), std.testing.io, project_root, &gen.graph, null, .{});
     const guard = gen.acquire();
@@ -1216,7 +1216,7 @@ test "path with edge_types filter returns only matching edges" {
     defer allocator.free(project_root);
 
     const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
-    defer gen.destroy(allocator);
+    defer gen.release();
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), std.testing.io, project_root, &gen.graph, null, .{});
     const guard = gen.acquire();
@@ -1262,7 +1262,7 @@ test "path with non-existent node" {
     defer allocator.free(project_root);
 
     const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
-    defer gen.destroy(allocator);
+    defer gen.release();
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), std.testing.io, project_root, &gen.graph, null, .{});
     const guard = gen.acquire();
@@ -1309,7 +1309,7 @@ test "cursor_create returns cursor_id and neighborhood" {
     defer allocator.free(project_root);
 
     const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
-    defer gen.destroy(allocator);
+    defer gen.release();
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), std.testing.io, project_root, &gen.graph, null, .{});
     const guard = gen.acquire();
@@ -1347,7 +1347,7 @@ test "cursor_create with start_node positions there" {
     defer allocator.free(project_root);
 
     const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
-    defer gen.destroy(allocator);
+    defer gen.release();
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), std.testing.io, project_root, &gen.graph, null, .{});
     const guard = gen.acquire();
@@ -1389,7 +1389,7 @@ test "cursor_move updates position" {
     defer allocator.free(project_root);
 
     const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
-    defer gen.destroy(allocator);
+    defer gen.release();
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), std.testing.io, project_root, &gen.graph, null, .{});
     const guard = gen.acquire();
@@ -1441,7 +1441,7 @@ test "cursor_close then move fails" {
     defer allocator.free(project_root);
 
     const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
-    defer gen.destroy(allocator);
+    defer gen.release();
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), std.testing.io, project_root, &gen.graph, null, .{});
     const guard = gen.acquire();
@@ -1504,7 +1504,7 @@ test "cursor_expand returns subgraph" {
     defer allocator.free(project_root);
 
     const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
-    defer gen.destroy(allocator);
+    defer gen.release();
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), std.testing.io, project_root, &gen.graph, null, .{});
     const guard = gen.acquire();
@@ -1561,7 +1561,7 @@ test "cursor_query with kind filter" {
     defer allocator.free(project_root);
 
     const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
-    defer gen.destroy(allocator);
+    defer gen.release();
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), std.testing.io, project_root, &gen.graph, null, .{});
     const guard = gen.acquire();
@@ -1612,7 +1612,7 @@ test "diff identical function with itself" {
     defer allocator.free(project_root);
 
     const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
-    defer gen.destroy(allocator);
+    defer gen.release();
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), std.testing.io, project_root, &gen.graph, null, .{});
     const guard = gen.acquire();
@@ -1652,7 +1652,7 @@ test "diff two different functions" {
     defer allocator.free(project_root);
 
     const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
-    defer gen.destroy(allocator);
+    defer gen.release();
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), std.testing.io, project_root, &gen.graph, null, .{});
     const guard = gen.acquire();
@@ -1696,7 +1696,7 @@ test "diff N nodes returns NxN matrix" {
     defer allocator.free(project_root);
 
     const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
-    defer gen.destroy(allocator);
+    defer gen.release();
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), std.testing.io, project_root, &gen.graph, null, .{});
     const guard = gen.acquire();
@@ -1753,7 +1753,7 @@ test "annotate sets tag and annotations returns it" {
     defer allocator.free(project_root);
 
     const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
-    defer gen.destroy(allocator);
+    defer gen.release();
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), std.testing.io, project_root, &gen.graph, null, .{});
     const guard = gen.acquire();
@@ -1815,7 +1815,7 @@ test "annotate with note" {
     defer allocator.free(project_root);
 
     const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
-    defer gen.destroy(allocator);
+    defer gen.release();
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), std.testing.io, project_root, &gen.graph, null, .{});
     const guard = gen.acquire();
@@ -1881,7 +1881,7 @@ test "annotate multiple nodes" {
     defer allocator.free(project_root);
 
     const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
-    defer gen.destroy(allocator);
+    defer gen.release();
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), std.testing.io, project_root, &gen.graph, null, .{});
     const guard = gen.acquire();
@@ -1949,7 +1949,7 @@ test "annotations filter by tag" {
     defer allocator.free(project_root);
 
     const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
-    defer gen.destroy(allocator);
+    defer gen.release();
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), std.testing.io, project_root, &gen.graph, null, .{});
     const guard = gen.acquire();
@@ -2021,7 +2021,7 @@ test "annotations on wrong cursor returns empty" {
     defer allocator.free(project_root);
 
     const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
-    defer gen.destroy(allocator);
+    defer gen.release();
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), std.testing.io, project_root, &gen.graph, null, .{});
     const guard = gen.acquire();
@@ -2125,7 +2125,7 @@ test "duplicates finds near-identical functions" {
     defer allocator.free(project_root);
 
     const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
-    defer gen.destroy(allocator);
+    defer gen.release();
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), std.testing.io, project_root, &gen.graph, null, .{});
     const guard = gen.acquire();
@@ -2165,7 +2165,7 @@ test "duplicates empty graph" {
     // Arrange
     const allocator = std.testing.allocator;
     const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
-    defer gen.destroy(allocator);
+    defer gen.release();
     _ = try gen.graph.freeze(gen.arena.allocator());
     const guard = gen.acquire();
     defer guard.deinit();
@@ -2201,7 +2201,7 @@ test "complexity returns top N sorted descending" {
     defer allocator.free(project_root);
 
     const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
-    defer gen.destroy(allocator);
+    defer gen.release();
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), std.testing.io, project_root, &gen.graph, null, .{});
     const guard = gen.acquire();
@@ -2237,7 +2237,7 @@ test "complexity empty graph" {
     // Arrange
     const allocator = std.testing.allocator;
     const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
-    defer gen.destroy(allocator);
+    defer gen.release();
     _ = try gen.graph.freeze(gen.arena.allocator());
     const guard = gen.acquire();
     defer guard.deinit();
@@ -2273,7 +2273,7 @@ test "dead_code finds unreferenced private function" {
     defer allocator.free(project_root);
 
     const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
-    defer gen.destroy(allocator);
+    defer gen.release();
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), std.testing.io, project_root, &gen.graph, null, .{});
     const guard = gen.acquire();
@@ -2327,7 +2327,7 @@ test "dead_code rust finds unreferenced private function, not Counter fields" {
     defer allocator.free(project_root);
 
     const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
-    defer gen.destroy(allocator);
+    defer gen.release();
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), std.testing.io, project_root, &gen.graph, null, .{});
     const guard = gen.acquire();
@@ -2380,7 +2380,7 @@ test "dead_code empty graph" {
     // Arrange
     const allocator = std.testing.allocator;
     const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
-    defer gen.destroy(allocator);
+    defer gen.release();
     _ = try gen.graph.freeze(gen.arena.allocator());
     const guard = gen.acquire();
     defer guard.deinit();
@@ -2418,7 +2418,7 @@ test "dependency_cycles detects import cycle" {
     defer allocator.free(project_root);
 
     const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
-    defer gen.destroy(allocator);
+    defer gen.release();
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), std.testing.io, project_root, &gen.graph, null, .{});
     const guard = gen.acquire();
@@ -2463,7 +2463,7 @@ test "dependency_cycles empty graph" {
     // Arrange
     const allocator = std.testing.allocator;
     const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
-    defer gen.destroy(allocator);
+    defer gen.release();
     _ = try gen.graph.freeze(gen.arena.allocator());
     const guard = gen.acquire();
     defer guard.deinit();
@@ -2499,7 +2499,7 @@ test "coupling coupled modules have score > 0" {
     defer allocator.free(project_root);
 
     const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
-    defer gen.destroy(allocator);
+    defer gen.release();
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), std.testing.io, project_root, &gen.graph, null, .{});
     const guard = gen.acquire();
@@ -2530,7 +2530,7 @@ test "coupling empty graph" {
     // Arrange
     const allocator = std.testing.allocator;
     const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
-    defer gen.destroy(allocator);
+    defer gen.release();
     _ = try gen.graph.freeze(gen.arena.allocator());
     const guard = gen.acquire();
     defer guard.deinit();
@@ -2566,7 +2566,7 @@ test "impact core function has dependents" {
     defer allocator.free(project_root);
 
     const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
-    defer gen.destroy(allocator);
+    defer gen.release();
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), std.testing.io, project_root, &gen.graph, null, .{});
     const guard = gen.acquire();
@@ -2600,7 +2600,7 @@ test "impact empty graph" {
     // Arrange
     const allocator = std.testing.allocator;
     const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
-    defer gen.destroy(allocator);
+    defer gen.release();
     _ = try gen.graph.freeze(gen.arena.allocator());
     const guard = gen.acquire();
     defer guard.deinit();
@@ -2657,7 +2657,7 @@ test "no analysis tool returns opinions" {
     defer allocator.free(project_root);
 
     const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
-    defer gen.destroy(allocator);
+    defer gen.release();
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), std.testing.io, project_root, &gen.graph, null, .{});
     const guard = gen.acquire();
@@ -2706,7 +2706,7 @@ test "all 20 MCP tools respond without crash" {
     defer allocator.free(project_root);
 
     const gen = try GraphGeneration.create(allocator, std.testing.io, 1, "abcdef1234567890".*);
-    defer gen.destroy(allocator);
+    defer gen.release();
     gen.graph = Graph.init(project_root);
     _ = try indexDirectory(gen.arena.allocator(), std.testing.io, project_root, &gen.graph, null, .{});
     const guard = gen.acquire();

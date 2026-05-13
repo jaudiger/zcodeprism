@@ -756,7 +756,7 @@ fn runServe(allocator: std.mem.Allocator, io: std.Io, stderr: *std.Io.Writer, wo
         }) catch |err| {
             stderr.print("initial indexing failed: {s}\n", .{@errorName(err)}) catch {};
             stderr.flush() catch {};
-            initial_gen.destroy(allocator);
+            initial_gen.release();
             std.process.exit(1);
         };
     }
@@ -776,10 +776,8 @@ fn runServe(allocator: std.mem.Allocator, io: std.Io, stderr: *std.Io.Writer, wo
 
     computeSourceHash(initial_gen);
 
-    const initial_guard = initial_gen.acquire();
-    defer initial_guard.deinit();
-
     var gen_manager = GenerationManager.init(initial_gen);
+    defer gen_manager.deinit();
 
     var server = mcp.server.Server.init(&gen_manager);
     defer server.deinit();
@@ -864,7 +862,7 @@ fn watcherThreadFn(
                 .logger = logger,
                 .budget_bytes = budget_bytes,
             }) catch {
-                new_gen.destroy(allocator);
+                new_gen.release();
                 continue;
             };
 
@@ -881,10 +879,7 @@ fn watcherThreadFn(
         // Acquire a guard on new_gen to keep it alive during notification.
         const new_guard = new_gen.acquire();
 
-        const old_gen = gen_manager.swap(io, new_gen);
-        if (old_gen.ref_count.loadForReclaim() == 0) {
-            old_gen.destroy(allocator);
-        }
+        gen_manager.swap(io, new_gen);
 
         // Send notification under stdout mutex.
         const notification = mcp.server.Server.buildNotification(

@@ -14,10 +14,16 @@ pub const RefCount = struct {
         std.debug.assert(prev != std.math.maxInt(u32));
     }
 
-    /// Decrements the count.
-    pub fn release(self: *RefCount) void {
+    /// Decrements the count. Returns true when the count transitioned to
+    /// zero, with an acquire load issued before returning.
+    pub fn release(self: *RefCount) bool {
         const prev = self.value.fetchSub(1, .release);
         std.debug.assert(prev > 0);
+        if (prev == 1) {
+            _ = self.value.load(.acquire);
+            return true;
+        }
+        return false;
     }
 
     /// Reads the count for the destroy decision.
@@ -62,7 +68,7 @@ test "release decrements by one" {
     rc.acquire();
 
     // Act
-    rc.release();
+    _ = rc.release();
 
     // Assert
     try std.testing.expectEqual(@as(u32, 2), rc.count());
@@ -76,7 +82,7 @@ test "count reflects net acquire and release" {
     rc.acquire();
     rc.acquire();
     rc.acquire();
-    rc.release();
+    _ = rc.release();
 
     // Assert
     try std.testing.expectEqual(@as(u32, 2), rc.count());
@@ -89,8 +95,8 @@ test "loadForReclaim returns zero after balanced acquire and release" {
     rc.acquire();
 
     // Act
-    rc.release();
-    rc.release();
+    _ = rc.release();
+    _ = rc.release();
 
     // Assert
     try std.testing.expectEqual(@as(u32, 0), rc.loadForReclaim());
@@ -105,5 +111,16 @@ test "loadForReclaim returns nonzero with outstanding acquire" {
     try std.testing.expect(rc.loadForReclaim() > 0);
 
     // Cleanup
-    rc.release();
+    _ = rc.release();
+}
+
+test "release returns true only on the last reference" {
+    // Arrange
+    var rc = RefCount.init(0);
+    rc.acquire();
+    rc.acquire();
+
+    // Act / Assert
+    try std.testing.expectEqual(false, rc.release());
+    try std.testing.expectEqual(true, rc.release());
 }
