@@ -2,6 +2,7 @@ const std = @import("std");
 const RustMeta = @import("../languages/rust/meta.zig").RustMeta;
 const RustSubKind = @import("../languages/rust/meta.zig").RustSubKind;
 const ZigMeta = @import("../languages/zig/meta.zig").ZigMeta;
+const Graph = @import("graph.zig").Graph;
 
 /// Language-specific metadata union carried by each graph node.
 /// `.rust` holds Rust-specific flags and sub-kind.
@@ -215,12 +216,9 @@ pub const LangMeta = union(enum) {
         }
     }
 
-    /// Parse a LangMeta from a `std.json.Value`, duplicating string data
-    /// so the result is independent of the JSON parser's lifetime.
-    /// `null` or unknown type returns `.none`.
-    /// Caller owns the duplicated `calling_convention` slice (if any) and
-    /// must free it via the same allocator.
-    pub fn parseJson(allocator: std.mem.Allocator, val: std.json.Value) !LangMeta {
+    /// Parse a LangMeta from a `std.json.Value`. String fields are duped
+    /// and registered on `g`. `null` or unknown type returns `.none`.
+    pub fn parseJson(allocator: std.mem.Allocator, g: *Graph, val: std.json.Value) !LangMeta {
         switch (val) {
             .null => return .{ .none = {} },
             .object => |obj| {
@@ -235,31 +233,26 @@ pub const LangMeta = union(enum) {
                         }
                         break :blk .none;
                     };
-                    const abi: ?[]const u8 = if (obj.get("abi")) |v| switch (v) {
-                        .string => |s| try allocator.dupe(u8, s),
+                    const abi: ?[]u8 = if (obj.get("abi")) |v| switch (v) {
+                        .string => |s| try g.dupeAndOwn(allocator, s),
                         else => null,
                     } else null;
-                    errdefer if (abi) |a| allocator.free(a);
-                    const derives: ?[]const u8 = if (obj.get("derives")) |v| switch (v) {
-                        .string => |s| try allocator.dupe(u8, s),
+                    const derives: ?[]u8 = if (obj.get("derives")) |v| switch (v) {
+                        .string => |s| try g.dupeAndOwn(allocator, s),
                         else => null,
                     } else null;
-                    errdefer if (derives) |d| allocator.free(d);
-                    const attributes: ?[]const u8 = if (obj.get("attributes")) |v| switch (v) {
-                        .string => |s| try allocator.dupe(u8, s),
+                    const attributes: ?[]u8 = if (obj.get("attributes")) |v| switch (v) {
+                        .string => |s| try g.dupeAndOwn(allocator, s),
                         else => null,
                     } else null;
-                    errdefer if (attributes) |at| allocator.free(at);
-                    const inner_attributes: ?[]const u8 = if (obj.get("inner_attributes")) |v| switch (v) {
-                        .string => |s| try allocator.dupe(u8, s),
+                    const inner_attributes: ?[]u8 = if (obj.get("inner_attributes")) |v| switch (v) {
+                        .string => |s| try g.dupeAndOwn(allocator, s),
                         else => null,
                     } else null;
-                    errdefer if (inner_attributes) |ia| allocator.free(ia);
-                    const visibility_scope: ?[]const u8 = if (obj.get("visibility_scope")) |v| switch (v) {
-                        .string => |s| try allocator.dupe(u8, s),
+                    const visibility_scope: ?[]u8 = if (obj.get("visibility_scope")) |v| switch (v) {
+                        .string => |s| try g.dupeAndOwn(allocator, s),
                         else => null,
                     } else null;
-                    errdefer comptime unreachable;
                     return .{ .rust = .{
                         .is_unsafe = if (obj.get("is_unsafe")) |v| (v == .bool and v.bool) else false,
                         .is_async = if (obj.get("is_async")) |v| (v == .bool and v.bool) else false,
@@ -283,7 +276,7 @@ pub const LangMeta = union(enum) {
                         .is_packed = if (obj.get("is_packed")) |v| (v == .bool and v.bool) else false,
                         .comptime_conditional = if (obj.get("comptime_conditional")) |v| (v == .bool and v.bool) else false,
                         .calling_convention = if (obj.get("calling_convention")) |v| switch (v) {
-                            .string => |s| try allocator.dupe(u8, s),
+                            .string => |s| try g.dupeAndOwn(allocator, s),
                             else => null,
                         } else null,
                     } };
@@ -437,8 +430,12 @@ test "LangMeta.writeJson none writes null" {
 }
 
 test "LangMeta.parseJson null returns none" {
+    // Arrange
+    var g = Graph.init("/tmp/test");
+    defer g.deinit(std.testing.allocator);
+
     // Act
-    const meta = try LangMeta.parseJson(std.testing.allocator, .null);
+    const meta = try LangMeta.parseJson(std.testing.allocator, &g, .null);
 
     // Assert
     try std.testing.expectEqual(LangMeta.none, meta);
@@ -570,14 +567,9 @@ test "LangMeta JSON writeJson/parseJson round-trip for rust" {
     try aw.writer.flush();
     const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, aw.written(), .{});
     defer parsed.deinit();
-    const decoded = try LangMeta.parseJson(std.testing.allocator, parsed.value);
-    defer {
-        if (decoded.rust.abi) |a| std.testing.allocator.free(a);
-        if (decoded.rust.derives) |d| std.testing.allocator.free(d);
-        if (decoded.rust.attributes) |at| std.testing.allocator.free(at);
-        if (decoded.rust.inner_attributes) |ia| std.testing.allocator.free(ia);
-        if (decoded.rust.visibility_scope) |vs| std.testing.allocator.free(vs);
-    }
+    var g = Graph.init("/tmp/test");
+    defer g.deinit(std.testing.allocator);
+    const decoded = try LangMeta.parseJson(std.testing.allocator, &g, parsed.value);
 
     // Assert
     try std.testing.expect(decoded.rust.is_unsafe);
@@ -728,7 +720,9 @@ test "LangMeta JSON writeJson/parseJson round-trip for zig" {
     try aw.writer.flush();
     const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, aw.written(), .{});
     defer parsed.deinit();
-    const decoded = try LangMeta.parseJson(std.testing.allocator, parsed.value);
+    var g = Graph.init("/tmp/test");
+    defer g.deinit(std.testing.allocator);
+    const decoded = try LangMeta.parseJson(std.testing.allocator, &g, parsed.value);
 
     // Assert
     try std.testing.expect(decoded.zig.is_comptime);

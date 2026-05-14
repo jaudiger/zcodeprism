@@ -65,9 +65,9 @@ pub const IndexResult = struct {
 
 /// Internal file entry collected during discovery.
 const FileEntry = struct {
-    rel_path: []const u8,
+    rel_path: []u8,
     basename: []const u8,
-    content: []const u8,
+    content: []u8,
     content_hash: types.ContentHash,
     lang_support: *const lang_support.LanguageSupport,
     import_count: usize = 0,

@@ -341,7 +341,7 @@ fn extractDeriveContent(source: []const u8, attr_node: ts.Node, k: *const KindId
 /// comment ordering. Returns an allocated string joining the kept
 /// attribute texts with newlines, or null when no kept attributes exist.
 /// Caller owns the returned memory.
-pub fn extractAttributes(allocator: std.mem.Allocator, source: []const u8, node: ts.Node, k: *const KindIds) !?[]const u8 {
+pub fn extractAttributes(allocator: std.mem.Allocator, source: []const u8, node: ts.Node, k: *const KindIds) !?[]u8 {
     const skip_names = [_][]const u8{ "derive", "test" };
 
     // Walk backward and record byte ranges of kept attributes.

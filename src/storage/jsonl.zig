@@ -166,29 +166,6 @@ fn parseExternal(allocator: std.mem.Allocator, g: *Graph, val: std.json.Value) !
     }
 }
 
-/// Register heap-allocated buffers from a parsed LangMeta with the graph's
-/// ownership tracker. On failure, frees any buffers not yet registered.
-fn registerLangMetaBuffers(allocator: std.mem.Allocator, g: *Graph, meta: LangMeta) !void {
-    const buffers: [3]?[]const u8 = switch (meta) {
-        .rust => |rm| .{ rm.abi, rm.derives, rm.attributes },
-        .zig => |zm| .{ zm.calling_convention, null, null },
-        .none => .{ null, null, null },
-    };
-    var registered: usize = 0;
-    errdefer {
-        // Free any buffers that were not yet registered.
-        for (buffers[registered..]) |maybe_buf| {
-            if (maybe_buf) |b| allocator.free(b);
-        }
-    }
-    for (buffers) |maybe_buf| {
-        if (maybe_buf) |b| {
-            try g.addOwnedBuffer(allocator, b);
-        }
-        registered += 1;
-    }
-}
-
 /// Parse a single JSON node record and add it to the graph. Returns null on skip.
 fn parseNodeFromJson(allocator: std.mem.Allocator, g: *Graph, obj: std.json.ObjectMap) !?NodeId {
     const name_str = jsonStr(obj.get("name") orelse return null) orelse return null;
@@ -231,11 +208,10 @@ fn parseNodeFromJson(allocator: std.mem.Allocator, g: *Graph, obj: std.json.Obje
 
     const external = if (obj.get("external")) |v| try parseExternal(allocator, g, v) else ExternalInfo{ .none = {} };
 
-    const lang_meta = if (obj.get("lang_meta")) |v| blk: {
-        const meta = try LangMeta.parseJson(allocator, v);
-        try registerLangMetaBuffers(allocator, g, meta);
-        break :blk meta;
-    } else LangMeta{ .none = {} };
+    const lang_meta = if (obj.get("lang_meta")) |v|
+        try LangMeta.parseJson(allocator, g, v)
+    else
+        LangMeta{ .none = {} };
 
     const metrics = if (obj.get("metrics")) |v| Metrics.parseJson(v) else null;
 

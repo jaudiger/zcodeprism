@@ -23,9 +23,9 @@ pub const OwnedBuffer = struct {
     len: usize,
     alignment: std.mem.Alignment,
 
-    pub fn fromSlice(comptime T: type, buf: []const T) OwnedBuffer {
+    pub fn fromSlice(comptime T: type, buf: []T) OwnedBuffer {
         return .{
-            .ptr = @ptrCast(@constCast(buf.ptr)),
+            .ptr = @ptrCast(buf.ptr),
             .len = buf.len * @sizeOf(T),
             .alignment = comptime std.mem.Alignment.of(T),
         };
@@ -86,7 +86,7 @@ pub const Graph = struct {
     /// so rawFree receives the correct alignment on deallocation.
     /// Each buffer must be added exactly once; adding the same pointer twice
     /// causes a double-free.
-    pub fn addOwnedSlice(self: *Graph, allocator: std.mem.Allocator, comptime T: type, buf: []const T) !void {
+    pub fn addOwnedSlice(self: *Graph, allocator: std.mem.Allocator, comptime T: type, buf: []T) !void {
         const ob = OwnedBuffer.fromSlice(T, buf);
         if (ob.len == 0) return;
         if (std.debug.runtime_safety) {
@@ -97,9 +97,18 @@ pub const Graph = struct {
         try self.owned_buffers.append(allocator, ob);
     }
 
-    /// Convenience wrapper for the common case of registering a []const u8.
-    pub fn addOwnedBuffer(self: *Graph, allocator: std.mem.Allocator, buf: []const u8) !void {
+    /// Convenience wrapper for the common case of registering a []u8.
+    pub fn addOwnedBuffer(self: *Graph, allocator: std.mem.Allocator, buf: []u8) !void {
         return self.addOwnedSlice(allocator, u8, buf);
+    }
+
+    /// Dupe `src` and register the duplicate with `owned_buffers`.
+    /// Returns the duped slice on success; rolls back on failure.
+    pub fn dupeAndOwn(self: *Graph, allocator: std.mem.Allocator, src: []const u8) ![]u8 {
+        const d = try allocator.dupe(u8, src);
+        errdefer allocator.free(d);
+        try self.addOwnedBuffer(allocator, d);
+        return d;
     }
 
     /// Move all owned buffers from `source` into this graph. After the call,
@@ -347,7 +356,7 @@ pub const FrozenGraph = struct {
 
 /// Collapse runs of whitespace (spaces, tabs, newlines) into single spaces,
 /// trimming any trailing space. The caller owns the returned buffer.
-fn collapseWhitespace(allocator: std.mem.Allocator, input: []const u8) ![]const u8 {
+fn collapseWhitespace(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
     // Measure
     var len: usize = 0;
     var in_ws = false;

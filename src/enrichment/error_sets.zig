@@ -120,8 +120,8 @@ pub fn propagateErrorSets(allocator: std.mem.Allocator, graph: *Graph, logger: L
 
 /// Pair of a flat backing buffer and an array of slices pointing into it.
 const ParsedNames = struct {
-    slices: []const []const u8,
-    flat_buf: []const u8,
+    slices: [][]const u8,
+    flat_buf: []u8,
 };
 
 /// Extend `entry` with names from `new_names` that are not already members.

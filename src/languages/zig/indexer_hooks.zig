@@ -449,8 +449,8 @@ fn resolveStdPhantoms(
 
 /// Flat-buffer + slice-array pair, same layout as error_sets.ParsedNames.
 const ParsedNames = struct {
-    slices: []const []const u8,
-    flat_buf: []const u8,
+    slices: [][]const u8,
+    flat_buf: []u8,
 };
 
 /// Extract error names from LSP hover text using tree-sitter. Parses the
