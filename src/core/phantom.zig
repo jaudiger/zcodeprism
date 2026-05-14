@@ -133,7 +133,7 @@ pub const PhantomManager = struct {
     pub fn deinit(self: *PhantomManager, allocator: std.mem.Allocator) void {
         var it = self.lookup.iterator();
         while (it.next()) |entry| {
-            allocator.free(@constCast(entry.key_ptr.*));
+            allocator.free(entry.key_ptr.*);
         }
         self.lookup.deinit(allocator);
         self.usage_sites.deinit(allocator);

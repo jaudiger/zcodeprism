@@ -574,7 +574,7 @@ test "jsonl output is sorted" {
             });
         }
     }
-    defer for (edges.items) |e| std.testing.allocator.free(@constCast(e.edge_type));
+    defer for (edges.items) |e| std.testing.allocator.free(e.edge_type);
 
     // Assert: edges are sorted by edge_type alphabetically, then source_id, then target_id
     for (0..edges.items.len -| 1) |i| {

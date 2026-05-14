@@ -113,8 +113,8 @@ fn dupeProjects(allocator: std.mem.Allocator, zon_projects: []const ZonProject) 
     var filled: usize = 0;
     errdefer {
         for (projects[0..filled]) |p| {
-            allocator.free(@constCast(p.name));
-            allocator.free(@constCast(p.path));
+            allocator.free(p.name);
+            allocator.free(p.path);
         }
         allocator.free(projects);
     }
@@ -132,11 +132,11 @@ fn dupeProjects(allocator: std.mem.Allocator, zon_projects: []const ZonProject) 
 /// Release memory allocated by `parseWorkspaceConfig`.
 pub fn freeWorkspace(allocator: std.mem.Allocator, ws: *const Workspace) void {
     for (ws.projects) |p| {
-        allocator.free(@constCast(p.name));
-        allocator.free(@constCast(p.path));
+        allocator.free(p.name);
+        allocator.free(p.path);
     }
     allocator.free(ws.projects);
-    allocator.free(@constCast(ws.name));
+    allocator.free(ws.name);
 }
 
 /// Name constraints and uniqueness checks. No filesystem I/O.
