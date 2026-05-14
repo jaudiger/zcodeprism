@@ -149,7 +149,7 @@ pub const TextStderrLogger = struct {
     }
 
     /// Return a Logger interface backed by this TextStderrLogger.
-    /// The returned Logger borrows `self`, so `self` must outlive it.
+    /// `self` must not move while the returned Logger is in use.
     pub fn logger(self: *TextStderrLogger) Logger {
         return .{
             .ptr = @ptrCast(self),
