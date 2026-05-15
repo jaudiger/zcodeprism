@@ -87,7 +87,7 @@ pub fn main(init: std.process.Init) !void {
         _ = try tool_utils.parseCommonFlag(allocator, arg, &args, &common_flags);
     }
 
-    var text_logger = logging.TextStderrLogger.init(io, tool_utils.verbosityToLevel(common_flags.verbosity));
+    var text_logger = logging.TextStderrLogger.init(io, logging.verbosityToLevel(common_flags.verbosity));
     const log = if (common_flags.verbosity > 0) text_logger.logger() else logging.Logger.noop;
 
     const options = indexer.IndexOptions{

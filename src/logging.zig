@@ -20,6 +20,16 @@ pub const Level = enum(u8) {
     }
 };
 
+/// Map a CLI verbosity count to the minimum log level.
+pub fn verbosityToLevel(verbosity: u8) Level {
+    return switch (verbosity) {
+        0 => .warn,
+        1 => .info,
+        2 => .debug,
+        else => .trace,
+    };
+}
+
 /// Tagged union carrying one structured log field value.
 pub const FieldValue = union(enum) {
     string: []const u8,

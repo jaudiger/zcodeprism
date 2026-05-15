@@ -20,16 +20,6 @@ pub fn countVerbosity(arg: []const u8) u8 {
     return 0;
 }
 
-/// Maps a verbosity count to the minimum log level for TextStderrLogger.
-pub fn verbosityToLevel(verbosity: u8) logging.Level {
-    return switch (verbosity) {
-        0 => .warn,
-        1 => .info,
-        2 => .debug,
-        else => .trace,
-    };
-}
-
 /// Flags shared across all directory-indexing debug tools.
 pub const CommonFlags = struct {
     exclude: std.ArrayList([]const u8),
@@ -92,7 +82,9 @@ pub fn parseCommonFlag(
     return false;
 }
 
-/// Run LSP enrichment over all registered languages and print a summary line.
+/// Run LSP enrichment over all registered languages and print a summary
+/// line. Thin convenience wrapper for debug tools; delegates to
+/// `zcodeprism.lsp.enricher.enrichAllLanguages` for the actual work.
 pub fn runLspEnrichment(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -101,16 +93,9 @@ pub fn runLspEnrichment(
     log: logging.Logger,
     stdout: *std.Io.Writer,
 ) !void {
-    const Registry = zcodeprism.registry.Registry;
-    const EnrichResult = zcodeprism.language_support.EnrichResult;
     var lsp_pool = zcodeprism.lsp.pool.LspPool.init(.{});
     defer lsp_pool.deinit(allocator, io);
-    var result = EnrichResult{};
 
-    for (Registry.allLanguages()) |ls| {
-        const r = try zcodeprism.lsp.enricher.enrich(allocator, io, graph, ls, wl, &lsp_pool, .{ .logger = log });
-        result.accumulate(r);
-    }
-
+    const result = try zcodeprism.lsp.enricher.enrichAllLanguages(allocator, io, graph, wl, &lsp_pool, .{ .logger = log });
     result.format(stdout) catch {};
 }

@@ -107,6 +107,11 @@ pub const lsp = @import("lsp/lsp.zig");
 /// MCP server: JSON-RPC transport, protocol types, dispatch.
 pub const mcp = @import("mcp/mcp.zig");
 
+/// High-level CLI command workflows (init, index, export, snapshot,
+/// diff, serve, status). Each `run` returns an error union; the CLI
+/// dispatcher translates results and errors to stdout/stderr/exit codes.
+pub const commands = @import("commands/commands.zig");
+
 /// File watcher, debouncer, and generation manager for watch mode.
 pub const watcher = @import("watcher/watcher_mod.zig");
 

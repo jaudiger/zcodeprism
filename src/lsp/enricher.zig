@@ -6,6 +6,7 @@
 const std = @import("std");
 const graph_mod = @import("../core/graph.zig");
 const lang_support = @import("../languages/language_support.zig");
+const registry_mod = @import("../languages/registry.zig");
 const enrichment = @import("../enrichment/enrichment.zig");
 const logging = @import("../logging.zig");
 const client_mod = @import("client.zig");
@@ -21,6 +22,7 @@ const Logger = logging.Logger;
 const Field = logging.Field;
 const LspClient = client_mod.LspClient;
 const LspPool = pool_mod.LspPool;
+const Registry = registry_mod.Registry;
 
 /// Options for the LSP enrichment pass.
 pub const EnrichOptions = struct {
@@ -107,6 +109,24 @@ pub fn enrich(
         log.warn("LSP: post-freeze enrichment failed", &.{});
     };
 
+    return result;
+}
+
+/// Run `enrich` over every registered language, accumulating results.
+/// Returns the first error encountered.
+pub fn enrichAllLanguages(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    graph: *Graph,
+    wl: *const LspWorklist,
+    pool: *LspPool,
+    options: EnrichOptions,
+) !EnrichResult {
+    var result = EnrichResult{};
+    for (Registry.allLanguages()) |ls| {
+        const r = try enrich(allocator, io, graph, ls, wl, pool, options);
+        result.accumulate(r);
+    }
     return result;
 }
 

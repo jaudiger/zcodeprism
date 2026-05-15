@@ -12,6 +12,15 @@ pub const binary = @import("binary.zig");
 /// JSONL storage backend (one JSON object per line, human-readable).
 pub const jsonl = @import("jsonl.zig");
 
+/// Default project data directory.
+pub const data_dir = ".zcodeprism";
+
+/// Default path for the indexed graph in binary format.
+pub const graph_binary_path = ".zcodeprism/graph.bin";
+
+/// Default path for the indexed graph in JSONL format.
+pub const graph_jsonl_path = ".zcodeprism/graph.jsonl";
+
 /// Supported persistent storage formats for graph serialization.
 ///
 /// Callers select a format and call the corresponding module's functions
