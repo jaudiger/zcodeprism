@@ -3,7 +3,6 @@ const types = @import("types.zig");
 const node_mod = @import("node.zig");
 const edge_mod = @import("edge.zig");
 const adjacency_mod = @import("adjacency.zig");
-const lang_meta_mod = @import("lang_meta.zig");
 
 const NodeId = types.NodeId;
 const EdgeId = types.EdgeId;
@@ -634,7 +633,7 @@ test "node with all optional fields null" {
     try std.testing.expectEqual(@as(?[]const u8, null), result.?.doc);
     try std.testing.expectEqual(@as(?[]const u8, null), result.?.signature);
     try std.testing.expectEqual(@as(?types.ContentHash, null), result.?.content_hash);
-    try std.testing.expectEqual(lang_meta_mod.LangMeta.none, result.?.lang_meta);
+    try std.testing.expect(result.?.lang_meta == .none);
 }
 
 // Optional fields via graph (fail: needs addNode)

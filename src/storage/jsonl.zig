@@ -5,6 +5,7 @@ const edge_mod = @import("../core/edge.zig");
 const types = @import("../core/types.zig");
 const metrics_mod = @import("../core/metrics.zig");
 const lang = @import("../languages/language.zig");
+const rust_meta_mod = @import("../languages/rust/meta.zig");
 
 const Graph = graph_mod.Graph;
 const FrozenGraph = graph_mod.FrozenGraph;
@@ -18,6 +19,7 @@ const Visibility = types.Visibility;
 const Metrics = metrics_mod.Metrics;
 const LangMeta = lang.LangMeta;
 const ExternalInfo = lang.ExternalInfo;
+const RustSubKind = rust_meta_mod.RustSubKind;
 
 fn writeNodeLine(writer: *std.Io.Writer, n: Node) !void {
     var stream: std.json.Stringify = .{ .writer = writer };
@@ -144,6 +146,77 @@ fn parseContentHash(hex: []const u8) ?types.ContentHash {
     return result;
 }
 
+/// Parse a LangMeta from a `std.json.Value`. String fields are duped
+/// and registered on `g`. `null` or unknown type returns `.none`.
+fn parseLangMeta(allocator: std.mem.Allocator, g: *Graph, val: std.json.Value) !LangMeta {
+    switch (val) {
+        .null => return .{ .none = {} },
+        .object => |obj| {
+            const type_val = obj.get("type") orelse return .{ .none = {} };
+            if (type_val != .string) return .{ .none = {} };
+            if (std.mem.eql(u8, type_val.string, "rust")) {
+                const sub_kind_val: RustSubKind = blk: {
+                    const sk = obj.get("sub_kind") orelse break :blk .none;
+                    if (sk != .string) break :blk .none;
+                    inline for (@typeInfo(RustSubKind).@"enum".fields) |f| {
+                        if (std.mem.eql(u8, sk.string, f.name)) break :blk @enumFromInt(f.value);
+                    }
+                    break :blk .none;
+                };
+                const abi: ?[]u8 = if (obj.get("abi")) |v| switch (v) {
+                    .string => |s| try g.dupeAndOwn(allocator, s),
+                    else => null,
+                } else null;
+                const derives: ?[]u8 = if (obj.get("derives")) |v| switch (v) {
+                    .string => |s| try g.dupeAndOwn(allocator, s),
+                    else => null,
+                } else null;
+                const attributes: ?[]u8 = if (obj.get("attributes")) |v| switch (v) {
+                    .string => |s| try g.dupeAndOwn(allocator, s),
+                    else => null,
+                } else null;
+                const inner_attributes: ?[]u8 = if (obj.get("inner_attributes")) |v| switch (v) {
+                    .string => |s| try g.dupeAndOwn(allocator, s),
+                    else => null,
+                } else null;
+                const visibility_scope: ?[]u8 = if (obj.get("visibility_scope")) |v| switch (v) {
+                    .string => |s| try g.dupeAndOwn(allocator, s),
+                    else => null,
+                } else null;
+                return .{ .rust = .{
+                    .is_unsafe = if (obj.get("is_unsafe")) |v| (v == .bool and v.bool) else false,
+                    .is_async = if (obj.get("is_async")) |v| (v == .bool and v.bool) else false,
+                    .is_const = if (obj.get("is_const")) |v| (v == .bool and v.bool) else false,
+                    .is_extern = if (obj.get("is_extern")) |v| (v == .bool and v.bool) else false,
+                    .is_default = if (obj.get("is_default")) |v| (v == .bool and v.bool) else false,
+                    .sub_kind = sub_kind_val,
+                    .abi = abi,
+                    .derives = derives,
+                    .attributes = attributes,
+                    .inner_attributes = inner_attributes,
+                    .visibility_scope = visibility_scope,
+                } };
+            }
+            if (std.mem.eql(u8, type_val.string, "zig")) {
+                return .{ .zig = .{
+                    .is_comptime = if (obj.get("is_comptime")) |v| (v == .bool and v.bool) else false,
+                    .is_mutable = if (obj.get("is_mutable")) |v| (v == .bool and v.bool) else false,
+                    .is_inline = if (obj.get("is_inline")) |v| (v == .bool and v.bool) else false,
+                    .is_extern = if (obj.get("is_extern")) |v| (v == .bool and v.bool) else false,
+                    .is_packed = if (obj.get("is_packed")) |v| (v == .bool and v.bool) else false,
+                    .comptime_conditional = if (obj.get("comptime_conditional")) |v| (v == .bool and v.bool) else false,
+                    .calling_convention = if (obj.get("calling_convention")) |v| switch (v) {
+                        .string => |s| try g.dupeAndOwn(allocator, s),
+                        else => null,
+                    } else null,
+                } };
+            }
+            return .{ .none = {} };
+        },
+        else => return .{ .none = {} },
+    }
+}
+
 fn parseExternal(allocator: std.mem.Allocator, g: *Graph, val: std.json.Value) !ExternalInfo {
     switch (val) {
         .null => return .{ .none = {} },
@@ -209,7 +282,7 @@ fn parseNodeFromJson(allocator: std.mem.Allocator, g: *Graph, obj: std.json.Obje
     const external = if (obj.get("external")) |v| try parseExternal(allocator, g, v) else ExternalInfo{ .none = {} };
 
     const lang_meta = if (obj.get("lang_meta")) |v|
-        try LangMeta.parseJson(allocator, g, v)
+        try parseLangMeta(allocator, g, v)
     else
         LangMeta{ .none = {} };
 
@@ -745,4 +818,80 @@ test "jsonl round-trip preserves is_packed metadata" {
     const meta = loaded.getNode(.root).?.lang_meta;
     try std.testing.expect(meta.zig.is_packed);
     try std.testing.expect(!meta.zig.is_extern);
+}
+
+test "parseLangMeta returns none for null" {
+    // Arrange
+    var g = Graph.init("/tmp/test");
+    defer g.deinit(std.testing.allocator);
+
+    // Act
+    const meta = try parseLangMeta(std.testing.allocator, &g, .null);
+
+    // Assert
+    try std.testing.expectEqual(LangMeta.none, meta);
+}
+
+test "parseLangMeta round-trip for rust" {
+    // Arrange
+    const original = LangMeta{ .rust = .{
+        .is_unsafe = true,
+        .is_async = true,
+        .sub_kind = .macro_rules,
+        .abi = "C",
+        .derives = "Debug,Clone",
+        .attributes = "#[inline]\n#[must_use]",
+        .inner_attributes = "#![no_std]\n#![forbid(unsafe_code)]",
+        .visibility_scope = "crate",
+    } };
+    var aw = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer aw.deinit();
+
+    // Act
+    var stream: std.json.Stringify = .{ .writer = &aw.writer };
+    try original.writeJson(&stream);
+    try aw.writer.flush();
+    const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, aw.written(), .{});
+    defer parsed.deinit();
+    var g = Graph.init("/tmp/test");
+    defer g.deinit(std.testing.allocator);
+    const decoded = try parseLangMeta(std.testing.allocator, &g, parsed.value);
+
+    // Assert
+    try std.testing.expect(decoded.rust.is_unsafe);
+    try std.testing.expect(decoded.rust.is_async);
+    try std.testing.expect(!decoded.rust.is_const);
+    try std.testing.expectEqual(RustSubKind.macro_rules, decoded.rust.sub_kind);
+    try std.testing.expectEqualStrings("C", decoded.rust.abi.?);
+    try std.testing.expectEqualStrings("Debug,Clone", decoded.rust.derives.?);
+    try std.testing.expectEqualStrings("#[inline]\n#[must_use]", decoded.rust.attributes.?);
+    try std.testing.expectEqualStrings("#![no_std]\n#![forbid(unsafe_code)]", decoded.rust.inner_attributes.?);
+    try std.testing.expectEqualStrings("crate", decoded.rust.visibility_scope.?);
+}
+
+test "parseLangMeta round-trip for zig" {
+    // Arrange
+    const original = LangMeta{ .zig = .{
+        .is_comptime = true,
+        .is_packed = true,
+        .comptime_conditional = true,
+    } };
+    var aw = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer aw.deinit();
+
+    // Act
+    var stream: std.json.Stringify = .{ .writer = &aw.writer };
+    try original.writeJson(&stream);
+    try aw.writer.flush();
+    const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, aw.written(), .{});
+    defer parsed.deinit();
+    var g = Graph.init("/tmp/test");
+    defer g.deinit(std.testing.allocator);
+    const decoded = try parseLangMeta(std.testing.allocator, &g, parsed.value);
+
+    // Assert
+    try std.testing.expect(decoded.zig.is_comptime);
+    try std.testing.expect(decoded.zig.is_packed);
+    try std.testing.expect(decoded.zig.comptime_conditional);
+    try std.testing.expect(!decoded.zig.is_inline);
 }
