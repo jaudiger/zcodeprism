@@ -11,7 +11,7 @@ const ast = @import("ast_analysis.zig");
 const cf = @import("cross_file.zig");
 const eb = @import("edge_builder.zig");
 const pc = @import("parse_context.zig");
-const rust_meta = @import("meta.zig");
+const rust_meta = @import("../../core/lang_meta.zig");
 const phantom_mod = @import("../../core/phantom.zig");
 
 const Metrics = metrics_mod.Metrics;

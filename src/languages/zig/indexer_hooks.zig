@@ -27,7 +27,7 @@ const worklist_mod = @import("../../lsp/worklist.zig");
 const enrich_helpers = @import("../../lsp/enrich_helpers.zig");
 const LspWorklist = worklist_mod.LspWorklist;
 const WorklistEntry = worklist_mod.WorklistEntry;
-const UsageSite = worklist_mod.UsageSite;
+const UsageSite = phantom_mod.UsageSite;
 const EnrichResult = lang_support.EnrichResult;
 
 /// A function node's ID and its inclusive 1-based line range.
@@ -318,7 +318,7 @@ fn handleZigHover(allocator: std.mem.Allocator, graph: *Graph, src_idx: usize, h
     try graph.addOwnedBuffer(allocator, names.flat_buf);
     errdefer allocator.free(names.slices);
     try graph.addOwnedSlice(allocator, []const u8, names.slices);
-    var zm = if (graph.nodes.items[src_idx].lang_meta == .zig) graph.nodes.items[src_idx].lang_meta.zig else @import("meta.zig").ZigMeta{};
+    var zm = if (graph.nodes.items[src_idx].lang_meta == .zig) graph.nodes.items[src_idx].lang_meta.zig else @import("../../core/lang_meta.zig").ZigMeta{};
     zm.inferred_errors = names.slices;
     graph.nodes.items[src_idx].lang_meta = .{ .zig = zm };
     result.errors_inferred += 1;

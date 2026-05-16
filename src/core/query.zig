@@ -4,7 +4,7 @@ const types = @import("types.zig");
 const node_mod = @import("node.zig");
 const edge_mod = @import("edge.zig");
 const scope_mod = @import("scope.zig");
-const regex_mod = @import("regex.zig");
+const regex_mod = @import("../regex.zig");
 const lang_meta_mod = @import("lang_meta.zig");
 
 const Graph = graph_mod.Graph;

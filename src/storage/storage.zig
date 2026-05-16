@@ -12,6 +12,9 @@ pub const binary = @import("binary.zig");
 /// JSONL storage backend (one JSON object per line, human-readable).
 pub const jsonl = @import("jsonl.zig");
 
+/// Workspace assembly loader.
+pub const workspace_loader = @import("workspace_loader.zig");
+
 /// Default project data directory.
 pub const data_dir = ".zcodeprism";
 

@@ -1,7 +1,7 @@
 const std = @import("std");
 const types = @import("../core/types.zig");
 const generation_mod = @import("../core/generation.zig");
-const workspace_mod = @import("../core/workspace.zig");
+const workspace_loader = @import("../storage/workspace_loader.zig");
 const logging = @import("../logging.zig");
 const indexer = @import("../parser/indexer.zig");
 const lsp_enricher = @import("../lsp/enricher.zig");
@@ -58,7 +58,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, options: Options) !void {
     defer wl.deinit(allocator);
 
     if (options.workspace_path) |ws| {
-        initial_gen.graph = try workspace_mod.loadAndAssemble(initial_gen.arena.allocator(), io, ws);
+        initial_gen.graph = try workspace_loader.loadAndAssemble(initial_gen.arena.allocator(), io, ws);
     } else {
         _ = try indexer.indexDirectory(allocator, io, options.project_root, &initial_gen.graph, &wl, .{
             .exclude_paths = options.exclude_paths,
@@ -173,7 +173,7 @@ fn watcherThreadFn(ctx: *WatcherContext) void {
 
 fn reindexInto(ctx: *WatcherContext, gen: *GraphGeneration) bool {
     if (ctx.workspace_path) |ws| {
-        gen.graph = workspace_mod.loadAndAssemble(gen.arena.allocator(), ctx.io, ws) catch return false;
+        gen.graph = workspace_loader.loadAndAssemble(gen.arena.allocator(), ctx.io, ws) catch return false;
         return true;
     }
 

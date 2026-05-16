@@ -26,7 +26,7 @@ pub const phantom = @import("core/phantom.zig");
 /// Query engine: search, path finding, stats, impact analysis.
 pub const query = @import("core/query.zig");
 /// Simple regex engine for pattern matching on node names.
-pub const regex = @import("core/regex.zig");
+pub const regex = @import("regex.zig");
 /// Scope matching for restricting queries to subtrees.
 pub const scope = @import("core/scope.zig");
 /// Shared type definitions: NodeId, NodeKind, EdgeType, Visibility, etc.
@@ -51,8 +51,6 @@ pub const rust_cargo_parser = @import("languages/rust/cargo_parser.zig");
 pub const rust_edge_builder = @import("languages/rust/edge_builder.zig");
 /// Rust indexer hooks for multi-file processing.
 pub const rust_indexer_hooks = @import("languages/rust/indexer_hooks.zig");
-/// Rust language-specific metadata (unsafe, async, sub-kind, etc.).
-pub const rust_meta = @import("languages/rust/meta.zig");
 /// Rust tree-sitter parse context (KindIds, ScopeIndex, FileIndex).
 pub const rust_parse_context = @import("languages/rust/parse_context.zig");
 /// Rust tree-sitter visitor producing nodes and edges from a single file.
@@ -70,8 +68,6 @@ pub const zig_cross_file = @import("languages/zig/cross_file.zig");
 pub const zig_edge_builder = @import("languages/zig/edge_builder.zig");
 /// Zig indexer hooks for multi-file processing.
 pub const zig_indexer_hooks = @import("languages/zig/indexer_hooks.zig");
-/// Zig language-specific metadata (comptime, inline, packed, etc.).
-pub const zig_meta = @import("languages/zig/meta.zig");
 
 /// Multi-file indexer orchestrating per-file visitors and cross-file linking.
 pub const indexer = @import("parser/indexer.zig");

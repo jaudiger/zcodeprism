@@ -5,7 +5,7 @@ const edge_mod = @import("../core/edge.zig");
 const types = @import("../core/types.zig");
 const metrics_mod = @import("../core/metrics.zig");
 const lang = @import("../languages/language.zig");
-const rust_meta_mod = @import("../languages/rust/meta.zig");
+const rust_meta_mod = @import("../core/lang_meta.zig");
 
 const Graph = graph_mod.Graph;
 const FrozenGraph = graph_mod.FrozenGraph;

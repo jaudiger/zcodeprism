@@ -1,6 +1,6 @@
 const node_mod = @import("../../core/node.zig");
 const types = @import("../../core/types.zig");
-const rust_meta = @import("meta.zig");
+const rust_meta = @import("../../core/lang_meta.zig");
 
 const Node = node_mod.Node;
 

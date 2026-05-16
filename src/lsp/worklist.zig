@@ -7,15 +7,6 @@ const types = @import("../core/types.zig");
 
 const NodeId = types.NodeId;
 
-/// File-relative path and 0-based LSP position of a single phantom usage site.
-/// Slice fields are not owned; they must outlive this struct.
-pub const UsageSite = struct {
-    file_path: []const u8,
-    line: u32,
-    col: u32,
-    hint_name: ?[]const u8 = null,
-};
-
 /// LSP method to invoke for a worklist entry.
 pub const QueryKind = enum {
     /// textDocument/definition: resolve an unknown call or reference target.

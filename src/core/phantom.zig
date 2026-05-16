@@ -3,7 +3,6 @@ const graph_mod = @import("graph.zig");
 const types = @import("types.zig");
 const node_mod = @import("node.zig");
 const lang_meta_mod = @import("lang_meta.zig");
-const worklist_mod = @import("../lsp/worklist.zig");
 
 const Graph = graph_mod.Graph;
 const Node = node_mod.Node;
@@ -11,7 +10,15 @@ const NodeId = types.NodeId;
 const NodeKind = types.NodeKind;
 const Language = types.Language;
 const ExternalInfo = lang_meta_mod.ExternalInfo;
-const UsageSite = worklist_mod.UsageSite;
+
+/// File-relative path and 0-based source position of a single usage site.
+/// Slice fields are borrowed and must outlive this struct.
+pub const UsageSite = struct {
+    file_path: []const u8,
+    line: u32,
+    col: u32,
+    hint_name: ?[]const u8 = null,
+};
 
 /// Deduplicated store for phantom nodes -- external symbols (stdlib, dependencies)
 /// referenced but not defined in the project.

@@ -178,7 +178,7 @@ test "parses static item" {
     const node = helpers.findNode(&g, "COUNTER", .constant);
     try std.testing.expect(node != null);
     try std.testing.expect(node.?.lang_meta == .rust);
-    try std.testing.expectEqual(zcodeprism.rust_meta.RustSubKind.static_item, node.?.lang_meta.rust.sub_kind);
+    try std.testing.expectEqual(zcodeprism.lang_meta.RustSubKind.static_item, node.?.lang_meta.rust.sub_kind);
 }
 
 test "parses type alias" {
@@ -193,7 +193,7 @@ test "parses type alias" {
     const node = helpers.findNode(&g, "Result", .type_def);
     try std.testing.expect(node != null);
     try std.testing.expect(node.?.lang_meta == .rust);
-    try std.testing.expectEqual(zcodeprism.rust_meta.RustSubKind.type_alias, node.?.lang_meta.rust.sub_kind);
+    try std.testing.expectEqual(zcodeprism.lang_meta.RustSubKind.type_alias, node.?.lang_meta.rust.sub_kind);
 }
 
 test "parses macro_rules" {
@@ -208,7 +208,7 @@ test "parses macro_rules" {
     const node = helpers.findNode(&g, "say_hello", .function);
     try std.testing.expect(node != null);
     try std.testing.expect(node.?.lang_meta == .rust);
-    try std.testing.expectEqual(zcodeprism.rust_meta.RustSubKind.macro_rules, node.?.lang_meta.rust.sub_kind);
+    try std.testing.expectEqual(zcodeprism.lang_meta.RustSubKind.macro_rules, node.?.lang_meta.rust.sub_kind);
 }
 
 test "parses test function" {
@@ -826,7 +826,7 @@ test "macro_export makes macro public" {
     try std.testing.expect(node != null);
     try std.testing.expectEqual(Visibility.public, node.?.visibility);
     try std.testing.expect(node.?.lang_meta == .rust);
-    try std.testing.expectEqual(zcodeprism.rust_meta.RustSubKind.macro_rules, node.?.lang_meta.rust.sub_kind);
+    try std.testing.expectEqual(zcodeprism.lang_meta.RustSubKind.macro_rules, node.?.lang_meta.rust.sub_kind);
 }
 
 test "macro without macro_export stays private" {
@@ -856,7 +856,7 @@ test "associated type inherits trait visibility" {
     const output_node = helpers.findNode(&g, "Output", .type_def);
     try std.testing.expect(output_node != null);
     try std.testing.expect(output_node.?.lang_meta == .rust);
-    try std.testing.expectEqual(zcodeprism.rust_meta.RustSubKind.associated_type, output_node.?.lang_meta.rust.sub_kind);
+    try std.testing.expectEqual(zcodeprism.lang_meta.RustSubKind.associated_type, output_node.?.lang_meta.rust.sub_kind);
     try std.testing.expectEqual(Visibility.public, output_node.?.visibility);
 }
 
