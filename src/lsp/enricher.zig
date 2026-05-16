@@ -131,7 +131,7 @@ pub fn enrichAllLanguages(
 }
 
 test "enricher handles no-op cases" {
-    // Arrange: language support with null lsp_config
+    // Arrange
     const no_lsp = comptime blk: {
         var ls: LanguageSupport = undefined;
         ls.language = .zig;
@@ -161,7 +161,7 @@ test "enricher handles no-op cases" {
     defer wl.deinit(std.testing.allocator);
     const result = try enrich(std.testing.allocator, std.testing.io, &graph, &no_lsp, &wl, &pool, .{});
 
-    // Assert: zero-valued result, graph unchanged, pool untouched
+    // Assert
     try std.testing.expectEqual(@as(usize, 0), result.edges_promoted);
     try std.testing.expectEqual(@as(usize, 0), result.edges_added);
     try std.testing.expectEqual(@as(usize, 0), result.errors_inferred);

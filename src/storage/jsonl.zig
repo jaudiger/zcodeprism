@@ -450,7 +450,7 @@ test "jsonl round-trip preserves nodes and edges" {
     var loaded = try importJsonl(std.testing.allocator, aw.written());
     defer loaded.deinit(std.testing.allocator);
 
-    // Assert: nodes
+    // Assert
     try std.testing.expectEqual(g.nodeCount(), loaded.nodeCount());
     for (g.nodes.items, loaded.nodes.items) |original, restored| {
         try std.testing.expectEqualStrings(original.name, restored.name);
@@ -459,7 +459,7 @@ test "jsonl round-trip preserves nodes and edges" {
         try std.testing.expectEqual(original.visibility, restored.visibility);
     }
 
-    // Assert: edges (compare as sets via canonical sort order)
+    // Assert
     try std.testing.expectEqual(g.edgeCount(), loaded.edgeCount());
 
     const orig_sorted = try std.testing.allocator.alloc(Edge, g.edgeCount());
@@ -493,7 +493,7 @@ test "jsonl lines are valid json" {
     try exportJsonl(std.testing.allocator, fg, &aw.writer);
     try aw.writer.flush();
 
-    // Assert: each non-empty line parses as JSON
+    // Assert
     var line_iter = std.mem.splitScalar(u8, aw.written(), '\n');
     while (line_iter.next()) |line| {
         if (line.len == 0) continue;
@@ -516,7 +516,7 @@ test "jsonl records have correct _type field" {
     try exportJsonl(std.testing.allocator, fg, &aw.writer);
     try aw.writer.flush();
 
-    // Assert: count node and edge lines by _type
+    // Assert
     var line_iter = std.mem.splitScalar(u8, aw.written(), '\n');
     var node_count: usize = 0;
     var edge_count: usize = 0;
@@ -547,7 +547,7 @@ test "jsonl output is sorted" {
     try exportJsonl(std.testing.allocator, fg, &aw.writer);
     try aw.writer.flush();
 
-    // Assert: node ids are in ascending order
+    // Assert
     const EdgeKey = struct { edge_type: []const u8, source_id: i64, target_id: i64 };
     var edges: std.ArrayList(EdgeKey) = .empty;
     defer edges.deinit(std.testing.allocator);
@@ -577,7 +577,7 @@ test "jsonl output is sorted" {
     }
     defer for (edges.items) |e| std.testing.allocator.free(e.edge_type);
 
-    // Assert: edges are sorted by edge_type alphabetically, then source_id, then target_id
+    // Assert
     for (0..edges.items.len -| 1) |i| {
         const a = edges.items[i];
         const b = edges.items[i + 1];
@@ -608,7 +608,7 @@ test "jsonl empty graph" {
     try exportJsonl(std.testing.allocator, fg, &aw.writer);
     try aw.writer.flush();
 
-    // Assert: no output lines
+    // Assert
     var line_count: usize = 0;
     var line_iter = std.mem.splitScalar(u8, aw.written(), '\n');
     while (line_iter.next()) |line| {
@@ -644,7 +644,7 @@ test "jsonl preserves null fields as explicit null" {
     try exportJsonl(std.testing.allocator, fg, &aw.writer);
     try aw.writer.flush();
 
-    // Assert: null fields are serialized as explicit JSON null, not omitted
+    // Assert
     var line_iter = std.mem.splitScalar(u8, aw.written(), '\n');
     while (line_iter.next()) |line| {
         if (line.len == 0) continue;

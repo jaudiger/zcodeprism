@@ -226,6 +226,7 @@ test "Level has correct integer values" {
 }
 
 test "Level.asText returns correct strings" {
+    // Act / Assert
     try std.testing.expectEqualStrings("TRACE", Level.trace.asText());
     try std.testing.expectEqualStrings("DEBUG", Level.debug.asText());
     try std.testing.expectEqualStrings("INFO", Level.info.asText());
@@ -233,45 +234,51 @@ test "Level.asText returns correct strings" {
     try std.testing.expectEqualStrings("ERROR", Level.err.asText());
 }
 
-test "Field constructors create correct fields" {
+test "Field.string stores key and string value" {
     // Arrange / Act
-    const fs = Field.string("name", "hello");
-    const fi = Field.int("count", -42);
-    const fu = Field.uint("size", 100);
-    const fb = Field.boolean("enabled", true);
+    const f = Field.string("name", "hello");
 
-    // Assert: string
-    try std.testing.expectEqualStrings("name", fs.key);
-    switch (fs.value) {
-        .string => |v| try std.testing.expectEqualStrings("hello", v),
-        else => return error.UnexpectedVariant,
-    }
+    // Assert
+    try std.testing.expectEqualStrings("name", f.key);
+    try std.testing.expect(f.value == .string);
+    try std.testing.expectEqualStrings("hello", f.value.string);
+}
 
-    // Assert: int
-    try std.testing.expectEqualStrings("count", fi.key);
-    switch (fi.value) {
-        .int => |v| try std.testing.expectEqual(@as(i64, -42), v),
-        else => return error.UnexpectedVariant,
-    }
+test "Field.int stores key and signed value" {
+    // Arrange / Act
+    const f = Field.int("count", -42);
 
-    // Assert: uint
-    try std.testing.expectEqualStrings("size", fu.key);
-    switch (fu.value) {
-        .uint => |v| try std.testing.expectEqual(@as(u64, 100), v),
-        else => return error.UnexpectedVariant,
-    }
+    // Assert
+    try std.testing.expectEqualStrings("count", f.key);
+    try std.testing.expect(f.value == .int);
+    try std.testing.expectEqual(@as(i64, -42), f.value.int);
+}
 
-    // Assert: boolean
-    try std.testing.expectEqualStrings("enabled", fb.key);
-    switch (fb.value) {
-        .boolean => |v| try std.testing.expectEqual(true, v),
-        else => return error.UnexpectedVariant,
-    }
+test "Field.uint stores key and unsigned value" {
+    // Arrange / Act
+    const f = Field.uint("size", 100);
+
+    // Assert
+    try std.testing.expectEqualStrings("size", f.key);
+    try std.testing.expect(f.value == .uint);
+    try std.testing.expectEqual(@as(u64, 100), f.value.uint);
+}
+
+test "Field.boolean stores key and boolean value" {
+    // Arrange / Act
+    const f = Field.boolean("enabled", true);
+
+    // Assert
+    try std.testing.expectEqualStrings("enabled", f.key);
+    try std.testing.expect(f.value == .boolean);
+    try std.testing.expectEqual(true, f.value.boolean);
 }
 
 test "Logger.noop does not crash on any method" {
-    // Act: call every level, none should crash
+    // Arrange
     const log = Logger.noop;
+
+    // Act / Assert
     log.trace("msg", &.{});
     log.debug("msg", &.{});
     log.info("msg", &.{});
@@ -298,7 +305,7 @@ test "Logger.withScope returns different scope" {
 }
 
 test "Logger filters by min_level" {
-    // Arrange: a spy logger that counts calls via the ptr field
+    // Arrange
     var call_count: usize = 0;
 
     const spy_vtable = Logger.VTable{
@@ -323,7 +330,7 @@ test "Logger filters by min_level" {
     log.warn("passed", &.{});
     log.err("passed", &.{});
 
-    // Assert: only warn and err get through
+    // Assert
     try std.testing.expectEqual(@as(usize, 2), call_count);
 }
 
@@ -351,7 +358,6 @@ test "TextStderrLogger.logger returns correct vtable and scope" {
 
 test "Logger struct size is reasonable" {
     comptime {
-        // ptr + vtable ptr + slice (ptr+len) + u8 = reasonable size
         std.debug.assert(@sizeOf(Logger) <= 48);
     }
 }

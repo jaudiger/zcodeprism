@@ -584,16 +584,12 @@ pub const Regex = struct {
     }
 };
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 test "literal pattern matches as unanchored substring" {
     // Arrange
     const re = try Regex.compile(std.testing.allocator, "parse");
     defer re.deinit(std.testing.allocator);
 
-    // Act + Assert
+    // Act / Assert
     try std.testing.expect(re.matches("parseToken"));
     try std.testing.expect(re.matches("myparse"));
     try std.testing.expect(re.matches("parse"));
@@ -612,23 +608,20 @@ test "dot and quantifiers match expected character spans" {
     const question = try Regex.compile(std.testing.allocator, "colou?r");
     defer question.deinit(std.testing.allocator);
 
-    // Act + Assert: dot matches exactly one character
+    // Act / Assert
     try std.testing.expect(dot.matches("main"));
     try std.testing.expect(dot.matches("mbin"));
     try std.testing.expect(!dot.matches("min"));
     try std.testing.expect(!dot.matches("mooin"));
 
-    // Act + Assert: .* matches zero or more
     try std.testing.expect(dot_star.matches("parseToken"));
     try std.testing.expect(dot_star.matches("parseMyToken"));
     try std.testing.expect(!dot_star.matches("parseToke"));
 
-    // Act + Assert: .+ requires at least one
     try std.testing.expect(dot_plus.matches("axb"));
     try std.testing.expect(dot_plus.matches("axyb"));
     try std.testing.expect(!dot_plus.matches("ab"));
 
-    // Act + Assert: ? makes preceding atom optional
     try std.testing.expect(question.matches("color"));
     try std.testing.expect(question.matches("colour"));
     try std.testing.expect(!question.matches("colouur"));
@@ -643,16 +636,14 @@ test "anchors restrict match position" {
     const both = try Regex.compile(std.testing.allocator, "^main$");
     defer both.deinit(std.testing.allocator);
 
-    // Act + Assert: ^ anchors to start
+    // Act / Assert
     try std.testing.expect(start.matches("main"));
     try std.testing.expect(start.matches("mainFunc"));
     try std.testing.expect(!start.matches("themain"));
 
-    // Act + Assert: $ anchors to end
     try std.testing.expect(end.matches("main"));
     try std.testing.expect(!end.matches("mainFunc"));
 
-    // Act + Assert: ^...$ requires exact match
     try std.testing.expect(both.matches("main"));
     try std.testing.expect(!both.matches("main2"));
     try std.testing.expect(!both.matches("themain"));
@@ -664,7 +655,7 @@ test "backslash escapes metacharacters into literals" {
     const re = try Regex.compile(std.testing.allocator, "std\\.mem");
     defer re.deinit(std.testing.allocator);
 
-    // Act + Assert
+    // Act / Assert
     try std.testing.expect(re.matches("std.mem"));
     try std.testing.expect(re.matches("std.mem.Allocator"));
     try std.testing.expect(!re.matches("stdXmem"));
@@ -681,21 +672,18 @@ test "character classes match expected sets" {
     const star_class = try Regex.compile(std.testing.allocator, "[0-9]*x");
     defer star_class.deinit(std.testing.allocator);
 
-    // Act + Assert: positive class
+    // Act / Assert
     try std.testing.expect(pos.matches("ax"));
     try std.testing.expect(pos.matches("cx"));
     try std.testing.expect(!pos.matches("dx"));
 
-    // Act + Assert: negated class
     try std.testing.expect(!neg.matches("ax"));
     try std.testing.expect(neg.matches("dx"));
 
-    // Act + Assert: range
     try std.testing.expect(range.matches("hello"));
     try std.testing.expect(!range.matches("Hello"));
     try std.testing.expect(!range.matches(""));
 
-    // Act + Assert: quantifier on class
     try std.testing.expect(star_class.matches("x"));
     try std.testing.expect(star_class.matches("123x"));
     try std.testing.expect(!star_class.matches("123"));
@@ -710,17 +698,15 @@ test "alternation matches any branch" {
     const three = try Regex.compile(std.testing.allocator, "a|b|c");
     defer three.deinit(std.testing.allocator);
 
-    // Act + Assert: either branch matches
+    // Act / Assert
     try std.testing.expect(simple.matches("parseToken"));
     try std.testing.expect(simple.matches("tokenizeAll"));
     try std.testing.expect(!simple.matches("serialize"));
 
-    // Act + Assert: anchors apply per branch
     try std.testing.expect(anchored.matches("getValue"));
     try std.testing.expect(anchored.matches("setValue"));
     try std.testing.expect(!anchored.matches("doGetValue"));
 
-    // Act + Assert: three-way alternation
     try std.testing.expect(three.matches("a"));
     try std.testing.expect(three.matches("b"));
     try std.testing.expect(three.matches("c"));
@@ -742,28 +728,23 @@ test "shorthand classes match expected character sets" {
     const non_space = try Regex.compile(std.testing.allocator, "^\\S+$");
     defer non_space.deinit(std.testing.allocator);
 
-    // Act + Assert: \w matches [a-zA-Z0-9_]
+    // Act / Assert
     try std.testing.expect(word.matches("parse_token_42"));
     try std.testing.expect(!word.matches("parse-token"));
     try std.testing.expect(!word.matches(""));
 
-    // Act + Assert: \W matches non-word chars
     try std.testing.expect(non_word.matches("hello world"));
     try std.testing.expect(!non_word.matches("helloworld"));
 
-    // Act + Assert: \d matches [0-9]
     try std.testing.expect(digit.matches("42"));
     try std.testing.expect(!digit.matches("4a"));
 
-    // Act + Assert: \D matches non-digits
     try std.testing.expect(non_digit.matches("abc"));
     try std.testing.expect(!non_digit.matches("a1c"));
 
-    // Act + Assert: \s matches whitespace
     try std.testing.expect(space.matches("hello world"));
     try std.testing.expect(!space.matches("helloworld"));
 
-    // Act + Assert: \S matches non-whitespace
     try std.testing.expect(non_space.matches("hello"));
     try std.testing.expect(!non_space.matches("hello world"));
 }
@@ -775,13 +756,12 @@ test "word boundary matches at word edges" {
     const start_boundary = try Regex.compile(std.testing.allocator, "\\bget");
     defer start_boundary.deinit(std.testing.allocator);
 
-    // Act + Assert: \b matches word/non-word transitions
+    // Act / Assert
     try std.testing.expect(whole_word.matches("parse"));
     try std.testing.expect(whole_word.matches("call parse here"));
     try std.testing.expect(!whole_word.matches("parseToken"));
     try std.testing.expect(!whole_word.matches("myparse"));
 
-    // Act + Assert: boundary at start of word
     try std.testing.expect(start_boundary.matches("getValue"));
     try std.testing.expect(!start_boundary.matches("target"));
 }
@@ -797,25 +777,22 @@ test "groups with alternation inside" {
     const optional = try Regex.compile(std.testing.allocator, "pre(fix)?");
     defer optional.deinit(std.testing.allocator);
 
-    // Act + Assert: group alternation
+    // Act / Assert
     try std.testing.expect(simple.matches("foobar"));
     try std.testing.expect(simple.matches("foobaz"));
     try std.testing.expect(!simple.matches("foobax"));
     try std.testing.expect(!simple.matches("foo"));
 
-    // Act + Assert: repeated group
     try std.testing.expect(quantified.matches("ab"));
     try std.testing.expect(quantified.matches("abcd"));
     try std.testing.expect(quantified.matches("cdabcd"));
     try std.testing.expect(!quantified.matches("ac"));
 
-    // Act + Assert: nested groups
     try std.testing.expect(nested.matches("abd"));
     try std.testing.expect(nested.matches("acd"));
     try std.testing.expect(nested.matches("abdacd"));
     try std.testing.expect(!nested.matches("aed"));
 
-    // Act + Assert: optional group
     try std.testing.expect(optional.matches("prefix"));
     try std.testing.expect(optional.matches("pre"));
 }
@@ -825,7 +802,7 @@ test "budget prevents pathological backtracking from hanging" {
     const re = try Regex.compile(std.testing.allocator, "a?a?a?a?a?a?a?a?a?a?aaaaaaaaaa");
     defer re.deinit(std.testing.allocator);
 
-    // Act + Assert: completes without hanging
+    // Act / Assert
     _ = re.matches("aaaaaaaaaa");
 }
 
@@ -834,13 +811,13 @@ test "empty pattern matches everything" {
     const re = try Regex.compile(std.testing.allocator, "");
     defer re.deinit(std.testing.allocator);
 
-    // Act + Assert
+    // Act / Assert
     try std.testing.expect(re.matches("anything"));
     try std.testing.expect(re.matches(""));
 }
 
 test "invalid patterns return InvalidRegex" {
-    // Arrange + Act + Assert
+    // Arrange / Act / Assert
     try std.testing.expectError(error.InvalidRegex, Regex.compile(std.testing.allocator, "*"));
     try std.testing.expectError(error.InvalidRegex, Regex.compile(std.testing.allocator, "+"));
     try std.testing.expectError(error.InvalidRegex, Regex.compile(std.testing.allocator, "?"));
@@ -855,7 +832,7 @@ test "pipe inside character class is literal" {
     const re = try Regex.compile(std.testing.allocator, "[a|b]");
     defer re.deinit(std.testing.allocator);
 
-    // Act + Assert
+    // Act / Assert
     try std.testing.expect(re.matches("a"));
     try std.testing.expect(re.matches("|"));
     try std.testing.expect(re.matches("b"));

@@ -114,7 +114,7 @@ fn writeDirImportsFixtures(io: std.Io, dir: std.Io.Dir) !void {
     });
 }
 
-test "project fixture: file nodes, imports, calls, phantom nodes, metrics" {
+test "project fixture produces complete graph with edges, phantoms, and metrics" {
     // Arrange
     var g = Graph.init("/tmp/project");
     defer g.deinit(std.testing.allocator);
@@ -124,26 +124,22 @@ test "project fixture: file nodes, imports, calls, phantom nodes, metrics" {
     // Act
     _ = indexProjectFixtures(&g, &tmp_dir) catch |err| return err;
 
-    // file nodes
+    // Assert
     try std.testing.expectEqual(@as(usize, 3), helpers.countNodesByKind(&g, .file));
 
-    // import edges
     const main_file = helpers.findNode(&g, "main.zig", .file) orelse return error.TestExpectedEqual;
     const parser_file = helpers.findNode(&g, "parser.zig", .file) orelse return error.TestExpectedEqual;
     const utils_file = helpers.findNode(&g, "utils.zig", .file) orelse return error.TestExpectedEqual;
     try std.testing.expect(helpers.hasEdge(&g, main_file.id, parser_file.id, .imports));
     try std.testing.expect(helpers.hasEdge(&g, main_file.id, utils_file.id, .imports));
 
-    // cross-file calls edge
     const process_fn = helpers.findNode(&g, "processInput", .function) orelse return error.TestExpectedEqual;
     const parse_fn = helpers.findNode(&g, "parse", .function) orelse return error.TestExpectedEqual;
     try std.testing.expect(helpers.hasEdge(&g, process_fn.id, parse_fn.id, .calls));
 
-    // cross-file uses_type edge
     const parser_type = helpers.findNode(&g, "Parser", .type_def) orelse return error.TestExpectedEqual;
     try std.testing.expect(helpers.hasEdge(&g, process_fn.id, parser_type.id, .uses_type));
 
-    // phantom nodes for std
     var found_stdlib = false;
     for (g.nodes.items) |n| {
         switch (n.external) {
@@ -156,7 +152,6 @@ test "project fixture: file nodes, imports, calls, phantom nodes, metrics" {
     }
     try std.testing.expect(found_stdlib);
 
-    // phantom nodes have no file_path
     for (g.nodes.items) |n| {
         switch (n.external) {
             .stdlib => try std.testing.expectEqual(@as(?[]const u8, null), n.file_path),
@@ -164,7 +159,6 @@ test "project fixture: file nodes, imports, calls, phantom nodes, metrics" {
         }
     }
 
-    // phantom nodes have no line numbers
     for (g.nodes.items) |n| {
         switch (n.external) {
             .stdlib => {
@@ -175,7 +169,6 @@ test "project fixture: file nodes, imports, calls, phantom nodes, metrics" {
         }
     }
 
-    // phantom edges have source phantom
     for (g.edges.items) |e| {
         const target = g.getNode(e.target_id) orelse continue;
         switch (target.external) {
@@ -184,14 +177,12 @@ test "project fixture: file nodes, imports, calls, phantom nodes, metrics" {
         }
     }
 
-    // file nodes have content_hash
     for (g.nodes.items) |n| {
         if (n.kind == .file) {
             try std.testing.expect(n.content_hash != null);
         }
     }
 
-    // all non-phantom, non-structural nodes have language=.zig
     for (g.nodes.items) |n| {
         if (n.language == null) continue;
         switch (n.external) {
@@ -200,14 +191,12 @@ test "project fixture: file nodes, imports, calls, phantom nodes, metrics" {
         }
     }
 
-    // parent_id chain is consistent
     for (g.nodes.items) |n| {
         if (n.parent_id) |pid| {
             try std.testing.expect(g.getNode(pid) != null);
         }
     }
 
-    // no parent_id cycles
     for (g.nodes.items) |n| {
         var current_id: ?NodeId = n.parent_id;
         var hops: usize = 0;
@@ -219,7 +208,6 @@ test "project fixture: file nodes, imports, calls, phantom nodes, metrics" {
         }
     }
 
-    // metrics computed
     var found_complexity = false;
     for (g.nodes.items) |n| {
         if (n.kind == .function) {
@@ -233,7 +221,6 @@ test "project fixture: file nodes, imports, calls, phantom nodes, metrics" {
     }
     try std.testing.expect(found_complexity);
 
-    // metrics lines counted
     for (g.nodes.items) |n| {
         if (n.kind == .function) {
             if (n.metrics) |m| {
@@ -245,7 +232,6 @@ test "project fixture: file nodes, imports, calls, phantom nodes, metrics" {
         }
     }
 
-    // utils.zig has no project import edges
     for (g.edges.items) |e| {
         if (e.source_id == utils_file.id and e.edge_type == .imports) {
             const target = g.getNode(e.target_id) orelse continue;
@@ -257,131 +243,137 @@ test "project fixture: file nodes, imports, calls, phantom nodes, metrics" {
     }
 }
 
-test "incremental indexing: skip unchanged, detect changes" {
-    // skips unchanged files
-    {
-        var g = Graph.init("/tmp/project");
-        defer g.deinit(std.testing.allocator);
-        var tmp_dir = std.testing.tmpDir(.{});
-        defer tmp_dir.cleanup();
-        const project_root = setupProjectFixtures(&tmp_dir) catch return error.SkipZigTest;
-        defer std.testing.allocator.free(project_root);
+test "incremental indexing skips unchanged files" {
+    // Arrange
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const project_root = setupProjectFixtures(&tmp_dir) catch return error.SkipZigTest;
+    defer std.testing.allocator.free(project_root);
+    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{ .incremental = true }) catch |err| return err;
 
-        _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{ .incremental = true }) catch |err| return err;
-        const result2 = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{ .incremental = true }) catch |err| return err;
+    // Act
+    const result = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{ .incremental = true }) catch |err| return err;
 
-        try std.testing.expect(result2.files_skipped > 0);
-    }
-
-    // detects changed file
-    {
-        var g = Graph.init("/tmp/project");
-        defer g.deinit(std.testing.allocator);
-        var tmp_dir = std.testing.tmpDir(.{});
-        defer tmp_dir.cleanup();
-        const project_root = setupProjectFixtures(&tmp_dir) catch return error.SkipZigTest;
-        defer std.testing.allocator.free(project_root);
-
-        _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{ .incremental = true }) catch |err| return err;
-
-        try tmp_dir.dir.writeFile(std.testing.io, .{
-            .sub_path = "utils.zig",
-            .data = "pub fn changed() void {}\n",
-        });
-
-        const result2 = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{ .incremental = true }) catch |err| return err;
-
-        try std.testing.expect(result2.files_indexed > 0);
-    }
-
-    // content_hash changes when file changes
-    {
-        var g = Graph.init("/tmp/project");
-        defer g.deinit(std.testing.allocator);
-        var tmp_dir = std.testing.tmpDir(.{});
-        defer tmp_dir.cleanup();
-        const project_root = setupProjectFixtures(&tmp_dir) catch return error.SkipZigTest;
-        defer std.testing.allocator.free(project_root);
-
-        _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
-
-        const utils_node = helpers.findNode(&g, "utils.zig", .file) orelse return error.TestExpectedEqual;
-        const old_hash = utils_node.content_hash orelse return error.TestExpectedEqual;
-
-        try tmp_dir.dir.writeFile(std.testing.io, .{
-            .sub_path = "utils.zig",
-            .data = "pub fn changed() void {}\n",
-        });
-
-        var g2 = Graph.init("/tmp/project");
-        defer g2.deinit(std.testing.allocator);
-        _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g2, null, .{}) catch |err| return err;
-
-        const utils_node2 = helpers.findNode(&g2, "utils.zig", .file) orelse return error.TestExpectedEqual;
-        const new_hash = utils_node2.content_hash orelse return error.TestExpectedEqual;
-        try std.testing.expect(!std.mem.eql(u8, &old_hash, &new_hash));
-    }
+    // Assert
+    try std.testing.expect(result.files_skipped > 0);
 }
 
-test "edge cases: single file, no zig files, exclude paths" {
-    // single file project
-    {
-        var g = Graph.init("/tmp/project");
-        defer g.deinit(std.testing.allocator);
-        var tmp_dir = std.testing.tmpDir(.{});
-        defer tmp_dir.cleanup();
+test "incremental indexing detects changed file" {
+    // Arrange
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const project_root = setupProjectFixtures(&tmp_dir) catch return error.SkipZigTest;
+    defer std.testing.allocator.free(project_root);
+    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{ .incremental = true }) catch |err| return err;
+    try tmp_dir.dir.writeFile(std.testing.io, .{
+        .sub_path = "utils.zig",
+        .data = "pub fn changed() void {}\n",
+    });
 
-        try tmp_dir.dir.writeFile(std.testing.io, .{
-            .sub_path = "single.zig",
-            .data = fixtures.zig.edge_cases.project_single_file,
-        });
-        const project_root = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
-        defer std.testing.allocator.free(project_root);
+    // Act
+    const result = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{ .incremental = true }) catch |err| return err;
 
-        _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
+    // Assert
+    try std.testing.expect(result.files_indexed > 0);
+}
 
-        try std.testing.expectEqual(@as(usize, 1), helpers.countNodesByKind(&g, .file));
-        try std.testing.expect(g.nodeCount() > 1);
-    }
+test "content_hash changes when file changes" {
+    // Arrange
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const project_root = setupProjectFixtures(&tmp_dir) catch return error.SkipZigTest;
+    defer std.testing.allocator.free(project_root);
+    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
-    // directory with no zig files
-    {
-        var g = Graph.init("/tmp/project");
-        defer g.deinit(std.testing.allocator);
-        var tmp_dir = std.testing.tmpDir(.{});
-        defer tmp_dir.cleanup();
+    const utils_node = helpers.findNode(&g, "utils.zig", .file) orelse return error.TestExpectedEqual;
+    const old_hash = utils_node.content_hash orelse return error.TestExpectedEqual;
 
-        try tmp_dir.dir.writeFile(std.testing.io, .{
-            .sub_path = "readme.txt",
-            .data = "no zig here",
-        });
-        const project_root = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
-        defer std.testing.allocator.free(project_root);
+    try tmp_dir.dir.writeFile(std.testing.io, .{
+        .sub_path = "utils.zig",
+        .data = "pub fn changed() void {}\n",
+    });
 
-        _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
+    // Act
+    var g2 = Graph.init("/tmp/project");
+    defer g2.deinit(std.testing.allocator);
+    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g2, null, .{}) catch |err| return err;
 
-        try std.testing.expectEqual(@as(usize, 0), helpers.countNodesByKind(&g, .file));
-        try std.testing.expectEqual(@as(usize, 0), g.nodeCount());
-    }
+    // Assert
+    const utils_node2 = helpers.findNode(&g2, "utils.zig", .file) orelse return error.TestExpectedEqual;
+    const new_hash = utils_node2.content_hash orelse return error.TestExpectedEqual;
+    try std.testing.expect(!std.mem.eql(u8, &old_hash, &new_hash));
+}
 
-    // respects exclude_paths
-    {
-        var g = Graph.init("/tmp/project");
-        defer g.deinit(std.testing.allocator);
-        var tmp_dir = std.testing.tmpDir(.{});
-        defer tmp_dir.cleanup();
-        const project_root = setupProjectFixtures(&tmp_dir) catch return error.SkipZigTest;
-        defer std.testing.allocator.free(project_root);
+test "indexing a single-file project produces one file node" {
+    // Arrange
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
 
-        const exclude = [_][]const u8{"parser.zig"};
-        _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{
-            .exclude_paths = &exclude,
-        }) catch |err| return err;
+    try tmp_dir.dir.writeFile(std.testing.io, .{
+        .sub_path = "single.zig",
+        .data = fixtures.zig.edge_cases.project_single_file,
+    });
+    const project_root = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(project_root);
 
-        try std.testing.expectEqual(@as(?*const Node, null), helpers.findNode(&g, "parser.zig", .file));
-        try std.testing.expect(helpers.findNode(&g, "main.zig", .file) != null);
-        try std.testing.expect(helpers.findNode(&g, "utils.zig", .file) != null);
-    }
+    // Act
+    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
+
+    // Assert
+    try std.testing.expectEqual(@as(usize, 1), helpers.countNodesByKind(&g, .file));
+    try std.testing.expect(g.nodeCount() > 1);
+}
+
+test "indexing a directory with no zig files produces empty graph" {
+    // Arrange
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.writeFile(std.testing.io, .{
+        .sub_path = "readme.txt",
+        .data = "no zig here",
+    });
+    const project_root = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(project_root);
+
+    // Act
+    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
+
+    // Assert
+    try std.testing.expectEqual(@as(usize, 0), helpers.countNodesByKind(&g, .file));
+    try std.testing.expectEqual(@as(usize, 0), g.nodeCount());
+}
+
+test "exclude_paths skips listed files" {
+    // Arrange
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const project_root = setupProjectFixtures(&tmp_dir) catch return error.SkipZigTest;
+    defer std.testing.allocator.free(project_root);
+
+    const exclude = [_][]const u8{"parser.zig"};
+
+    // Act
+    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{
+        .exclude_paths = &exclude,
+    }) catch |err| return err;
+
+    // Assert
+    try std.testing.expectEqual(@as(?*const Node, null), helpers.findNode(&g, "parser.zig", .file));
+    try std.testing.expect(helpers.findNode(&g, "main.zig", .file) != null);
+    try std.testing.expect(helpers.findNode(&g, "utils.zig", .file) != null);
 }
 
 test "phantom nodes: deduplication, parent chain" {
@@ -506,7 +498,7 @@ test "test block resolves method call on import-assigned variable" {
     // Act
     _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
-    // Assert: the test node has a calls edge to the increment method
+    // Assert
     const provider_file = helpers.findNode(&g, "provider.zig", .file) orelse return error.TestExpectedEqual;
     const increment_id = helpers.findNodeInFile(&g, "increment", .function, provider_file.id) orelse return error.TestExpectedEqual;
 
@@ -521,11 +513,6 @@ test "test block resolves method call on import-assigned variable" {
 
     try std.testing.expect(helpers.hasEdge(&g, test_id.?, increment_id, .calls));
 }
-
-// ===========================================================================
-// Parameter method call: basic, pointer, optional, chained, multi, self,
-//                        return value, negative
-// ===========================================================================
 
 test "parameter method call: basic parameter" {
     // Arrange
@@ -716,30 +703,28 @@ test "parameter method call: return value from imported function" {
     try std.testing.expect(helpers.hasEdge(&g, use_factory_fn, process_fn, .calls));
 }
 
-test "parameter method call: negative tests" {
-    // no calls edge when parameter method is not called
-    {
-        var g = Graph.init("/tmp/param");
-        defer g.deinit(std.testing.allocator);
-        var tmp_dir = std.testing.tmpDir(.{});
-        defer tmp_dir.cleanup();
-        try writeNoCallsFixtures(std.testing.io, tmp_dir.dir);
-        const project_root = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
-        defer std.testing.allocator.free(project_root);
+test "no calls edge when parameter method is not called" {
+    // Arrange
+    var g = Graph.init("/tmp/param");
+    defer g.deinit(std.testing.allocator);
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try writeNoCallsFixtures(std.testing.io, tmp_dir.dir);
+    const project_root = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(project_root);
 
-        _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
+    // Act
+    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
-        const service_file = helpers.findNode(&g, "service.zig", .file) orelse return error.TestExpectedEqual;
-        const no_calls_file = helpers.findNode(&g, "no_calls.zig", .file) orelse return error.TestExpectedEqual;
-        const process_fn = helpers.findNodeInFile(&g, "process", .function, service_file.id) orelse return error.TestExpectedEqual;
-        const no_calls_fn = helpers.findNodeInFile(&g, "noMethodCalls", .function, no_calls_file.id) orelse return error.TestExpectedEqual;
-        const service_type = helpers.findNodeInFile(&g, "Service", .type_def, service_file.id) orelse return error.TestExpectedEqual;
+    // Assert
+    const service_file = helpers.findNode(&g, "service.zig", .file) orelse return error.TestExpectedEqual;
+    const no_calls_file = helpers.findNode(&g, "no_calls.zig", .file) orelse return error.TestExpectedEqual;
+    const process_fn = helpers.findNodeInFile(&g, "process", .function, service_file.id) orelse return error.TestExpectedEqual;
+    const no_calls_fn = helpers.findNodeInFile(&g, "noMethodCalls", .function, no_calls_file.id) orelse return error.TestExpectedEqual;
+    const service_type = helpers.findNodeInFile(&g, "Service", .type_def, service_file.id) orelse return error.TestExpectedEqual;
 
-        // no calls edge to process
-        try std.testing.expect(!helpers.hasEdge(&g, no_calls_fn, process_fn, .calls));
-        // but still has uses_type to Service
-        try std.testing.expect(helpers.hasEdge(&g, no_calls_fn, service_type, .uses_type));
-    }
+    try std.testing.expect(!helpers.hasEdge(&g, no_calls_fn, process_fn, .calls));
+    try std.testing.expect(helpers.hasEdge(&g, no_calls_fn, service_type, .uses_type));
 }
 
 test "dir imports: same-directory resolution with duplicate basenames" {
@@ -755,7 +740,7 @@ test "dir imports: same-directory resolution with duplicate basenames" {
     // Act
     _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
-    // Assert: find file nodes by file_path
+    // Assert
     var crypto_helpers_id: ?NodeId = null;
     var tar_helpers_id: ?NodeId = null;
     var crypto_aegis_id: ?NodeId = null;
@@ -796,7 +781,7 @@ test "dir imports: dot-slash prefix resolves to same directory" {
     // Act
     _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
-    // Assert: crypto/hmac.zig (uses @import("./helpers.zig")) imports crypto/helpers.zig
+    // Assert
     var crypto_hmac_id: ?NodeId = null;
     var crypto_helpers_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
@@ -825,7 +810,7 @@ test "dir imports: subdirectory import resolves across directories" {
     // Act
     _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
-    // Assert: compress/flate.zig (uses @import("flate/inner.zig")) imports compress/flate/inner.zig
+    // Assert
     var compress_flate_id: ?NodeId = null;
     var compress_flate_inner_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
@@ -854,7 +839,7 @@ test "dir imports: parent directory import resolves across directories" {
     // Act
     _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
-    // Assert: compress/flate/inner.zig (uses @import("../flate.zig")) imports compress/flate.zig
+    // Assert
     var compress_flate_inner_id: ?NodeId = null;
     var compress_flate_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
@@ -883,7 +868,7 @@ test "dir imports: subdirectory import from root" {
     // Act
     _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
-    // Assert: root.zig (uses @import("crypto/aegis.zig")) imports crypto/aegis.zig
+    // Assert
     var root_id: ?NodeId = null;
     var crypto_aegis_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
@@ -982,14 +967,14 @@ test "inner struct call: cross-file edges from test block inner struct" {
     // Act
     _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
-    // Assert: find file nodes
+    // Assert
     const provider_file = helpers.findNode(&g, "provider.zig", .file) orelse return error.TestExpectedEqual;
     const consumer_file = helpers.findNode(&g, "consumer.zig", .file) orelse return error.TestExpectedEqual;
 
-    // Assert: import edge consumer.zig imports provider.zig
+    // Assert
     try std.testing.expect(helpers.hasEdge(&g, consumer_file.id, provider_file.id, .imports));
 
-    // Assert: find function and test nodes
+    // Assert
     const some_fn = helpers.findNodeInFile(&g, "someFunction", .function, provider_file.id) orelse return error.TestExpectedEqual;
     const another_fn = helpers.findNodeInFile(&g, "anotherFunction", .function, provider_file.id) orelse return error.TestExpectedEqual;
 
@@ -1003,10 +988,10 @@ test "inner struct call: cross-file edges from test block inner struct" {
     }
     try std.testing.expect(do_id != null);
 
-    // Assert: do calls someFunction (cross-file edge from inner struct)
+    // Assert
     try std.testing.expect(helpers.hasEdge(&g, do_id.?, some_fn, .calls));
 
-    // Assert: "direct call" test calls anotherFunction (baseline)
+    // Assert
     var direct_test_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
         if (n.kind == .test_def and std.mem.eql(u8, n.name, "direct call")) {
@@ -1031,14 +1016,14 @@ test "direct extraction type: qualified method call creates cross-file calls edg
     // Act
     _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
-    // Assert: find file nodes
+    // Assert
     const provider_file = helpers.findNode(&g, "provider.zig", .file) orelse return error.TestExpectedEqual;
     const consumer_file = helpers.findNode(&g, "type_consumer.zig", .file) orelse return error.TestExpectedEqual;
 
-    // Assert: import edge
+    // Assert
     try std.testing.expect(helpers.hasEdge(&g, consumer_file.id, provider_file.id, .imports));
 
-    // Assert: find function nodes
+    // Assert
     const use_widget_fn = helpers.findNodeInFile(&g, "useWidget", .function, consumer_file.id) orelse return error.TestExpectedEqual;
     const init_fn = helpers.findNodeInFile(&g, "init", .function, provider_file.id) orelse return error.TestExpectedEqual;
     const widget_type = helpers.findNodeInFile(&g, "Widget", .type_def, provider_file.id) orelse return error.TestExpectedEqual;
@@ -1062,7 +1047,7 @@ test "direct extraction fn: bare call creates cross-file calls edge" {
     // Act
     _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
-    // Assert: find nodes
+    // Assert
     const provider_file = helpers.findNode(&g, "provider.zig", .file) orelse return error.TestExpectedEqual;
     const consumer_file = helpers.findNode(&g, "fn_consumer.zig", .file) orelse return error.TestExpectedEqual;
     const call_fn = helpers.findNodeInFile(&g, "callStandalone", .function, consumer_file.id) orelse return error.TestExpectedEqual;
@@ -1073,10 +1058,6 @@ test "direct extraction fn: bare call creates cross-file calls edge" {
     // import edge
     try std.testing.expect(helpers.hasEdge(&g, consumer_file.id, provider_file.id, .imports));
 }
-
-// ===========================================================================
-// Directory nodes
-// ===========================================================================
 
 test "directory nodes created for each directory" {
     // Arrange
@@ -1091,7 +1072,7 @@ test "directory nodes created for each directory" {
     // Act
     _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
-    // Assert: directory nodes exist with correct file_path and name (basename)
+    // Assert
     var found_crypto = false;
     var found_tar = false;
     var found_compress = false;
@@ -1139,7 +1120,7 @@ test "file parent_id points to directory" {
     // Act
     _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
-    // Assert: every file node's parent_id resolves to a directory node
+    // Assert
     for (g.nodes.items) |n| {
         if (n.kind != .file) continue;
         const pid = n.parent_id orelse return error.TestExpectedEqual;
@@ -1161,7 +1142,7 @@ test "directory parent_id chain" {
     // Act
     _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
-    // Assert: compress/flate's parent is compress, compress's parent is root
+    // Assert
     var flate_node: ?*const Node = null;
     for (g.nodes.items) |*n| {
         if (n.kind == .directory) {
@@ -1196,10 +1177,10 @@ test "root directory node exists for flat project" {
 
     _ = indexProjectFixtures(&g, &tmp_dir) catch |err| return err;
 
-    // Assert: exactly 1 directory node (the root)
+    // Assert
     try std.testing.expectEqual(@as(usize, 1), helpers.countNodesByKind(&g, .directory));
 
-    // Assert: root directory has parent_id == null, name == "", file_path == null
+    // Assert
     var root_found = false;
     for (g.nodes.items) |n| {
         if (n.kind == .directory and n.parent_id == null) {
@@ -1211,7 +1192,7 @@ test "root directory node exists for flat project" {
     }
     try std.testing.expect(root_found);
 
-    // Assert: all file nodes point to the root directory
+    // Assert
     for (g.nodes.items) |n| {
         if (n.kind != .file) continue;
         const pid = n.parent_id orelse return error.TestExpectedEqual;
@@ -1231,7 +1212,7 @@ test "incremental indexing does not duplicate directory nodes" {
     const project_root = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(project_root);
 
-    // Act: index twice with incremental
+    // Act
     _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{ .incremental = true }) catch |err| return err;
     const count_after_first = helpers.countNodesByKind(&g, .directory);
 
@@ -1251,10 +1232,10 @@ test "incremental indexing does not duplicate directory nodes" {
     _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{ .incremental = true }) catch |err| return err;
     const count_after_second = helpers.countNodesByKind(&g, .directory);
 
-    // Assert: same number of directory nodes after both runs
+    // Assert
     try std.testing.expectEqual(count_after_first, count_after_second);
 
-    // Assert: same NodeIds still reference directory nodes with same file_path
+    // Assert
     for (first_run_ids[0..id_count], first_run_paths[0..id_count]) |nid, expected_fp| {
         const n = g.getNode(nid) orelse return error.TestExpectedEqual;
         try std.testing.expectEqual(NodeKind.directory, n.kind);
@@ -1279,7 +1260,7 @@ test "no zig files produces zero directory nodes" {
     // Act
     _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
-    // Assert: zero directory nodes (early return before directory creation)
+    // Assert
     try std.testing.expectEqual(@as(usize, 0), helpers.countNodesByKind(&g, .directory));
     try std.testing.expectEqual(@as(usize, 0), g.nodeCount());
 }

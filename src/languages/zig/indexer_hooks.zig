@@ -262,7 +262,7 @@ pub fn resolvePhantoms(
         }
     }
 
-    // Act: create phantom nodes and edges outside the scan loop.
+    // Act
     for (collected[0..collect_count]) |entry| {
         const phantom_id = try phantom.getOrCreate(allocator, entry.import_path, .zig, entry.external);
         _ = try graph.addEdgeIfNew(allocator, .{ .source_id = file_id, .target_id = phantom_id, .edge_type = .imports, .source = .phantom });

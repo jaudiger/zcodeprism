@@ -88,10 +88,6 @@ fn callToolAndParseInner(
     return .{ .outer = outer, .inner = inner, .response_bytes = response_bytes };
 }
 
-// ---------------------------------------------------------------------------
-// graph.stats
-// ---------------------------------------------------------------------------
-
 test "stats returns file count, function count, languages, and externals" {
     // Arrange
     const allocator = std.testing.allocator;
@@ -195,10 +191,6 @@ test "stats on empty graph" {
     // Assert
     try std.testing.expectEqual(@as(i64, 0), result.inner.value.object.get("total_files").?.integer);
 }
-
-// ---------------------------------------------------------------------------
-// graph.search
-// ---------------------------------------------------------------------------
 
 test "search returns matching nodes with metadata" {
     // Arrange
@@ -307,10 +299,6 @@ test "search with no results returns zero matches" {
     try std.testing.expectEqual(@as(i64, 0), result.inner.value.object.get("total_matches").?.integer);
 }
 
-// ---------------------------------------------------------------------------
-// graph.get_nodes
-// ---------------------------------------------------------------------------
-
 test "get_nodes returns all fields for a single id" {
     // Arrange
     const allocator = std.testing.allocator;
@@ -345,7 +333,7 @@ test "get_nodes returns all fields for a single id" {
     defer result.inner.deinit();
     const nodes = result.inner.value.object.get("nodes").?.array;
 
-    // Assert: single string id returns exactly one node
+    // Assert
     try std.testing.expectEqual(@as(usize, 1), nodes.items.len);
     const first = nodes.items[0].object;
     try std.testing.expect(first.get("id") != null);
@@ -514,7 +502,7 @@ test "get_nodes with non-existent id" {
     const parsed = try parseJsonResponse(allocator, response_bytes);
     defer parsed.deinit();
 
-    // Assert: either an error response or an empty nodes array
+    // Assert
     if (isErrorResponse(parsed.value)) return;
     const text = getToolResultText(parsed.value) orelse return;
     var inner = try std.json.parseFromSlice(std.json.Value, allocator, text, .{});
@@ -571,10 +559,6 @@ test "get_nodes string id equals single-element array" {
     const nodes2 = r2.inner.value.object.get("nodes").?.array;
     try std.testing.expectEqual(nodes1.items.len, nodes2.items.len);
 }
-
-// ---------------------------------------------------------------------------
-// graph.get_source
-// ---------------------------------------------------------------------------
 
 test "get_source full returns non-empty source" {
     // Arrange
@@ -840,10 +824,6 @@ test "get_source for file node returns file content" {
     try std.testing.expect(source.string.len > 0);
 }
 
-// ---------------------------------------------------------------------------
-// graph.get_edges
-// ---------------------------------------------------------------------------
-
 test "get_edges out direction" {
     // Arrange
     const allocator = std.testing.allocator;
@@ -1009,12 +989,12 @@ test "get_edges with type filter and connected node info" {
     defer result.outer.deinit();
     defer result.inner.deinit();
 
-    // Assert: all edges have type "calls"
+    // Assert
     const edges = result.inner.value.object.get("edges").?.array;
     for (edges.items) |edge| {
         try std.testing.expectEqualStrings("calls", edge.object.get("type").?.string);
     }
-    // Assert: connected node info present
+    // Assert
     if (edges.items.len > 0) {
         const first = edges.items[0].object;
         const to_node = first.get("to_node") orelse first.get("to_info") orelse return;
@@ -1079,10 +1059,6 @@ test "get_edges for isolated node returns empty" {
     const edges = result.inner.value.object.get("edges") orelse return;
     try std.testing.expectEqual(@as(usize, 0), edges.array.items.len);
 }
-
-// ---------------------------------------------------------------------------
-// graph.path
-// ---------------------------------------------------------------------------
 
 test "path between connected nodes returns non-empty" {
     // Arrange
@@ -1286,7 +1262,7 @@ test "path with non-existent node" {
     const parsed = try parseJsonResponse(allocator, response_bytes);
     defer parsed.deinit();
 
-    // Assert: either an error or empty paths
+    // Assert
     if (isErrorResponse(parsed.value)) return;
     const text = getToolResultText(parsed.value) orelse return;
     var inner = try std.json.parseFromSlice(std.json.Value, allocator, text, .{});
@@ -1295,10 +1271,6 @@ test "path with non-existent node" {
     const paths = inner.value.object.get("paths") orelse return;
     try std.testing.expectEqual(@as(usize, 0), paths.array.items.len);
 }
-
-// ---------------------------------------------------------------------------
-// explorer.cursor_create
-// ---------------------------------------------------------------------------
 
 test "cursor_create returns cursor_id and neighborhood" {
     // Arrange
@@ -1376,10 +1348,6 @@ test "cursor_create with start_node positions there" {
     try std.testing.expectEqualStrings(id_str, position.get("id").?.string);
 }
 
-// ---------------------------------------------------------------------------
-// explorer.cursor_move
-// ---------------------------------------------------------------------------
-
 test "cursor_move updates position" {
     // Arrange
     const allocator = std.testing.allocator;
@@ -1412,7 +1380,7 @@ test "cursor_move updates position" {
     defer r1.inner.deinit();
     const cursor_id = r1.inner.value.object.get("cursor_id").?.string;
 
-    // Act: move to target
+    // Act
     const move_req = try std.fmt.allocPrint(allocator,
         \\{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"explorer.cursor_move","arguments":{{"cursor_id":"{s}","node_id":"{s}"}}}}}}
     , .{ cursor_id, target_id });
@@ -1427,10 +1395,6 @@ test "cursor_move updates position" {
     const position = r2.inner.value.object.get("position").?.object;
     try std.testing.expectEqualStrings(target_id, position.get("id").?.string);
 }
-
-// ---------------------------------------------------------------------------
-// explorer.cursor_close
-// ---------------------------------------------------------------------------
 
 test "cursor_close then move fails" {
     // Arrange
@@ -1472,7 +1436,7 @@ test "cursor_close then move fails" {
     const close_resp = (try srv.handleMessage(allocator, std.testing.io, close_req)).?;
     defer allocator.free(close_resp);
 
-    // Act: attempt move on closed cursor
+    // Act
     const move_req = try std.fmt.allocPrint(allocator,
         \\{{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{{"name":"explorer.cursor_move","arguments":{{"cursor_id":"{s}","node_id":"{s}"}}}}}}
     , .{ cursor_id, target_id });
@@ -1483,17 +1447,13 @@ test "cursor_close then move fails" {
     const parsed = try parseJsonResponse(allocator, move_resp);
     defer parsed.deinit();
 
-    // Assert: should be an error (invalid cursor) or null from callToolAndParseInner
+    // Assert
     if (isErrorResponse(parsed.value)) return;
     const text = getToolResultText(parsed.value) orelse return;
     var inner = try std.json.parseFromSlice(std.json.Value, allocator, text, .{});
     defer inner.deinit();
     try std.testing.expect(inner.value.object.get("error") != null);
 }
-
-// ---------------------------------------------------------------------------
-// explorer.cursor_expand
-// ---------------------------------------------------------------------------
 
 test "cursor_expand returns subgraph" {
     // Arrange
@@ -1529,7 +1489,7 @@ test "cursor_expand returns subgraph" {
     defer r1.inner.deinit();
     const cursor_id = r1.inner.value.object.get("cursor_id").?.string;
 
-    // Act: expand from current position
+    // Act
     const expand_req = try std.fmt.allocPrint(allocator,
         \\{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"explorer.cursor_expand","arguments":{{"cursor_id":"{s}","depth":2}}}}}}
     , .{cursor_id});
@@ -1547,10 +1507,6 @@ test "cursor_expand returns subgraph" {
     try std.testing.expect(nodes.items.len > 0);
     try std.testing.expect(edges.items.len > 0);
 }
-
-// ---------------------------------------------------------------------------
-// explorer.cursor_query
-// ---------------------------------------------------------------------------
 
 test "cursor_query with kind filter" {
     // Arrange
@@ -1580,7 +1536,7 @@ test "cursor_query with kind filter" {
     defer r1.inner.deinit();
     const cursor_id = r1.inner.value.object.get("cursor_id").?.string;
 
-    // Act: query for functions only
+    // Act
     const query_req = try std.fmt.allocPrint(allocator,
         \\{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"explorer.cursor_query","arguments":{{"cursor_id":"{s}","kind":"function"}}}}}}
     , .{cursor_id});
@@ -1591,17 +1547,13 @@ test "cursor_query with kind filter" {
     defer r2.outer.deinit();
     defer r2.inner.deinit();
 
-    // Assert: all returned nodes must be functions
+    // Assert
     const nodes = r2.inner.value.object.get("nodes").?.array;
     try std.testing.expect(nodes.items.len > 0);
     for (nodes.items) |n| {
         try std.testing.expectEqualStrings("function", n.object.get("kind").?.string);
     }
 }
-
-// ---------------------------------------------------------------------------
-// explorer.diff
-// ---------------------------------------------------------------------------
 
 test "diff identical function with itself" {
     // Arrange
@@ -1636,7 +1588,7 @@ test "diff identical function with itself" {
     defer result.outer.deinit();
     defer result.inner.deinit();
 
-    // Assert: self-diff has similarity 1.0
+    // Assert
     const pairs = result.inner.value.object.get("pairs").?.array;
     try std.testing.expect(pairs.items.len > 0);
     const similarity = jsonAsFloat(pairs.items[0].object.get("similarity").?);
@@ -1679,7 +1631,7 @@ test "diff two different functions" {
     defer result.outer.deinit();
     defer result.inner.deinit();
 
-    // Assert: different functions have similarity between 0 and 1 exclusive
+    // Assert
     const pairs = result.inner.value.object.get("pairs").?.array;
     try std.testing.expect(pairs.items.len > 0);
     const similarity = jsonAsFloat(pairs.items[0].object.get("similarity").?);
@@ -1726,7 +1678,7 @@ test "diff N nodes returns NxN matrix" {
     defer result.outer.deinit();
     defer result.inner.deinit();
 
-    // Assert: 3x3 matrix with 1.0 on diagonal
+    // Assert
     const matrix = result.inner.value.object.get("matrix").?.object;
     const node_ids = matrix.get("node_ids").?.array;
     try std.testing.expectEqual(@as(usize, 3), node_ids.items.len);
@@ -1739,10 +1691,6 @@ test "diff N nodes returns NxN matrix" {
         try std.testing.expectApproxEqAbs(@as(f64, 1.0), diag, 0.001);
     }
 }
-
-// ---------------------------------------------------------------------------
-// explorer.annotate / explorer.annotations
-// ---------------------------------------------------------------------------
 
 test "annotate sets tag and annotations returns it" {
     // Arrange
@@ -1786,7 +1734,7 @@ test "annotate sets tag and annotations returns it" {
     defer r2.outer.deinit();
     defer r2.inner.deinit();
 
-    // Act: query annotations
+    // Act
     const annot_req = try std.fmt.allocPrint(allocator,
         \\{{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{{"name":"explorer.annotations","arguments":{{"cursor_id":"{s}"}}}}}}
     , .{cursor_id});
@@ -1848,7 +1796,7 @@ test "annotate with note" {
     defer r2.outer.deinit();
     defer r2.inner.deinit();
 
-    // Act: query annotations
+    // Act
     const annot_req = try std.fmt.allocPrint(allocator,
         \\{{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{{"name":"explorer.annotations","arguments":{{"cursor_id":"{s}"}}}}}}
     , .{cursor_id});
@@ -1917,7 +1865,7 @@ test "annotate multiple nodes" {
     defer r2.outer.deinit();
     defer r2.inner.deinit();
 
-    // Act: query annotations
+    // Act
     const annot_req = try std.fmt.allocPrint(allocator,
         \\{{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{{"name":"explorer.annotations","arguments":{{"cursor_id":"{s}"}}}}}}
     , .{cursor_id});
@@ -1927,7 +1875,7 @@ test "annotate multiple nodes" {
     defer r3.outer.deinit();
     defer r3.inner.deinit();
 
-    // Assert: both node IDs appear in annotations
+    // Assert
     const annotations = r3.inner.value.object.get("annotations").?.array;
     var found_a = false;
     var found_b = false;
@@ -1994,7 +1942,7 @@ test "annotations filter by tag" {
     defer r3.outer.deinit();
     defer r3.inner.deinit();
 
-    // Act: query with tag filter
+    // Act
     const query_req = try std.fmt.allocPrint(allocator,
         \\{{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{{"name":"explorer.annotations","arguments":{{"cursor_id":"{s}","tag":"alpha"}}}}}}
     , .{cursor_id});
@@ -2004,7 +1952,7 @@ test "annotations filter by tag" {
     defer r4.outer.deinit();
     defer r4.inner.deinit();
 
-    // Assert: only alpha tag returned
+    // Assert
     const annotations = r4.inner.value.object.get("annotations").?.array;
     for (annotations.items) |a| {
         try std.testing.expectEqualStrings("alpha", a.object.get("tag").?.string);
@@ -2063,7 +2011,7 @@ test "annotations on wrong cursor returns empty" {
     defer r3.inner.deinit();
     const cursor_b = r3.inner.value.object.get("cursor_id").?.string;
 
-    // Act: query annotations on cursor B
+    // Act
     const query_req = try std.fmt.allocPrint(allocator,
         \\{{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{{"name":"explorer.annotations","arguments":{{"cursor_id":"{s}"}}}}}}
     , .{cursor_b});
@@ -2073,14 +2021,10 @@ test "annotations on wrong cursor returns empty" {
     defer r4.outer.deinit();
     defer r4.inner.deinit();
 
-    // Assert: cursor B has no annotations
+    // Assert
     const annotations = r4.inner.value.object.get("annotations").?.array;
     try std.testing.expectEqual(@as(usize, 0), annotations.items.len);
 }
-
-// ---------------------------------------------------------------------------
-// analysis.* setup helpers
-// ---------------------------------------------------------------------------
 
 fn setupDuplicatesFixture(tmp_dir: *std.testing.TmpDir) ![:0]const u8 {
     try writeFixtureFiles(std.testing.io, tmp_dir.dir, &.{
@@ -2111,10 +2055,6 @@ fn setupComplexFixture(tmp_dir: *std.testing.TmpDir) ![:0]const u8 {
     });
     return try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
 }
-
-// ---------------------------------------------------------------------------
-// analysis.duplicates
-// ---------------------------------------------------------------------------
 
 test "duplicates finds near-identical functions" {
     // Arrange
@@ -2188,10 +2128,6 @@ test "duplicates empty graph" {
     try std.testing.expectEqual(@as(usize, 0), groups.items.len);
 }
 
-// ---------------------------------------------------------------------------
-// analysis.complexity
-// ---------------------------------------------------------------------------
-
 test "complexity returns top N sorted descending" {
     // Arrange
     const allocator = std.testing.allocator;
@@ -2259,10 +2195,6 @@ test "complexity empty graph" {
     const nodes = result.inner.value.object.get("nodes").?.array;
     try std.testing.expectEqual(@as(usize, 0), nodes.items.len);
 }
-
-// ---------------------------------------------------------------------------
-// analysis.dead_code
-// ---------------------------------------------------------------------------
 
 test "dead_code finds unreferenced private function" {
     // Arrange
@@ -2405,10 +2337,6 @@ test "dead_code empty graph" {
     try std.testing.expectEqual(@as(usize, 0), nodes.items.len);
 }
 
-// ---------------------------------------------------------------------------
-// analysis.dependency_cycles
-// ---------------------------------------------------------------------------
-
 test "dependency_cycles detects import cycle" {
     // Arrange
     const allocator = std.testing.allocator;
@@ -2486,10 +2414,6 @@ test "dependency_cycles empty graph" {
     try std.testing.expectEqual(@as(usize, 0), cycles.items.len);
 }
 
-// ---------------------------------------------------------------------------
-// analysis.coupling
-// ---------------------------------------------------------------------------
-
 test "coupling coupled modules have score > 0" {
     // Arrange
     const allocator = std.testing.allocator;
@@ -2552,10 +2476,6 @@ test "coupling empty graph" {
     const pairs = result.inner.value.object.get("pairs").?.array;
     try std.testing.expectEqual(@as(usize, 0), pairs.items.len);
 }
-
-// ---------------------------------------------------------------------------
-// analysis.impact
-// ---------------------------------------------------------------------------
 
 test "impact core function has dependents" {
     // Arrange
@@ -2623,10 +2543,6 @@ test "impact empty graph" {
     try std.testing.expectEqual(@as(i64, 0), total);
 }
 
-// ---------------------------------------------------------------------------
-// Cross-cutting: no opinions in analysis responses
-// ---------------------------------------------------------------------------
-
 fn containsOpinionKey(obj: std.json.ObjectMap) bool {
     const opinion_keys = [_][]const u8{ "suggestion", "recommendation", "should", "advice", "warning" };
     var it = obj.iterator();
@@ -2679,7 +2595,7 @@ test "no analysis tool returns opinions" {
         ,
     };
 
-    // Act + Assert
+    // Act / Assert
     for (tools) |tool_req| {
         const result = try callToolAndParseInner(allocator, &srv, tool_req) orelse continue;
         defer allocator.free(result.response_bytes);
@@ -2688,10 +2604,6 @@ test "no analysis tool returns opinions" {
         try std.testing.expect(!containsOpinionKey(result.inner.value.object));
     }
 }
-
-// ---------------------------------------------------------------------------
-// dispatch: all tools respond
-// ---------------------------------------------------------------------------
 
 test "all 20 MCP tools respond without crash" {
     // Arrange
@@ -2715,7 +2627,7 @@ test "all 20 MCP tools respond without crash" {
     var srv = Server.init(&mgr);
     defer srv.deinit();
 
-    // Act: tools/list
+    // Act
     const list_input =
         \\{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}
     ;
@@ -2725,12 +2637,12 @@ test "all 20 MCP tools respond without crash" {
     var list_parsed = try parseJsonResponse(allocator, list_response);
     defer list_parsed.deinit();
 
-    // Assert: exactly 20 tools
+    // Assert
     const result_obj = list_parsed.value.object.get("result") orelse return error.NoResult;
     const tools_arr = result_obj.object.get("tools") orelse return error.NoTools;
     try std.testing.expectEqual(@as(usize, 20), tools_arr.array.items.len);
 
-    // Act + Assert: call each tool with empty arguments, verify it responds
+    // Act / Assert
     for (tools_arr.array.items, 0..) |tool_val, i| {
         const name = tool_val.object.get("name") orelse continue;
         if (name != .string) continue;

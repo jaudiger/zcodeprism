@@ -100,19 +100,15 @@ test "targetsOf returns import targets and empty for absent files" {
     var idx = try ImportIndex.build(std.testing.allocator, edges);
     defer idx.deinit(std.testing.allocator);
 
-    // Assert: file_a imports file_b and file_c
+    // Assert
     const a_targets = idx.targetsOf(file_a);
     try std.testing.expectEqual(@as(usize, 2), a_targets.len);
 
-    // Assert: file_b imports file_c
     const b_targets = idx.targetsOf(file_b);
     try std.testing.expectEqual(@as(usize, 1), b_targets.len);
     try std.testing.expectEqual(file_c, b_targets[0]);
 
-    // Assert: file_c has no imports
     try std.testing.expectEqual(@as(usize, 0), idx.targetsOf(file_c).len);
-
-    // Assert: unknown file returns empty
     try std.testing.expectEqual(@as(usize, 0), idx.targetsOf(@enumFromInt(99)).len);
 }
 

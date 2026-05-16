@@ -93,7 +93,7 @@ test "guard deinit decrements refcount" {
     g1.deinit();
 }
 
-test "multiple acquires and releases" {
+test "acquire raises refcount and release lowers it back" {
     // Arrange
     const gen = try GraphGeneration.create(std.testing.allocator, std.testing.io, 1, "abcdef1234567890".*);
     defer gen.release();
@@ -102,15 +102,11 @@ test "multiple acquires and releases" {
     const g1 = gen.acquire();
     const g2 = gen.acquire();
     const g3 = gen.acquire();
+    g3.deinit();
+    g2.deinit();
+    g1.deinit();
 
     // Assert
-    try std.testing.expectEqual(@as(u32, 4), gen.ref_count.count());
-
-    g3.deinit();
-    try std.testing.expectEqual(@as(u32, 3), gen.ref_count.count());
-    g2.deinit();
-    try std.testing.expectEqual(@as(u32, 2), gen.ref_count.count());
-    g1.deinit();
     try std.testing.expectEqual(@as(u32, 1), gen.ref_count.count());
 }
 

@@ -103,12 +103,12 @@ test "validateTag accepts valid tags and rejects invalid ones" {
     const invalid_space = "has space";
     const invalid_too_long = "a" ** 65;
 
-    // Act / Assert: valid tags succeed
+    // Act / Assert
     try validateTag(valid_alphanum);
     try validateTag(valid_single);
     try validateTag(valid_max_len);
 
-    // Act / Assert: invalid tags produce expected errors
+    // Act / Assert
     try std.testing.expectError(error.InvalidTagName, validateTag(invalid_empty));
     try std.testing.expectError(error.InvalidTagName, validateTag(invalid_slash));
     try std.testing.expectError(error.InvalidTagName, validateTag(invalid_dot));

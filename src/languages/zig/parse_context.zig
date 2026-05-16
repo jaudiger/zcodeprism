@@ -200,57 +200,97 @@ pub fn resolveFileImport(file_index: *const FileIndex, importer_path: ?[]const u
     return file_index.findByName(import_path);
 }
 
-test "resolveImportPath: same-directory import" {
+test "resolveImportPath resolves same-directory import" {
+    // Arrange
     var buf: [std.fs.max_path_bytes]u8 = undefined;
+
+    // Act
     const result = resolveImportPath(&buf, "crypto/aegis.zig", "helpers.zig");
+
+    // Assert
     try std.testing.expect(result != null);
     try std.testing.expectEqualStrings("crypto/helpers.zig", result.?);
 }
 
-test "resolveImportPath: dot-slash prefix" {
+test "resolveImportPath strips dot-slash prefix" {
+    // Arrange
     var buf: [std.fs.max_path_bytes]u8 = undefined;
+
+    // Act
     const result = resolveImportPath(&buf, "json/dynamic.zig", "./static.zig");
+
+    // Assert
     try std.testing.expect(result != null);
     try std.testing.expectEqualStrings("json/static.zig", result.?);
 }
 
-test "resolveImportPath: root-level import" {
+test "resolveImportPath resolves root-level import" {
+    // Arrange
     var buf: [std.fs.max_path_bytes]u8 = undefined;
+
+    // Act
     const result = resolveImportPath(&buf, "main.zig", "utils.zig");
+
+    // Assert
     try std.testing.expect(result != null);
     try std.testing.expectEqualStrings("utils.zig", result.?);
 }
 
-test "resolveImportPath: parent directory" {
+test "resolveImportPath ascends parent directory" {
+    // Arrange
     var buf: [std.fs.max_path_bytes]u8 = undefined;
+
+    // Act
     const result = resolveImportPath(&buf, "crypto/sub/inner.zig", "../helpers.zig");
+
+    // Assert
     try std.testing.expect(result != null);
     try std.testing.expectEqualStrings("crypto/helpers.zig", result.?);
 }
 
-test "resolveImportPath: subdirectory import" {
+test "resolveImportPath descends into subdirectory" {
+    // Arrange
     var buf: [std.fs.max_path_bytes]u8 = undefined;
+
+    // Act
     const result = resolveImportPath(&buf, "main.zig", "sub/mod.zig");
+
+    // Assert
     try std.testing.expect(result != null);
     try std.testing.expectEqualStrings("sub/mod.zig", result.?);
 }
 
-test "resolveImportPath: double dot-dot" {
+test "resolveImportPath ascends two levels with double dot-dot" {
+    // Arrange
     var buf: [std.fs.max_path_bytes]u8 = undefined;
+
+    // Act
     const result = resolveImportPath(&buf, "a/b/c/file.zig", "../../root.zig");
+
+    // Assert
     try std.testing.expect(result != null);
     try std.testing.expectEqualStrings("a/root.zig", result.?);
 }
 
-test "resolveImportPath: dot-slash at root" {
+test "resolveImportPath strips dot-slash at root" {
+    // Arrange
     var buf: [std.fs.max_path_bytes]u8 = undefined;
+
+    // Act
     const result = resolveImportPath(&buf, "main.zig", "./utils.zig");
+
+    // Assert
     try std.testing.expect(result != null);
     try std.testing.expectEqualStrings("utils.zig", result.?);
 }
 
-test "resolveImportPath: escape above project root returns null" {
+test "resolveImportPath returns null when escaping above project root" {
+    // Arrange
     var buf: [std.fs.max_path_bytes]u8 = undefined;
+
+    // Act
     const result = resolveImportPath(&buf, "file.zig", "../outside.zig");
+
+    // Assert
     try std.testing.expectEqual(@as(?[]const u8, null), result);
 }

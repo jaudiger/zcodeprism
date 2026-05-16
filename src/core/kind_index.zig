@@ -90,7 +90,7 @@ test "findByKind returns correct indices and empty for absent kinds" {
     var idx = try KindIndex.build(std.testing.allocator, nodes);
     defer idx.deinit(std.testing.allocator);
 
-    // Assert: matching kinds return correct indices in order
+    // Assert
     const fns = idx.findByKind(.function);
     try std.testing.expectEqual(@as(usize, 2), fns.len);
     try std.testing.expectEqual(@as(usize, 0), fns[0]);
@@ -100,11 +100,9 @@ test "findByKind returns correct indices and empty for absent kinds" {
     try std.testing.expectEqual(@as(usize, 1), structs.len);
     try std.testing.expectEqual(@as(usize, 1), structs[0]);
 
-    // Assert: absent kinds return empty
     try std.testing.expectEqual(@as(usize, 0), idx.findByKind(.file).len);
     try std.testing.expectEqual(@as(usize, 0), idx.findByKind(.enum_def).len);
 
-    // Assert: storage covers all nodes
     try std.testing.expectEqual(@as(usize, 3), idx.storage.len);
 }
 
@@ -122,7 +120,7 @@ test "build on empty nodes returns empty index" {
 }
 
 test "every NodeKind variant is indexed" {
-    // Arrange: one node per kind
+    // Arrange
     const nodes: []const Node = &.{
         .{ .id = @enumFromInt(0), .name = "f", .kind = .file, .language = .zig },
         .{ .id = @enumFromInt(1), .name = "m", .kind = .module, .language = .zig },

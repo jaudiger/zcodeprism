@@ -59,7 +59,7 @@ test "parse invalid syntax returns tree with error nodes" {
 
     const root = tree.rootNode();
 
-    // Assert: tree-sitter always returns a tree, even for invalid syntax
+    // Assert
     try std.testing.expectEqualStrings("source_file", root.kind());
 
     // Walk direct children to find at least one ERROR node

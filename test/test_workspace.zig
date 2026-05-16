@@ -26,10 +26,6 @@ const formatPrefixedId = zcodeprism.workspace.formatPrefixedId;
 const findNode = test_helpers.findNode;
 const countNodesByKind = test_helpers.countNodesByKind;
 
-// ---------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------
-
 fn buildProjectGraph(allocator: std.mem.Allocator, root: []const u8, file_name: []const u8, func_name: []const u8) !Graph {
     var g = Graph.init(root);
     errdefer g.deinit(allocator);
@@ -112,10 +108,6 @@ fn makeWs(comptime n: usize, names: [n][]const u8, paths: [n][]const u8) Workspa
     return Workspace{ .name = "ws", .projects = &projects };
 }
 
-// ---------------------------------------------------------------
-// Config parsing: valid, default name, path dot
-// ---------------------------------------------------------------
-
 test "parses valid workspace config with name defaulting to directory" {
     // Arrange
     const allocator = std.testing.allocator;
@@ -156,11 +148,8 @@ test "parses valid workspace config with name defaulting to directory" {
     try std.testing.expectEqualStrings(".", ws2.projects[0].path);
 }
 
-// ---------------------------------------------------------------
-// Config validation errors
-// ---------------------------------------------------------------
-
 test "rejects duplicate names, colon in name, and duplicate paths" {
+    // Arrange
     const allocator = std.testing.allocator;
 
     const cases = .{
@@ -198,6 +187,7 @@ test "rejects duplicate names, colon in name, and duplicate paths" {
         },
     };
 
+    // Act / Assert
     inline for (cases) |case| {
         const source: [:0]const u8 = case[0];
         const expected = case[1];
@@ -210,10 +200,6 @@ test "rejects duplicate names, colon in name, and duplicate paths" {
         }
     }
 }
-
-// ---------------------------------------------------------------
-// validateWorkspace direct calls
-// ---------------------------------------------------------------
 
 test "validateWorkspace rejects empty name, name over 32 chars, and non-existent path" {
     // Arrange
@@ -235,10 +221,6 @@ test "validateWorkspace rejects empty name, name over 32 chars, and non-existent
     try std.testing.expectError(error.InvalidProjectName, validateWorkspace(std.testing.io, &long_name, "."));
     try std.testing.expectError(error.PathNotFound, validateWorkspace(std.testing.io, &bad_path, "."));
 }
-
-// ---------------------------------------------------------------
-// Multi-graph assembly
-// ---------------------------------------------------------------
 
 test "assembled graph has virtual root, project children, all nodes, and preserved edges" {
     // Arrange
@@ -285,10 +267,6 @@ test "assembled graph has virtual root, project children, all nodes, and preserv
     try std.testing.expect(found_calls);
 }
 
-// ---------------------------------------------------------------
-// ID prefixing and splitting
-// ---------------------------------------------------------------
-
 test "root formats as root, project nodes are prefixed, splitPrefixedId round-trips" {
     // Arrange
     const allocator = std.testing.allocator;
@@ -302,31 +280,24 @@ test "root formats as root, project nodes are prefixed, splitPrefixedId round-tr
         },
     };
 
+    // Act
     var assembled = try assembleWorkspace(allocator, &ws, &graphs);
     defer assembled.deinit(allocator);
 
-    // Assert -- root ID
+    // Assert
     var buf: [64]u8 = undefined;
     try std.testing.expectEqualStrings("root", formatPrefixedId(&buf, &assembled, .root));
-
-    // Assert -- root split returns null
     try std.testing.expectEqual(@as(?@TypeOf(splitPrefixedId(&assembled, .root).?), null), splitPrefixedId(&assembled, .root));
 
-    // Assert -- file node is prefixed
     const file_node = findNode(&assembled.graph, "main.zig", .file);
     try std.testing.expect(file_node != null);
     const formatted = formatPrefixedId(&buf, &assembled, file_node.?.id);
     try std.testing.expect(std.mem.startsWith(u8, formatted, "alpha:"));
 
-    // Assert -- split recovers the project name
     const split = splitPrefixedId(&assembled, file_node.?.id);
     try std.testing.expect(split != null);
     try std.testing.expectEqualStrings("alpha", split.?.project_name);
 }
-
-// ---------------------------------------------------------------
-// Scope filtering and cross-project search
-// ---------------------------------------------------------------
 
 test "scope filters by project, no scope returns all, non-existent scope returns empty" {
     // Arrange
@@ -364,10 +335,6 @@ test "scope filters by project, no scope returns all, non-existent scope returns
     try std.testing.expectEqual(@as(u32, 0), empty.total_matches);
 }
 
-// ---------------------------------------------------------------
-// Stats via query engine
-// ---------------------------------------------------------------
-
 test "stats counts all projects without scope and one project with scope" {
     // Arrange
     const allocator = std.testing.allocator;
@@ -392,18 +359,12 @@ test "stats counts all projects without scope and one project with scope" {
     const all_stats = try zcodeprism.query.computeStats(allocator, ws_fg, .{});
     const alpha_stats = try zcodeprism.query.computeStats(allocator, ws_fg, .{ .scope = "alpha/" });
 
-    // Assert -- all
+    // Assert
     try std.testing.expectEqual(@as(u32, 2), all_stats.node_counts[@intFromEnum(NodeKind.file)]);
     try std.testing.expectEqual(@as(u32, 2), all_stats.node_counts[@intFromEnum(NodeKind.function)]);
-
-    // Assert -- scoped
     try std.testing.expectEqual(@as(u32, 1), alpha_stats.node_counts[@intFromEnum(NodeKind.file)]);
     try std.testing.expectEqual(@as(u32, 1), alpha_stats.node_counts[@intFromEnum(NodeKind.function)]);
 }
-
-// ---------------------------------------------------------------
-// File path prefixing
-// ---------------------------------------------------------------
 
 test "file paths are prefixed with project name" {
     // Arrange
@@ -426,10 +387,6 @@ test "file paths are prefixed with project name" {
     try std.testing.expect(file_node != null);
     try std.testing.expectEqualStrings("alpha/main.zig", file_node.?.file_path.?);
 }
-
-// ---------------------------------------------------------------
-// ProjectRange
-// ---------------------------------------------------------------
 
 test "project_ranges has one entry per project with non-overlapping spans" {
     // Arrange
@@ -456,18 +413,12 @@ test "project_ranges has one entry per project with non-overlapping spans" {
     try std.testing.expect(@intFromEnum(assembled.project_ranges[0].end_id) <= @intFromEnum(assembled.project_ranges[1].start_id));
 }
 
-// ---------------------------------------------------------------
-// Comptime type assertions
-// ---------------------------------------------------------------
-
 test "workspace types have expected fields and error count" {
     comptime {
-        // WorkspaceError has 5 variants
         const err_info = @typeInfo(WorkspaceError);
         std.debug.assert(err_info == .error_set);
         std.debug.assert(err_info.error_set.?.len == 5);
 
-        // Struct fields
         std.debug.assert(@hasField(Workspace, "name"));
         std.debug.assert(@hasField(Workspace, "projects"));
         std.debug.assert(@hasField(WorkspaceProject, "name"));

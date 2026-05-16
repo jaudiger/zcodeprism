@@ -245,8 +245,6 @@ pub fn renderDiffReport(
     }
 }
 
-// --- internal helpers ---
-
 const CollectedEntity = struct {
     entity_kind: EntityKind,
     name: []const u8,

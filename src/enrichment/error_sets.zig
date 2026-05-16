@@ -191,17 +191,8 @@ fn buildMergedNames(allocator: std.mem.Allocator, base: []const []const u8, addi
     return .{ .slices = slices, .flat_buf = flat_buf };
 }
 
-test "propagation: direct, multi-hop, union, and no-call boundary" {
-    // Arrange: build a graph with error_def nodes, functions, and edges.
-    //   err_x (error_def, error_set_names=["X"])
-    //   err_y (error_def, error_set_names=["Y"])
-    //   fn_a (function, uses_type -> err_x)      => declares {X}
-    //   fn_b (function, calls -> fn_a)            => inferred {X} via direct call
-    //   fn_c (function, calls -> fn_b)            => inferred {X} via 2-hop
-    //   fn_d (function, calls -> fn_c)            => inferred {X} via 3-hop
-    //   fn_e (function, uses_type -> err_y, calls -> fn_a) => inferred {X, Y} (union)
-    //   fn_f (function, uses_type -> fn_a)        => no call edge, no propagation
-    //   fn_g (function, returns void, no edges)   => inferred_errors stays null
+test "propagateErrorSets covers direct, multi-hop, union, and no-call boundaries" {
+    // Arrange
     const allocator = std.testing.allocator;
     var g = Graph.init("/tmp/test");
     defer g.deinit(allocator);
@@ -228,59 +219,47 @@ test "propagation: direct, multi-hop, union, and no-call boundary" {
     const fn_f = try g.addNode(allocator, .{ .id = .root, .name = "fnF", .kind = .function, .language = .zig, .lang_meta = try zig_meta.allocAndAttach(allocator, &g, .{}) });
     const fn_g = try g.addNode(allocator, .{ .id = .root, .name = "fnG", .kind = .function, .language = .zig, .lang_meta = try zig_meta.allocAndAttach(allocator, &g, .{}) });
 
-    // fn_a uses_type err_x
     _ = try g.addEdgeIfNew(allocator, .{ .source_id = fn_a, .target_id = err_x, .edge_type = .uses_type });
-    // fn_b calls fn_a (direct propagation)
     _ = try g.addEdgeIfNew(allocator, .{ .source_id = fn_b, .target_id = fn_a, .edge_type = .calls });
-    // fn_c calls fn_b (2-hop)
     _ = try g.addEdgeIfNew(allocator, .{ .source_id = fn_c, .target_id = fn_b, .edge_type = .calls });
-    // fn_d calls fn_c (3-hop)
     _ = try g.addEdgeIfNew(allocator, .{ .source_id = fn_d, .target_id = fn_c, .edge_type = .calls });
-    // fn_e uses_type err_y AND calls fn_a (union of {Y} and {X})
     _ = try g.addEdgeIfNew(allocator, .{ .source_id = fn_e, .target_id = err_y, .edge_type = .uses_type });
     _ = try g.addEdgeIfNew(allocator, .{ .source_id = fn_e, .target_id = fn_a, .edge_type = .calls });
-    // fn_f uses_type fn_a but does NOT call it
     _ = try g.addEdgeIfNew(allocator, .{ .source_id = fn_f, .target_id = fn_a, .edge_type = .uses_type });
 
     // Act
     try propagateErrorSets(allocator, &g, Logger.noop);
 
-    // Assert: fn_a has inferred {X} (direct uses_type)
+    // Assert
     const a_errors = zig_meta.metaOf(&g.nodes.items[@intFromEnum(fn_a)]).?.inferred_errors.?;
     try std.testing.expectEqual(@as(usize, 1), a_errors.len);
     try std.testing.expectEqualStrings("X", a_errors[0]);
 
-    // Assert: fn_b has inferred {X} (1-hop call)
     const b_errors = zig_meta.metaOf(&g.nodes.items[@intFromEnum(fn_b)]).?.inferred_errors.?;
     try std.testing.expectEqual(@as(usize, 1), b_errors.len);
     try std.testing.expectEqualStrings("X", b_errors[0]);
 
-    // Assert: fn_c has inferred {X} (2-hop)
     const c_errors = zig_meta.metaOf(&g.nodes.items[@intFromEnum(fn_c)]).?.inferred_errors.?;
     try std.testing.expectEqual(@as(usize, 1), c_errors.len);
 
-    // Assert: fn_d has inferred {X} (3-hop)
     const d_errors = zig_meta.metaOf(&g.nodes.items[@intFromEnum(fn_d)]).?.inferred_errors.?;
     try std.testing.expectEqual(@as(usize, 1), d_errors.len);
 
-    // Assert: fn_e has inferred {X, Y} (union from two sources)
     const e_errors = zig_meta.metaOf(&g.nodes.items[@intFromEnum(fn_e)]).?.inferred_errors.?;
     try std.testing.expectEqual(@as(usize, 2), e_errors.len);
 
-    // Assert: fn_f has no inferred_errors (uses_type, not calls)
     try std.testing.expectEqual(
         @as(?[]const []const u8, null),
         zig_meta.metaOf(&g.nodes.items[@intFromEnum(fn_f)]).?.inferred_errors,
     );
 
-    // Assert: fn_g has no inferred_errors (void, no edges)
     try std.testing.expectEqual(
         @as(?[]const []const u8, null),
         zig_meta.metaOf(&g.nodes.items[@intFromEnum(fn_g)]).?.inferred_errors,
     );
 }
 
-test "propagation: union of two error_def seeds on the same function" {
+test "propagateErrorSets unions two error_def seeds on the same function" {
     // Arrange
     const allocator = std.testing.allocator;
     var g = Graph.init("/tmp/test");
@@ -312,7 +291,7 @@ test "propagation: union of two error_def seeds on the same function" {
     try std.testing.expectEqual(@as(usize, 2), errors.len);
 }
 
-test "propagation: caller already has all callee errors makes no copy" {
+test "propagateErrorSets does not duplicate when caller already has callee errors" {
     // Arrange
     const allocator = std.testing.allocator;
     var g = Graph.init("/tmp/test");
@@ -341,14 +320,13 @@ test "propagation: caller already has all callee errors makes no copy" {
     // Act
     try propagateErrorSets(allocator, &g, Logger.noop);
 
-    // Assert: fn_b already had X from its own seed; calling fn_a adds nothing
+    // Assert
     const b_errors = zig_meta.metaOf(&g.nodes.items[@intFromEnum(fn_b)]).?.inferred_errors.?;
     try std.testing.expectEqual(@as(usize, 2), b_errors.len);
 }
 
-test "propagation: deduplicates names across multiple call hops" {
-    // Arrange: fn_a declares {X}, fn_b calls fn_a AND has uses_type -> err_x
-    // (same X). fn_b should end up with exactly one X, not two.
+test "propagateErrorSets deduplicates names across multiple call hops" {
+    // Arrange
     const allocator = std.testing.allocator;
     var g = Graph.init("/tmp/test");
     defer g.deinit(allocator);
@@ -374,8 +352,8 @@ test "propagation: deduplicates names across multiple call hops" {
     try std.testing.expectEqual(@as(usize, 1), b_errors.len);
 }
 
-test "propagation: large fan-in does not duplicate" {
-    // Arrange: 30 callers all call fn_a which has {E1..E10}
+test "propagateErrorSets does not duplicate under large fan-in" {
+    // Arrange
     const allocator = std.testing.allocator;
     var g = Graph.init("/tmp/test");
     defer g.deinit(allocator);
@@ -403,7 +381,7 @@ test "propagation: large fan-in does not duplicate" {
     // Act
     try propagateErrorSets(allocator, &g, Logger.noop);
 
-    // Assert: every caller has exactly 10 errors, no duplicates
+    // Assert
     for (callers) |c| {
         const errors = zig_meta.metaOf(&g.nodes.items[@intFromEnum(c)]).?.inferred_errors.?;
         try std.testing.expectEqual(@as(usize, 10), errors.len);

@@ -31,16 +31,10 @@ test "node with external equals stdlib" {
 }
 
 test "node with external equals dependency with version" {
-    // Arrange
-    const version_str = "1.2.3";
-    const ext = ExternalInfo{ .dependency = .{ .version = version_str } };
+    // Arrange / Act
+    const ext = ExternalInfo{ .dependency = .{ .version = "1.2.3" } };
 
     // Assert
-    switch (ext) {
-        .dependency => |dep| {
-            try std.testing.expect(dep.version != null);
-            try std.testing.expectEqualStrings("1.2.3", dep.version.?);
-        },
-        else => return error.UnexpectedVariant,
-    }
+    try std.testing.expect(ext == .dependency);
+    try std.testing.expectEqualStrings("1.2.3", ext.dependency.version.?);
 }

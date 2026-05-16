@@ -10,7 +10,7 @@ const indexer = zcodeprism.indexer;
 const enricher = zcodeprism.lsp.enricher;
 
 test "graph is complete without LSP" {
-    // Arrange: index the lsp fixture directory
+    // Arrange
     const allocator = std.testing.allocator;
     const fixture_path = try resolveFixturePath(allocator, "test/fixtures/zig/lsp");
     defer allocator.free(fixture_path);
@@ -21,14 +21,11 @@ test "graph is complete without LSP" {
     // Act
     _ = try indexer.indexDirectory(allocator, std.testing.io, fixture_path, &graph, null, .{});
 
-    // Assert: graph has nodes and edges, no crash
+    // Assert
     try std.testing.expect(graph.nodeCount() > 0);
     try std.testing.expect(graph.edgeCount() > 0);
-
-    // No edge was discovered by LSP
     try std.testing.expect(!helpers.hasEdgeWithSource(&graph, .lsp));
 
-    // Fan metrics are populated (enrichment ran)
     var has_fan_out = false;
     for (graph.nodes.items) |n| {
         if (n.metrics) |m| {
@@ -40,8 +37,6 @@ test "graph is complete without LSP" {
     }
     try std.testing.expect(has_fan_out);
 
-    // Functions returning !void from stdlib calls have null inferred_errors
-    // because tree-sitter cannot resolve cross-package error sets.
     const process_fn = helpers.findNode(&graph, "processConfig", .function);
     try std.testing.expect(process_fn != null);
     if (process_fn) |f| {
@@ -52,7 +47,7 @@ test "graph is complete without LSP" {
 }
 
 test "LSP enrichment adds edges and populates errors" {
-    // Arrange: check if ZLS is available, skip if not
+    // Arrange
     const allocator = std.testing.allocator;
     const zls_available = blk: {
         var child = std.process.spawn(std.testing.io, .{
@@ -71,15 +66,13 @@ test "LSP enrichment adds edges and populates errors" {
     var graph = Graph.init(fixture_path);
     defer graph.deinit(allocator);
 
-    // Index with a worklist so hover entries are collected for LSP enrichment.
     var wl = zcodeprism.lsp.worklist.LspWorklist{};
     defer wl.deinit(allocator);
     _ = try indexer.indexDirectory(allocator, std.testing.io, fixture_path, &graph, &wl, .{});
 
-    // Record pre-LSP state
     const pre_lsp_edge_count = graph.edgeCount();
 
-    // Act: run LSP enrichment with the populated worklist
+    // Act
     const zig_support = zcodeprism.registry.Registry.getByExtension(".zig").?;
     var lsp_pool = zcodeprism.lsp.pool.LspPool.init(.{});
     defer lsp_pool.deinit(allocator, std.testing.io);
@@ -87,15 +80,12 @@ test "LSP enrichment adds edges and populates errors" {
         .project_root = fixture_path,
     });
 
-    // LSP enrichment only adds edges, never removes.
+    // Assert
     try std.testing.expect(graph.edgeCount() >= pre_lsp_edge_count);
 
-    // All LSP edges in the graph are accounted for by the result counters.
     const lsp_edge_count = helpers.countEdgesBySource(&graph, .lsp);
     try std.testing.expectEqual(result.edges_promoted + result.edges_added, lsp_edge_count);
 
-    // All pre-LSP edge keys still present (LSP only adds, never removes)
-    // Fan metrics recalculated
     var has_fan_in = false;
     for (graph.nodes.items) |n| {
         if (n.metrics) |m| {
@@ -107,7 +97,6 @@ test "LSP enrichment adds edges and populates errors" {
     }
     try std.testing.expect(has_fan_in);
 
-    // At least one function has non-null inferred_errors after LSP
     var has_inferred = false;
     for (graph.nodes.items) |n| {
         if (n.kind != .function) continue;
@@ -122,7 +111,7 @@ test "LSP enrichment adds edges and populates errors" {
 }
 
 test "rust graph is complete without rust-analyzer" {
-    // Arrange: index the Rust project fixture directory
+    // Arrange
     const allocator = std.testing.allocator;
     const fixture_path = try resolveFixturePath(allocator, "test/fixtures/rust/project");
     defer allocator.free(fixture_path);
@@ -133,16 +122,14 @@ test "rust graph is complete without rust-analyzer" {
     // Act
     _ = try indexer.indexDirectory(allocator, std.testing.io, fixture_path, &graph, null, .{});
 
-    // Assert: graph has Rust nodes
+    // Assert
     try std.testing.expect(graph.nodeCount() > 0);
     try std.testing.expect(graph.edgeCount() > 0);
-
-    // No edge was discovered by LSP
     try std.testing.expect(!helpers.hasEdgeWithSource(&graph, .lsp));
 }
 
 test "rust-analyzer enrichment adds edges" {
-    // Arrange: check if rust-analyzer is available, skip if not
+    // Arrange
     const allocator = std.testing.allocator;
     const ra_available = blk: {
         var child = std.process.spawn(std.testing.io, .{
@@ -161,15 +148,13 @@ test "rust-analyzer enrichment adds edges" {
     var graph = Graph.init(fixture_path);
     defer graph.deinit(allocator);
 
-    // Index with a worklist for LSP enrichment.
     var wl = zcodeprism.lsp.worklist.LspWorklist{};
     defer wl.deinit(allocator);
     _ = try indexer.indexDirectory(allocator, std.testing.io, fixture_path, &graph, &wl, .{});
 
-    // Record pre-LSP state
     const pre_lsp_edge_count = graph.edgeCount();
 
-    // Act: run LSP enrichment with the populated worklist
+    // Act
     const rust_support = zcodeprism.registry.Registry.getByExtension(".rs").?;
     var lsp_pool = zcodeprism.lsp.pool.LspPool.init(.{});
     defer lsp_pool.deinit(allocator, std.testing.io);
@@ -177,10 +162,9 @@ test "rust-analyzer enrichment adds edges" {
         .project_root = fixture_path,
     });
 
-    // LSP enrichment only adds edges, never removes.
+    // Assert
     try std.testing.expect(graph.edgeCount() >= pre_lsp_edge_count);
 
-    // All LSP edges in the graph are accounted for by the result counters.
     const lsp_edge_count = helpers.countEdgesBySource(&graph, .lsp);
     try std.testing.expectEqual(result.edges_promoted + result.edges_added, lsp_edge_count);
 }

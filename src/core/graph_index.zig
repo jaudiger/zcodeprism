@@ -62,8 +62,6 @@ pub const GraphIndex = struct {
     }
 };
 
-// -- Tests --
-
 test "build on empty nodes succeeds" {
     // Arrange
     const nodes: []const Node = &.{};
@@ -72,7 +70,7 @@ test "build on empty nodes succeeds" {
     var idx = try GraphIndex.build(std.testing.allocator, nodes);
     defer idx.deinit(std.testing.allocator);
 
-    // Assert: all sub-indexes are functional but empty
+    // Assert
     try std.testing.expectEqual(@as(usize, 0), idx.scope.childrenOf(.root).len);
     try std.testing.expectEqual(@as(usize, 0), idx.names.findByName("anything").len);
     try std.testing.expectEqual(@as(?types.NodeId, null), idx.files.findByName("any.zig"));
@@ -92,13 +90,13 @@ test "build populates all four sub-indexes" {
     var idx = try GraphIndex.build(std.testing.allocator, nodes);
     defer idx.deinit(std.testing.allocator);
 
-    // Assert: scope has 2 children under file
+    // Assert
     try std.testing.expectEqual(@as(usize, 2), idx.scope.childrenOf(file_id).len);
-    // Assert: name lookup works
+    // Assert
     try std.testing.expectEqual(@as(usize, 1), idx.names.findByName("main").len);
-    // Assert: file lookup works
+    // Assert
     try std.testing.expect(idx.files.findByName("src/main.zig") != null);
-    // Assert: kind lookup works
+    // Assert
     try std.testing.expectEqual(@as(usize, 1), idx.kinds.findByKind(.function).len);
     try std.testing.expectEqual(@as(usize, 1), idx.kinds.findByKind(.type_def).len);
     try std.testing.expectEqual(@as(usize, 1), idx.kinds.findByKind(.file).len);

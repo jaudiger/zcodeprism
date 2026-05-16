@@ -34,26 +34,22 @@ pub const FileIndex = struct {
     }
 };
 
-// -- Tests --
-
 test "findByName returns file NodeIds and null for absent paths" {
-    // Arrange: mix of file and non-file nodes
+    // Arrange
     const nodes: []const Node = &.{
         .{ .id = @enumFromInt(0), .name = "src/main.zig", .kind = .file, .language = .zig, .file_path = "src/main.zig" },
         .{ .id = @enumFromInt(1), .name = "fn_a", .kind = .function, .language = .zig, .file_path = "src/main.zig" },
         .{ .id = @enumFromInt(2), .name = "src/lib.zig", .kind = .file, .language = .zig, .file_path = "src/lib.zig" },
     };
+
+    // Act
     var idx = try FileIndex.build(std.testing.allocator, nodes);
     defer idx.deinit(std.testing.allocator);
 
-    // Assert: correct NodeId for known file
+    // Assert
     try std.testing.expectEqual(@as(u64, 0), @intFromEnum(idx.findByName("src/main.zig").?));
     try std.testing.expectEqual(@as(u64, 2), @intFromEnum(idx.findByName("src/lib.zig").?));
-
-    // Assert: absent path returns null
     try std.testing.expectEqual(@as(?NodeId, null), idx.findByName("nonexistent.zig"));
-
-    // Assert: non-file node's file_path is not indexed
     try std.testing.expectEqual(@as(?NodeId, null), idx.findByName("fn_a"));
 }
 
@@ -69,19 +65,27 @@ test "build uses name as fallback when file_path is null" {
     try std.testing.expect(idx.findByName("virtual.zig") != null);
 }
 
-test "build on empty nodes and non-file-only nodes" {
-    // Arrange: empty
-    var idx1 = try FileIndex.build(std.testing.allocator, &.{});
-    defer idx1.deinit(std.testing.allocator);
-    try std.testing.expectEqual(@as(?NodeId, null), idx1.findByName("anything"));
+test "build on empty nodes returns empty index" {
+    // Arrange / Act
+    var idx = try FileIndex.build(std.testing.allocator, &.{});
+    defer idx.deinit(std.testing.allocator);
 
-    // Arrange: only non-file nodes
+    // Assert
+    try std.testing.expectEqual(@as(?NodeId, null), idx.findByName("anything"));
+}
+
+test "build skips non-file nodes" {
+    // Arrange
     const nodes: []const Node = &.{
         .{ .id = @enumFromInt(0), .name = "main", .kind = .function, .language = .zig, .file_path = "src/main.zig" },
         .{ .id = @enumFromInt(1), .name = "MyStruct", .kind = .type_def, .language = .zig },
     };
-    var idx2 = try FileIndex.build(std.testing.allocator, nodes);
-    defer idx2.deinit(std.testing.allocator);
-    try std.testing.expectEqual(@as(?NodeId, null), idx2.findByName("src/main.zig"));
-    try std.testing.expectEqual(@as(?NodeId, null), idx2.findByName("main"));
+
+    // Act
+    var idx = try FileIndex.build(std.testing.allocator, nodes);
+    defer idx.deinit(std.testing.allocator);
+
+    // Assert
+    try std.testing.expectEqual(@as(?NodeId, null), idx.findByName("src/main.zig"));
+    try std.testing.expectEqual(@as(?NodeId, null), idx.findByName("main"));
 }

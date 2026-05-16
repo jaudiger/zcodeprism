@@ -19,10 +19,6 @@ fn parseJsonResponse(allocator: std.mem.Allocator, bytes: []const u8) !std.json.
     return std.json.parseFromSlice(std.json.Value, allocator, bytes, .{});
 }
 
-// ---------------------------------------------------------------
-// JSON-RPC parsing
-// ---------------------------------------------------------------
-
 test "parses valid request" {
     // Arrange
     const allocator = std.testing.allocator;
@@ -383,10 +379,6 @@ test "parses request with explicit null id" {
     try std.testing.expectEqual(jsonrpc.RequestId.null_id, id);
 }
 
-// ---------------------------------------------------------------
-// tools/list
-// ---------------------------------------------------------------
-
 test "tools list returns exactly 20 tools" {
     // Arrange
     const allocator = std.testing.allocator;
@@ -531,10 +523,6 @@ test "each tool has name and inputSchema" {
     }
 }
 
-// ---------------------------------------------------------------
-// initialize
-// ---------------------------------------------------------------
-
 test "initialize returns serverInfo" {
     // Arrange
     const allocator = std.testing.allocator;
@@ -587,10 +575,6 @@ test "initialize returns capabilities" {
     try std.testing.expect(result.object.get("capabilities") != null);
 }
 
-// ---------------------------------------------------------------
-// Server lifecycle
-// ---------------------------------------------------------------
-
 test "server acquires generation on request" {
     // Arrange
     const allocator = std.testing.allocator;
@@ -610,7 +594,7 @@ test "server acquires generation on request" {
     const response_bytes = try srv.handleMessage(allocator, std.testing.io, input);
     defer if (response_bytes) |b| allocator.free(b);
 
-    // Assert: ref_count unchanged means acquire+release paired correctly
+    // Assert
     const after = gen.ref_count.count();
     try std.testing.expectEqual(before, after);
 }
@@ -627,7 +611,7 @@ test "server releases generation after response" {
     defer srv.deinit();
     const baseline = gen.ref_count.count();
 
-    // Act: send multiple requests
+    // Act
     const input =
         \\{"jsonrpc":"2.0","id":1,"method":"tools/list"}
     ;
@@ -638,7 +622,7 @@ test "server releases generation after response" {
     const r3 = try srv.handleMessage(allocator, std.testing.io, input);
     defer if (r3) |b| allocator.free(b);
 
-    // Assert: ref_count stable after all requests
+    // Assert
     const after = gen.ref_count.count();
     try std.testing.expectEqual(baseline, after);
 }

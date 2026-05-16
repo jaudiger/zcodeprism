@@ -334,8 +334,6 @@ fn emptyBuildInfo() BuildInfo {
     return .{};
 }
 
-// --- Tree-sitter AST helpers ---
-
 /// Find the body block of the top-level `build` function declaration.
 fn findBuildFunctionBlock(source: []const u8, root: ts.Node) ?ts.Node {
     var i: u32 = 0;
@@ -609,8 +607,6 @@ fn findUrlInBlock(content: []const u8, block_start: usize) ?[]const u8 {
     }
     return null;
 }
-
-// --- Tests ---
 
 test "parseBuildSource returns empty for empty source" {
     // Arrange
@@ -925,6 +921,6 @@ test "BuildInfo.deinit frees all memory" {
     // Act
     const info = try parseBuildSource(allocator, source, Logger.noop);
 
-    // Assert: deinit must free everything; leak detector will catch any missed frees.
+    // Assert
     info.deinit(allocator);
 }

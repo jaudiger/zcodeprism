@@ -70,8 +70,6 @@ pub const NameIndex = struct {
     }
 };
 
-// -- Tests --
-
 test "findByName returns matches and empty for absent names" {
     // Arrange
     const nodes: []const Node = &.{
@@ -79,40 +77,44 @@ test "findByName returns matches and empty for absent names" {
         .{ .id = @enumFromInt(1), .name = "deinit", .kind = .function, .language = .zig },
         .{ .id = @enumFromInt(2), .name = "init", .kind = .type_def, .language = .zig },
     };
+
+    // Act
     var idx = try NameIndex.build(std.testing.allocator, nodes, 0);
     defer idx.deinit(std.testing.allocator);
 
-    // Assert: single match returns correct index
+    // Assert
     const deinits = idx.findByName("deinit");
     try std.testing.expectEqual(@as(usize, 1), deinits.len);
     try std.testing.expectEqual(@as(u64, 1), deinits[0]);
-
-    // Assert: duplicate names return all matches
     try std.testing.expectEqual(@as(usize, 2), idx.findByName("init").len);
-
-    // Assert: absent name returns empty
     try std.testing.expectEqual(@as(usize, 0), idx.findByName("nonexistent").len);
-
-    // Assert: storage covers all named nodes
     try std.testing.expectEqual(@as(usize, 3), idx.storage.len);
 }
 
-test "build on empty nodes or nodes with empty names" {
-    // Arrange: empty array
-    var idx1 = try NameIndex.build(std.testing.allocator, &.{}, 0);
-    defer idx1.deinit(std.testing.allocator);
-    try std.testing.expectEqual(@as(usize, 0), idx1.storage.len);
+test "build on empty nodes returns empty index" {
+    // Arrange / Act
+    var idx = try NameIndex.build(std.testing.allocator, &.{}, 0);
+    defer idx.deinit(std.testing.allocator);
 
-    // Arrange: empty-name nodes are skipped
+    // Assert
+    try std.testing.expectEqual(@as(usize, 0), idx.storage.len);
+}
+
+test "build skips nodes with empty names" {
+    // Arrange
     const nodes: []const Node = &.{
         .{ .id = @enumFromInt(0), .name = "", .kind = .function, .language = .zig },
         .{ .id = @enumFromInt(1), .name = "real", .kind = .function, .language = .zig },
     };
-    var idx2 = try NameIndex.build(std.testing.allocator, nodes, 0);
-    defer idx2.deinit(std.testing.allocator);
-    try std.testing.expectEqual(@as(usize, 1), idx2.storage.len);
-    try std.testing.expectEqual(@as(usize, 0), idx2.findByName("").len);
-    try std.testing.expectEqual(@as(usize, 1), idx2.findByName("real").len);
+
+    // Act
+    var idx = try NameIndex.build(std.testing.allocator, nodes, 0);
+    defer idx.deinit(std.testing.allocator);
+
+    // Assert
+    try std.testing.expectEqual(@as(usize, 1), idx.storage.len);
+    try std.testing.expectEqual(@as(usize, 0), idx.findByName("").len);
+    try std.testing.expectEqual(@as(usize, 1), idx.findByName("real").len);
 }
 
 test "build with offset skips earlier nodes" {
@@ -122,7 +124,7 @@ test "build with offset skips earlier nodes" {
         .{ .id = @enumFromInt(1), .name = "included", .kind = .function, .language = .zig },
     };
 
-    // Act: offset=1 skips node 0
+    // Act
     var idx = try NameIndex.build(std.testing.allocator, nodes, 1);
     defer idx.deinit(std.testing.allocator);
 

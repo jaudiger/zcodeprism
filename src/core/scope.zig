@@ -62,8 +62,6 @@ fn globMatchInner(pattern: []const u8, pi_arg: usize, text: []const u8, ti_arg: 
     return ti == text.len;
 }
 
-// -- Tests --
-
 test "empty scope matches everything" {
     // Arrange
     const scope = Scope.parse("");

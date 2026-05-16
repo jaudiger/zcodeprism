@@ -310,7 +310,7 @@ pub fn findContainingFunction(graph: *const Graph, file_id: NodeId, line: u32, k
     return null;
 }
 
-test "computeStructuralHash: identical structure with different names" {
+test "computeStructuralHash treats identical structure with different names as equal" {
     // Arrange
     const a = "fn foo(x: u32) void { if (x) {} }";
     const b = "fn bar(y: u32) void { if (y) {} }";
@@ -319,7 +319,7 @@ test "computeStructuralHash: identical structure with different names" {
     try std.testing.expectEqual(computeStructuralHash(a, CommentSyntax.c_like), computeStructuralHash(b, CommentSyntax.c_like));
 }
 
-test "computeStructuralHash: different structure produces different hash" {
+test "computeStructuralHash differs when structure differs" {
     // Arrange
     const a = "fn foo() void { if (x) {} }";
     const b = "fn foo() void { if (x) {} if (y) {} }";
@@ -328,7 +328,7 @@ test "computeStructuralHash: different structure produces different hash" {
     try std.testing.expect(computeStructuralHash(a, CommentSyntax.c_like) != computeStructuralHash(b, CommentSyntax.c_like));
 }
 
-test "computeStructuralHash: line comments are ignored" {
+test "computeStructuralHash ignores line comments" {
     // Arrange
     const a = "fn foo() void { if (x) {} }";
     const b = "fn foo() void { // a comment\nif (x) {} }";
@@ -337,7 +337,7 @@ test "computeStructuralHash: line comments are ignored" {
     try std.testing.expectEqual(computeStructuralHash(a, CommentSyntax.c_like), computeStructuralHash(b, CommentSyntax.c_like));
 }
 
-test "computeStructuralHash: block comments are ignored" {
+test "computeStructuralHash ignores block comments" {
     // Arrange
     const a = "fn foo() void { if (x) {} }";
     const b = "fn foo() void { /* block comment */ if (x) {} }";
@@ -346,7 +346,7 @@ test "computeStructuralHash: block comments are ignored" {
     try std.testing.expectEqual(computeStructuralHash(a, CommentSyntax.c_like), computeStructuralHash(b, CommentSyntax.c_like));
 }
 
-test "computeStructuralHash: nested block comment text is ignored" {
+test "computeStructuralHash ignores nested block comment text" {
     // Arrange
     const a = "fn f() void { x(); }";
     const b = "fn f() void { /* multi\nline\ncomment */ x(); }";
@@ -355,7 +355,7 @@ test "computeStructuralHash: nested block comment text is ignored" {
     try std.testing.expectEqual(computeStructuralHash(a, CommentSyntax.c_like), computeStructuralHash(b, CommentSyntax.c_like));
 }
 
-test "computeStructuralHash: whitespace differences are normalized" {
+test "computeStructuralHash normalizes whitespace" {
     // Arrange
     const a = "fn foo() void { if (x) {} }";
     const b = "fn  foo()  void  {\n    if  (x)  {}\n}";
@@ -364,7 +364,7 @@ test "computeStructuralHash: whitespace differences are normalized" {
     try std.testing.expectEqual(computeStructuralHash(a, CommentSyntax.c_like), computeStructuralHash(b, CommentSyntax.c_like));
 }
 
-test "computeStructuralHash: tabs vs spaces produce same hash" {
+test "computeStructuralHash treats tabs and spaces as equal" {
     // Arrange
     const a = "fn foo() void {\n    x();\n}";
     const b = "fn foo() void {\n\tx();\n}";
@@ -373,7 +373,7 @@ test "computeStructuralHash: tabs vs spaces produce same hash" {
     try std.testing.expectEqual(computeStructuralHash(a, CommentSyntax.c_like), computeStructuralHash(b, CommentSyntax.c_like));
 }
 
-test "computeStructuralHash: CRLF vs LF produce same hash" {
+test "computeStructuralHash treats CRLF and LF as equal" {
     // Arrange
     const a = "fn foo() void {\n    x();\n}";
     const b = "fn foo() void {\r\n    x();\r\n}";
@@ -382,16 +382,16 @@ test "computeStructuralHash: CRLF vs LF produce same hash" {
     try std.testing.expectEqual(computeStructuralHash(a, CommentSyntax.c_like), computeStructuralHash(b, CommentSyntax.c_like));
 }
 
-test "computeStructuralHash: comment-like sequences inside strings are preserved" {
+test "computeStructuralHash preserves comment-like sequences inside strings" {
     // Arrange
     const a = "fn f() void { print(\"// not a comment\"); }";
     const b = "fn f() void { print(\"// different text\"); }";
 
-    // Act / Assert: different string content should produce different hashes
+    // Act / Assert
     try std.testing.expect(computeStructuralHash(a, CommentSyntax.c_like) != computeStructuralHash(b, CommentSyntax.c_like));
 }
 
-test "computeStructuralHash: block comment syntax inside string is preserved" {
+test "computeStructuralHash preserves block comment syntax inside string" {
     // Arrange
     const a = "fn f() void { print(\"/* not a comment */\"); }";
     const b = "fn f() void { print(\"/* other */\"); }";
@@ -400,12 +400,12 @@ test "computeStructuralHash: block comment syntax inside string is preserved" {
     try std.testing.expect(computeStructuralHash(a, CommentSyntax.c_like) != computeStructuralHash(b, CommentSyntax.c_like));
 }
 
-test "computeStructuralHash: empty input returns consistent hash" {
+test "computeStructuralHash returns consistent hash for empty input" {
     // Arrange / Act / Assert
     try std.testing.expectEqual(computeStructuralHash("", CommentSyntax.c_like), computeStructuralHash("", CommentSyntax.c_like));
 }
 
-test "computeStructuralHash: numeric literals are normalized" {
+test "computeStructuralHash normalizes numeric literals" {
     // Arrange
     const a = "fn f() void { return 42; }";
     const b = "fn f() void { return 99; }";
@@ -414,7 +414,7 @@ test "computeStructuralHash: numeric literals are normalized" {
     try std.testing.expectEqual(computeStructuralHash(a, CommentSyntax.c_like), computeStructuralHash(b, CommentSyntax.c_like));
 }
 
-test "computeStructuralHash: escaped quote inside string does not end string" {
+test "computeStructuralHash handles escaped quote inside string" {
     // Arrange
     const a = "fn f() void { x(\"hello \\\" world\"); }";
     const b = "fn f() void { x(\"hello \\\" world\"); }";
@@ -423,16 +423,16 @@ test "computeStructuralHash: escaped quote inside string does not end string" {
     try std.testing.expectEqual(computeStructuralHash(a, CommentSyntax.c_like), computeStructuralHash(b, CommentSyntax.c_like));
 }
 
-test "computeStructuralHash: char literals with comment-like content" {
+test "computeStructuralHash preserves char literals with comment-like content" {
     // Arrange
     const a = "fn f() void { const c = '/'; }";
     const b = "fn f() void { const c = '*'; }";
 
-    // Act / Assert: different char literal content produces different hash
+    // Act / Assert
     try std.testing.expect(computeStructuralHash(a, CommentSyntax.c_like) != computeStructuralHash(b, CommentSyntax.c_like));
 }
 
-test "computeStructuralHash: Rust nested block comments are fully stripped" {
+test "computeStructuralHash strips Rust nested block comments fully" {
     // Arrange
     const a = "fn f() { x(); }";
     const b = "fn f() { /* outer /* inner */ still comment */ x(); }";
@@ -441,25 +441,26 @@ test "computeStructuralHash: Rust nested block comments are fully stripped" {
     try std.testing.expectEqual(computeStructuralHash(a, CommentSyntax.rust), computeStructuralHash(b, CommentSyntax.rust));
 }
 
-test "computeStructuralHash: Zig syntax does not strip block comments" {
-    // Arrange: Zig has no block comments, so /* */ are structural punctuation.
+test "computeStructuralHash keeps Zig block comment markers as structure" {
+    // Arrange
     const a = "fn f() void { x(); }";
     const b = "fn f() void { /* stuff */ x(); }";
 
-    // Act / Assert: with Zig syntax these are different structures
+    // Act / Assert
     try std.testing.expect(computeStructuralHash(a, CommentSyntax.zig) != computeStructuralHash(b, CommentSyntax.zig));
 }
 
-test "computeStructuralHash: forLanguage maps correctly" {
+test "computeStructuralHash forLanguage maps every language to line-comment stripping" {
     // Arrange
     const src = "fn f() void { // comment\nx(); }";
 
-    // Act / Assert: all known languages strip line comments
+    // Act
     const hash_zig = computeStructuralHash(src, CommentSyntax.forLanguage(.zig));
     const hash_rust = computeStructuralHash(src, CommentSyntax.forLanguage(.rust));
     const hash_null = computeStructuralHash(src, CommentSyntax.forLanguage(null));
     const hash_no_comment = computeStructuralHash("fn f() void { x(); }", CommentSyntax.c_like);
 
+    // Assert
     try std.testing.expectEqual(hash_no_comment, hash_zig);
     try std.testing.expectEqual(hash_no_comment, hash_rust);
     try std.testing.expectEqual(hash_no_comment, hash_null);

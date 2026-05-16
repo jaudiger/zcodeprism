@@ -79,7 +79,7 @@ pub const Registry = struct {
 };
 
 test "lookup by unknown extension returns null" {
-    // Act
+    // Arrange / Act
     const result = Registry.getByExtension(".xyz");
 
     // Assert
@@ -87,7 +87,7 @@ test "lookup by unknown extension returns null" {
 }
 
 test "lookup by .rs extension returns rust support" {
-    // Act
+    // Arrange / Act
     const result = Registry.getByExtension(".rs");
 
     // Assert
@@ -96,7 +96,7 @@ test "lookup by .rs extension returns rust support" {
 }
 
 test "lookup by .zig extension returns zig support" {
-    // Act
+    // Arrange / Act
     const result = Registry.getByExtension(".zig");
 
     // Assert

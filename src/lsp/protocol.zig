@@ -298,7 +298,7 @@ test "parse LSP responses" {
     // Arrange
     const allocator = std.testing.allocator;
 
-    // Act: single Location (definition response)
+    // Act
     const def_json =
         \\{"uri":"file:///src/main.zig","range":{"start":{"line":10,"character":4},"end":{"line":10,"character":14}}}
     ;
@@ -308,13 +308,13 @@ test "parse LSP responses" {
     try std.testing.expectEqual(@as(u32, 10), loc.range.start.line);
     try std.testing.expectEqual(@as(u32, 4), loc.range.start.character);
 
-    // Act: empty references array
+    // Act
     const empty_json = "[]";
     const empty_locs = try parseLocationArray(allocator, empty_json);
     defer allocator.free(empty_locs);
     try std.testing.expectEqual(@as(usize, 0), empty_locs.len);
 
-    // Act: hover with MarkupContent
+    // Act
     const hover_json =
         \\{"contents":{"kind":"markdown","value":"fn readConfig() ![]const u8"}}
     ;
@@ -322,7 +322,7 @@ test "parse LSP responses" {
     defer freeHover(allocator, hover);
     try std.testing.expectEqual(MarkupKind.markdown, hover.contents.markup.kind);
 
-    // Act: error response (tested via parseResponse)
+    // Act
     const err_json =
         \\{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"method not found"}}
     ;
@@ -369,7 +369,7 @@ test "freeLocationArray releases all URIs" {
     const locs = try parseLocationArray(allocator, json);
     freeLocationArray(allocator, locs);
 
-    // Assert: no leak (checked by std.testing.allocator)
+    // Assert
 }
 
 test "SymbolKind fromInt maps known values" {

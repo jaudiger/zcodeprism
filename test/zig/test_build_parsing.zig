@@ -190,7 +190,7 @@ test "module-to-file contains edge has workspace source" {
     // Act
     _ = try indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{});
 
-    // Assert: find the specific module-to-file contains edge.
+    // Assert
     const lib_mod = helpers.findNode(&g, "lib_mod", .module) orelse return error.TestExpectedEqual;
     const lib_file = helpers.findNode(&g, "lib.zig", .file) orelse return error.TestExpectedEqual;
     for (g.edges.items) |e| {

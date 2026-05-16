@@ -458,7 +458,7 @@ test "header line 1 matches spec" {
     const fg = try g.freeze(allocator);
     try renderCtg(allocator, std.testing.io, fg, options, &out);
 
-    // Assert: first line: "# zcodeprism graph -- myproject"
+    // Assert
     const output = out.items;
     const first_line_end = std.mem.indexOfScalar(u8, output, '\n') orelse output.len;
     const first_line = output[0..first_line_end];
@@ -482,7 +482,7 @@ test "header line 2 has stats" {
     const fg = try g.freeze(allocator);
     try renderCtg(allocator, std.testing.io, fg, options, &out);
 
-    // Assert: second line starts with "# " and contains "files" and "functions"
+    // Assert
     const output = out.items;
     var lines = std.mem.splitScalar(u8, output, '\n');
     _ = lines.next(); // skip line 1
@@ -512,7 +512,7 @@ test "header line 3 has languages" {
     const fg = try g.freeze(allocator);
     try renderCtg(allocator, std.testing.io, fg, options, &out);
 
-    // Assert: third line: "# languages: zig"
+    // Assert
     const output = out.items;
     var lines = std.mem.splitScalar(u8, output, '\n');
     _ = lines.next();
@@ -538,7 +538,7 @@ test "header line 4 has timestamp" {
     const fg = try g.freeze(allocator);
     try renderCtg(allocator, std.testing.io, fg, options, &out);
 
-    // Assert: fourth line: "# generated 2026-02-14T10:30:00Z"
+    // Assert
     const output = out.items;
     var lines = std.mem.splitScalar(u8, output, '\n');
     _ = lines.next();
@@ -566,7 +566,7 @@ test "sections appear in correct order" {
     const fg = try g.freeze(allocator);
     try renderCtg(allocator, std.testing.io, fg, options, &out);
 
-    // Assert: sections in order
+    // Assert
     const output = out.items;
     const section_markers = [_][]const u8{
         "[files]",
@@ -763,7 +763,7 @@ test "union IDs use un: prefix" {
     const fg = try g.freeze(allocator);
     try renderCtg(allocator, std.testing.io, fg, options, &out);
 
-    // Assert: [unions] section exists with un: prefix
+    // Assert
     const output = out.items;
     const uns_start = (std.mem.indexOf(u8, output, "[unions]\n") orelse return error.MissingSection) + "[unions]\n".len;
     const section_start = uns_start;
@@ -780,7 +780,7 @@ test "union IDs use un: prefix" {
     }
     try std.testing.expect(found);
 
-    // Assert: header mentions unions count
+    // Assert
     try std.testing.expect(std.mem.indexOf(u8, output, "unions") != null);
 }
 
@@ -938,7 +938,7 @@ test "files sorted by path alphabetical" {
     const fg = try g.freeze(allocator);
     try renderCtg(allocator, std.testing.io, fg, options, &out);
 
-    // Assert: file entries are sorted: src/lib.zig before src/main.zig
+    // Assert
     const output = out.items;
     const lib_pos = std.mem.indexOf(u8, output, "src/lib.zig") orelse return error.MissingEntry;
     const main_pos = std.mem.indexOf(u8, output, "src/main.zig") orelse return error.MissingEntry;
@@ -962,7 +962,7 @@ test "edges sorted by type then source then target" {
     const fg = try g.freeze(allocator);
     try renderCtg(allocator, std.testing.io, fg, options, &out);
 
-    // Assert: within [edges], "calls" < "imports" < "uses_type" (alphabetical)
+    // Assert
     const output = out.items;
     const edges_start = (std.mem.indexOf(u8, output, "[edges]\n") orelse return error.MissingSection) + "[edges]\n".len;
     const edges_section = output[edges_start..];
@@ -1004,7 +1004,7 @@ test "deterministic output" {
     const fg2 = try g2.freeze(allocator);
     try renderCtg(allocator, std.testing.io, fg2, options, &out2);
 
-    // Assert: byte-identical output
+    // Assert
     try std.testing.expectEqualSlices(u8, out1.items, out2.items);
 }
 
@@ -1025,7 +1025,7 @@ test "empty graph renders without crash" {
     const fg = try g.freeze(allocator);
     try renderCtg(allocator, std.testing.io, fg, options, &out);
 
-    // Assert: has header, no crash
+    // Assert
     const output = out.items;
     try std.testing.expect(output.len > 0);
     try std.testing.expect(std.mem.startsWith(u8, output, "# zcodeprism graph"));
@@ -1072,7 +1072,7 @@ test "with scope filters nodes" {
     const fg = try g.freeze(allocator);
     try renderCtg(allocator, std.testing.io, fg, options, &out);
 
-    // Assert: only src/main.zig nodes appear, not src/lib.zig nodes
+    // Assert
     const output = out.items;
     try std.testing.expect(std.mem.indexOf(u8, output, "src/main.zig") != null);
     const types_start = std.mem.indexOf(u8, output, "[types]");
@@ -1151,7 +1151,7 @@ test "snapshot line absent for export" {
     const fg = try g.freeze(allocator);
     try renderCtg(allocator, std.testing.io, fg, options, &out);
 
-    // Assert: no snapshot line, exactly 4 header lines
+    // Assert
     const output = out.items;
     try std.testing.expect(std.mem.indexOf(u8, output, "# snapshot:") == null);
 

@@ -532,7 +532,7 @@ test "buildRequest serializes correct JSON-RPC envelope" {
     var client = LspClient.init(allocator, Logger.noop);
     defer client.deinit(std.testing.io);
 
-    // Act: build two sequential requests with empty params
+    // Act
     const empty1: ObjectMap = .empty;
     const id1 = client.nextId();
     const req1 = try client.buildRequest(id1, "textDocument/definition", .{ .object = empty1 });
@@ -553,20 +553,32 @@ test "buildRequest serializes correct JSON-RPC envelope" {
     try std.testing.expect(std.mem.indexOf(u8, owned2, "\"id\":2") != null);
 }
 
-test "parseContentLength parses headers" {
-    // Single-line header
+test "parseContentLength reads single-line header" {
+    // Arrange / Act
     const len = try LspClient.parseContentLength("Content-Length: 52\r\n\r\n");
+
+    // Assert
     try std.testing.expectEqual(@as(usize, 52), len);
+}
 
-    // Zero length
-    const zero = try LspClient.parseContentLength("Content-Length: 0\r\n\r\n");
-    try std.testing.expectEqual(@as(usize, 0), zero);
+test "parseContentLength accepts zero length" {
+    // Arrange / Act
+    const len = try LspClient.parseContentLength("Content-Length: 0\r\n\r\n");
 
-    // Multi-line header with Content-Type first
-    const multi = try LspClient.parseContentLength("Content-Type: application/vscode-jsonrpc; charset=utf-8\r\nContent-Length: 128\r\n\r\n");
-    try std.testing.expectEqual(@as(usize, 128), multi);
+    // Assert
+    try std.testing.expectEqual(@as(usize, 0), len);
+}
 
-    // Missing Content-Length
+test "parseContentLength skips Content-Type and reads following Content-Length" {
+    // Arrange / Act
+    const len = try LspClient.parseContentLength("Content-Type: application/vscode-jsonrpc; charset=utf-8\r\nContent-Length: 128\r\n\r\n");
+
+    // Assert
+    try std.testing.expectEqual(@as(usize, 128), len);
+}
+
+test "parseContentLength returns InvalidHeader when Content-Length absent" {
+    // Act / Assert
     try std.testing.expectError(HeaderError.InvalidHeader, LspClient.parseContentLength("Bad-Header: 52\r\n\r\n"));
 }
 

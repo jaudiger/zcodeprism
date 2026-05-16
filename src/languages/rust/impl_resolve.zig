@@ -52,7 +52,7 @@ pub fn resolveImplementsEdges(
         }
     }
 
-    // Act: resolve traits and create edges. Iterates the collected buffer,
+    // Act
     // so phantom.getOrCreate adding nodes to the graph is harmless.
     const clamped_end = @min(scope_end, graph.nodes.items.len);
     for (buf[0..count]) |info| {

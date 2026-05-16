@@ -163,7 +163,7 @@ test "diff identical graphs produces zero changes" {
     try std.testing.expectEqual(@as(usize, 0), report.entries.len);
 }
 
-test "diff empty vs populated and populated vs empty" {
+test "diff from empty to populated reports every node as added" {
     // Arrange
     const allocator = std.testing.allocator;
 
@@ -175,28 +175,55 @@ test "diff empty vs populated and populated vs empty" {
     _ = try populated.addNode(allocator, .{ .id = .root, .name = "a.zig", .kind = .file, .file_path = "a.zig", .content_hash = "aaaaaaaaaaaaaaaa".* });
     _ = try populated.addNode(allocator, .{ .id = .root, .name = "foo", .kind = .function, .file_path = "a.zig" });
 
-    // Act: empty -> populated = everything added
+    // Act
     const fg_empty = FrozenGraph{ .graph = &empty };
     const fg_pop = FrozenGraph{ .graph = &populated };
-    var report1 = try snapshot_diff.diffGraphs(allocator, fg_empty, fg_pop);
-    defer report1.deinit(allocator);
+    var report = try snapshot_diff.diffGraphs(allocator, fg_empty, fg_pop);
+    defer report.deinit(allocator);
 
-    try std.testing.expect(report1.summary.added > 0);
-    try std.testing.expectEqual(@as(usize, 0), report1.summary.removed);
+    // Assert
+    try std.testing.expect(report.summary.added > 0);
+    try std.testing.expectEqual(@as(usize, 0), report.summary.removed);
+}
 
-    // Act: populated -> empty = everything removed
-    var report2 = try snapshot_diff.diffGraphs(allocator, fg_pop, fg_empty);
-    defer report2.deinit(allocator);
+test "diff from populated to empty reports every node as removed" {
+    // Arrange
+    const allocator = std.testing.allocator;
 
-    try std.testing.expect(report2.summary.removed > 0);
-    try std.testing.expectEqual(@as(usize, 0), report2.summary.added);
+    var empty = Graph.init("proj");
+    defer empty.deinit(allocator);
 
-    // Act: empty -> empty = zero changes
-    var report3 = try snapshot_diff.diffGraphs(allocator, fg_empty, fg_empty);
-    defer report3.deinit(allocator);
+    var populated = Graph.init("proj");
+    defer populated.deinit(allocator);
+    _ = try populated.addNode(allocator, .{ .id = .root, .name = "a.zig", .kind = .file, .file_path = "a.zig", .content_hash = "aaaaaaaaaaaaaaaa".* });
+    _ = try populated.addNode(allocator, .{ .id = .root, .name = "foo", .kind = .function, .file_path = "a.zig" });
 
-    try std.testing.expectEqual(@as(usize, 0), report3.summary.added);
-    try std.testing.expectEqual(@as(usize, 0), report3.summary.removed);
+    // Act
+    const fg_empty = FrozenGraph{ .graph = &empty };
+    const fg_pop = FrozenGraph{ .graph = &populated };
+    var report = try snapshot_diff.diffGraphs(allocator, fg_pop, fg_empty);
+    defer report.deinit(allocator);
+
+    // Assert
+    try std.testing.expect(report.summary.removed > 0);
+    try std.testing.expectEqual(@as(usize, 0), report.summary.added);
+}
+
+test "diff from empty to empty reports zero changes" {
+    // Arrange
+    const allocator = std.testing.allocator;
+
+    var empty = Graph.init("proj");
+    defer empty.deinit(allocator);
+
+    // Act
+    const fg_empty = FrozenGraph{ .graph = &empty };
+    var report = try snapshot_diff.diffGraphs(allocator, fg_empty, fg_empty);
+    defer report.deinit(allocator);
+
+    // Assert
+    try std.testing.expectEqual(@as(usize, 0), report.summary.added);
+    try std.testing.expectEqual(@as(usize, 0), report.summary.removed);
 }
 
 test "diff output is deterministic" {
@@ -213,7 +240,7 @@ test "diff output is deterministic" {
     _ = try gb.addNode(allocator, .{ .id = .root, .name = "a.zig", .kind = .file, .file_path = "a.zig", .content_hash = "aaaaaaaaaaaaaaaa".* });
     _ = try gb.addNode(allocator, .{ .id = .root, .name = "bar", .kind = .function, .file_path = "a.zig" });
 
-    // Act: diff twice
+    // Act
     const fga = FrozenGraph{ .graph = &ga };
     const fgb = FrozenGraph{ .graph = &gb };
     var report1 = try snapshot_diff.diffGraphs(allocator, fga, fgb);
@@ -230,6 +257,6 @@ test "diff output is deterministic" {
     defer out2.deinit(allocator);
     try snapshot_diff.renderDiffReport(allocator, &report2, &out2);
 
-    // Assert: identical output
+    // Assert
     try std.testing.expectEqualSlices(u8, out1.items, out2.items);
 }

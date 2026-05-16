@@ -33,8 +33,6 @@ fn parseWithEdges(allocator: std.mem.Allocator, source: []const u8, g: *Graph) !
     try buildEdges(allocator, std.testing.io, source, g, 0, g.nodeCount(), null, &gi, &phantom_mgr, &ntm, &wl, Logger.noop);
 }
 
-// --- Nominal tests (simple.rs) ---
-
 test "parses public function" {
     // Arrange
     var g = Graph.init("/tmp/project");
@@ -298,7 +296,7 @@ test "attaches inner doc comment" {
     // Act
     try parseWithEdges(std.testing.allocator, fixtures.rust.simple, &g);
 
-    // Assert: file node (first node) has doc from //! lines
+    // Assert
     try std.testing.expect(g.nodes.items.len > 0);
     const file_node = g.nodes.items[0];
     try std.testing.expectEqual(NodeKind.file, file_node.kind);
@@ -314,7 +312,7 @@ test "sets parent_id for method in impl" {
     // Act
     try parseWithEdges(std.testing.allocator, fixtures.rust.simple, &g);
 
-    // Assert: "new" method has a parent_id pointing to an impl block
+    // Assert
     const new_node = helpers.findNode(&g, "new", .function);
     try std.testing.expect(new_node != null);
     try std.testing.expect(new_node.?.parent_id != null);
@@ -331,7 +329,7 @@ test "sets parent_id for top-level function" {
     // Act
     try parseWithEdges(std.testing.allocator, fixtures.rust.simple, &g);
 
-    // Assert: top-level "helper" function has parent_id pointing to file
+    // Assert
     const node = helpers.findNode(&g, "helper", .function);
     try std.testing.expect(node != null);
     try std.testing.expect(node.?.parent_id != null);
@@ -428,7 +426,7 @@ test "creates calls edge" {
     // Act
     try parseWithEdges(std.testing.allocator, fixtures.rust.simple, &g);
 
-    // Assert: at least one calls edge exists
+    // Assert
     var found = false;
     for (g.edges.items) |e| {
         if (e.edge_type == .calls) {
@@ -447,7 +445,7 @@ test "creates uses_type edge from signature and body" {
     // Act
     try parseWithEdges(std.testing.allocator, fixtures.rust.simple, &g);
 
-    // Assert: signature-detected uses_type (parameter type reference)
+    // Assert
     const distance_id = for (g.nodes.items, 0..) |n, i| {
         if (n.kind == .function and std.mem.eql(u8, n.name, "distance")) break @as(NodeId, @enumFromInt(i));
     } else return error.NodeNotFound;
@@ -460,7 +458,7 @@ test "creates uses_type edge from signature and body" {
 
     try std.testing.expect(helpers.hasEdge(&g, distance_id, point_id, .uses_type));
 
-    // Assert: body-detected uses_type (struct literal in function body)
+    // Assert
     const literal_id = for (g.nodes.items, 0..) |n, i| {
         if (n.kind == .function and std.mem.eql(u8, n.name, "creates_point_literal")) break @as(NodeId, @enumFromInt(i));
     } else return error.NodeNotFound;
@@ -476,7 +474,7 @@ test "creates implements edge" {
     // Act
     try parseWithEdges(std.testing.allocator, fixtures.rust.simple, &g);
 
-    // Assert: impl Drawable for Point creates an implements edge
+    // Assert
     var found = false;
     for (g.edges.items) |e| {
         if (e.edge_type == .implements) {
@@ -546,8 +544,6 @@ test "function signature extraction" {
     try std.testing.expect(node.?.signature != null);
 }
 
-// --- Generic impl block tests ---
-
 test "parses generic impl blocks and their methods" {
     // Arrange
     var g = Graph.init("/tmp/project");
@@ -556,7 +552,7 @@ test "parses generic impl blocks and their methods" {
     // Act
     try parseWithEdges(std.testing.allocator, fixtures.rust.simple, &g);
 
-    // Assert: impl<T> Wrapper<T> creates an impl_block named "Wrapper"
+    // Assert
     var wrapper_impl_count: usize = 0;
     for (g.nodes.items) |n| {
         if (n.kind == .type_def and
@@ -569,7 +565,7 @@ test "parses generic impl blocks and their methods" {
     // Four generic impl blocks for Wrapper: inherent, Display, From, IntoIterator (ref)
     try std.testing.expectEqual(@as(usize, 4), wrapper_impl_count);
 
-    // Assert: methods inside generic impl blocks are captured
+    // Assert
     try std.testing.expect(helpers.findNode(&g, "into_inner", .function) != null);
     try std.testing.expect(helpers.findNode(&g, "fmt", .function) != null);
     try std.testing.expect(helpers.findNode(&g, "from", .function) != null);
@@ -583,7 +579,7 @@ test "trait impl for reference type names node after target type" {
     // Act
     try parseWithEdges(std.testing.allocator, fixtures.rust.simple, &g);
 
-    // Assert: impl<'a, T> IntoIterator for &'a Wrapper<T> creates an impl_block
+    // Assert
     // named "Wrapper" (the target type), with the full impl header as signature.
     var found = false;
     for (g.nodes.items) |n| {
@@ -599,8 +595,6 @@ test "trait impl for reference type names node after target type" {
     }
     try std.testing.expect(found);
 }
-
-// --- Edge case tests ---
 
 test "empty file produces only file node" {
     // Arrange
@@ -636,7 +630,7 @@ test "no pub file has all private nodes" {
     // Act
     try parseWithEdges(std.testing.allocator, fixtures.rust.edge_cases.no_pub, &g);
 
-    // Assert: all non-file nodes are private
+    // Assert
     for (g.nodes.items) |n| {
         if (n.kind != .file) {
             try std.testing.expectEqual(Visibility.private, n.visibility);
@@ -652,7 +646,7 @@ test "deeply nested sets correct parent chain" {
     // Act
     try parseWithEdges(std.testing.allocator, fixtures.rust.edge_cases.deeply_nested, &g);
 
-    // Assert: get_value exists and has a parent chain leading to file
+    // Assert
     const method = helpers.findNode(&g, "get_value", .function);
     try std.testing.expect(method != null);
     try std.testing.expect(method.?.parent_id != null);
@@ -678,7 +672,7 @@ test "many attributes do not crash" {
     // Act
     try parseWithEdges(std.testing.allocator, fixtures.rust.edge_cases.many_attrs, &g);
 
-    // Assert: parse completed, at least file + struct + function
+    // Assert
     try std.testing.expect(g.nodeCount() >= 3);
 }
 
@@ -727,7 +721,7 @@ test "struct with only derive has null attributes" {
     // Act
     try parseWithEdges(std.testing.allocator, fixtures.rust.simple, &g);
 
-    // Assert: Color has #[derive(Debug, Clone)] but no other attributes
+    // Assert
     const node = helpers.findNode(&g, "Color", .enum_def);
     try std.testing.expect(node != null);
     try std.testing.expect(rust_meta.metaOf(node.?) != null);
@@ -743,7 +737,7 @@ test "captures attributes on struct fields" {
     // Act
     try parseWithEdges(std.testing.allocator, fixtures.rust.edge_cases.many_attrs, &g);
 
-    // Assert: attributed field has serde rename captured
+    // Assert
     const id_node = helpers.findNode(&g, "id", .field);
     try std.testing.expect(id_node != null);
     try std.testing.expect(rust_meta.metaOf(id_node.?) != null);
@@ -751,7 +745,7 @@ test "captures attributes on struct fields" {
     try std.testing.expect(attrs != null);
     try std.testing.expect(std.mem.indexOf(u8, attrs.?, "serde") != null);
 
-    // Assert: unattributed field has null attributes
+    // Assert
     const plain_node = helpers.findNode(&g, "plain", .field);
     try std.testing.expect(plain_node != null);
     try std.testing.expect(rust_meta.metaOf(plain_node.?) != null);
@@ -766,7 +760,7 @@ test "captures attributes on enum variants" {
     // Act
     try parseWithEdges(std.testing.allocator, fixtures.rust.edge_cases.many_attrs, &g);
 
-    // Assert: #[default] on Active
+    // Assert
     const active = helpers.findNode(&g, "Active", .field);
     try std.testing.expect(active != null);
     try std.testing.expect(rust_meta.metaOf(active.?) != null);
@@ -774,7 +768,7 @@ test "captures attributes on enum variants" {
     try std.testing.expect(active_attrs != null);
     try std.testing.expect(std.mem.indexOf(u8, active_attrs.?, "default") != null);
 
-    // Assert: #[serde(rename = "off")] on Inactive
+    // Assert
     const inactive = helpers.findNode(&g, "Inactive", .field);
     try std.testing.expect(inactive != null);
     try std.testing.expect(rust_meta.metaOf(inactive.?) != null);
@@ -782,14 +776,12 @@ test "captures attributes on enum variants" {
     try std.testing.expect(inactive_attrs != null);
     try std.testing.expect(std.mem.indexOf(u8, inactive_attrs.?, "serde") != null);
 
-    // Assert: unattributed variant has null attributes
+    // Assert
     const plain = helpers.findNode(&g, "Plain", .field);
     try std.testing.expect(plain != null);
     try std.testing.expect(rust_meta.metaOf(plain.?) != null);
     try std.testing.expectEqual(@as(?[]const u8, null), rust_meta.metaOf(plain.?).?.attributes);
 }
-
-// --- Visibility inheritance tests ---
 
 test "pub enum variants inherit public visibility" {
     // Arrange
@@ -799,7 +791,7 @@ test "pub enum variants inherit public visibility" {
     // Act
     try parseWithEdges(std.testing.allocator, fixtures.rust.simple, &g);
 
-    // Assert: Color is a pub enum, so its variants should be public
+    // Assert
     const red = helpers.findNode(&g, "Red", .field);
     try std.testing.expect(red != null);
     try std.testing.expectEqual(Visibility.public, red.?.visibility);
@@ -821,7 +813,7 @@ test "macro_export makes macro public" {
     // Act
     try parseWithEdges(std.testing.allocator, fixtures.rust.simple, &g);
 
-    // Assert: exported_macro has #[macro_export] so it should be public
+    // Assert
     const node = helpers.findNode(&g, "exported_macro", .function);
     try std.testing.expect(node != null);
     try std.testing.expectEqual(Visibility.public, node.?.visibility);
@@ -837,7 +829,7 @@ test "macro without macro_export stays private" {
     // Act
     try parseWithEdges(std.testing.allocator, fixtures.rust.simple, &g);
 
-    // Assert: say_hello has no #[macro_export] so it should be private
+    // Assert
     const node = helpers.findNode(&g, "say_hello", .function);
     try std.testing.expect(node != null);
     try std.testing.expectEqual(Visibility.private, node.?.visibility);
@@ -851,7 +843,7 @@ test "associated type inherits trait visibility" {
     // Act
     try parseWithEdges(std.testing.allocator, fixtures.rust.simple, &g);
 
-    // Assert: Output is an associated type declared in pub trait Drawable,
+    // Assert
     // so it inherits the trait's public visibility.
     const output_node = helpers.findNode(&g, "Output", .type_def);
     try std.testing.expect(output_node != null);
@@ -859,8 +851,6 @@ test "associated type inherits trait visibility" {
     try std.testing.expectEqual(RustSubKind.associated_type, rust_meta.metaOf(output_node.?).?.sub_kind);
     try std.testing.expectEqual(Visibility.public, output_node.?.visibility);
 }
-
-// --- Doc comment extraction on fields, variants, impl blocks ---
 
 test "attaches doc comment to struct fields and enum variants" {
     // Arrange
@@ -870,19 +860,19 @@ test "attaches doc comment to struct fields and enum variants" {
     // Act
     try parseWithEdges(std.testing.allocator, fixtures.rust.simple, &g);
 
-    // Assert: struct field has doc
+    // Assert
     const x_node = helpers.findNode(&g, "x", .field);
     try std.testing.expect(x_node != null);
     try std.testing.expect(x_node.?.doc != null);
     try std.testing.expect(std.mem.indexOf(u8, x_node.?.doc.?, "x coordinate") != null);
 
-    // Assert: enum variant with doc
+    // Assert
     const red_node = helpers.findNode(&g, "Red", .field);
     try std.testing.expect(red_node != null);
     try std.testing.expect(red_node.?.doc != null);
     try std.testing.expect(std.mem.indexOf(u8, red_node.?.doc.?, "red") != null);
 
-    // Assert: enum variant without doc has null
+    // Assert
     const custom_node = helpers.findNode(&g, "Custom", .field);
     try std.testing.expect(custom_node != null);
     try std.testing.expectEqual(@as(?[]const u8, null), custom_node.?.doc);
@@ -896,7 +886,7 @@ test "attaches doc comment to impl blocks" {
     // Act
     try parseWithEdges(std.testing.allocator, fixtures.rust.simple, &g);
 
-    // Assert: inherent impl Point has doc
+    // Assert
     var found_inherent = false;
     var found_trait = false;
     for (g.nodes.items) |n| {
@@ -923,8 +913,6 @@ test "attaches doc comment to impl blocks" {
     try std.testing.expect(found_trait);
 }
 
-// --- Tuple variant field attribute tests ---
-
 test "attributed tuple variant has one field with type signature and attribute in lang_meta" {
     // Arrange
     var g = Graph.init("/tmp/project");
@@ -933,7 +921,7 @@ test "attributed tuple variant has one field with type signature and attribute i
     // Act
     try parseWithEdges(std.testing.allocator, fixtures.rust.edge_cases.tuple_field_attrs, &g);
 
-    // Assert: IoError(#[from] io::Error) has exactly one child field
+    // Assert
     const variant_id = for (g.nodes.items, 0..) |n, i| {
         if (n.kind == .field and std.mem.eql(u8, n.name, "IoError")) break @as(NodeId, @enumFromInt(i));
     } else unreachable;
@@ -966,7 +954,7 @@ test "tuple variant with multiple fields and attributes has correct indices" {
     // Act
     try parseWithEdges(std.testing.allocator, fixtures.rust.edge_cases.tuple_field_attrs, &g);
 
-    // Assert: Custom(#[source] io::Error, String) has two child fields "0" and "1"
+    // Assert
     const variant_id = for (g.nodes.items, 0..) |n, i| {
         if (n.kind == .field and std.mem.eql(u8, n.name, "Custom")) break @as(NodeId, @enumFromInt(i));
     } else unreachable;
@@ -991,7 +979,7 @@ test "tuple variant without attributes has no lang_meta on fields" {
     // Act
     try parseWithEdges(std.testing.allocator, fixtures.rust.edge_cases.tuple_field_attrs, &g);
 
-    // Assert: Plain(u32) field "0" has no attributes
+    // Assert
     const variant_id = for (g.nodes.items, 0..) |n, i| {
         if (n.kind == .field and std.mem.eql(u8, n.name, "Plain")) break @as(NodeId, @enumFromInt(i));
     } else unreachable;
@@ -1015,7 +1003,7 @@ test "tuple struct field attribute stored in lang_meta" {
     // Act
     try parseWithEdges(std.testing.allocator, fixtures.rust.edge_cases.tuple_field_attrs, &g);
 
-    // Assert: Wrapper(#[serde(...)] pub String) field "0" has serde attribute
+    // Assert
     const wrapper_id = for (g.nodes.items, 0..) |n, i| {
         if (n.kind == .type_def and std.mem.eql(u8, n.name, "Wrapper")) break @as(NodeId, @enumFromInt(i));
     } else unreachable;
@@ -1034,8 +1022,6 @@ test "tuple struct field attribute stored in lang_meta" {
     return error.FieldNotFound;
 }
 
-// --- Attribute-before-doc ordering tests ---
-
 test "captures attributes, derives, and test marker when placed before doc comment" {
     // Arrange
     var g = Graph.init("/tmp/project");
@@ -1044,7 +1030,7 @@ test "captures attributes, derives, and test marker when placed before doc comme
     // Act
     try parseWithEdges(std.testing.allocator, fixtures.rust.edge_cases.many_attrs, &g);
 
-    // Assert: function with #[allow(...)] before /// doc
+    // Assert
     const fn_node = helpers.findNode(&g, "attr_before_doc", .function);
     try std.testing.expect(fn_node != null);
     try std.testing.expect(fn_node.?.doc != null);
@@ -1052,7 +1038,7 @@ test "captures attributes, derives, and test marker when placed before doc comme
     try std.testing.expect(rust_meta.metaOf(fn_node.?).?.attributes != null);
     try std.testing.expect(std.mem.indexOf(u8, rust_meta.metaOf(fn_node.?).?.attributes.?, "allow") != null);
 
-    // Assert: struct with #[derive(...)] #[allow(...)] before /// doc
+    // Assert
     const struct_node = helpers.findNode(&g, "DeriveBeforeDoc", .type_def);
     try std.testing.expect(struct_node != null);
     try std.testing.expect(struct_node.?.doc != null);
@@ -1062,7 +1048,7 @@ test "captures attributes, derives, and test marker when placed before doc comme
     try std.testing.expect(rust_meta.metaOf(struct_node.?).?.attributes != null);
     try std.testing.expect(std.mem.indexOf(u8, rust_meta.metaOf(struct_node.?).?.attributes.?, "allow") != null);
 
-    // Assert: #[test] after #[allow(...)] and /// doc still detected as test_def
+    // Assert
     const test_node = helpers.findNode(&g, "test_attr_before_doc", .test_def);
     try std.testing.expect(test_node != null);
     try std.testing.expect(rust_meta.metaOf(test_node.?) != null);
@@ -1118,7 +1104,7 @@ test "generic return type creates uses_type edge" {
     // Act
     try parseWithEdges(std.testing.allocator, fixtures.rust.project.parser_rs, &g);
 
-    // Assert: tokenize() -> Vec<Token> creates uses_type to the local Token struct
+    // Assert
     const tokenize_id = for (g.nodes.items, 0..) |n, i| {
         if (n.kind == .function and std.mem.eql(u8, n.name, "tokenize")) break @as(NodeId, @enumFromInt(i));
     } else return error.NodeNotFound;
@@ -1146,13 +1132,13 @@ test "struct and enum field types create uses_type for local types" {
         if (n.kind == .type_def and std.mem.eql(u8, n.name, "Color")) break @as(NodeId, @enumFromInt(i));
     } else return error.NodeNotFound;
 
-    // Assert: Pixel (struct) has uses_type edge to Color
+    // Assert
     const pixel_id = for (g.nodes.items, 0..) |n, i| {
         if (n.kind == .type_def and std.mem.eql(u8, n.name, "Pixel")) break @as(NodeId, @enumFromInt(i));
     } else return error.NodeNotFound;
     try std.testing.expect(helpers.hasEdge(&g, pixel_id, color_id, .uses_type));
 
-    // Assert: Container (enum) has uses_type edge to Color
+    // Assert
     const container_id = for (g.nodes.items, 0..) |n, i| {
         if (n.kind == .enum_def and std.mem.eql(u8, n.name, "Container")) break @as(NodeId, @enumFromInt(i));
     } else return error.NodeNotFound;
@@ -1164,7 +1150,7 @@ test "Self shorthand struct init creates accesses_field edges to fields" {
     var g = Graph.init("/tmp/project");
     defer g.deinit(std.testing.allocator);
 
-    // Act: simple.rs has `Self { x, y }` inside Point::new
+    // Act
     try parseWithEdges(std.testing.allocator, fixtures.rust.simple, &g);
 
     const new_id = for (g.nodes.items, 0..) |n, i| {
@@ -1180,7 +1166,7 @@ test "Self shorthand struct init creates accesses_field edges to fields" {
         if (n.kind == .field and std.mem.eql(u8, n.name, "y")) break @as(NodeId, @enumFromInt(i));
     } else return error.NodeNotFound;
 
-    // Assert: Point::new -> accesses_field -> x and y (shorthand Self { x, y })
+    // Assert
     try std.testing.expect(helpers.hasEdge(&g, new_id, x_id, .accesses_field));
     try std.testing.expect(helpers.hasEdge(&g, new_id, y_id, .accesses_field));
 }
@@ -1190,7 +1176,7 @@ test "let-bound struct literal field access creates accesses_field edge" {
     var g = Graph.init("/tmp/project");
     defer g.deinit(std.testing.allocator);
 
-    // Act: simple.rs has `let p = Point { x: 1.0, y: 2.0 }; p.x`
+    // Act
     try parseWithEdges(std.testing.allocator, fixtures.rust.simple, &g);
 
     const fn_id = for (g.nodes.items, 0..) |n, i| {
@@ -1201,6 +1187,6 @@ test "let-bound struct literal field access creates accesses_field edge" {
         if (n.kind == .field and std.mem.eql(u8, n.name, "x")) break @as(NodeId, @enumFromInt(i));
     } else return error.NodeNotFound;
 
-    // Assert: field_access_after_binding -> accesses_field -> Point::x
+    // Assert
     try std.testing.expect(helpers.hasEdge(&g, fn_id, x_id, .accesses_field));
 }

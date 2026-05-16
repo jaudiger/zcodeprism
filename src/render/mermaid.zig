@@ -361,7 +361,7 @@ test "header line 1 matches spec" {
     const fg = try g.freeze(allocator);
     try renderMermaid(allocator, std.testing.io, fg, options, &out);
 
-    // Assert: first line: "%% zcodeprism mermaid -- myproject"
+    // Assert
     const output = out.items;
     const first_line_end = std.mem.indexOfScalar(u8, output, '\n') orelse output.len;
     const first_line = output[0..first_line_end];
@@ -385,7 +385,7 @@ test "header line 2 has stats" {
     const fg = try g.freeze(allocator);
     try renderMermaid(allocator, std.testing.io, fg, options, &out);
 
-    // Assert: second line starts with "%% " and contains "files" and "functions"
+    // Assert
     const output = out.items;
     var lines = std.mem.splitScalar(u8, output, '\n');
     _ = lines.next(); // skip line 1
@@ -412,7 +412,7 @@ test "header line 3 has timestamp" {
     const fg = try g.freeze(allocator);
     try renderMermaid(allocator, std.testing.io, fg, options, &out);
 
-    // Assert: third line: "%% generated 2026-02-14T10:30:00Z"
+    // Assert
     const output = out.items;
     var lines = std.mem.splitScalar(u8, output, '\n');
     _ = lines.next();
@@ -438,7 +438,7 @@ test "starts with flowchart TB" {
     const fg = try g.freeze(allocator);
     try renderMermaid(allocator, std.testing.io, fg, options, &out);
 
-    // Assert: first non-comment non-empty line is "flowchart TB"
+    // Assert
     const output = out.items;
     var lines = std.mem.splitScalar(u8, output, '\n');
     while (lines.next()) |line| {
@@ -466,7 +466,7 @@ test "sections appear in correct order" {
     const fg = try g.freeze(allocator);
     try renderMermaid(allocator, std.testing.io, fg, options, &out);
 
-    // Assert: section markers in order
+    // Assert
     const output = out.items;
     const markers = [_][]const u8{
         "%% === Class definitions ===",
@@ -501,7 +501,7 @@ test "classDef styles are alphabetical" {
     const fg = try g.freeze(allocator);
     try renderMermaid(allocator, std.testing.io, fg, options, &out);
 
-    // Assert: classDef names appear in alphabetical order
+    // Assert
     const output = out.items;
     const expected_order = [_][]const u8{
         "classDef const_style",
@@ -547,7 +547,7 @@ test "deterministic output" {
     const fg2 = try g2.freeze(allocator);
     try renderMermaid(allocator, std.testing.io, fg2, options, &out2);
 
-    // Assert: byte-identical output
+    // Assert
     try std.testing.expectEqualSlices(u8, out1.items, out2.items);
 }
 
@@ -568,7 +568,7 @@ test "functions use rectangle shape" {
     const fg = try g.freeze(allocator);
     try renderMermaid(allocator, std.testing.io, fg, options, &out);
 
-    // Assert: output contains rectangle shape for function: fn_N["fn: main"]
+    // Assert
     const output = out.items;
     try std.testing.expect(std.mem.indexOf(u8, output, "[\"fn: main\"]") != null);
 }
@@ -590,7 +590,7 @@ test "type_def nodes use subroutine shape" {
     const fg = try g.freeze(allocator);
     try renderMermaid(allocator, std.testing.io, fg, options, &out);
 
-    // Assert: output contains subroutine shape: ty_N[["struct: Tokenizer"]]
+    // Assert
     const output = out.items;
     try std.testing.expect(std.mem.indexOf(u8, output, "[[\"struct: Tokenizer\"]]") != null);
 }
@@ -612,7 +612,7 @@ test "enums use hexagon shape" {
     const fg = try g.freeze(allocator);
     try renderMermaid(allocator, std.testing.io, fg, options, &out);
 
-    // Assert: output contains hexagon shape: en_N{{"enum: TokenKind"}}
+    // Assert
     const output = out.items;
     try std.testing.expect(std.mem.indexOf(u8, output, "{{\"enum: TokenKind\"}}") != null);
 }
@@ -634,7 +634,7 @@ test "constants use parallelogram shape" {
     const fg = try g.freeze(allocator);
     try renderMermaid(allocator, std.testing.io, fg, options, &out);
 
-    // Assert: output contains parallelogram shape: c_N[/"const: MAX_SIZE"/]
+    // Assert
     const output = out.items;
     try std.testing.expect(std.mem.indexOf(u8, output, "[/\"const: MAX_SIZE\"/]") != null);
 }
@@ -656,7 +656,7 @@ test "methods labeled with parent type" {
     const fg = try g.freeze(allocator);
     try renderMermaid(allocator, std.testing.io, fg, options, &out);
 
-    // Assert: method "next" on Tokenizer appears as "fn: Tokenizer.next"
+    // Assert
     const output = out.items;
     try std.testing.expect(std.mem.indexOf(u8, output, "fn: Tokenizer.next") != null);
 }
@@ -678,7 +678,7 @@ test "calls edges use solid arrow" {
     const fg = try g.freeze(allocator);
     try renderMermaid(allocator, std.testing.io, fg, options, &out);
 
-    // Assert: calls edges use "-->" syntax
+    // Assert
     const output = out.items;
     try std.testing.expect(std.mem.indexOf(u8, output, " --> ") != null);
 }
@@ -700,7 +700,7 @@ test "imports edges use dotted arrow" {
     const fg = try g.freeze(allocator);
     try renderMermaid(allocator, std.testing.io, fg, options, &out);
 
-    // Assert: imports edges use "-.->'" syntax
+    // Assert
     const output = out.items;
     try std.testing.expect(std.mem.indexOf(u8, output, " -.-> ") != null);
 }
@@ -722,7 +722,7 @@ test "empty graph renders without crash" {
     const fg = try g.freeze(allocator);
     try renderMermaid(allocator, std.testing.io, fg, options, &out);
 
-    // Assert: has header and flowchart directive, no crash
+    // Assert
     const output = out.items;
     try std.testing.expect(output.len > 0);
     try std.testing.expect(std.mem.indexOf(u8, output, "flowchart TB") != null);
@@ -746,7 +746,7 @@ test "phantom nodes in subgraphs" {
     const fg = try g.freeze(allocator);
     try renderMermaid(allocator, std.testing.io, fg, options, &out);
 
-    // Assert: phantom stdlib node renders as subgraph with "std (stdlib)" label
+    // Assert
     // and child nodes use "ext:" prefix
     const output = out.items;
     try std.testing.expect(std.mem.indexOf(u8, output, "\"std (stdlib)\"") != null);
@@ -773,7 +773,7 @@ test "scoped export creates ghost nodes" {
     const fg = try g.freeze(allocator);
     try renderMermaid(allocator, std.testing.io, fg, options, &out);
 
-    // Assert: ghost nodes appear with ghoty_style
+    // Assert
     const output = out.items;
     try std.testing.expect(std.mem.indexOf(u8, output, ":::ghost_style") != null or
         std.mem.indexOf(u8, output, "ghost_style") != null);

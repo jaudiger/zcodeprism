@@ -37,7 +37,7 @@ test "simple fixture: edge creation" {
     // Act
     try parseWithEdges(std.testing.allocator, fixtures.zig.simple, &g);
 
-    // Assert: at least one calls edge exists (manhattan calls abs)
+    // Assert
     var found_calls = false;
     for (g.edges.items) |e| {
         if (e.edge_type == .calls) {
@@ -47,7 +47,7 @@ test "simple fixture: edge creation" {
     }
     try std.testing.expect(found_calls);
 
-    // Assert: isWithinRadius calls manhattan via self.manhattan()
+    // Assert
     var iwr_id: ?NodeId = null;
     var manhattan_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
@@ -70,7 +70,7 @@ test "simple fixture: edge creation" {
     }
     try std.testing.expect(found_self_call);
 
-    // Assert: at least one uses_type edge exists (defaultPoint uses Point)
+    // Assert
     var found_uses_type = false;
     for (g.edges.items) |e| {
         if (e.edge_type == .uses_type) {
@@ -80,13 +80,13 @@ test "simple fixture: edge creation" {
     }
     try std.testing.expect(found_uses_type);
 
-    // Assert: every edge has source == .tree_sitter
+    // Assert
     try std.testing.expect(g.edgeCount() > 0);
     for (g.edges.items) |e| {
         try std.testing.expectEqual(EdgeSource.tree_sitter, e.source);
     }
 
-    // Assert: isWarm has a uses_type edge pointing to Color (enum method -> parent enum)
+    // Assert
     var color_id: ?NodeId = null;
     var iswarm_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
@@ -109,7 +109,7 @@ test "simple fixture: edge creation" {
     }
     try std.testing.expect(found_enum_edge);
 
-    // Assert: test "point manhattan distance" has a uses_type edge to Point
+    // Assert
     var test_id: ?NodeId = null;
     var point_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
@@ -141,7 +141,7 @@ test "file struct fixture: edge creation" {
     // Act
     try parseWithEdges(std.testing.allocator, fixtures.zig.file_struct, &g);
 
-    // Assert: isValid has a calls edge to validate (via self.validate())
+    // Assert
     var isValid_id: ?NodeId = null;
     var validate_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
@@ -164,7 +164,7 @@ test "file struct fixture: edge creation" {
     }
     try std.testing.expect(found);
 
-    // Assert: test "basic" calls init via Self.init() (@This() alias resolution)
+    // Assert
     var basic_test_id: ?NodeId = null;
     var init_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
@@ -196,7 +196,7 @@ test "generic type fixture: edge creation" {
     // Act
     try parseWithEdges(std.testing.allocator, fixtures.zig.generic_type, &g);
 
-    // Assert: isEmpty calls count (via self.count())
+    // Assert
     var caller_id: ?NodeId = null;
     var callee_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
@@ -219,7 +219,7 @@ test "generic type fixture: edge creation" {
     }
     try std.testing.expect(found);
 
-    // Assert: Container.init still exists
+    // Assert
     var container_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
         if (n.kind == .type_def and std.mem.eql(u8, n.name, "Container")) {
@@ -240,7 +240,7 @@ test "generic type fixture: edge creation" {
     }
     try std.testing.expect(init_id != null);
 
-    // Assert: Container type_def does not have uses_type edge to own nested type Entry
+    // Assert
     var entry_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
         if (n.kind == .type_def and std.mem.eql(u8, n.name, "Entry") and
@@ -261,7 +261,7 @@ test "generic type fixture: edge creation" {
     }
     try std.testing.expect(!has_spurious_edge);
 
-    // Assert: reset calls init via Self.init() (@This() alias in nested struct)
+    // Assert
     var reset_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
         if (n.kind == .function and std.mem.eql(u8, n.name, "reset") and
@@ -283,697 +283,735 @@ test "generic type fixture: edge creation" {
     try std.testing.expect(found_reset_init);
 }
 
-test "test block edges" {
-    // test block creates calls edge to local function
-    {
-        var g = Graph.init("/tmp/project");
-        defer g.deinit(std.testing.allocator);
-        const source =
-            \\fn helper() i32 { return 42; }
-            \\test "uses helper" { _ = helper(); }
-        ;
-        try parseWithEdges(std.testing.allocator, source, &g);
+test "test block creates calls edge to local function" {
+    // Arrange
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
+    const source =
+        \\fn helper() i32 { return 42; }
+        \\test "uses helper" { _ = helper(); }
+    ;
 
-        var test_id: ?NodeId = null;
-        var helper_id: ?NodeId = null;
-        for (g.nodes.items, 0..) |n, idx| {
-            if (n.kind == .test_def) test_id = @enumFromInt(idx);
-            if (n.kind == .function and std.mem.eql(u8, n.name, "helper")) helper_id = @enumFromInt(idx);
-        }
-        try std.testing.expect(test_id != null);
-        try std.testing.expect(helper_id != null);
+    // Act
+    try parseWithEdges(std.testing.allocator, source, &g);
 
-        var found = false;
-        for (g.edges.items) |e| {
-            if (e.source_id == test_id.? and e.target_id == helper_id.? and e.edge_type == .calls) {
-                found = true;
-                break;
-            }
-        }
-        try std.testing.expect(found);
+    // Assert
+    var test_id: ?NodeId = null;
+    var helper_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind == .test_def) test_id = @enumFromInt(idx);
+        if (n.kind == .function and std.mem.eql(u8, n.name, "helper")) helper_id = @enumFromInt(idx);
     }
+    try std.testing.expect(test_id != null);
+    try std.testing.expect(helper_id != null);
 
-    // test block creates calls edge to method via dot syntax
-    {
-        var g = Graph.init("/tmp/project");
-        defer g.deinit(std.testing.allocator);
-        const source =
-            \\const Foo = struct {
-            \\    pub fn bar() void {}
-            \\};
-            \\test "calls bar" { Foo.bar(); }
-        ;
-        try parseWithEdges(std.testing.allocator, source, &g);
-
-        var test_id: ?NodeId = null;
-        var bar_id: ?NodeId = null;
-        for (g.nodes.items, 0..) |n, idx| {
-            if (n.kind == .test_def) test_id = @enumFromInt(idx);
-            if (n.kind == .function and std.mem.eql(u8, n.name, "bar")) bar_id = @enumFromInt(idx);
+    var found = false;
+    for (g.edges.items) |e| {
+        if (e.source_id == test_id.? and e.target_id == helper_id.? and e.edge_type == .calls) {
+            found = true;
+            break;
         }
-        try std.testing.expect(test_id != null);
-        try std.testing.expect(bar_id != null);
-
-        var found = false;
-        for (g.edges.items) |e| {
-            if (e.source_id == test_id.? and e.target_id == bar_id.? and e.edge_type == .calls) {
-                found = true;
-                break;
-            }
-        }
-        try std.testing.expect(found);
     }
-
-    // test block with no local calls has no edges
-    {
-        var g = Graph.init("/tmp/project");
-        defer g.deinit(std.testing.allocator);
-        const source =
-            \\test "standalone" {
-            \\    const x: i32 = 42;
-            \\    _ = x;
-            \\}
-        ;
-        try parseWithEdges(std.testing.allocator, source, &g);
-
-        var test_id: ?NodeId = null;
-        for (g.nodes.items, 0..) |n, idx| {
-            if (n.kind == .test_def) {
-                test_id = @enumFromInt(idx);
-                break;
-            }
-        }
-        try std.testing.expect(test_id != null);
-
-        var outgoing: usize = 0;
-        for (g.edges.items) |e| {
-            if (e.source_id == test_id.?) outgoing += 1;
-        }
-        try std.testing.expectEqual(@as(usize, 0), outgoing);
-    }
-
-    // decl-reference test edges are attributed to correct node
-    {
-        var g = Graph.init("/tmp/project");
-        defer g.deinit(std.testing.allocator);
-        const source =
-            \\fn alpha() i32 { return 1; }
-            \\fn beta() i32 { return 2; }
-            \\test alpha { _ = alpha(); }
-            \\test beta { _ = beta(); }
-        ;
-        try parseWithEdges(std.testing.allocator, source, &g);
-
-        var test_alpha_id: ?NodeId = null;
-        var test_beta_id: ?NodeId = null;
-        var fn_alpha_id: ?NodeId = null;
-        var fn_beta_id: ?NodeId = null;
-        for (g.nodes.items, 0..) |n, idx| {
-            if (n.kind == .test_def and std.mem.eql(u8, n.name, "alpha")) test_alpha_id = @enumFromInt(idx);
-            if (n.kind == .test_def and std.mem.eql(u8, n.name, "beta")) test_beta_id = @enumFromInt(idx);
-            if (n.kind == .function and std.mem.eql(u8, n.name, "alpha")) fn_alpha_id = @enumFromInt(idx);
-            if (n.kind == .function and std.mem.eql(u8, n.name, "beta")) fn_beta_id = @enumFromInt(idx);
-        }
-        try std.testing.expect(test_alpha_id != null);
-        try std.testing.expect(test_beta_id != null);
-        try std.testing.expect(fn_alpha_id != null);
-        try std.testing.expect(fn_beta_id != null);
-
-        var alpha_calls_alpha = false;
-        var alpha_calls_beta = false;
-        var beta_calls_beta = false;
-        var beta_calls_alpha = false;
-        for (g.edges.items) |e| {
-            if (e.edge_type == .calls) {
-                if (e.source_id == test_alpha_id.? and e.target_id == fn_alpha_id.?) alpha_calls_alpha = true;
-                if (e.source_id == test_alpha_id.? and e.target_id == fn_beta_id.?) alpha_calls_beta = true;
-                if (e.source_id == test_beta_id.? and e.target_id == fn_beta_id.?) beta_calls_beta = true;
-                if (e.source_id == test_beta_id.? and e.target_id == fn_alpha_id.?) beta_calls_alpha = true;
-            }
-        }
-        try std.testing.expect(alpha_calls_alpha);
-        try std.testing.expect(!alpha_calls_beta);
-        try std.testing.expect(beta_calls_beta);
-        try std.testing.expect(!beta_calls_alpha);
-    }
+    try std.testing.expect(found);
 }
 
-test "nested scope isolation" {
-    // test block does not leak calls from nested function
-    {
-        var g = Graph.init("/tmp/project");
-        defer g.deinit(std.testing.allocator);
-        const source =
-            \\fn helper() void {}
-            \\test "outer" {
-            \\    const S = struct {
-            \\        fn inner() void { helper(); }
-            \\    };
-            \\    S.inner();
-            \\}
-        ;
-        try parseWithEdges(std.testing.allocator, source, &g);
+test "test block creates calls edge to method via dot syntax" {
+    // Arrange
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
+    const source =
+        \\const Foo = struct {
+        \\    pub fn bar() void {}
+        \\};
+        \\test "calls bar" { Foo.bar(); }
+    ;
 
-        var test_id: ?NodeId = null;
-        var helper_id: ?NodeId = null;
-        var inner_id: ?NodeId = null;
-        for (g.nodes.items, 0..) |n, idx| {
-            if (n.kind == .test_def and std.mem.eql(u8, n.name, "outer")) test_id = @enumFromInt(idx);
-            if (n.kind == .function and std.mem.eql(u8, n.name, "helper")) helper_id = @enumFromInt(idx);
-            if (n.kind == .function and std.mem.eql(u8, n.name, "inner")) inner_id = @enumFromInt(idx);
-        }
-        try std.testing.expect(test_id != null);
-        try std.testing.expect(helper_id != null);
-        try std.testing.expect(inner_id != null);
+    // Act
+    try parseWithEdges(std.testing.allocator, source, &g);
 
-        // test "outer" does NOT have a leaked calls edge to helper
-        var found_leak = false;
-        for (g.edges.items) |e| {
-            if (e.source_id == test_id.? and e.target_id == helper_id.? and e.edge_type == .calls) {
-                found_leak = true;
-                break;
-            }
-        }
-        try std.testing.expect(!found_leak);
-
-        // inner -> helper calls edge exists (inner function's own edge)
-        var found_inner_calls = false;
-        for (g.edges.items) |e| {
-            if (e.source_id == inner_id.? and e.target_id == helper_id.? and e.edge_type == .calls) {
-                found_inner_calls = true;
-                break;
-            }
-        }
-        try std.testing.expect(found_inner_calls);
-
-        // S type_def node exists with parent = test_def
-        var found_s = false;
-        for (g.nodes.items) |n| {
-            if (n.kind == .type_def and std.mem.eql(u8, n.name, "S") and
-                n.parent_id != null and n.parent_id.? == test_id.?)
-            {
-                found_s = true;
-                break;
-            }
-        }
-        try std.testing.expect(found_s);
+    // Assert
+    var test_id: ?NodeId = null;
+    var bar_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind == .test_def) test_id = @enumFromInt(idx);
+        if (n.kind == .function and std.mem.eql(u8, n.name, "bar")) bar_id = @enumFromInt(idx);
     }
+    try std.testing.expect(test_id != null);
+    try std.testing.expect(bar_id != null);
 
-    // function does not leak calls from nested function
-    {
-        var g = Graph.init("/tmp/project");
-        defer g.deinit(std.testing.allocator);
-        const source =
-            \\fn target() void {}
-            \\fn outer() void {
-            \\    const S = struct {
-            \\        fn nested() void { target(); }
-            \\    };
-            \\    S.nested();
-            \\}
-        ;
-        try parseWithEdges(std.testing.allocator, source, &g);
-
-        var outer_id: ?NodeId = null;
-        var target_id: ?NodeId = null;
-        var nested_id: ?NodeId = null;
-        for (g.nodes.items, 0..) |n, idx| {
-            if (n.kind == .function and std.mem.eql(u8, n.name, "outer")) outer_id = @enumFromInt(idx);
-            if (n.kind == .function and std.mem.eql(u8, n.name, "target")) target_id = @enumFromInt(idx);
-            if (n.kind == .function and std.mem.eql(u8, n.name, "nested")) nested_id = @enumFromInt(idx);
+    var found = false;
+    for (g.edges.items) |e| {
+        if (e.source_id == test_id.? and e.target_id == bar_id.? and e.edge_type == .calls) {
+            found = true;
+            break;
         }
-        try std.testing.expect(outer_id != null);
-        try std.testing.expect(target_id != null);
-        try std.testing.expect(nested_id != null);
-
-        // outer does NOT have a leaked calls edge to target
-        var found_leak = false;
-        for (g.edges.items) |e| {
-            if (e.source_id == outer_id.? and e.target_id == target_id.? and e.edge_type == .calls) {
-                found_leak = true;
-                break;
-            }
-        }
-        try std.testing.expect(!found_leak);
-
-        // nested -> target calls edge exists
-        var found_nested_calls = false;
-        for (g.edges.items) |e| {
-            if (e.source_id == nested_id.? and e.target_id == target_id.? and e.edge_type == .calls) {
-                found_nested_calls = true;
-                break;
-            }
-        }
-        try std.testing.expect(found_nested_calls);
     }
-
-    // nested function gets its own calls edge not parent's
-    {
-        var g = Graph.init("/tmp/project");
-        defer g.deinit(std.testing.allocator);
-        const source =
-            \\fn alpha() void {}
-            \\fn beta() void {}
-            \\fn parent() void {
-            \\    _ = alpha();
-            \\    const S = struct {
-            \\        fn child() void { beta(); }
-            \\    };
-            \\    S.child();
-            \\}
-        ;
-        try parseWithEdges(std.testing.allocator, source, &g);
-
-        var parent_id: ?NodeId = null;
-        var child_id: ?NodeId = null;
-        var alpha_id: ?NodeId = null;
-        var beta_id: ?NodeId = null;
-        for (g.nodes.items, 0..) |n, idx| {
-            if (n.kind == .function and std.mem.eql(u8, n.name, "parent")) parent_id = @enumFromInt(idx);
-            if (n.kind == .function and std.mem.eql(u8, n.name, "child")) child_id = @enumFromInt(idx);
-            if (n.kind == .function and std.mem.eql(u8, n.name, "alpha")) alpha_id = @enumFromInt(idx);
-            if (n.kind == .function and std.mem.eql(u8, n.name, "beta")) beta_id = @enumFromInt(idx);
-        }
-        try std.testing.expect(parent_id != null);
-        try std.testing.expect(child_id != null);
-        try std.testing.expect(alpha_id != null);
-        try std.testing.expect(beta_id != null);
-
-        var calls_alpha = false;
-        var calls_beta = false;
-        for (g.edges.items) |e| {
-            if (e.source_id == parent_id.?) {
-                if (e.target_id == alpha_id.? and e.edge_type == .calls) calls_alpha = true;
-                if (e.target_id == beta_id.? and e.edge_type == .calls) calls_beta = true;
-            }
-        }
-        try std.testing.expect(calls_alpha);
-        try std.testing.expect(!calls_beta);
-
-        // child -> beta calls edge exists
-        var found_child_calls = false;
-        for (g.edges.items) |e| {
-            if (e.source_id == child_id.? and e.target_id == beta_id.? and e.edge_type == .calls) {
-                found_child_calls = true;
-                break;
-            }
-        }
-        try std.testing.expect(found_child_calls);
-    }
-
-    // function does not leak uses_type from nested function
-    {
-        var g = Graph.init("/tmp/project");
-        defer g.deinit(std.testing.allocator);
-        const source =
-            \\const MyType = struct {};
-            \\fn outer() void {
-            \\    const S = struct {
-            \\        fn nested(x: MyType) void { _ = x; }
-            \\    };
-            \\    _ = S.nested;
-            \\}
-        ;
-        try parseWithEdges(std.testing.allocator, source, &g);
-
-        var outer_id: ?NodeId = null;
-        var nested_id: ?NodeId = null;
-        var mytype_id: ?NodeId = null;
-        for (g.nodes.items, 0..) |n, idx| {
-            if (n.kind == .function and std.mem.eql(u8, n.name, "outer")) outer_id = @enumFromInt(idx);
-            if (n.kind == .function and std.mem.eql(u8, n.name, "nested")) nested_id = @enumFromInt(idx);
-            if (std.mem.eql(u8, n.name, "MyType")) mytype_id = @enumFromInt(idx);
-        }
-        try std.testing.expect(outer_id != null);
-        try std.testing.expect(nested_id != null);
-        try std.testing.expect(mytype_id != null);
-
-        // outer does NOT have a leaked uses_type edge to MyType
-        var found_leak = false;
-        for (g.edges.items) |e| {
-            if (e.source_id == outer_id.? and e.target_id == mytype_id.? and e.edge_type == .uses_type) {
-                found_leak = true;
-                break;
-            }
-        }
-        try std.testing.expect(!found_leak);
-
-        // nested -> MyType uses_type edge exists (inner function's own type reference)
-        var found_nested_uses = false;
-        for (g.edges.items) |e| {
-            if (e.source_id == nested_id.? and e.target_id == mytype_id.? and e.edge_type == .uses_type) {
-                found_nested_uses = true;
-                break;
-            }
-        }
-        try std.testing.expect(found_nested_uses);
-    }
+    try std.testing.expect(found);
 }
 
-test "type alias edges" {
-    // uses_type edge for type alias in parameter
-    {
-        var g = Graph.init("/tmp/project");
-        defer g.deinit(std.testing.allocator);
-        const source =
-            \\const Foo = struct { val: i32 };
-            \\const Bar = Foo;
-            \\fn useBar(b: Bar) void { _ = b; }
-        ;
-        try parseWithEdges(std.testing.allocator, source, &g);
+test "test block with no local calls has no edges" {
+    // Arrange
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
+    const source =
+        \\test "standalone" {
+        \\    const x: i32 = 42;
+        \\    _ = x;
+        \\}
+    ;
 
-        var useBar_id: ?NodeId = null;
-        var bar_id: ?NodeId = null;
-        for (g.nodes.items, 0..) |n, idx| {
-            if (n.kind == .function and std.mem.eql(u8, n.name, "useBar")) useBar_id = @enumFromInt(idx);
-            if (std.mem.eql(u8, n.name, "Bar")) bar_id = @enumFromInt(idx);
-        }
-        try std.testing.expect(useBar_id != null);
-        try std.testing.expect(bar_id != null);
+    // Act
+    try parseWithEdges(std.testing.allocator, source, &g);
 
-        var found = false;
-        for (g.edges.items) |e| {
-            if (e.source_id == useBar_id.? and e.target_id == bar_id.? and e.edge_type == .uses_type) {
-                found = true;
-                break;
-            }
+    // Assert
+    var test_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind == .test_def) {
+            test_id = @enumFromInt(idx);
+            break;
         }
-        try std.testing.expect(found);
     }
+    try std.testing.expect(test_id != null);
 
-    // uses_type edge for type alias in return type
-    {
-        var g = Graph.init("/tmp/project");
-        defer g.deinit(std.testing.allocator);
-        const source =
-            \\const MyError = error{ Oops, Bad };
-            \\const Err = MyError;
-            \\fn doStuff() Err!void {}
-        ;
-        try parseWithEdges(std.testing.allocator, source, &g);
-
-        var doStuff_id: ?NodeId = null;
-        var err_id: ?NodeId = null;
-        for (g.nodes.items, 0..) |n, idx| {
-            if (n.kind == .function and std.mem.eql(u8, n.name, "doStuff")) doStuff_id = @enumFromInt(idx);
-            if (std.mem.eql(u8, n.name, "Err")) err_id = @enumFromInt(idx);
-        }
-        try std.testing.expect(doStuff_id != null);
-        try std.testing.expect(err_id != null);
-
-        var found = false;
-        for (g.edges.items) |e| {
-            if (e.source_id == doStuff_id.? and e.target_id == err_id.? and e.edge_type == .uses_type) {
-                found = true;
-                break;
-            }
-        }
-        try std.testing.expect(found);
+    var outgoing: usize = 0;
+    for (g.edges.items) |e| {
+        if (e.source_id == test_id.?) outgoing += 1;
     }
-
-    // uses_type edge not created for non-type constant
-    {
-        var g = Graph.init("/tmp/project");
-        defer g.deinit(std.testing.allocator);
-        const source =
-            \\const Limit = struct {};
-            \\const max = 100;
-            \\fn process(l: Limit) void { _ = l; }
-        ;
-        try parseWithEdges(std.testing.allocator, source, &g);
-
-        var process_id: ?NodeId = null;
-        var limit_id: ?NodeId = null;
-        var max_id: ?NodeId = null;
-        for (g.nodes.items, 0..) |n, idx| {
-            if (n.kind == .function and std.mem.eql(u8, n.name, "process")) process_id = @enumFromInt(idx);
-            if (std.mem.eql(u8, n.name, "Limit")) limit_id = @enumFromInt(idx);
-            if (std.mem.eql(u8, n.name, "max")) max_id = @enumFromInt(idx);
-        }
-        try std.testing.expect(process_id != null);
-        try std.testing.expect(limit_id != null);
-        try std.testing.expect(max_id != null);
-
-        var found_limit = false;
-        var found_max = false;
-        for (g.edges.items) |e| {
-            if (e.source_id == process_id.? and e.edge_type == .uses_type) {
-                if (e.target_id == limit_id.?) found_limit = true;
-                if (e.target_id == max_id.?) found_max = true;
-            }
-        }
-        try std.testing.expect(found_limit);
-        try std.testing.expect(!found_max);
-    }
-
-    // uses_type edge for aliased type works alongside direct type
-    {
-        var g = Graph.init("/tmp/project");
-        defer g.deinit(std.testing.allocator);
-        const source =
-            \\const Direct = struct {};
-            \\const Other = struct {};
-            \\const Alias = Other;
-            \\fn both(d: Direct, a: Alias) void { _ = d; _ = a; }
-        ;
-        try parseWithEdges(std.testing.allocator, source, &g);
-
-        var both_id: ?NodeId = null;
-        var direct_id: ?NodeId = null;
-        var alias_id: ?NodeId = null;
-        for (g.nodes.items, 0..) |n, idx| {
-            if (n.kind == .function and std.mem.eql(u8, n.name, "both")) both_id = @enumFromInt(idx);
-            if (std.mem.eql(u8, n.name, "Direct")) direct_id = @enumFromInt(idx);
-            if (std.mem.eql(u8, n.name, "Alias")) alias_id = @enumFromInt(idx);
-        }
-        try std.testing.expect(both_id != null);
-        try std.testing.expect(direct_id != null);
-        try std.testing.expect(alias_id != null);
-
-        var found_direct = false;
-        var found_alias = false;
-        for (g.edges.items) |e| {
-            if (e.source_id == both_id.? and e.edge_type == .uses_type) {
-                if (e.target_id == direct_id.?) found_direct = true;
-                if (e.target_id == alias_id.?) found_alias = true;
-            }
-        }
-        try std.testing.expect(found_direct);
-        try std.testing.expect(found_alias);
-    }
+    try std.testing.expectEqual(@as(usize, 0), outgoing);
 }
 
-test "advanced uses_type edges" {
-    // struct literal construction in body
-    {
-        var g = Graph.init("/tmp/project");
-        defer g.deinit(std.testing.allocator);
-        const source =
-            \\const Config = struct { max: i32 = 0 };
-            \\fn makeDefault() void {
-            \\    const c = Config{ .max = 42 };
-            \\    _ = c;
-            \\}
-        ;
-        try parseWithEdges(std.testing.allocator, source, &g);
+test "decl-reference test edges are attributed to correct node" {
+    // Arrange
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
+    const source =
+        \\fn alpha() i32 { return 1; }
+        \\fn beta() i32 { return 2; }
+        \\test alpha { _ = alpha(); }
+        \\test beta { _ = beta(); }
+    ;
 
-        var makeDefault_id: ?NodeId = null;
-        var config_id: ?NodeId = null;
-        for (g.nodes.items, 0..) |n, idx| {
-            if (n.kind == .function and std.mem.eql(u8, n.name, "makeDefault")) makeDefault_id = @enumFromInt(idx);
-            if (n.kind == .type_def and std.mem.eql(u8, n.name, "Config")) config_id = @enumFromInt(idx);
-        }
-        try std.testing.expect(makeDefault_id != null);
-        try std.testing.expect(config_id != null);
+    // Act
+    try parseWithEdges(std.testing.allocator, source, &g);
 
-        var found = false;
-        for (g.edges.items) |e| {
-            if (e.source_id == makeDefault_id.? and e.target_id == config_id.? and e.edge_type == .uses_type) {
-                found = true;
-                break;
-            }
-        }
-        try std.testing.expect(found);
+    // Assert
+    var test_alpha_id: ?NodeId = null;
+    var test_beta_id: ?NodeId = null;
+    var fn_alpha_id: ?NodeId = null;
+    var fn_beta_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind == .test_def and std.mem.eql(u8, n.name, "alpha")) test_alpha_id = @enumFromInt(idx);
+        if (n.kind == .test_def and std.mem.eql(u8, n.name, "beta")) test_beta_id = @enumFromInt(idx);
+        if (n.kind == .function and std.mem.eql(u8, n.name, "alpha")) fn_alpha_id = @enumFromInt(idx);
+        if (n.kind == .function and std.mem.eql(u8, n.name, "beta")) fn_beta_id = @enumFromInt(idx);
     }
+    try std.testing.expect(test_alpha_id != null);
+    try std.testing.expect(test_beta_id != null);
+    try std.testing.expect(fn_alpha_id != null);
+    try std.testing.expect(fn_beta_id != null);
 
-    // static method call in body
-    {
-        var g = Graph.init("/tmp/project");
-        defer g.deinit(std.testing.allocator);
-        const source =
-            \\const Builder = struct {
-            \\    val: i32,
-            \\    pub fn init(v: i32) Builder {
-            \\        return Builder{ .val = v };
-            \\    }
-            \\};
-            \\fn create() void {
-            \\    const b = Builder.init(5);
-            \\    _ = b;
-            \\}
-        ;
-        try parseWithEdges(std.testing.allocator, source, &g);
-
-        var create_id: ?NodeId = null;
-        var builder_id: ?NodeId = null;
-        for (g.nodes.items, 0..) |n, idx| {
-            if (n.kind == .function and std.mem.eql(u8, n.name, "create")) create_id = @enumFromInt(idx);
-            if (n.kind == .type_def and std.mem.eql(u8, n.name, "Builder")) builder_id = @enumFromInt(idx);
+    var alpha_calls_alpha = false;
+    var alpha_calls_beta = false;
+    var beta_calls_beta = false;
+    var beta_calls_alpha = false;
+    for (g.edges.items) |e| {
+        if (e.edge_type == .calls) {
+            if (e.source_id == test_alpha_id.? and e.target_id == fn_alpha_id.?) alpha_calls_alpha = true;
+            if (e.source_id == test_alpha_id.? and e.target_id == fn_beta_id.?) alpha_calls_beta = true;
+            if (e.source_id == test_beta_id.? and e.target_id == fn_beta_id.?) beta_calls_beta = true;
+            if (e.source_id == test_beta_id.? and e.target_id == fn_alpha_id.?) beta_calls_alpha = true;
         }
-        try std.testing.expect(create_id != null);
-        try std.testing.expect(builder_id != null);
-
-        var found = false;
-        for (g.edges.items) |e| {
-            if (e.source_id == create_id.? and e.target_id == builder_id.? and e.edge_type == .uses_type) {
-                found = true;
-                break;
-            }
-        }
-        try std.testing.expect(found);
     }
+    try std.testing.expect(alpha_calls_alpha);
+    try std.testing.expect(!alpha_calls_beta);
+    try std.testing.expect(beta_calls_beta);
+    try std.testing.expect(!beta_calls_alpha);
+}
 
-    // no duplicate uses_type edge when type in both signature and body
-    {
-        var g = Graph.init("/tmp/project");
-        defer g.deinit(std.testing.allocator);
-        const source =
-            \\const Item = struct { id: i32 = 0 };
-            \\fn process(item: Item) Item {
-            \\    return Item{ .id = item.id + 1 };
-            \\}
-        ;
-        try parseWithEdges(std.testing.allocator, source, &g);
+test "test block does not leak calls from nested function" {
+    // Arrange
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
+    const source =
+        \\fn helper() void {}
+        \\test "outer" {
+        \\    const S = struct {
+        \\        fn inner() void { helper(); }
+        \\    };
+        \\    S.inner();
+        \\}
+    ;
 
-        var process_id: ?NodeId = null;
-        var item_id: ?NodeId = null;
-        for (g.nodes.items, 0..) |n, idx| {
-            if (n.kind == .function and std.mem.eql(u8, n.name, "process")) process_id = @enumFromInt(idx);
-            if (n.kind == .type_def and std.mem.eql(u8, n.name, "Item")) item_id = @enumFromInt(idx);
-        }
-        try std.testing.expect(process_id != null);
-        try std.testing.expect(item_id != null);
+    // Act
+    try parseWithEdges(std.testing.allocator, source, &g);
 
-        var count: usize = 0;
-        for (g.edges.items) |e| {
-            if (e.source_id == process_id.? and e.target_id == item_id.? and e.edge_type == .uses_type) {
-                count += 1;
-            }
-        }
-        try std.testing.expectEqual(@as(usize, 1), count);
+    // Assert
+    var test_id: ?NodeId = null;
+    var helper_id: ?NodeId = null;
+    var inner_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind == .test_def and std.mem.eql(u8, n.name, "outer")) test_id = @enumFromInt(idx);
+        if (n.kind == .function and std.mem.eql(u8, n.name, "helper")) helper_id = @enumFromInt(idx);
+        if (n.kind == .function and std.mem.eql(u8, n.name, "inner")) inner_id = @enumFromInt(idx);
     }
+    try std.testing.expect(test_id != null);
+    try std.testing.expect(helper_id != null);
+    try std.testing.expect(inner_id != null);
 
-    // type passed as comptime argument
-    {
-        var g = Graph.init("/tmp/project");
-        defer g.deinit(std.testing.allocator);
-        const source =
-            \\const Payload = struct { data: i32 = 0 };
-            \\fn serialize(comptime T: type, val: T) void { _ = val; }
-            \\fn doWork() void {
-            \\    const p = Payload{ .data = 1 };
-            \\    serialize(Payload, p);
-            \\}
-        ;
-        try parseWithEdges(std.testing.allocator, source, &g);
-
-        var doWork_id: ?NodeId = null;
-        var payload_id: ?NodeId = null;
-        for (g.nodes.items, 0..) |n, idx| {
-            if (n.kind == .function and std.mem.eql(u8, n.name, "doWork")) doWork_id = @enumFromInt(idx);
-            if (n.kind == .type_def and std.mem.eql(u8, n.name, "Payload")) payload_id = @enumFromInt(idx);
+    var found_leak = false;
+    for (g.edges.items) |e| {
+        if (e.source_id == test_id.? and e.target_id == helper_id.? and e.edge_type == .calls) {
+            found_leak = true;
+            break;
         }
-        try std.testing.expect(doWork_id != null);
-        try std.testing.expect(payload_id != null);
-
-        var found = false;
-        for (g.edges.items) |e| {
-            if (e.source_id == doWork_id.? and e.target_id == payload_id.? and e.edge_type == .uses_type) {
-                found = true;
-                break;
-            }
-        }
-        try std.testing.expect(found);
     }
+    try std.testing.expect(!found_leak);
 
-    // type in generic container instantiation
-    {
-        var g = Graph.init("/tmp/project");
-        defer g.deinit(std.testing.allocator);
-        const source =
-            \\const Element = struct { val: i32 = 0 };
-            \\fn Container(comptime T: type) type {
-            \\    return struct { item: T };
-            \\}
-            \\fn build() void {
-            \\    _ = Container(Element);
-            \\}
-        ;
-        try parseWithEdges(std.testing.allocator, source, &g);
-
-        var build_id: ?NodeId = null;
-        var element_id: ?NodeId = null;
-        for (g.nodes.items, 0..) |n, idx| {
-            if (n.kind == .function and std.mem.eql(u8, n.name, "build")) build_id = @enumFromInt(idx);
-            if (n.kind == .type_def and std.mem.eql(u8, n.name, "Element")) element_id = @enumFromInt(idx);
+    var found_inner_calls = false;
+    for (g.edges.items) |e| {
+        if (e.source_id == inner_id.? and e.target_id == helper_id.? and e.edge_type == .calls) {
+            found_inner_calls = true;
+            break;
         }
-        try std.testing.expect(build_id != null);
-        try std.testing.expect(element_id != null);
-
-        var found = false;
-        for (g.edges.items) |e| {
-            if (e.source_id == build_id.? and e.target_id == element_id.? and e.edge_type == .uses_type) {
-                found = true;
-                break;
-            }
-        }
-        try std.testing.expect(found);
     }
+    try std.testing.expect(found_inner_calls);
 
-    // no uses_type edge for non-type identifier argument
-    {
-        var g = Graph.init("/tmp/project");
-        defer g.deinit(std.testing.allocator);
-        const source =
-            \\const Config = struct {};
-            \\const max = 100;
-            \\fn helper(n: i32) void { _ = n; }
-            \\fn run() void {
-            \\    helper(max);
-            \\}
-        ;
-        try parseWithEdges(std.testing.allocator, source, &g);
-
-        var run_id: ?NodeId = null;
-        var helper_id: ?NodeId = null;
-        var max_id: ?NodeId = null;
-        for (g.nodes.items, 0..) |n, idx| {
-            if (n.kind == .function and std.mem.eql(u8, n.name, "run")) run_id = @enumFromInt(idx);
-            if (n.kind == .function and std.mem.eql(u8, n.name, "helper")) helper_id = @enumFromInt(idx);
-            if (n.kind == .constant and std.mem.eql(u8, n.name, "max")) max_id = @enumFromInt(idx);
+    var found_s = false;
+    for (g.nodes.items) |n| {
+        if (n.kind == .type_def and std.mem.eql(u8, n.name, "S") and
+            n.parent_id != null and n.parent_id.? == test_id.?)
+        {
+            found_s = true;
+            break;
         }
-        try std.testing.expect(run_id != null);
-        try std.testing.expect(helper_id != null);
-        try std.testing.expect(max_id != null);
-
-        var found_max_edge = false;
-        for (g.edges.items) |e| {
-            if (e.source_id == run_id.? and e.target_id == max_id.? and e.edge_type == .uses_type) {
-                found_max_edge = true;
-                break;
-            }
-        }
-        try std.testing.expect(!found_max_edge);
-
-        var found_calls = false;
-        for (g.edges.items) |e| {
-            if (e.source_id == run_id.? and e.target_id == helper_id.? and e.edge_type == .calls) {
-                found_calls = true;
-                break;
-            }
-        }
-        try std.testing.expect(found_calls);
     }
+    try std.testing.expect(found_s);
+}
+
+test "function does not leak calls from nested function" {
+    // Arrange
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
+    const source =
+        \\fn target() void {}
+        \\fn outer() void {
+        \\    const S = struct {
+        \\        fn nested() void { target(); }
+        \\    };
+        \\    S.nested();
+        \\}
+    ;
+
+    // Act
+    try parseWithEdges(std.testing.allocator, source, &g);
+
+    // Assert
+    var outer_id: ?NodeId = null;
+    var target_id: ?NodeId = null;
+    var nested_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind == .function and std.mem.eql(u8, n.name, "outer")) outer_id = @enumFromInt(idx);
+        if (n.kind == .function and std.mem.eql(u8, n.name, "target")) target_id = @enumFromInt(idx);
+        if (n.kind == .function and std.mem.eql(u8, n.name, "nested")) nested_id = @enumFromInt(idx);
+    }
+    try std.testing.expect(outer_id != null);
+    try std.testing.expect(target_id != null);
+    try std.testing.expect(nested_id != null);
+
+    var found_leak = false;
+    for (g.edges.items) |e| {
+        if (e.source_id == outer_id.? and e.target_id == target_id.? and e.edge_type == .calls) {
+            found_leak = true;
+            break;
+        }
+    }
+    try std.testing.expect(!found_leak);
+
+    var found_nested_calls = false;
+    for (g.edges.items) |e| {
+        if (e.source_id == nested_id.? and e.target_id == target_id.? and e.edge_type == .calls) {
+            found_nested_calls = true;
+            break;
+        }
+    }
+    try std.testing.expect(found_nested_calls);
+}
+
+test "nested function gets its own calls edge not parent's" {
+    // Arrange
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
+    const source =
+        \\fn alpha() void {}
+        \\fn beta() void {}
+        \\fn parent() void {
+        \\    _ = alpha();
+        \\    const S = struct {
+        \\        fn child() void { beta(); }
+        \\    };
+        \\    S.child();
+        \\}
+    ;
+
+    // Act
+    try parseWithEdges(std.testing.allocator, source, &g);
+
+    // Assert
+    var parent_id: ?NodeId = null;
+    var child_id: ?NodeId = null;
+    var alpha_id: ?NodeId = null;
+    var beta_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind == .function and std.mem.eql(u8, n.name, "parent")) parent_id = @enumFromInt(idx);
+        if (n.kind == .function and std.mem.eql(u8, n.name, "child")) child_id = @enumFromInt(idx);
+        if (n.kind == .function and std.mem.eql(u8, n.name, "alpha")) alpha_id = @enumFromInt(idx);
+        if (n.kind == .function and std.mem.eql(u8, n.name, "beta")) beta_id = @enumFromInt(idx);
+    }
+    try std.testing.expect(parent_id != null);
+    try std.testing.expect(child_id != null);
+    try std.testing.expect(alpha_id != null);
+    try std.testing.expect(beta_id != null);
+
+    var calls_alpha = false;
+    var calls_beta = false;
+    for (g.edges.items) |e| {
+        if (e.source_id == parent_id.?) {
+            if (e.target_id == alpha_id.? and e.edge_type == .calls) calls_alpha = true;
+            if (e.target_id == beta_id.? and e.edge_type == .calls) calls_beta = true;
+        }
+    }
+    try std.testing.expect(calls_alpha);
+    try std.testing.expect(!calls_beta);
+
+    var found_child_calls = false;
+    for (g.edges.items) |e| {
+        if (e.source_id == child_id.? and e.target_id == beta_id.? and e.edge_type == .calls) {
+            found_child_calls = true;
+            break;
+        }
+    }
+    try std.testing.expect(found_child_calls);
+}
+
+test "function does not leak uses_type from nested function" {
+    // Arrange
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
+    const source =
+        \\const MyType = struct {};
+        \\fn outer() void {
+        \\    const S = struct {
+        \\        fn nested(x: MyType) void { _ = x; }
+        \\    };
+        \\    _ = S.nested;
+        \\}
+    ;
+
+    // Act
+    try parseWithEdges(std.testing.allocator, source, &g);
+
+    // Assert
+    var outer_id: ?NodeId = null;
+    var nested_id: ?NodeId = null;
+    var mytype_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind == .function and std.mem.eql(u8, n.name, "outer")) outer_id = @enumFromInt(idx);
+        if (n.kind == .function and std.mem.eql(u8, n.name, "nested")) nested_id = @enumFromInt(idx);
+        if (std.mem.eql(u8, n.name, "MyType")) mytype_id = @enumFromInt(idx);
+    }
+    try std.testing.expect(outer_id != null);
+    try std.testing.expect(nested_id != null);
+    try std.testing.expect(mytype_id != null);
+
+    var found_leak = false;
+    for (g.edges.items) |e| {
+        if (e.source_id == outer_id.? and e.target_id == mytype_id.? and e.edge_type == .uses_type) {
+            found_leak = true;
+            break;
+        }
+    }
+    try std.testing.expect(!found_leak);
+
+    var found_nested_uses = false;
+    for (g.edges.items) |e| {
+        if (e.source_id == nested_id.? and e.target_id == mytype_id.? and e.edge_type == .uses_type) {
+            found_nested_uses = true;
+            break;
+        }
+    }
+    try std.testing.expect(found_nested_uses);
+}
+
+test "uses_type edge for type alias in parameter" {
+    // Arrange
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
+    const source =
+        \\const Foo = struct { val: i32 };
+        \\const Bar = Foo;
+        \\fn useBar(b: Bar) void { _ = b; }
+    ;
+
+    // Act
+    try parseWithEdges(std.testing.allocator, source, &g);
+
+    // Assert
+    var useBar_id: ?NodeId = null;
+    var bar_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind == .function and std.mem.eql(u8, n.name, "useBar")) useBar_id = @enumFromInt(idx);
+        if (std.mem.eql(u8, n.name, "Bar")) bar_id = @enumFromInt(idx);
+    }
+    try std.testing.expect(useBar_id != null);
+    try std.testing.expect(bar_id != null);
+
+    var found = false;
+    for (g.edges.items) |e| {
+        if (e.source_id == useBar_id.? and e.target_id == bar_id.? and e.edge_type == .uses_type) {
+            found = true;
+            break;
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "uses_type edge for type alias in return type" {
+    // Arrange
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
+    const source =
+        \\const MyError = error{ Oops, Bad };
+        \\const Err = MyError;
+        \\fn doStuff() Err!void {}
+    ;
+
+    // Act
+    try parseWithEdges(std.testing.allocator, source, &g);
+
+    // Assert
+    var doStuff_id: ?NodeId = null;
+    var err_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind == .function and std.mem.eql(u8, n.name, "doStuff")) doStuff_id = @enumFromInt(idx);
+        if (std.mem.eql(u8, n.name, "Err")) err_id = @enumFromInt(idx);
+    }
+    try std.testing.expect(doStuff_id != null);
+    try std.testing.expect(err_id != null);
+
+    var found = false;
+    for (g.edges.items) |e| {
+        if (e.source_id == doStuff_id.? and e.target_id == err_id.? and e.edge_type == .uses_type) {
+            found = true;
+            break;
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "uses_type edge not created for non-type constant" {
+    // Arrange
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
+    const source =
+        \\const Limit = struct {};
+        \\const max = 100;
+        \\fn process(l: Limit) void { _ = l; }
+    ;
+
+    // Act
+    try parseWithEdges(std.testing.allocator, source, &g);
+
+    // Assert
+    var process_id: ?NodeId = null;
+    var limit_id: ?NodeId = null;
+    var max_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind == .function and std.mem.eql(u8, n.name, "process")) process_id = @enumFromInt(idx);
+        if (std.mem.eql(u8, n.name, "Limit")) limit_id = @enumFromInt(idx);
+        if (std.mem.eql(u8, n.name, "max")) max_id = @enumFromInt(idx);
+    }
+    try std.testing.expect(process_id != null);
+    try std.testing.expect(limit_id != null);
+    try std.testing.expect(max_id != null);
+
+    var found_limit = false;
+    var found_max = false;
+    for (g.edges.items) |e| {
+        if (e.source_id == process_id.? and e.edge_type == .uses_type) {
+            if (e.target_id == limit_id.?) found_limit = true;
+            if (e.target_id == max_id.?) found_max = true;
+        }
+    }
+    try std.testing.expect(found_limit);
+    try std.testing.expect(!found_max);
+}
+
+test "uses_type edge for aliased type works alongside direct type" {
+    // Arrange
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
+    const source =
+        \\const Direct = struct {};
+        \\const Other = struct {};
+        \\const Alias = Other;
+        \\fn both(d: Direct, a: Alias) void { _ = d; _ = a; }
+    ;
+
+    // Act
+    try parseWithEdges(std.testing.allocator, source, &g);
+
+    // Assert
+    var both_id: ?NodeId = null;
+    var direct_id: ?NodeId = null;
+    var alias_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind == .function and std.mem.eql(u8, n.name, "both")) both_id = @enumFromInt(idx);
+        if (std.mem.eql(u8, n.name, "Direct")) direct_id = @enumFromInt(idx);
+        if (std.mem.eql(u8, n.name, "Alias")) alias_id = @enumFromInt(idx);
+    }
+    try std.testing.expect(both_id != null);
+    try std.testing.expect(direct_id != null);
+    try std.testing.expect(alias_id != null);
+
+    var found_direct = false;
+    var found_alias = false;
+    for (g.edges.items) |e| {
+        if (e.source_id == both_id.? and e.edge_type == .uses_type) {
+            if (e.target_id == direct_id.?) found_direct = true;
+            if (e.target_id == alias_id.?) found_alias = true;
+        }
+    }
+    try std.testing.expect(found_direct);
+    try std.testing.expect(found_alias);
+}
+
+test "uses_type edge from struct literal construction in body" {
+    // Arrange
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
+    const source =
+        \\const Config = struct { max: i32 = 0 };
+        \\fn makeDefault() void {
+        \\    const c = Config{ .max = 42 };
+        \\    _ = c;
+        \\}
+    ;
+
+    // Act
+    try parseWithEdges(std.testing.allocator, source, &g);
+
+    // Assert
+    var makeDefault_id: ?NodeId = null;
+    var config_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind == .function and std.mem.eql(u8, n.name, "makeDefault")) makeDefault_id = @enumFromInt(idx);
+        if (n.kind == .type_def and std.mem.eql(u8, n.name, "Config")) config_id = @enumFromInt(idx);
+    }
+    try std.testing.expect(makeDefault_id != null);
+    try std.testing.expect(config_id != null);
+
+    var found = false;
+    for (g.edges.items) |e| {
+        if (e.source_id == makeDefault_id.? and e.target_id == config_id.? and e.edge_type == .uses_type) {
+            found = true;
+            break;
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "uses_type edge from static method call in body" {
+    // Arrange
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
+    const source =
+        \\const Builder = struct {
+        \\    val: i32,
+        \\    pub fn init(v: i32) Builder {
+        \\        return Builder{ .val = v };
+        \\    }
+        \\};
+        \\fn create() void {
+        \\    const b = Builder.init(5);
+        \\    _ = b;
+        \\}
+    ;
+
+    // Act
+    try parseWithEdges(std.testing.allocator, source, &g);
+
+    // Assert
+    var create_id: ?NodeId = null;
+    var builder_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind == .function and std.mem.eql(u8, n.name, "create")) create_id = @enumFromInt(idx);
+        if (n.kind == .type_def and std.mem.eql(u8, n.name, "Builder")) builder_id = @enumFromInt(idx);
+    }
+    try std.testing.expect(create_id != null);
+    try std.testing.expect(builder_id != null);
+
+    var found = false;
+    for (g.edges.items) |e| {
+        if (e.source_id == create_id.? and e.target_id == builder_id.? and e.edge_type == .uses_type) {
+            found = true;
+            break;
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "no duplicate uses_type edge when type appears in signature and body" {
+    // Arrange
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
+    const source =
+        \\const Item = struct { id: i32 = 0 };
+        \\fn process(item: Item) Item {
+        \\    return Item{ .id = item.id + 1 };
+        \\}
+    ;
+
+    // Act
+    try parseWithEdges(std.testing.allocator, source, &g);
+
+    // Assert
+    var process_id: ?NodeId = null;
+    var item_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind == .function and std.mem.eql(u8, n.name, "process")) process_id = @enumFromInt(idx);
+        if (n.kind == .type_def and std.mem.eql(u8, n.name, "Item")) item_id = @enumFromInt(idx);
+    }
+    try std.testing.expect(process_id != null);
+    try std.testing.expect(item_id != null);
+
+    var count: usize = 0;
+    for (g.edges.items) |e| {
+        if (e.source_id == process_id.? and e.target_id == item_id.? and e.edge_type == .uses_type) {
+            count += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), count);
+}
+
+test "uses_type edge from type passed as comptime argument" {
+    // Arrange
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
+    const source =
+        \\const Payload = struct { data: i32 = 0 };
+        \\fn serialize(comptime T: type, val: T) void { _ = val; }
+        \\fn doWork() void {
+        \\    const p = Payload{ .data = 1 };
+        \\    serialize(Payload, p);
+        \\}
+    ;
+
+    // Act
+    try parseWithEdges(std.testing.allocator, source, &g);
+
+    // Assert
+    var doWork_id: ?NodeId = null;
+    var payload_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind == .function and std.mem.eql(u8, n.name, "doWork")) doWork_id = @enumFromInt(idx);
+        if (n.kind == .type_def and std.mem.eql(u8, n.name, "Payload")) payload_id = @enumFromInt(idx);
+    }
+    try std.testing.expect(doWork_id != null);
+    try std.testing.expect(payload_id != null);
+
+    var found = false;
+    for (g.edges.items) |e| {
+        if (e.source_id == doWork_id.? and e.target_id == payload_id.? and e.edge_type == .uses_type) {
+            found = true;
+            break;
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "uses_type edge from type in generic container instantiation" {
+    // Arrange
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
+    const source =
+        \\const Element = struct { val: i32 = 0 };
+        \\fn Container(comptime T: type) type {
+        \\    return struct { item: T };
+        \\}
+        \\fn build() void {
+        \\    _ = Container(Element);
+        \\}
+    ;
+
+    // Act
+    try parseWithEdges(std.testing.allocator, source, &g);
+
+    // Assert
+    var build_id: ?NodeId = null;
+    var element_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind == .function and std.mem.eql(u8, n.name, "build")) build_id = @enumFromInt(idx);
+        if (n.kind == .type_def and std.mem.eql(u8, n.name, "Element")) element_id = @enumFromInt(idx);
+    }
+    try std.testing.expect(build_id != null);
+    try std.testing.expect(element_id != null);
+
+    var found = false;
+    for (g.edges.items) |e| {
+        if (e.source_id == build_id.? and e.target_id == element_id.? and e.edge_type == .uses_type) {
+            found = true;
+            break;
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "no uses_type edge for non-type identifier argument" {
+    // Arrange
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
+    const source =
+        \\const Config = struct {};
+        \\const max = 100;
+        \\fn helper(n: i32) void { _ = n; }
+        \\fn run() void {
+        \\    helper(max);
+        \\}
+    ;
+
+    // Act
+    try parseWithEdges(std.testing.allocator, source, &g);
+
+    // Assert
+    var run_id: ?NodeId = null;
+    var helper_id: ?NodeId = null;
+    var max_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, idx| {
+        if (n.kind == .function and std.mem.eql(u8, n.name, "run")) run_id = @enumFromInt(idx);
+        if (n.kind == .function and std.mem.eql(u8, n.name, "helper")) helper_id = @enumFromInt(idx);
+        if (n.kind == .constant and std.mem.eql(u8, n.name, "max")) max_id = @enumFromInt(idx);
+    }
+    try std.testing.expect(run_id != null);
+    try std.testing.expect(helper_id != null);
+    try std.testing.expect(max_id != null);
+
+    var found_max_edge = false;
+    for (g.edges.items) |e| {
+        if (e.source_id == run_id.? and e.target_id == max_id.? and e.edge_type == .uses_type) {
+            found_max_edge = true;
+            break;
+        }
+    }
+    try std.testing.expect(!found_max_edge);
+
+    var found_calls = false;
+    for (g.edges.items) |e| {
+        if (e.source_id == run_id.? and e.target_id == helper_id.? and e.edge_type == .calls) {
+            found_calls = true;
+            break;
+        }
+    }
+    try std.testing.expect(found_calls);
 }
 
 test "local-type parameter edges" {
@@ -984,7 +1022,7 @@ test "local-type parameter edges" {
     // Act
     try parseWithEdges(std.testing.allocator, fixtures.zig.edge_cases.local_type_param, &g);
 
-    // Assert: processPoint has a calls edge to manhattan
+    // Assert
     var processPoint_id: ?NodeId = null;
     var manhattan_id: ?NodeId = null;
     var multiParam_id: ?NodeId = null;
@@ -1055,7 +1093,7 @@ test "duplicate method names: scope resolution" {
     // Act
     try parseWithEdges(std.testing.allocator, fixtures.zig.edge_cases.duplicate_method_names, &g);
 
-    // Assert: @This() aliases are filtered -- no Self constants exist
+    // Assert
     var self_count: usize = 0;
     for (g.nodes.items) |n| {
         if (n.kind == .constant and std.mem.eql(u8, n.name, "Self")) {
@@ -1240,7 +1278,7 @@ test "generic dual self: Self filtering and resolution" {
     // Act
     try parseWithEdges(std.testing.allocator, fixtures.zig.edge_cases.generic_dual_self, &g);
 
-    // Assert: no Self constants exist
+    // Assert
     var self_count: usize = 0;
     for (g.nodes.items) |n| {
         if (n.kind == .constant and std.mem.eql(u8, n.name, "Self")) {
@@ -1321,14 +1359,14 @@ test "generic type: self-reference prevention" {
     // Act
     try parseWithEdges(std.testing.allocator, fixtures.zig.generic_type, &g);
 
-    // Assert: no Self constants exist
+    // Assert
     for (g.nodes.items) |n| {
         if (std.mem.eql(u8, n.name, "Self")) {
             try std.testing.expect(false);
         }
     }
 
-    // Assert: Container has no self-referencing uses_type edge
+    // Assert
     var container_id: ?NodeId = null;
     var result_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
@@ -1364,7 +1402,7 @@ test "union classification: union_def distinct from type_def" {
     // Act
     try parseWithEdges(std.testing.allocator, source, &g);
 
-    // Assert: struct -> type_def, union -> union_def, enum -> enum_def
+    // Assert
     var struct_node: ?*const Node = null;
     var tagged_node: ?*const Node = null;
     var plain_node: ?*const Node = null;
@@ -1385,7 +1423,7 @@ test "union classification: union_def distinct from type_def" {
     try std.testing.expectEqual(NodeKind.union_def, plain_node.?.kind);
     try std.testing.expectEqual(NodeKind.enum_def, enum_node.?.kind);
 
-    // Assert: union fields are children of the union_def node
+    // Assert
     var tagged_field_count: usize = 0;
     for (g.nodes.items) |n| {
         if (n.kind == .field and n.parent_id != null and n.parent_id.? == tagged_node.?.id) {
@@ -1447,7 +1485,7 @@ test "container layout qualifiers: packed and extern detected on structs and uni
     // Act
     try parseWithEdges(std.testing.allocator, source, &g);
 
-    // Assert: collect all named nodes
+    // Assert
     var normal: ?*const Node = null;
     var packed_s: ?*const Node = null;
     var packed_backed: ?*const Node = null;
@@ -1529,7 +1567,7 @@ test "type-returning function signature preserved" {
         // Act
         try parseWithEdges(std.testing.allocator, fixtures.zig.generic_type, &g);
 
-        // Assert: find Container, Result, Config nodes
+        // Assert
         var container_node: ?*const Node = null;
         var result_node: ?*const Node = null;
         var config_node: ?*const Node = null;
@@ -1542,7 +1580,7 @@ test "type-returning function signature preserved" {
         try std.testing.expect(result_node != null);
         try std.testing.expect(config_node != null);
 
-        // Assert: Container has kind type_def and signature != null
+        // Assert
         try std.testing.expectEqual(NodeKind.type_def, container_node.?.kind);
         try std.testing.expect(container_node.?.signature != null);
         const container_sig = container_node.?.signature.?;
@@ -1550,7 +1588,7 @@ test "type-returning function signature preserved" {
         try std.testing.expect(std.mem.indexOf(u8, container_sig, "Container") != null);
         try std.testing.expect(std.mem.indexOf(u8, container_sig, "comptime T") != null);
 
-        // Assert: Result has kind union_def and signature != null
+        // Assert
         try std.testing.expectEqual(NodeKind.union_def, result_node.?.kind);
         try std.testing.expect(result_node.?.signature != null);
         const result_sig = result_node.?.signature.?;
@@ -1559,7 +1597,7 @@ test "type-returning function signature preserved" {
         try std.testing.expect(std.mem.indexOf(u8, result_sig, "comptime T") != null);
         try std.testing.expect(std.mem.indexOf(u8, result_sig, "comptime E") != null);
 
-        // Assert: Config has kind type_def and signature == null (non-generic, not a function)
+        // Assert
         try std.testing.expectEqual(NodeKind.type_def, config_node.?.kind);
         try std.testing.expectEqual(@as(?[]const u8, null), config_node.?.signature);
     }
@@ -1578,20 +1616,20 @@ test "type-returning function signature preserved" {
         // Act
         try parseWithEdges(std.testing.allocator, source, &g);
 
-        // Assert: find Wrapper node
+        // Assert
         var wrapper_node: ?*const Node = null;
         for (g.nodes.items) |*n| {
             if (std.mem.eql(u8, n.name, "Wrapper")) wrapper_node = n;
         }
         try std.testing.expect(wrapper_node != null);
 
-        // Assert: kind is type_def
+        // Assert
         try std.testing.expectEqual(NodeKind.type_def, wrapper_node.?.kind);
 
-        // Assert: signature is present
+        // Assert
         try std.testing.expect(wrapper_node.?.signature != null);
 
-        // Assert: is_inline is true in lang_meta
+        // Assert
         if (zig_meta.metaOf(wrapper_node.?)) |zm| {
             try std.testing.expect(zm.is_inline);
         } else return error.ExpectedZigMeta;
@@ -1615,7 +1653,7 @@ test "conditional expressions classified as constant with comptime_conditional" 
         // Act
         try parseWithEdges(std.testing.allocator, source, &g);
 
-        // Assert: system has kind .constant (NOT .type_def)
+        // Assert
         var system_node: ?*const Node = null;
         for (g.nodes.items) |*n| {
             if (std.mem.eql(u8, n.name, "system")) {
@@ -1626,15 +1664,15 @@ test "conditional expressions classified as constant with comptime_conditional" 
         try std.testing.expect(system_node != null);
         try std.testing.expectEqual(NodeKind.constant, system_node.?.kind);
 
-        // Assert: system has lang_meta.zig.comptime_conditional == true
+        // Assert
         if (zig_meta.metaOf(system_node.?)) |zm| {
             try std.testing.expect(zm.comptime_conditional);
         } else return error.ExpectedZigMeta;
 
-        // Assert: system has visibility .public
+        // Assert
         try std.testing.expectEqual(Visibility.public, system_node.?.visibility);
 
-        // Assert: no child nodes with parent system exist (no read, no write leaked)
+        // Assert
         var system_id: ?NodeId = null;
         for (g.nodes.items, 0..) |n, idx| {
             if (std.mem.eql(u8, n.name, "system")) {
@@ -1669,7 +1707,7 @@ test "conditional expressions classified as constant with comptime_conditional" 
         // Act
         try parseWithEdges(std.testing.allocator, source, &g);
 
-        // Assert: backend has kind .constant (NOT .type_def)
+        // Assert
         var backend_node: ?*const Node = null;
         for (g.nodes.items) |*n| {
             if (std.mem.eql(u8, n.name, "backend")) {
@@ -1680,12 +1718,12 @@ test "conditional expressions classified as constant with comptime_conditional" 
         try std.testing.expect(backend_node != null);
         try std.testing.expectEqual(NodeKind.constant, backend_node.?.kind);
 
-        // Assert: backend has lang_meta.zig.comptime_conditional == true
+        // Assert
         if (zig_meta.metaOf(backend_node.?)) |zm| {
             try std.testing.expect(zm.comptime_conditional);
         } else return error.ExpectedZigMeta;
 
-        // Assert: no child function init has parent backend
+        // Assert
         var backend_id: ?NodeId = null;
         for (g.nodes.items, 0..) |n, idx| {
             if (std.mem.eql(u8, n.name, "backend")) {
@@ -1718,7 +1756,7 @@ test "conditional expressions classified as constant with comptime_conditional" 
         // Act
         try parseWithEdges(std.testing.allocator, source, &g);
 
-        // Assert: Config has kind .type_def (unchanged, no conditional)
+        // Assert
         var config_node: ?*const Node = null;
         for (g.nodes.items) |*n| {
             if (std.mem.eql(u8, n.name, "Config")) {
@@ -1729,7 +1767,7 @@ test "conditional expressions classified as constant with comptime_conditional" 
         try std.testing.expect(config_node != null);
         try std.testing.expectEqual(NodeKind.type_def, config_node.?.kind);
 
-        // Assert: defaults function has parent Config (children still captured)
+        // Assert
         var config_id: ?NodeId = null;
         for (g.nodes.items, 0..) |n, idx| {
             if (std.mem.eql(u8, n.name, "Config")) {
@@ -1749,7 +1787,7 @@ test "conditional expressions classified as constant with comptime_conditional" 
         }
         try std.testing.expect(found_defaults);
 
-        // Assert: Config does NOT have comptime_conditional == true
+        // Assert
         if (zig_meta.metaOf(config_node.?)) |zm| {
             try std.testing.expect(!zm.comptime_conditional);
         }
@@ -1886,7 +1924,7 @@ test "re-export filtering: public re-exports preserved, private aliases filtered
     // Act
     try parseWithEdges(std.testing.allocator, source, &g);
 
-    // Assert: collect all nodes by name
+    // Assert
     var found_iovec = false;
     var found_helper = false;
     var found_allocator = false;
@@ -1919,7 +1957,7 @@ test "re-export filtering: public re-exports preserved, private aliases filtered
     // Sanity: function and imports are unaffected
     try std.testing.expect(found_do_work);
 
-    // Assert: public re-exports have correct visibility
+    // Assert
     for (g.nodes.items) |n| {
         if (std.mem.eql(u8, n.name, "iovec")) {
             try std.testing.expectEqual(Visibility.public, n.visibility);
@@ -1956,12 +1994,12 @@ test "top-level comptime blocks produce no nodes" {
     // Act
     try parseWithEdges(std.testing.allocator, source, &g);
 
-    // Assert: no comptime_block nodes exist (comptime blocks produce zero nodes)
+    // Assert
     for (g.nodes.items) |n| {
         try std.testing.expect(!std.mem.eql(u8, n.name, "comptime"));
     }
 
-    // Assert: Config still has kind .type_def
+    // Assert
     var found_config = false;
     for (g.nodes.items) |n| {
         if (std.mem.eql(u8, n.name, "Config")) {
@@ -1971,7 +2009,7 @@ test "top-level comptime blocks produce no nodes" {
     }
     try std.testing.expect(found_config);
 
-    // Assert: init still has kind .function
+    // Assert
     var found_init = false;
     for (g.nodes.items) |n| {
         if (std.mem.eql(u8, n.name, "init")) {
@@ -1981,7 +2019,7 @@ test "top-level comptime blocks produce no nodes" {
     }
     try std.testing.expect(found_init);
 
-    // Assert: only file + std import + Config (type_def) + name (field) + init (function) = 5 nodes
+    // Assert
     try std.testing.expectEqual(@as(usize, 5), g.nodeCount());
 }
 
@@ -1990,7 +2028,7 @@ test "self.field access in file-struct method creates accesses_field edge" {
     var g = Graph.init("/tmp/project");
     defer g.deinit(std.testing.allocator);
 
-    // Act: file_struct.zig has `return self.value` inside getValue
+    // Act
     try parseWithEdges(std.testing.allocator, fixtures.zig.file_struct, &g);
 
     var getvalue_id: ?NodeId = null;
@@ -2002,7 +2040,7 @@ test "self.field access in file-struct method creates accesses_field edge" {
     try std.testing.expect(getvalue_id != null);
     try std.testing.expect(value_field_id != null);
 
-    // Assert: getValue -> accesses_field -> value (self.value resolution via self binding)
+    // Assert
     var found = false;
     for (g.edges.items) |e| {
         if (e.source_id == getvalue_id.? and e.target_id == value_field_id.? and e.edge_type == .accesses_field) {
@@ -2018,7 +2056,7 @@ test "anonymous struct with type annotation creates accesses_field edge" {
     var g = Graph.init("/tmp/project");
     defer g.deinit(std.testing.allocator);
 
-    // Act: file_struct.zig has `const c: Self = .{ .value = v, .name = "anon" }; return c.value`
+    // Act
     try parseWithEdges(std.testing.allocator, fixtures.zig.file_struct, &g);
 
     var anon_init_id: ?NodeId = null;
@@ -2030,7 +2068,7 @@ test "anonymous struct with type annotation creates accesses_field edge" {
     try std.testing.expect(anon_init_id != null);
     try std.testing.expect(value_field_id != null);
 
-    // Assert: anonymousInit -> accesses_field -> value (via annotated .{} binding then c.value)
+    // Assert
     var found = false;
     for (g.edges.items) |e| {
         if (e.source_id == anon_init_id.? and e.target_id == value_field_id.? and e.edge_type == .accesses_field) {

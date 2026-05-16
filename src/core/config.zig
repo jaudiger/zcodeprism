@@ -106,11 +106,8 @@ pub fn createDataDir(io: std.Io, dir: std.Io.Dir) !void {
     };
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 test "parses valid config" {
+    // Arrange
     const source: [:0]const u8 =
         \\.{
         \\    .exclude_paths = .{ ".git", "vendor" },
@@ -121,9 +118,11 @@ test "parses valid config" {
         \\}
     ;
 
+    // Act
     const cfg = try parseFromSlice(std.testing.allocator, source);
     defer deinit(cfg, std.testing.allocator);
 
+    // Assert
     try std.testing.expect(cfg.exclude_paths != null);
     try std.testing.expectEqual(2, cfg.exclude_paths.?.len);
     try std.testing.expect(cfg.languages != null);
@@ -137,24 +136,29 @@ test "parses valid config" {
 }
 
 test "applies defaults for missing fields" {
+    // Arrange
     const source: [:0]const u8 =
         \\.{
         \\    .languages = .{ .zig },
         \\}
     ;
-
     const cfg = try parseFromSlice(std.testing.allocator, source);
     defer deinit(cfg, std.testing.allocator);
 
+    // Act
     const full = withDefaults(cfg);
 
+    // Assert
     try std.testing.expect(full.exclude_paths != null);
     try std.testing.expect(full.storage != null);
     try std.testing.expectEqual(StorageFormat.binary, full.storage.?.format.?);
 }
 
 test "exclude_paths default" {
+    // Arrange / Act
     const paths = defaultExcludePaths();
+
+    // Assert
     try std.testing.expectEqual(@as(usize, 5), paths.len);
     try std.testing.expectEqualStrings(".git", paths[0]);
     try std.testing.expectEqualStrings(".zcodeprism", paths[1]);
@@ -164,11 +168,14 @@ test "exclude_paths default" {
 }
 
 test "empty config file" {
+    // Arrange
     const source: [:0]const u8 = ".{}";
 
+    // Act
     const cfg = try parseFromSlice(std.testing.allocator, source);
     defer deinit(cfg, std.testing.allocator);
 
+    // Assert
     try std.testing.expectEqual(@as(?[]const []const u8, null), cfg.exclude_paths);
     try std.testing.expectEqual(@as(?[]const LanguageOption, null), cfg.languages);
     try std.testing.expectEqual(@as(?LspConfig, null), cfg.lsp);
@@ -177,6 +184,7 @@ test "empty config file" {
 }
 
 test "config with unknown fields" {
+    // Arrange
     const source: [:0]const u8 =
         \\.{
         \\    .languages = .{ .zig },
@@ -184,21 +192,25 @@ test "config with unknown fields" {
         \\}
     ;
 
+    // Act
     const cfg = try parseFromSlice(std.testing.allocator, source);
     defer deinit(cfg, std.testing.allocator);
 
+    // Assert
     try std.testing.expect(cfg.languages != null);
 }
 
 test "all fields are optional" {
+    // Arrange / Act
+    const cfg = Config{};
+
+    // Assert
     comptime {
         const info = @typeInfo(Config);
         for (info.@"struct".fields) |f| {
             std.debug.assert(@typeInfo(f.type) == .optional);
         }
     }
-
-    const cfg = Config{};
     try std.testing.expectEqual(@as(?[]const []const u8, null), cfg.exclude_paths);
     try std.testing.expectEqual(@as(?[]const LanguageOption, null), cfg.languages);
     try std.testing.expectEqual(@as(?LspConfig, null), cfg.lsp);

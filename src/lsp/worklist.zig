@@ -144,7 +144,7 @@ test "LspWorklist phantom_hovers are separate from entries" {
         .hint_name = "std",
     });
 
-    // Assert: phantom hover appears in phantomHovers, not in items or count
+    // Assert
     try std.testing.expectEqual(@as(usize, 1), wl.count());
     try std.testing.expectEqual(@as(usize, 1), wl.items().len);
     try std.testing.expectEqual(@as(usize, 1), wl.phantomHovers().len);

@@ -742,10 +742,6 @@ pub fn getEdges(allocator: std.mem.Allocator, fg: FrozenGraph, node_ids: []const
     return .{ .total_count = total_count, .edges = result[0..collected] };
 }
 
-// ---------------------------------------------------------------------------
-// Test helpers
-// ---------------------------------------------------------------------------
-
 /// Builds a frozen test graph with known structure:
 ///   0: "test-project" directory (root, no parent)
 ///   1: "src/parser.zig" file (zig, public, parent=0)
@@ -784,10 +780,6 @@ fn nid(v: u64) NodeId {
     return @enumFromInt(v);
 }
 
-// ===========================================================================
-// search -- single filters and combined
-// ===========================================================================
-
 test "search by name regex, kind, visibility, and language individually" {
     // Arrange
     var g = try buildTestGraph(testing.allocator);
@@ -804,25 +796,25 @@ test "search by name regex, kind, visibility, and language individually" {
     const by_lang = try search(testing.allocator, fg, .{ .language = .zig });
     defer by_lang.deinit(testing.allocator);
 
-    // Assert: name regex finds nodes containing "parse"
+    // Assert
     try testing.expect(by_name.total_matches >= 1);
     for (by_name.nodes) |id| {
         try testing.expect(std.mem.indexOf(u8, g.getNode(id).?.name, "parse") != null);
     }
 
-    // Assert: kind filter returns only functions
+    // Assert
     try testing.expect(by_kind.total_matches >= 1);
     for (by_kind.nodes) |id| {
         try testing.expectEqual(NodeKind.function, g.getNode(id).?.kind);
     }
 
-    // Assert: visibility filter returns only public
+    // Assert
     try testing.expect(by_vis.total_matches >= 1);
     for (by_vis.nodes) |id| {
         try testing.expectEqual(Visibility.public, g.getNode(id).?.visibility);
     }
 
-    // Assert: language filter returns only zig
+    // Assert
     try testing.expect(by_lang.total_matches >= 1);
     for (by_lang.nodes) |id| {
         try testing.expectEqual(Language.zig, g.getNode(id).?.language.?);
@@ -835,7 +827,7 @@ test "search combines filters into intersection" {
     defer g.deinit(testing.allocator);
     const fg = try g.freeze(testing.allocator);
 
-    // Act: public zig functions matching "parse"
+    // Act
     const result = try search(testing.allocator, fg, .{
         .query = "parse",
         .kind = .function,
@@ -843,14 +835,10 @@ test "search combines filters into intersection" {
     });
     defer result.deinit(testing.allocator);
 
-    // Assert: only "parse" matches (test_parse is test_def + private)
+    // Assert
     try testing.expectEqual(@as(u32, 1), result.total_matches);
     try testing.expectEqualStrings("parse", g.getNode(result.nodes[0]).?.name);
 }
-
-// ===========================================================================
-// search -- external filter variants
-// ===========================================================================
 
 test "search external filter: include, exclude, only" {
     // Arrange
@@ -881,10 +869,6 @@ test "search external filter: include, exclude, only" {
     }
 }
 
-// ===========================================================================
-// search -- pagination
-// ===========================================================================
-
 test "search pagination: offset, limit, boundaries" {
     // Arrange
     var g = try buildTestGraph(testing.allocator);
@@ -899,16 +883,16 @@ test "search pagination: offset, limit, boundaries" {
     const zero_lim = try search(testing.allocator, fg, .{ .limit = 0 });
     defer zero_lim.deinit(testing.allocator);
 
-    // Assert: max limit returns up to 200
+    // Assert
     try testing.expect(all.nodes.len <= 200);
 
-    // Assert: offset beyond total gives empty page
+    // Assert
     try testing.expectEqual(@as(usize, 0), beyond.nodes.len);
 
-    // Assert: limit=0 gives empty page but total_matches still computed
+    // Assert
     try testing.expectEqual(@as(usize, 0), zero_lim.nodes.len);
 
-    // Assert: paginated subset preserves total_matches
+    // Assert
     if (all.total_matches > 2) {
         const page = try search(testing.allocator, fg, .{ .offset = 1, .limit = 2 });
         defer page.deinit(testing.allocator);
@@ -917,12 +901,8 @@ test "search pagination: offset, limit, boundaries" {
     }
 }
 
-// ===========================================================================
-// search -- empty/boundary
-// ===========================================================================
-
 test "search on empty graph and with no matches" {
-    // Arrange: empty graph
+    // Arrange
     var empty = Graph.init("empty");
     defer empty.deinit(testing.allocator);
     const empty_fg = try empty.freeze(testing.allocator);
@@ -933,7 +913,7 @@ test "search on empty graph and with no matches" {
     try testing.expectEqual(@as(u32, 0), empty_result.total_matches);
     try testing.expectEqual(@as(usize, 0), empty_result.nodes.len);
 
-    // Arrange: populated graph, impossible query
+    // Arrange
     var g = try buildTestGraph(testing.allocator);
     defer g.deinit(testing.allocator);
     const fg = try g.freeze(testing.allocator);
@@ -969,10 +949,6 @@ test "search on empty graph and with no matches" {
     try testing.expectEqualStrings("parse", g.getNode(exact.nodes[0]).?.name);
 }
 
-// ===========================================================================
-// search -- scope integration
-// ===========================================================================
-
 test "search with scope: prefix, empty, no matches" {
     // Arrange
     var g = try buildTestGraph(testing.allocator);
@@ -989,7 +965,7 @@ test "search with scope: prefix, empty, no matches" {
     const dead_scope = try search(testing.allocator, fg, .{ .scope = "nonexistent/" });
     defer dead_scope.deinit(testing.allocator);
 
-    // Assert: prefix scope restricts to matching files
+    // Assert
     for (scoped.nodes) |id| {
         const n = g.getNode(id).?;
         if (n.file_path) |fp| {
@@ -997,16 +973,12 @@ test "search with scope: prefix, empty, no matches" {
         }
     }
 
-    // Assert: empty scope matches everything
+    // Assert
     try testing.expectEqual(unscoped.total_matches, empty_scope.total_matches);
 
-    // Assert: impossible scope gives zero results
+    // Assert
     try testing.expectEqual(@as(u32, 0), dead_scope.total_matches);
 }
-
-// ===========================================================================
-// findPaths
-// ===========================================================================
 
 test "findPaths: direct, multi-hop, and unconnected" {
     // Arrange
@@ -1014,29 +986,29 @@ test "findPaths: direct, multi-hop, and unconnected" {
     defer g.deinit(testing.allocator);
     const fg = try g.freeze(testing.allocator);
 
-    // Act: direct path main(6) -> parse(2)
+    // Act
     const direct = try findPaths(testing.allocator, fg, nid(6), nid(2), .{});
     defer direct.deinit(testing.allocator);
 
-    // Act: multi-hop main(6) -> parse(2) -> Token(3)
+    // Act
     const multi = try findPaths(testing.allocator, fg, nid(6), nid(3), .{});
     defer multi.deinit(testing.allocator);
 
-    // Act: no path helper(4) -> main(6)
+    // Act
     const none = try findPaths(testing.allocator, fg, nid(4), nid(6), .{});
     defer none.deinit(testing.allocator);
 
-    // Assert: direct path found with 2 nodes
+    // Assert
     try testing.expect(direct.paths.len >= 1);
     try testing.expectEqual(@as(usize, 2), direct.paths[0].node_ids.len);
     try testing.expectEqual(nid(6), direct.paths[0].node_ids[0]);
     try testing.expectEqual(nid(2), direct.paths[0].node_ids[1]);
 
-    // Assert: multi-hop path found with 3+ nodes
+    // Assert
     try testing.expect(multi.paths.len >= 1);
     try testing.expect(multi.paths[0].node_ids.len >= 3);
 
-    // Assert: no path between unconnected nodes
+    // Assert
     try testing.expectEqual(@as(usize, 0), none.paths.len);
 }
 
@@ -1046,11 +1018,11 @@ test "findPaths: max_depth and edge_types restrict results" {
     defer g.deinit(testing.allocator);
     const fg = try g.freeze(testing.allocator);
 
-    // Act: max_depth=1 cannot reach Token(3) from main(6) (needs 2 hops)
+    // Act
     const shallow = try findPaths(testing.allocator, fg, nid(6), nid(3), .{ .max_depth = 1 });
     defer shallow.deinit(testing.allocator);
 
-    // Act: calls-only cannot reach Token(3) since parse->Token is uses_type
+    // Act
     const only_calls = [_]EdgeType{.calls};
     const filtered = try findPaths(testing.allocator, fg, nid(6), nid(3), .{ .edge_types = &only_calls });
     defer filtered.deinit(testing.allocator);
@@ -1072,18 +1044,14 @@ test "findPaths: same node and non-existent node" {
     const bad = try findPaths(testing.allocator, fg, nid(9999), nid(2), .{});
     defer bad.deinit(testing.allocator);
 
-    // Assert: self-path is trivial or empty
+    // Assert
     if (self_path.paths.len > 0) {
         try testing.expect(self_path.paths[0].node_ids.len <= 1);
     }
 
-    // Assert: non-existent source gives empty result
+    // Assert
     try testing.expectEqual(@as(usize, 0), bad.paths.len);
 }
-
-// ===========================================================================
-// getChildren / getAncestors
-// ===========================================================================
 
 test "getChildren returns direct children, leaf returns empty" {
     // Arrange
@@ -1091,14 +1059,14 @@ test "getChildren returns direct children, leaf returns empty" {
     defer g.deinit(testing.allocator);
     _ = try g.freeze(testing.allocator);
 
-    // Assert: root(0) has file children
+    // Assert
     const root_children = g.getChildren(nid(0));
     try testing.expect(root_children.len >= 2);
     for (root_children) |cid| {
         try testing.expectEqual(NodeKind.file, g.getNode(cid).?.kind);
     }
 
-    // Assert: leaf node helper(4) has no children
+    // Assert
     try testing.expectEqual(@as(usize, 0), g.getChildren(nid(4)).len);
 }
 
@@ -1108,7 +1076,7 @@ test "getAncestors returns full chain and empty for root" {
     defer g.deinit(testing.allocator);
     const fg = try g.freeze(testing.allocator);
 
-    // Act: parse(2) has parent=file(1), grandparent=root(0)
+    // Act
     const ancestors = try getAncestors(testing.allocator, fg, nid(2));
     defer if (ancestors.len > 0) testing.allocator.free(ancestors);
 
@@ -1117,17 +1085,13 @@ test "getAncestors returns full chain and empty for root" {
     try testing.expectEqual(nid(1), ancestors[0]);
     try testing.expectEqual(nid(0), ancestors[1]);
 
-    // Act: root(0) has no parent
+    // Act
     const root_anc = try getAncestors(testing.allocator, fg, nid(0));
     defer if (root_anc.len > 0) testing.allocator.free(root_anc);
 
     // Assert
     try testing.expectEqual(@as(usize, 0), root_anc.len);
 }
-
-// ===========================================================================
-// getImpact
-// ===========================================================================
 
 test "impact: leaf has zero, core function includes callers" {
     // Arrange
@@ -1141,10 +1105,10 @@ test "impact: leaf has zero, core function includes callers" {
     const core = try getImpact(testing.allocator, fg, nid(2), .{});
     defer core.deinit(testing.allocator);
 
-    // Assert: helper(4) has no dependents
+    // Assert
     try testing.expectEqual(@as(u32, 0), leaf.total_impacted);
 
-    // Assert: parse(2) is called by main(6)
+    // Assert
     try testing.expect(core.total_impacted >= 1);
     var found_main = false;
     for (core.impacted) |id| {
@@ -1159,18 +1123,18 @@ test "impact is transitive and works on phantom nodes" {
     defer g.deinit(testing.allocator);
     const fg = try g.freeze(testing.allocator);
 
-    // Act: Token(3) used by parse(2), parse called by main(6)
+    // Act
     const token_impact = try getImpact(testing.allocator, fg, nid(3), .{});
     defer token_impact.deinit(testing.allocator);
 
-    // Act: std.mem.Allocator(8) used by parse(2) and main(6)
+    // Act
     const phantom_impact = try getImpact(testing.allocator, fg, nid(8), .{});
     defer phantom_impact.deinit(testing.allocator);
 
-    // Assert: Token impacts both parse and main transitively
+    // Assert
     try testing.expect(token_impact.total_impacted >= 2);
 
-    // Assert: phantom node impacts its users
+    // Assert
     try testing.expect(phantom_impact.total_impacted >= 2);
 }
 
@@ -1180,7 +1144,7 @@ test "impact respects edge_types filter" {
     defer g.deinit(testing.allocator);
     const fg = try g.freeze(testing.allocator);
 
-    // Act: Token(3) only has uses_type incoming, not calls
+    // Act
     const only_calls = [_]EdgeType{.calls};
     const result = try getImpact(testing.allocator, fg, nid(3), .{ .edge_types = &only_calls });
     defer result.deinit(testing.allocator);
@@ -1188,10 +1152,6 @@ test "impact respects edge_types filter" {
     // Assert
     try testing.expectEqual(@as(u32, 0), result.total_impacted);
 }
-
-// ===========================================================================
-// computeStats
-// ===========================================================================
 
 test "stats on full graph counts nodes, edges, and lines" {
     // Arrange
@@ -1219,7 +1179,7 @@ test "stats with scope restricts counts" {
     // Act
     const stats = try computeStats(testing.allocator, fg, .{ .scope = "src/main" });
 
-    // Assert: only main's function
+    // Assert
     try testing.expectEqual(@as(u32, 1), stats.node_counts[@intFromEnum(NodeKind.function)]);
 }
 
@@ -1238,47 +1198,39 @@ test "stats on empty graph returns all zeros" {
     try testing.expectEqual(@as(u64, 0), stats.total_lines);
 }
 
-// ===========================================================================
-// getNodes
-// ===========================================================================
-
 test "getNodes returns details, skips invalid IDs, respects include_edges" {
     // Arrange
     var g = try buildTestGraph(testing.allocator);
     defer g.deinit(testing.allocator);
     const fg = try g.freeze(testing.allocator);
 
-    // Act: batch lookup with one invalid ID
+    // Act
     const ids = [_]NodeId{ nid(2), nid(9999), nid(6) };
     const result = try getNodes(testing.allocator, fg, &ids, .{});
     defer result.deinit(testing.allocator);
 
-    // Assert: only 2 valid nodes returned with edges populated
+    // Assert
     try testing.expectEqual(@as(usize, 2), result.nodes.len);
     try testing.expectEqualStrings("parse", result.nodes[0].node.name);
     try testing.expectEqualStrings("main", result.nodes[1].node.name);
     try testing.expect(result.nodes[0].out_edge_ids.len > 0);
 
-    // Act: same query with edges disabled
+    // Act
     const no_edges = try getNodes(testing.allocator, fg, &ids, .{ .include_edges = false });
     defer no_edges.deinit(testing.allocator);
 
-    // Assert: nodes returned but edge slices are empty
+    // Assert
     try testing.expectEqual(@as(usize, 2), no_edges.nodes.len);
     try testing.expectEqual(@as(usize, 0), no_edges.nodes[0].in_edge_ids.len);
     try testing.expectEqual(@as(usize, 0), no_edges.nodes[0].out_edge_ids.len);
 
-    // Act: empty input
+    // Act
     const empty = try getNodes(testing.allocator, fg, &.{}, .{});
     defer empty.deinit(testing.allocator);
 
     // Assert
     try testing.expectEqual(@as(usize, 0), empty.nodes.len);
 }
-
-// ===========================================================================
-// getEdges
-// ===========================================================================
 
 test "getEdges filters by direction, edge_type, and include_external" {
     // Arrange
@@ -1287,35 +1239,35 @@ test "getEdges filters by direction, edge_type, and include_external" {
     const fg = try g.freeze(testing.allocator);
     const ids = [_]NodeId{nid(2)};
 
-    // Act: outgoing only
+    // Act
     const out_only = try getEdges(testing.allocator, fg, &ids, .{ .direction = .out, .include_external = true });
     defer out_only.deinit(testing.allocator);
 
-    // Assert: parse(2) has outgoing uses_type edges to Token and Allocator
+    // Assert
     try testing.expect(out_only.total_count >= 2);
     for (out_only.edges) |e| try testing.expectEqual(nid(2), e.source_id);
 
-    // Act: incoming only
+    // Act
     const in_only = try getEdges(testing.allocator, fg, &ids, .{ .direction = .in, .include_external = true });
     defer in_only.deinit(testing.allocator);
 
-    // Assert: parse(2) has incoming calls from main(6)
+    // Assert
     try testing.expect(in_only.total_count >= 1);
     for (in_only.edges) |e| try testing.expectEqual(nid(2), e.target_id);
 
-    // Act: uses_type out, exclude external
+    // Act
     const uses_no_ext = try getEdges(testing.allocator, fg, &ids, .{ .direction = .out, .edge_type = .uses_type, .include_external = false });
     defer uses_no_ext.deinit(testing.allocator);
 
-    // Act: uses_type out, include external
+    // Act
     const uses_with_ext = try getEdges(testing.allocator, fg, &ids, .{ .direction = .out, .edge_type = .uses_type, .include_external = true });
     defer uses_with_ext.deinit(testing.allocator);
 
-    // Assert: without external only parse->Token, with external also parse->Allocator
+    // Assert
     try testing.expectEqual(@as(u32, 1), uses_no_ext.total_count);
     try testing.expect(uses_with_ext.total_count >= 2);
 
-    // Act: non-existent node
+    // Act
     const bad_ids = [_]NodeId{nid(9999)};
     const bad = try getEdges(testing.allocator, fg, &bad_ids, .{});
     defer bad.deinit(testing.allocator);
@@ -1323,10 +1275,6 @@ test "getEdges filters by direction, edge_type, and include_external" {
     // Assert
     try testing.expectEqual(@as(u32, 0), bad.total_count);
 }
-
-// ===========================================================================
-// Compile-time type assertions
-// ===========================================================================
 
 test "type invariants" {
     comptime {

@@ -222,8 +222,6 @@ pub const LspPool = struct {
     }
 };
 
-// -- Tests --
-
 test "pool init has zero connections" {
     // Arrange / Act
     var pool = LspPool.init(.{});
@@ -249,7 +247,7 @@ test "pool deinit with no connections is clean" {
     // Arrange / Act
     var pool = LspPool.init(.{});
 
-    // Assert: deinit does not leak (std.testing.allocator checks)
+    // Assert
     pool.deinit(std.testing.allocator, std.testing.io);
 }
 
@@ -284,24 +282,24 @@ test "LspConnection tracks opened files" {
     };
     defer conn.deinit(allocator, std.testing.io);
 
-    // Act: open a file
+    // Act
     try conn.openFile(allocator, std.testing.io, "file:///test.zig", "const x = 1;", "zig");
 
-    // Assert: tracked at version 1
+    // Assert
     try std.testing.expectEqual(@as(u32, 1), conn.openedFileCount());
     try std.testing.expectEqual(@as(i32, 1), conn.opened_files.get("file:///test.zig").?);
 
-    // Act: re-open same file (triggers didChange, increments version)
+    // Act
     try conn.openFile(allocator, std.testing.io, "file:///test.zig", "const x = 2;", "zig");
 
-    // Assert: still one entry, version bumped to 2
+    // Assert
     try std.testing.expectEqual(@as(u32, 1), conn.openedFileCount());
     try std.testing.expectEqual(@as(i32, 2), conn.opened_files.get("file:///test.zig").?);
 
-    // Act: close the file
+    // Act
     conn.closeFile(allocator, std.testing.io, "file:///test.zig");
 
-    // Assert: entry removed
+    // Assert
     try std.testing.expectEqual(@as(u32, 0), conn.openedFileCount());
     try std.testing.expect(conn.opened_files.get("file:///test.zig") == null);
 }
@@ -318,7 +316,7 @@ test "LspConnection closeFile on unknown uri is no-op" {
     };
     defer conn.deinit(allocator, std.testing.io);
 
-    // Act / Assert: no crash, no leak
+    // Act / Assert
     conn.closeFile(allocator, std.testing.io, "file:///nonexistent.zig");
     try std.testing.expectEqual(@as(u32, 0), conn.openedFileCount());
 }

@@ -106,12 +106,10 @@ test "loadForReclaim returns nonzero with outstanding acquire" {
     // Arrange
     var rc = RefCount.init(0);
     rc.acquire();
+    defer _ = rc.release();
 
-    // Assert
+    // Act / Assert
     try std.testing.expect(rc.loadForReclaim() > 0);
-
-    // Cleanup
-    _ = rc.release();
 }
 
 test "release returns true only on the last reference" {

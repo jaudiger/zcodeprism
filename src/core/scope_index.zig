@@ -102,8 +102,6 @@ pub const ScopeIndex = struct {
     }
 };
 
-// -- Tests --
-
 test "childrenOf returns direct children and excludes grandchildren" {
     // Arrange
     const file_id: NodeId = @enumFromInt(0);
@@ -114,39 +112,45 @@ test "childrenOf returns direct children and excludes grandchildren" {
         .{ .id = @enumFromInt(2), .name = "fn_a", .kind = .function, .language = .zig, .parent_id = file_id },
         .{ .id = @enumFromInt(3), .name = "method", .kind = .function, .language = .zig, .parent_id = struct_id },
     };
+
+    // Act
     var idx = try ScopeIndex.build(std.testing.allocator, nodes, 0);
     defer idx.deinit(std.testing.allocator);
 
-    // Assert: file has 2 direct children (struct + fn_a), not the grandchild method
+    // Assert
     const file_children = idx.childrenOf(file_id);
     try std.testing.expectEqual(@as(usize, 2), file_children.len);
 
-    // Assert: struct has 1 child (method)
     const struct_children = idx.childrenOf(struct_id);
     try std.testing.expectEqual(@as(usize, 1), struct_children.len);
     try std.testing.expectEqual(@as(u64, 3), struct_children[0]);
 
-    // Assert: unknown parent returns empty
     try std.testing.expectEqual(@as(usize, 0), idx.childrenOf(@enumFromInt(99)).len);
-
-    // Assert: storage covers all parent-child pairs
     try std.testing.expectEqual(@as(usize, 3), idx.storage.len);
 }
 
-test "build on empty or parentless nodes returns empty index" {
-    // Arrange: empty array
-    var idx1 = try ScopeIndex.build(std.testing.allocator, &.{}, 0);
-    defer idx1.deinit(std.testing.allocator);
-    try std.testing.expectEqual(@as(usize, 0), idx1.storage.len);
+test "build on empty nodes returns empty index" {
+    // Arrange / Act
+    var idx = try ScopeIndex.build(std.testing.allocator, &.{}, 0);
+    defer idx.deinit(std.testing.allocator);
 
-    // Arrange: all nodes are parentless
+    // Assert
+    try std.testing.expectEqual(@as(usize, 0), idx.storage.len);
+}
+
+test "build on parentless nodes returns empty index" {
+    // Arrange
     const nodes: []const Node = &.{
         .{ .id = @enumFromInt(0), .name = "a", .kind = .file, .language = .zig },
         .{ .id = @enumFromInt(1), .name = "b", .kind = .file, .language = .zig },
     };
-    var idx2 = try ScopeIndex.build(std.testing.allocator, nodes, 0);
-    defer idx2.deinit(std.testing.allocator);
-    try std.testing.expectEqual(@as(usize, 0), idx2.storage.len);
+
+    // Act
+    var idx = try ScopeIndex.build(std.testing.allocator, nodes, 0);
+    defer idx.deinit(std.testing.allocator);
+
+    // Assert
+    try std.testing.expectEqual(@as(usize, 0), idx.storage.len);
 }
 
 test "build with offset skips earlier nodes" {
@@ -158,7 +162,7 @@ test "build with offset skips earlier nodes" {
         .{ .id = @enumFromInt(2), .name = "included", .kind = .function, .language = .zig, .parent_id = parent },
     };
 
-    // Act: offset=2 skips node 1
+    // Act
     var idx = try ScopeIndex.build(std.testing.allocator, nodes, 2);
     defer idx.deinit(std.testing.allocator);
 
@@ -182,14 +186,11 @@ test "findUniqueDescendant finds nested match and rejects ambiguity" {
     var idx = try ScopeIndex.build(std.testing.allocator, nodes, 0);
     defer idx.deinit(std.testing.allocator);
 
-    // Assert: unique nested descendant found
+    // Act / Assert
     const found = idx.findUniqueDescendant(nodes, file_id, "target");
     try std.testing.expect(found != null);
     try std.testing.expectEqual(@as(u64, 2), @intFromEnum(found.?));
 
-    // Assert: non-existent name returns null
     try std.testing.expectEqual(@as(?NodeId, null), idx.findUniqueDescendant(nodes, file_id, "nonexistent"));
-
-    // Assert: ambiguous name (2 descendants named "dup") returns null
     try std.testing.expectEqual(@as(?NodeId, null), idx.findUniqueDescendant(nodes, file_id, "dup"));
 }

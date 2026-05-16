@@ -548,14 +548,12 @@ test "neighbors both returns all edges" {
     try std.testing.expectEqual(@as(usize, 2), result.len);
 }
 
-// Empty/zero tests (pass: stubs return null/empty)
-
 test "empty graph has zero nodes and edges" {
     // Arrange
     var g = Graph.init("/tmp/project");
     defer g.deinit(std.testing.allocator);
 
-    // Assert
+    // Act / Assert
     try std.testing.expectEqual(@as(usize, 0), g.nodeCount());
     try std.testing.expectEqual(@as(usize, 0), g.edgeCount());
 }
@@ -565,9 +563,8 @@ test "getNode returns null for non-existent id" {
     var g = Graph.init("/tmp/project");
     defer g.deinit(std.testing.allocator);
 
-    // Act / Assert: .root on empty graph
+    // Act / Assert
     try std.testing.expectEqual(@as(?*const Node, null), g.getNode(.root));
-    // Act / Assert: arbitrary non-existent id
     try std.testing.expectEqual(@as(?*const Node, null), g.getNode(@enumFromInt(99)));
 }
 
@@ -577,9 +574,8 @@ test "getChildren returns empty for missing parent" {
     defer g.deinit(std.testing.allocator);
     const fg = try g.freeze(std.testing.allocator);
 
-    // Act / Assert: .root on empty graph
+    // Act / Assert
     try std.testing.expectEqual(@as(usize, 0), fg.getChildren(.root).len);
-    // Act / Assert: non-existent parent id
     try std.testing.expectEqual(@as(usize, 0), fg.getChildren(@enumFromInt(99)).len);
 }
 
@@ -597,14 +593,12 @@ test "neighbors on empty graph returns empty" {
     try std.testing.expectEqual(@as(usize, 0), result.len);
 }
 
-// Error/boundary tests
-
 test "getParent on root node returns null" {
     // Arrange
     var g = Graph.init("/tmp/project");
     defer g.deinit(std.testing.allocator);
 
-    // Act: root node has no parent
+    // Act
     const result = g.getParent(.root);
 
     // Assert
@@ -621,7 +615,6 @@ test "node with all optional fields null" {
         .name = "bare",
         .kind = .function,
         .language = .zig,
-        // All optional fields use their default null values
     };
 
     // Act
@@ -635,8 +628,6 @@ test "node with all optional fields null" {
     try std.testing.expectEqual(@as(?types.ContentHash, null), result.?.content_hash);
     try std.testing.expect(result.?.lang_meta == null);
 }
-
-// Optional fields via graph (fail: needs addNode)
 
 test "node stores doc and signature via graph" {
     // Arrange
@@ -704,7 +695,7 @@ test "addNode preserves single-line signature unchanged" {
     // Act
     const result = g.getNode(id);
 
-    // Assert: same pointer, no allocation
+    // Assert
     try std.testing.expectEqual(sig.ptr, result.?.signature.?.ptr);
 }
 

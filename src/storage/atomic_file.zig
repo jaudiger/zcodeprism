@@ -115,13 +115,13 @@ test "AtomicWriter.deinit without commit leaves no file" {
     defer tmp.cleanup();
     var write_buf: [256]u8 = undefined;
 
-    // Act: init but do not commit
+    // Act
     {
         var aw = try AtomicWriter.init(std.testing.io, tmp.dir, "ghost.txt", &write_buf);
         aw.deinit(std.testing.io);
     }
 
-    // Assert: neither the destination nor a temp file remains
+    // Assert
     const result = tmp.dir.access(std.testing.io, "ghost.txt", .{});
     try std.testing.expectError(error.FileNotFound, result);
 }

@@ -49,6 +49,6 @@ test "mmap on empty file" {
     const content = try mmapFile(std.testing.io, "test/fixtures/zig/edge_cases/empty.zig");
     defer unmapFile(content);
 
-    // Assert: empty slice, no crash
+    // Assert
     try std.testing.expectEqual(@as(usize, 0), content.len);
 }

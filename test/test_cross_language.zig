@@ -33,8 +33,6 @@ fn indexMixedProject(graph: *Graph, tmp_dir: *std.testing.TmpDir) !zcodeprism.in
     return indexDirectory(std.testing.allocator, std.testing.io, project_root, graph, null, .{});
 }
 
-// --- Unified graph ---
-
 test "unified graph contains both zig and rust file nodes" {
     // Arrange
     var g = Graph.init("/tmp/mixed");
@@ -45,14 +43,11 @@ test "unified graph contains both zig and rust file nodes" {
     // Act
     const result = try indexMixedProject(&g, &tmp_dir);
 
-    // Assert: both files indexed successfully
+    // Assert
     try std.testing.expect(result.files_indexed >= 2);
-
-    // Assert: file nodes for both languages exist
     try std.testing.expect(helpers.findNode(&g, "main.zig", .file) != null);
     try std.testing.expect(helpers.findNode(&g, "lib.rs", .file) != null);
 
-    // Assert: at least one zig and one rust non-structural node
     var has_zig = false;
     var has_rust = false;
     for (g.nodes.items) |n| {
@@ -65,8 +60,6 @@ test "unified graph contains both zig and rust file nodes" {
     try std.testing.expect(has_rust);
 }
 
-// --- FFI edge detection ---
-
 test "FFI edge from zig extern declaration to rust extern definition" {
     // Arrange
     var g = Graph.init("/tmp/mixed");
@@ -77,17 +70,15 @@ test "FFI edge from zig extern declaration to rust extern definition" {
     // Act
     _ = try indexMixedProject(&g, &tmp_dir);
 
-    // Assert: the zig file has an extern "c" fn rust_add (declaration, no body)
+    // Assert
     const zig_file = helpers.findNode(&g, "main.zig", .file) orelse return error.TestExpectedEqual;
     const zig_rust_add = helpers.findNodeInFile(&g, "rust_add", .function, zig_file.id) orelse
         return error.TestExpectedEqual;
 
-    // Assert: the rust file has an extern "C" fn rust_add (definition, with body)
     const rs_file = helpers.findNode(&g, "lib.rs", .file) orelse return error.TestExpectedEqual;
     const rs_rust_add = helpers.findNodeInFile(&g, "rust_add", .function, rs_file.id) orelse
         return error.TestExpectedEqual;
 
-    // Assert: a calls edge connects the zig declaration to the rust definition
     try std.testing.expect(helpers.hasEdge(&g, zig_rust_add, rs_rust_add, .calls));
 }
 
@@ -101,7 +92,7 @@ test "FFI edge exists for all matching extern symbols" {
     // Act
     _ = try indexMixedProject(&g, &tmp_dir);
 
-    // Assert: rust_multiply also gets an FFI edge
+    // Assert
     const zig_file = helpers.findNode(&g, "main.zig", .file) orelse return error.TestExpectedEqual;
     const rs_file = helpers.findNode(&g, "lib.rs", .file) orelse return error.TestExpectedEqual;
 
@@ -123,7 +114,7 @@ test "FFI edge has source workspace" {
     // Act
     _ = try indexMixedProject(&g, &tmp_dir);
 
-    // Assert: the FFI edge between zig rust_add and rust rust_add has source .workspace
+    // Assert
     const zig_file = helpers.findNode(&g, "main.zig", .file) orelse return error.TestExpectedEqual;
     const rs_file = helpers.findNode(&g, "lib.rs", .file) orelse return error.TestExpectedEqual;
     const zig_fn = helpers.findNodeInFile(&g, "rust_add", .function, zig_file.id) orelse
@@ -142,8 +133,6 @@ test "FFI edge has source workspace" {
     try std.testing.expect(found);
 }
 
-// --- Language filtering ---
-
 test "search with language zig returns only zig nodes" {
     // Arrange
     var g = Graph.init("/tmp/mixed");
@@ -160,7 +149,7 @@ test "search with language zig returns only zig nodes" {
     });
     defer result.deinit(std.testing.allocator);
 
-    // Assert: all returned nodes have language == .zig
+    // Assert
     try std.testing.expect(result.total_matches > 0);
     for (result.nodes) |nid| {
         const n = g.getNode(nid) orelse continue;
@@ -184,7 +173,7 @@ test "search with language rust returns only rust nodes" {
     });
     defer result.deinit(std.testing.allocator);
 
-    // Assert: all returned nodes have language == .rust
+    // Assert
     try std.testing.expect(result.total_matches > 0);
     for (result.nodes) |nid| {
         const n = g.getNode(nid) orelse continue;
@@ -208,7 +197,7 @@ test "search without language filter returns nodes from both languages" {
     });
     defer result.deinit(std.testing.allocator);
 
-    // Assert: results include nodes from both languages
+    // Assert
     var found_zig = false;
     var found_rust = false;
     for (result.nodes) |nid| {
@@ -222,8 +211,6 @@ test "search without language filter returns nodes from both languages" {
     try std.testing.expect(found_rust);
 }
 
-// --- Cross-language coupling ---
-
 test "coupling between zig and rust files is positive" {
     // Arrange
     var g = Graph.init("/tmp/mixed");
@@ -233,16 +220,14 @@ test "coupling between zig and rust files is positive" {
     _ = try indexMixedProject(&g, &tmp_dir);
     const fg = g.asFrozen();
 
-    // Act: compute coupling without language filter (cross-language)
+    // Act
     const result = try coupling_mod.findCoupling(std.testing.allocator, fg, .{
         .min_coupling = 0.5,
     });
     defer result.deinit(std.testing.allocator);
 
-    // Assert: at least one coupling pair with score > 0
+    // Assert
     try std.testing.expect(result.pairs.len >= 1);
-
-    // Assert: the pair involves main.zig and lib.rs
     var found_cross_lang_pair = false;
     for (result.pairs) |pair| {
         const a_name = pair.module_a;
@@ -259,8 +244,6 @@ test "coupling between zig and rust files is positive" {
     }
     try std.testing.expect(found_cross_lang_pair);
 }
-
-// --- Stats across languages ---
 
 test "stats report both languages present" {
     // Arrange

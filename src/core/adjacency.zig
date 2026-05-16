@@ -428,7 +428,7 @@ test "out-of-bounds node id returns empty" {
 }
 
 test "edges with OOB node ids are excluded from adjacency" {
-    // Arrange: 2 nodes, but edge references node id 99 (out of bounds)
+    // Arrange
     const nodes: []const Node = &.{
         .{ .id = @enumFromInt(0), .name = "a", .kind = .function, .language = .zig },
         .{ .id = @enumFromInt(1), .name = "b", .kind = .function, .language = .zig },
@@ -448,7 +448,7 @@ test "edges with OOB node ids are excluded from adjacency" {
     var adj = try buildAdjacency(std.testing.allocator, nodes, edges);
     defer adj.deinit(std.testing.allocator);
 
-    // Assert: each endpoint is indexed independently.
+    // Assert
     // Node 0 has 2 outgoing: edge 0 (0->1, valid) and edge 2 (0->99, OOB target).
     try std.testing.expectEqual(@as(usize, 2), adj.outEdges(@enumFromInt(0)).len);
     // Node 1 has 2 incoming: edge 0 (0->1, valid) and edge 1 (99->1, OOB source).

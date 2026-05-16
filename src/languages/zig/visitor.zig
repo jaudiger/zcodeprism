@@ -662,7 +662,7 @@ fn isImportSibling(g: *const Graph, parent_id: NodeId, name: []const u8) bool {
     return false;
 }
 
-test "simple fixture: nodes, visibility, parents, doc comments" {
+test "simple fixture produces nodes for every declaration kind" {
     // Arrange
     var g = Graph.init("/tmp/project");
     defer g.deinit(std.testing.allocator);
@@ -670,7 +670,7 @@ test "simple fixture: nodes, visibility, parents, doc comments" {
     // Act
     try parse(std.testing.allocator, std.testing.io, fixtures.zig.simple, &g, null, Logger.noop);
 
-    // Assert: at least one node of each kind exists
+    // Assert
     var found_pub_fn = false;
     var found_priv_fn = false;
     var found_type_def = false;
@@ -706,7 +706,7 @@ test "file node is always first" {
     // Act
     try parse(std.testing.allocator, std.testing.io, fixtures.zig.simple, &g, "test/fixtures/zig/simple.zig", Logger.noop);
 
-    // Assert: first node is file node
+    // Assert
     const first = g.getNode(@enumFromInt(0)).?;
     try std.testing.expectEqual(NodeKind.file, first.kind);
 }
@@ -719,7 +719,7 @@ test "file node has line_end" {
     // Act
     try parse(std.testing.allocator, std.testing.io, fixtures.zig.simple, &g, null, Logger.noop);
 
-    // Assert: file node line_end > 1 for non-empty source
+    // Assert
     const file_node = g.getNode(@enumFromInt(0)).?;
     try std.testing.expect(file_node.line_end != null);
     try std.testing.expect(file_node.line_end.? > 1);
@@ -733,7 +733,7 @@ test "struct methods are children" {
     // Act
     try parse(std.testing.allocator, std.testing.io, fixtures.zig.simple, &g, null, Logger.noop);
 
-    // Assert: at least one function has a type_def parent
+    // Assert
     var found_method = false;
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {
@@ -758,7 +758,7 @@ test "doc comment attached to function" {
     // Act
     try parse(std.testing.allocator, std.testing.io, fixtures.zig.simple, &g, null, Logger.noop);
 
-    // Assert: at least one function has a doc comment
+    // Assert
     var found_doc = false;
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {
@@ -779,7 +779,7 @@ test "empty file produces single file node" {
     // Act
     try parse(std.testing.allocator, std.testing.io, fixtures.zig.edge_cases.empty, &g, null, Logger.noop);
 
-    // Assert: exactly 1 node
+    // Assert
     try std.testing.expectEqual(@as(usize, 1), g.nodeCount());
     const n = g.getNode(@enumFromInt(0)).?;
     try std.testing.expectEqual(NodeKind.file, n.kind);
@@ -793,7 +793,7 @@ test "only_comments file produces single file node" {
     // Act
     try parse(std.testing.allocator, std.testing.io, fixtures.zig.edge_cases.only_comments, &g, null, Logger.noop);
 
-    // Assert: only file node
+    // Assert
     try std.testing.expectEqual(@as(usize, 1), g.nodeCount());
 }
 
@@ -805,7 +805,7 @@ test "no_pub file has no public declarations" {
     // Act
     try parse(std.testing.allocator, std.testing.io, fixtures.zig.edge_cases.no_pub, &g, null, Logger.noop);
 
-    // Assert: no public nodes except the file node itself
+    // Assert
     var i: usize = 1;
     while (i < g.nodeCount()) : (i += 1) {
         const n = g.getNode(@enumFromInt(i)) orelse continue;
@@ -821,7 +821,7 @@ test "language is always zig" {
     // Act
     try parse(std.testing.allocator, std.testing.io, fixtures.zig.simple, &g, null, Logger.noop);
 
-    // Assert: every node has language == .zig
+    // Assert
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {
         const n = g.getNode(@enumFromInt(i)) orelse continue;
@@ -837,7 +837,7 @@ test "file_struct fixture: @This aliases skipped" {
     // Act
     try parse(std.testing.allocator, std.testing.io, fixtures.zig.file_struct, &g, null, Logger.noop);
 
-    // Assert: no node named "Self" (the @This() alias is skipped)
+    // Assert
     var found_self = false;
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {
@@ -858,7 +858,7 @@ test "generic_type fixture: type-returning functions promoted to types" {
     // Act
     try parse(std.testing.allocator, std.testing.io, fixtures.zig.generic_type, &g, null, Logger.noop);
 
-    // Assert: at least one type_def exists with a method child (promoted generic fn)
+    // Assert
     var found_promoted_type = false;
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {
@@ -883,7 +883,7 @@ test "deeply_nested fixture: types at multiple nesting levels" {
     // Act
     try parse(std.testing.allocator, std.testing.io, fixtures.zig.edge_cases.deeply_nested, &g, null, Logger.noop);
 
-    // Assert: at least 3 different nesting depth levels (file -> fn -> inner type)
+    // Assert
     var max_depth: u32 = 0;
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {
@@ -906,7 +906,7 @@ test "function signatures extracted correctly" {
     // Act
     try parse(std.testing.allocator, std.testing.io, fixtures.zig.simple, &g, null, Logger.noop);
 
-    // Assert: at least one function has a non-null signature starting with "pub fn" or "fn"
+    // Assert
     var found_sig = false;
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {
@@ -930,7 +930,7 @@ test "import_decl has signature with path" {
     // Act
     try parse(std.testing.allocator, std.testing.io, fixtures.zig.simple, &g, null, Logger.noop);
 
-    // Assert: at least one import_decl has a non-null signature
+    // Assert
     var found = false;
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {
@@ -951,7 +951,7 @@ test "module doc comment attached to file node" {
     // Act
     try parse(std.testing.allocator, std.testing.io, fixtures.zig.simple, &g, null, Logger.noop);
 
-    // Assert: file node (index 0) has doc (module doc comment)
+    // Assert
     const file_node = g.getNode(@enumFromInt(0)).?;
     try std.testing.expect(file_node.doc != null);
 }
@@ -964,7 +964,7 @@ test "fields are private" {
     // Act
     try parse(std.testing.allocator, std.testing.io, fixtures.zig.simple, &g, null, Logger.noop);
 
-    // Assert: all .field nodes are private
+    // Assert
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {
         const n = g.getNode(@enumFromInt(i)) orelse continue;
@@ -982,7 +982,7 @@ test "error_def has signature and error_set_names from AST" {
     // Act
     try parse(std.testing.allocator, std.testing.io, fixtures.zig.simple, &g, null, Logger.noop);
 
-    // Assert: ParseError error_def has signature and extracted names
+    // Assert
     var found = false;
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {
@@ -1010,7 +1010,7 @@ test "line numbers are 1-based" {
     // Act
     try parse(std.testing.allocator, std.testing.io, fixtures.zig.simple, &g, null, Logger.noop);
 
-    // Assert: all nodes have line_start >= 1
+    // Assert
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {
         const n = g.getNode(@enumFromInt(i)) orelse continue;
@@ -1026,7 +1026,7 @@ test "local_type_param fixture: method calls via local-type params" {
     // Act
     try parse(std.testing.allocator, std.testing.io, fixtures.zig.edge_cases.local_type_param, &g, null, Logger.noop);
 
-    // Assert: the Processor type_def exists with the expected methods
+    // Assert
     var found_processor = false;
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {
@@ -1047,7 +1047,7 @@ test "generic_type fixture: enum-returning generic promoted to enum_def" {
     // Act
     try parse(std.testing.allocator, std.testing.io, fixtures.zig.generic_type, &g, null, Logger.noop);
 
-    // Assert: find a node named "StatusEnum" that is an enum_def
+    // Assert
     var found = false;
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {
@@ -1068,7 +1068,7 @@ test "generic_type fixture: union-returning generic promoted to union_def" {
     // Act
     try parse(std.testing.allocator, std.testing.io, fixtures.zig.generic_type, &g, null, Logger.noop);
 
-    // Assert: find a node named "ValueUnion" that is a union_def
+    // Assert
     var found = false;
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {
@@ -1089,7 +1089,7 @@ test "generic_type fixture: type signature preserved on promoted types" {
     // Act
     try parse(std.testing.allocator, std.testing.io, fixtures.zig.generic_type, &g, null, Logger.noop);
 
-    // Assert: find a node that is a type container with a non-null signature
+    // Assert
     // containing parameter info from the generic function header
     var found = false;
     var i: usize = 0;

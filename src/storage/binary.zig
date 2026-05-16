@@ -636,7 +636,7 @@ test "Layout.compute aligns each table to 8 bytes" {
     // Arrange / Act
     const layout = Layout.compute(1, 1, 7);
 
-    // Assert: all offsets are multiples of 8
+    // Assert
     try std.testing.expectEqual(@as(usize, 0), layout.node_table_offset % 8);
     try std.testing.expectEqual(@as(usize, 0), layout.edge_table_offset % 8);
     try std.testing.expectEqual(@as(usize, 0), layout.metrics_table_offset % 8);
@@ -649,7 +649,7 @@ test "Layout.verify passes for a correctly sized buffer" {
     const buf = try std.testing.allocator.alloc(u8, layout.total_size);
     defer std.testing.allocator.free(buf);
 
-    // Act / Assert: no assertion fires
+    // Act / Assert
     layout.verify(buf.len);
 }
 
@@ -662,7 +662,7 @@ test "StringTable.intern deduplicates strings" {
     const r1 = try st.intern(std.testing.allocator, "hello");
     const r2 = try st.intern(std.testing.allocator, "hello");
 
-    // Assert: same ref, bytes written only once
+    // Assert
     try std.testing.expectEqual(r1.offset, r2.offset);
     try std.testing.expectEqual(r1.len, r2.len);
     try std.testing.expectEqual(@as(usize, 5), st.bytes.items.len);
@@ -677,14 +677,14 @@ test "StringTable iteration order matches insertion order" {
     _ = try st.intern(std.testing.allocator, "bbb");
     _ = try st.intern(std.testing.allocator, "ccc");
 
-    // Act: iterate the index
+    // Act
     var it = st.index.iterator();
     const first = it.next().?.key_ptr.*;
     const second = it.next().?.key_ptr.*;
     const third = it.next().?.key_ptr.*;
     try std.testing.expect(it.next() == null);
 
-    // Assert: insertion order is preserved
+    // Assert
     try std.testing.expectEqualStrings("aaa", first);
     try std.testing.expectEqualStrings("bbb", second);
     try std.testing.expectEqualStrings("ccc", third);
@@ -788,7 +788,7 @@ test "binary round-trip preserves nodes, edges, and metrics" {
     var loaded = try load(std.testing.allocator, std.testing.io, file_path);
     defer loaded.deinit(std.testing.allocator);
 
-    // Assert: nodes
+    // Assert
     try std.testing.expectEqual(g.nodeCount(), loaded.nodeCount());
     for (g.nodes.items, loaded.nodes.items) |original, restored| {
         try std.testing.expectEqualStrings(original.name, restored.name);
@@ -802,7 +802,7 @@ test "binary round-trip preserves nodes, edges, and metrics" {
         try std.testing.expectEqual(original.col_end, restored.col_end);
     }
 
-    // Assert: edges
+    // Assert
     try std.testing.expectEqual(g.edgeCount(), loaded.edgeCount());
     for (g.edges.items, loaded.edges.items) |original, restored| {
         try std.testing.expectEqual(original.source_id, restored.source_id);
@@ -811,7 +811,7 @@ test "binary round-trip preserves nodes, edges, and metrics" {
         try std.testing.expectEqual(original.source, restored.source);
     }
 
-    // Assert: metrics (node 1 has metrics)
+    // Assert
     const original_metrics = g.getNode(@enumFromInt(1)).?.metrics.?;
     const loaded_metrics = loaded.getNode(@enumFromInt(1)).?.metrics.?;
     try std.testing.expectEqual(original_metrics.complexity, loaded_metrics.complexity);
@@ -841,7 +841,7 @@ test "binary header has correct magic, version, and counts" {
     const fg = try g.freeze(std.testing.allocator);
     try save(std.testing.allocator, std.testing.io, fg, file_path);
 
-    // Assert: magic bytes
+    // Assert
     const file = try tmp.dir.openFile(std.testing.io, "test.bin", .{});
     defer file.close(std.testing.io);
     var header_buf: [12]u8 = undefined;
@@ -852,11 +852,11 @@ test "binary header has correct magic, version, and counts" {
     try std.testing.expectEqual(@as(usize, 12), bytes_read);
     try std.testing.expectEqualSlices(u8, &MAGIC, header_buf[0..8]);
 
-    // Assert: version
+    // Assert
     const version = std.mem.readInt(u32, header_buf[8..12], .little);
     try std.testing.expectEqual(VERSION, version);
 
-    // Assert: counts
+    // Assert
     var loaded = try load(std.testing.allocator, std.testing.io, file_path);
     defer loaded.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(usize, 3), loaded.nodeCount());
@@ -1229,20 +1229,20 @@ test "compaction after append" {
     const fg2 = try extra2.freeze(std.testing.allocator);
     try append(std.testing.allocator, std.testing.io, fg2, file_path);
 
-    // Act: full save (compaction) after appends
+    // Act
     var loaded_pre = try load(std.testing.allocator, std.testing.io, file_path);
     defer loaded_pre.deinit(std.testing.allocator);
     const pre_fg = try loaded_pre.freeze(std.testing.allocator);
     try save(std.testing.allocator, std.testing.io, pre_fg, file_path);
 
-    // Assert: data preserved after compaction
+    // Assert
     var loaded_post = try load(std.testing.allocator, std.testing.io, file_path);
     defer loaded_post.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(usize, 5), loaded_post.nodeCount());
 }
 
 test "load rejects truncated file with table regions past EOF" {
-    // Arrange: valid header claiming 1 node, but file is only the header
+    // Arrange
     var header: [HEADER_SIZE]u8 = undefined;
     @memset(&header, 0);
     @memcpy(header[0..8], &MAGIC);
@@ -1264,13 +1264,13 @@ test "load rejects truncated file with table regions past EOF" {
     defer file.close(std.testing.io);
     try file.writeStreamingAll(std.testing.io, &header);
 
-    // Act / Assert: node table (72 + 120 = 192) exceeds 72-byte file
+    // Act / Assert
     const result = load(std.testing.allocator, std.testing.io, file_path);
     try std.testing.expectError(error.InvalidFormat, result);
 }
 
 test "load rejects corrupt string ref past string table" {
-    // Arrange: save a valid graph, then corrupt a name StringRef
+    // Arrange
     var g = Graph.init("/tmp/test-project");
     defer g.deinit(std.testing.allocator);
     _ = try g.addNode(std.testing.allocator, .{ .id = .root, .name = "n", .kind = .file, .language = .zig });
@@ -1299,7 +1299,7 @@ test "load rejects corrupt string ref past string table" {
 }
 
 test "load rejects invalid enum string" {
-    // Arrange: save a valid graph, then corrupt the kind StringRef
+    // Arrange
     // to point to an out-of-bounds offset so resolveStr fails
     var g = Graph.init("/tmp/test-project");
     defer g.deinit(std.testing.allocator);

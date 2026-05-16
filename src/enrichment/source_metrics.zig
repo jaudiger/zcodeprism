@@ -104,9 +104,8 @@ test "default metrics when visitor did not populate" {
     try std.testing.expect(m.structural_hash != 0);
 }
 
-test "structural hash: deterministic, normalized identifiers, structure-sensitive" {
-    // Arrange: two functions with identical structure but different variable names,
-    // and a third with different branching structure.
+test "structural hash is deterministic, normalizes identifiers, and reflects structure" {
+    // Arrange
     const alloc = std.testing.allocator;
 
     const src = "fn foo() void {\n    if (x) {}\n}\nfn bar() void {\n    if (y) {}\n}\nfn baz() void {\n    if (a) {}\n    if (b) {}\n    while (c) { break; }\n}\n";
@@ -119,33 +118,29 @@ test "structural hash: deterministic, normalized identifiers, structure-sensitiv
     _ = try g.addNode(alloc, .{ .id = .root, .name = "bar", .kind = .function, .line_start = 4, .line_end = 6 });
     _ = try g.addNode(alloc, .{ .id = .root, .name = "baz", .kind = .function, .line_start = 7, .line_end = 11 });
 
-    // Act
-    computeAllSourceMetrics(&g, src, 0, g.nodeCount());
-
-    const hash_foo = g.getNode(@enumFromInt(1)).?.metrics.?.structural_hash;
-    const hash_bar = g.getNode(@enumFromInt(2)).?.metrics.?.structural_hash;
-    const hash_baz = g.getNode(@enumFromInt(3)).?.metrics.?.structural_hash;
-
-    // Assert: identical structure with different names produces same hash
-    try std.testing.expectEqual(hash_foo, hash_bar);
-
-    // Assert: different structure produces different hash
-    try std.testing.expect(hash_foo != hash_baz);
-
-    // Assert: deterministic (run again on a fresh graph)
     var g2 = Graph.init("/tmp/project");
     defer g2.deinit(alloc);
 
     _ = try g2.addNode(alloc, .{ .id = .root, .name = "test.zig", .kind = .file, .line_start = 1, .line_end = 11 });
     _ = try g2.addNode(alloc, .{ .id = .root, .name = "foo", .kind = .function, .line_start = 1, .line_end = 3 });
 
+    // Act
+    computeAllSourceMetrics(&g, src, 0, g.nodeCount());
     computeAllSourceMetrics(&g2, src, 0, g2.nodeCount());
 
-    try std.testing.expectEqual(hash_foo, g2.getNode(@enumFromInt(1)).?.metrics.?.structural_hash);
+    const hash_foo = g.getNode(@enumFromInt(1)).?.metrics.?.structural_hash;
+    const hash_bar = g.getNode(@enumFromInt(2)).?.metrics.?.structural_hash;
+    const hash_baz = g.getNode(@enumFromInt(3)).?.metrics.?.structural_hash;
+    const hash_foo_rerun = g2.getNode(@enumFromInt(1)).?.metrics.?.structural_hash;
+
+    // Assert
+    try std.testing.expectEqual(hash_foo, hash_bar);
+    try std.testing.expect(hash_foo != hash_baz);
+    try std.testing.expectEqual(hash_foo, hash_foo_rerun);
 }
 
-test "structural hash: comment and whitespace changes do not affect hash" {
-    // Arrange: same function with a comment and different indentation.
+test "structural hash is unaffected by comment and whitespace changes" {
+    // Arrange
     const alloc = std.testing.allocator;
 
     const src_plain = "fn foo() void {\n    if (x) {}\n}\n";
@@ -156,21 +151,22 @@ test "structural hash: comment and whitespace changes do not affect hash" {
     defer g1.deinit(alloc);
     _ = try g1.addNode(alloc, .{ .id = .root, .name = "test.zig", .kind = .file, .line_start = 1, .line_end = 3 });
     _ = try g1.addNode(alloc, .{ .id = .root, .name = "foo", .kind = .function, .line_start = 1, .line_end = 3 });
-    computeAllSourceMetrics(&g1, src_plain, 0, g1.nodeCount());
 
     var g2 = Graph.init("/tmp/project");
     defer g2.deinit(alloc);
     _ = try g2.addNode(alloc, .{ .id = .root, .name = "test.zig", .kind = .file, .line_start = 1, .line_end = 4 });
     _ = try g2.addNode(alloc, .{ .id = .root, .name = "foo", .kind = .function, .line_start = 1, .line_end = 4 });
-    computeAllSourceMetrics(&g2, src_commented, 0, g2.nodeCount());
 
     var g3 = Graph.init("/tmp/project");
     defer g3.deinit(alloc);
     _ = try g3.addNode(alloc, .{ .id = .root, .name = "test.zig", .kind = .file, .line_start = 1, .line_end = 3 });
     _ = try g3.addNode(alloc, .{ .id = .root, .name = "foo", .kind = .function, .line_start = 1, .line_end = 3 });
-    computeAllSourceMetrics(&g3, src_reindented, 0, g3.nodeCount());
 
     // Act
+    computeAllSourceMetrics(&g1, src_plain, 0, g1.nodeCount());
+    computeAllSourceMetrics(&g2, src_commented, 0, g2.nodeCount());
+    computeAllSourceMetrics(&g3, src_reindented, 0, g3.nodeCount());
+
     const hash_plain = g1.getNode(@enumFromInt(1)).?.metrics.?.structural_hash;
     const hash_commented = g2.getNode(@enumFromInt(1)).?.metrics.?.structural_hash;
     const hash_reindented = g3.getNode(@enumFromInt(1)).?.metrics.?.structural_hash;

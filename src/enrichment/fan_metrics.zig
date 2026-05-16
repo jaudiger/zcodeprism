@@ -136,11 +136,11 @@ test "fan metrics are idempotent" {
     const b = try g.addNode(allocator, .{ .id = .root, .name = "b", .kind = .function, .language = .zig, .metrics = .{} });
     _ = try g.addEdgeIfNew(allocator, .{ .source_id = a, .target_id = b, .edge_type = .calls });
 
-    // Act: run twice
+    // Act
     computeFanOut(&g);
     computeFanOut(&g);
 
-    // Assert: same result, not doubled
+    // Assert
     try std.testing.expectEqual(@as(u16, 1), g.nodes.items[@intFromEnum(a)].metrics.?.fan_out);
 }
 
@@ -158,7 +158,7 @@ test "fan metrics skip nodes without metrics" {
     computeFanOut(&g);
     computeFanIn(&g);
 
-    // Assert: node a has no metrics, so fan_out is not set
+    // Assert
     try std.testing.expectEqual(@as(?@import("../core/metrics.zig").Metrics, null), g.nodes.items[@intFromEnum(a)].metrics);
     try std.testing.expectEqual(@as(u16, 1), g.nodes.items[@intFromEnum(b)].metrics.?.fan_in);
 }

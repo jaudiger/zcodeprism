@@ -46,8 +46,6 @@ fn indexProjectFixtures(graph: *Graph, tmp_dir: *std.testing.TmpDir) !zcodeprism
     return indexDirectory(std.testing.allocator, std.testing.io, project_root, graph, null, .{});
 }
 
-// --- Nominal tests (project/) ---
-
 test "indexes all rs files" {
     // Arrange
     var g = Graph.init("/tmp/rust-project");
@@ -76,7 +74,7 @@ test "creates import edges from mod declarations" {
     // Act
     _ = try indexProjectFixtures(&g, &tmp_dir);
 
-    // Assert: lib.rs declares mod parser and mod utils
+    // Assert
     const lib_file = helpers.findNode(&g, "lib.rs", .file) orelse return error.TestExpectedEqual;
     const parser_file = helpers.findNode(&g, "parser.rs", .file) orelse return error.TestExpectedEqual;
     const utils_file = helpers.findNode(&g, "utils.rs", .file) orelse return error.TestExpectedEqual;
@@ -95,7 +93,7 @@ test "creates phantom nodes for std" {
     // Act
     _ = try indexProjectFixtures(&g, &tmp_dir);
 
-    // Assert: at least one phantom stdlib node exists (from use std::collections::HashMap)
+    // Assert
     var found_stdlib = false;
     for (g.nodes.items) |n| {
         switch (n.external) {
@@ -108,7 +106,7 @@ test "creates phantom nodes for std" {
     }
     try std.testing.expect(found_stdlib);
 
-    // Assert: no phantom nodes for in-project modules (parser, utils, Token, etc.)
+    // Assert
     for (g.nodes.items) |n| {
         if (n.external == .none) continue;
         const in_project = std.mem.eql(u8, n.name, "parser") or
@@ -167,7 +165,7 @@ test "all nodes have language rust" {
     // Act
     _ = try indexProjectFixtures(&g, &tmp_dir);
 
-    // Assert: all non-phantom, non-structural nodes have language=.rust
+    // Assert
     for (g.nodes.items) |n| {
         if (n.language == null) continue; // structural nodes (directories)
         switch (n.external) {
@@ -187,14 +185,14 @@ test "parent_id chain is consistent" {
     // Act
     _ = try indexProjectFixtures(&g, &tmp_dir);
 
-    // Assert: for every node with a parent_id, getNode(parent_id) succeeds
+    // Assert
     for (g.nodes.items) |n| {
         if (n.parent_id) |pid| {
             try std.testing.expect(g.getNode(pid) != null);
         }
     }
 
-    // Assert: no parent_id cycles
+    // Assert
     for (g.nodes.items) |n| {
         var current_id: ?NodeId = n.parent_id;
         var hops: usize = 0;
@@ -207,8 +205,6 @@ test "parent_id chain is consistent" {
     }
 }
 
-// --- Incremental tests ---
-
 test "incremental skips unchanged files" {
     // Arrange
     var g = Graph.init("/tmp/rust-project");
@@ -218,15 +214,13 @@ test "incremental skips unchanged files" {
     const project_root = setupProjectFixtures(&tmp_dir) catch return error.SkipZigTest;
     defer std.testing.allocator.free(project_root);
 
-    // Act: index twice with incremental=true
+    // Act
     _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{ .incremental = true }) catch |err| return err;
     const result2 = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{ .incremental = true }) catch |err| return err;
 
     // Assert
     try std.testing.expect(result2.files_skipped > 0);
 }
-
-// --- Edge case tests ---
 
 test "single file project" {
     // Arrange
@@ -272,8 +266,6 @@ test "directory with no rs files" {
     try std.testing.expectEqual(@as(usize, 0), g.nodeCount());
 }
 
-// --- Module resolution tests ---
-
 test "mod foo resolves to foo.rs" {
     // Arrange
     var g = Graph.init("/tmp/rust-mod");
@@ -296,7 +288,7 @@ test "mod foo resolves to foo.rs" {
     // Act
     _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
-    // Assert: lib.rs has imports edge to parser.rs
+    // Assert
     const lib_file = helpers.findNode(&g, "lib.rs", .file) orelse return error.TestExpectedEqual;
     const parser_file = helpers.findNode(&g, "parser.rs", .file) orelse return error.TestExpectedEqual;
 
@@ -332,7 +324,7 @@ test "module-prefix import resolves to qualified phantom" {
     // Act
     _ = try indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{});
 
-    // Assert: a phantom "Display" node exists whose parent is "fmt"
+    // Assert
     var found_qualified = false;
     for (g.nodes.items) |n| {
         if (!std.mem.eql(u8, n.name, "Display")) continue;
@@ -348,7 +340,7 @@ test "module-prefix import resolves to qualified phantom" {
     }
     try std.testing.expect(found_qualified);
 
-    // Assert: the "fmt" phantom has an imports edge from the file (module import)
+    // Assert
     const lib_file = helpers.findNode(&g, "lib.rs", .file) orelse return error.TestExpectedEqual;
     var has_fmt_import = false;
     for (g.edges.items) |e| {
@@ -362,7 +354,7 @@ test "module-prefix import resolves to qualified phantom" {
     }
     try std.testing.expect(has_fmt_import);
 
-    // Assert: an implements edge exists from Point to the phantom Display
+    // Assert
     const point_node = helpers.findNode(&g, "Point", .type_def) orelse return error.TestExpectedEqual;
     var has_implements = false;
     for (g.edges.items) |e| {
@@ -406,7 +398,7 @@ test "aliased use import resolves to qualified phantom" {
     // Act
     _ = try indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{});
 
-    // Assert: a phantom "Display" node exists whose parent is "fmt"
+    // Assert
     var found_qualified = false;
     for (g.nodes.items) |n| {
         if (!std.mem.eql(u8, n.name, "Display")) continue;
@@ -420,7 +412,7 @@ test "aliased use import resolves to qualified phantom" {
     }
     try std.testing.expect(found_qualified);
 
-    // Assert: no bare "Disp" phantom exists
+    // Assert
     var found_bare_disp = false;
     for (g.nodes.items) |n| {
         if (std.mem.eql(u8, n.name, "Disp") and n.external == .stdlib) {
@@ -430,7 +422,7 @@ test "aliased use import resolves to qualified phantom" {
     }
     try std.testing.expect(!found_bare_disp);
 
-    // Assert: an implements edge exists from Point to the phantom Display
+    // Assert
     const point_node = helpers.findNode(&g, "Point", .type_def) orelse return error.TestExpectedEqual;
     var has_implements = false;
     for (g.edges.items) |e| {
@@ -478,7 +470,7 @@ test "phantom module kind and edge type follow Rust naming convention" {
     // Act
     _ = try indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{});
 
-    // Assert: snake_case "io" is kind=module, PascalCase "Read" is kind=type_def
+    // Assert
     for (g.nodes.items) |n| {
         if (n.external != .stdlib) continue;
         if (std.mem.eql(u8, n.name, "io")) {
@@ -489,7 +481,7 @@ test "phantom module kind and edge type follow Rust naming convention" {
         }
     }
 
-    // Assert: lib.rs has imports edge (not uses_type) to the io module phantom
+    // Assert
     const lib_file = helpers.findNode(&g, "lib.rs", .file) orelse return error.TestExpectedEqual;
     var has_io_import = false;
     for (g.edges.items) |e| {
@@ -527,7 +519,7 @@ test "mod foo resolves to foo/mod.rs" {
     // Act
     _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
-    // Assert: lib.rs has imports edge to parser/mod.rs
+    // Assert
     const lib_file = helpers.findNode(&g, "lib.rs", .file) orelse return error.TestExpectedEqual;
     const mod_file = helpers.findNode(&g, "mod.rs", .file) orelse return error.TestExpectedEqual;
 
@@ -544,14 +536,14 @@ test "super:: resolves to parent module across topological ordering" {
     // Act
     _ = try indexProjectFixtures(&g, &tmp_dir);
 
-    // Assert: helpers.rs file exists
+    // Assert
     const helpers_file = helpers.findNode(&g, "helpers.rs", .file) orelse return error.TestExpectedEqual;
     const parser_file = helpers.findNode(&g, "parser.rs", .file) orelse return error.TestExpectedEqual;
 
-    // Assert: parser.rs imports helpers.rs (mod helpers;)
+    // Assert
     try std.testing.expect(helpers.hasEdge(&g, parser_file.id, helpers_file.id, .imports));
 
-    // Assert: uses_type edge from helpers.rs to Token in parser.rs
+    // Assert
     const token_node = helpers.findNodeInFile(&g, "Token", .type_def, parser_file.id) orelse
         return error.TestExpectedEqual;
     var has_uses_type = false;
@@ -566,7 +558,7 @@ test "super:: resolves to parent module across topological ordering" {
     }
     try std.testing.expect(has_uses_type);
 
-    // Assert: calls edge from parse_trimmed in helpers.rs to parse in parser.rs
+    // Assert
     const parse_fn = helpers.findNodeInFile(&g, "parse", .function, parser_file.id) orelse
         return error.TestExpectedEqual;
     const parse_trimmed = helpers.findNodeInFile(&g, "parse_trimmed", .function, helpers_file.id) orelse
@@ -584,7 +576,7 @@ test "qualified cross-file call resolves through impl block" {
     // Act
     _ = try indexProjectFixtures(&g, &tmp_dir);
 
-    // Assert: make_token in lib.rs calls Token::new in parser.rs
+    // Assert
     const lib_file = helpers.findNode(&g, "lib.rs", .file) orelse return error.TestExpectedEqual;
     const parser_file = helpers.findNode(&g, "parser.rs", .file) orelse return error.TestExpectedEqual;
     const make_token = helpers.findNodeInFile(&g, "make_token", .function, lib_file.id) orelse
@@ -593,8 +585,6 @@ test "qualified cross-file call resolves through impl block" {
         return error.TestExpectedEqual;
     try std.testing.expect(helpers.hasEdge(&g, make_token, token_new, .calls));
 }
-
-// --- Transitive re-export tests ---
 
 test "transitive re-export resolves through chain" {
     // Arrange
@@ -610,13 +600,13 @@ test "transitive re-export resolves through chain" {
     // Act
     _ = try indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{});
 
-    // Assert: Widget is defined in deep.rs
+    // Assert
     const deep_file = helpers.findNode(&g, "deep.rs", .file) orelse return error.TestExpectedEqual;
     const widget = helpers.findNodeInFile(&g, "Widget", .type_def, deep_file.id) orelse
         return error.TestExpectedEqual;
     _ = widget;
 
-    // Assert: create_widget in lib.rs has a uses_type edge to Widget in deep.rs
+    // Assert
     const lib_file = helpers.findNode(&g, "lib.rs", .file) orelse return error.TestExpectedEqual;
     const create_fn = helpers.findNodeInFile(&g, "create_widget", .function, lib_file.id) orelse
         return error.TestExpectedEqual;
@@ -652,25 +642,23 @@ test "pub use emits exports edge to resolved type" {
     // Act
     _ = try indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{});
 
-    // Assert: Widget and Gadget are type nodes in deep.rs
+    // Assert
     const deep_file = helpers.findNode(&g, "deep.rs", .file) orelse return error.TestExpectedEqual;
     const widget = helpers.findNodeInFile(&g, "Widget", .type_def, deep_file.id) orelse
         return error.TestExpectedEqual;
     const gadget = helpers.findNodeInFile(&g, "Gadget", .type_def, deep_file.id) orelse
         return error.TestExpectedEqual;
 
-    // Assert: lib.rs has exports edges to Widget and Gadget (pub use mid::{Widget, Gadget})
+    // Assert
     const lib_file = helpers.findNode(&g, "lib.rs", .file) orelse return error.TestExpectedEqual;
     try std.testing.expect(helpers.hasEdge(&g, lib_file.id, widget, .exports));
     try std.testing.expect(helpers.hasEdge(&g, lib_file.id, gadget, .exports));
 
-    // Assert: mid.rs has exports edges to Widget and Gadget (pub use deep::{Widget, Gadget})
+    // Assert
     const mid_file = helpers.findNode(&g, "mid.rs", .file) orelse return error.TestExpectedEqual;
     try std.testing.expect(helpers.hasEdge(&g, mid_file.id, widget, .exports));
     try std.testing.expect(helpers.hasEdge(&g, mid_file.id, gadget, .exports));
 }
-
-// --- Glob import tests ---
 
 test "glob import resolves public symbols but not private ones" {
     // Arrange
@@ -686,7 +674,7 @@ test "glob import resolves public symbols but not private ones" {
     // Act
     _ = try indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{});
 
-    // Assert: lib.rs functions have calls edges to public utils.rs functions
+    // Assert
     const lib_file = helpers.findNode(&g, "lib.rs", .file) orelse return error.TestExpectedEqual;
     const utils_file = helpers.findNode(&g, "utils.rs", .file) orelse return error.TestExpectedEqual;
     const run_fn = helpers.findNodeInFile(&g, "run", .function, lib_file.id) orelse
@@ -701,7 +689,7 @@ test "glob import resolves public symbols but not private ones" {
         return error.TestExpectedEqual;
     try std.testing.expect(helpers.hasEdge(&g, run_other_fn, other_fn, .calls));
 
-    // Assert: no edge from lib.rs to the private function in utils.rs
+    // Assert
     const private_fn = helpers.findNodeInFile(&g, "private_fn", .function, utils_file.id) orelse
         return error.TestExpectedEqual;
     var has_edge_to_private = false;
@@ -716,14 +704,14 @@ test "glob import resolves public symbols but not private ones" {
     }
     try std.testing.expect(!has_edge_to_private);
 
-    // Assert: multi-segment glob (use utils::inner::*) resolves deep_helper
+    // Assert
     const run_deep_fn = helpers.findNodeInFile(&g, "run_deep", .function, lib_file.id) orelse
         return error.TestExpectedEqual;
     const deep_helper_fn = helpers.findNodeInFile(&g, "deep_helper", .function, utils_file.id) orelse
         return error.TestExpectedEqual;
     try std.testing.expect(helpers.hasEdge(&g, run_deep_fn, deep_helper_fn, .calls));
 
-    // Assert: super glob (use super::*) resolves run from parent
+    // Assert
     const sub_file = helpers.findNode(&g, "sub.rs", .file) orelse return error.TestExpectedEqual;
     const call_parent_fn = helpers.findNodeInFile(&g, "call_parent", .function, sub_file.id) orelse
         return error.TestExpectedEqual;
@@ -754,7 +742,7 @@ test "scoped field type creates phantom uses_type edge" {
     // Act
     _ = try indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{});
 
-    // Assert: phantom Error node exists under phantom io module
+    // Assert
     var found_error = false;
     for (g.nodes.items) |n| {
         if (!std.mem.eql(u8, n.name, "Error")) continue;
@@ -768,7 +756,7 @@ test "scoped field type creates phantom uses_type edge" {
     }
     try std.testing.expect(found_error);
 
-    // Assert: AppError has uses_type edge to the phantom Error
+    // Assert
     var app_error_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, i| {
         if (n.kind == .enum_def and std.mem.eql(u8, n.name, "AppError")) {
@@ -789,8 +777,6 @@ test "scoped field type creates phantom uses_type edge" {
     }
     try std.testing.expect(has_uses_type);
 }
-
-// --- Cargo.toml integration tests ---
 
 const cargo_project_files: []const helpers.FileEntry = &.{
     .{ .sub_path = "Cargo.toml", .data = fixtures.rust.rust_project.cargo_toml },
@@ -829,12 +815,12 @@ test "Cargo.toml: crate module and dependencies" {
     // Act
     _ = try indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{});
 
-    // Assert: source files are indexed
+    // Assert
     try std.testing.expect(helpers.findNode(&g, "main.rs", .file) != null);
     try std.testing.expect(helpers.findNode(&g, "lib.rs", .file) != null);
     try std.testing.expect(helpers.findNode(&g, "helpers.rs", .file) != null);
 
-    // Assert: phantom nodes exist for external crates used in source (serde, log)
+    // Assert
     const main_file = helpers.findNode(&g, "main.rs", .file) orelse return error.TestExpectedEqual;
     var has_serde_phantom = false;
     var has_log_phantom = false;
@@ -848,7 +834,7 @@ test "Cargo.toml: crate module and dependencies" {
     try std.testing.expect(has_serde_phantom);
     try std.testing.expect(has_log_phantom);
 
-    // Assert: std phantom exists from lib.rs (use std::collections::HashMap)
+    // Assert
     const lib_file = helpers.findNode(&g, "lib.rs", .file) orelse return error.TestExpectedEqual;
     var has_std_phantom = false;
     for (g.edges.items) |e| {
@@ -875,10 +861,10 @@ test "Cargo.toml: no dependencies" {
     // Act
     _ = try indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{});
 
-    // Assert: source file is indexed
+    // Assert
     try std.testing.expect(helpers.findNode(&g, "lib.rs", .file) != null);
 
-    // Assert: no phantom dependency modules (no external crate imports in source)
+    // Assert
     for (g.nodes.items) |n| {
         if (n.external == .dependency) {
             return error.TestExpectedEqual;
@@ -898,7 +884,7 @@ test "Cargo.toml: workspace members" {
     // Act
     _ = try indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{});
 
-    // Assert: both crate lib.rs files are indexed
+    // Assert
     var lib_count: usize = 0;
     for (g.nodes.items) |n| {
         if (n.kind == .file and std.mem.eql(u8, n.name, "lib.rs")) lib_count += 1;

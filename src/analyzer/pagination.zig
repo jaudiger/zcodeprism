@@ -13,6 +13,7 @@ pub fn paginate(total: u32, offset: u32, limit: u32) Page {
 }
 
 test "paginate clamps and saturates correctly" {
+    // Arrange
     const cases = [_]struct { u32, u32, u32, u32, u32 }{
         .{ 100, 10, 20, 10, 20 },
         .{ 100, 10, 0, 10, 0 },
@@ -21,8 +22,12 @@ test "paginate clamps and saturates correctly" {
         .{ 0, 0, 50, 0, 0 },
         .{ 50, 0, 50, 0, 50 },
     };
+
     for (cases) |c| {
+        // Act
         const p = paginate(c[0], c[1], c[2]);
+
+        // Assert
         try std.testing.expectEqual(c[3], p.start);
         try std.testing.expectEqual(c[4], p.len);
     }

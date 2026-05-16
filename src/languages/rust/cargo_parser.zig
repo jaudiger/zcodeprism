@@ -373,15 +373,15 @@ test "parseCargoToml handles empty and missing sections" {
     // Arrange
     const allocator = std.testing.allocator;
 
-    // Act: empty content
+    // Act
     const empty_info = try parseCargoToml(allocator, "", Logger.noop);
     defer empty_info.deinit(allocator);
 
-    // Assert: all fields null
+    // Assert
     try std.testing.expectEqual(@as(?[]u8, null), empty_info.package_name);
     try std.testing.expectEqual(@as(?[]CargoInfo.DepEntry, null), empty_info.dependencies);
 
-    // Act: package only, no dependencies section
+    // Act
     const pkg_only =
         \\[package]
         \\name = "bare"
