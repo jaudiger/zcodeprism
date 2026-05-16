@@ -4,7 +4,6 @@ const logging = @import("../../logging.zig");
 const metrics_mod = @import("../../core/metrics.zig");
 const node_mod = @import("../../core/node.zig");
 const types = @import("../../core/types.zig");
-const lang = @import("../language.zig");
 const ts = @import("tree-sitter");
 const ts_api = @import("../../parser/tree_sitter_api.zig");
 const ast = @import("ast_analysis.zig");
@@ -13,6 +12,7 @@ const eb = @import("edge_builder.zig");
 const pc = @import("parse_context.zig");
 const fixtures = @import("test-fixtures");
 const phantom_mod = @import("../../core/phantom.zig");
+const zig_meta = @import("meta.zig");
 
 const Metrics = metrics_mod.Metrics;
 
@@ -28,7 +28,6 @@ const NodeId = types.NodeId;
 const NodeKind = types.NodeKind;
 const Visibility = types.Visibility;
 const Language = types.Language;
-const LangMeta = lang.LangMeta;
 
 /// Bundles shared state threaded through all process* functions.
 const VisitorContext = struct {
@@ -205,7 +204,7 @@ fn extractErrorSetNames(allocator: std.mem.Allocator, g: *Graph, source: []const
 /// Classifies the value to determine the node kind (struct, enum, union,
 /// error set, import, or plain constant). Filters noise constants:
 /// @This() aliases and private same-name re-exports. Detects Zig-specific
-/// qualifiers (mutable, comptime, packed, extern) and stores them as LangMeta.
+/// qualifiers (mutable, comptime, packed, extern) and stores them as ZigMeta.
 /// Recurses into container bodies for nested declarations.
 fn processVariableDecl(allocator: std.mem.Allocator, io: std.Io, ctx: *const VisitorContext, ts_node: ts.Node, parent_id: NodeId) error{OutOfMemory}!void {
     const name = ast.getIdentifierName(ctx.source, ts_node, ctx.k) orelse {
@@ -253,14 +252,14 @@ fn processVariableDecl(allocator: std.mem.Allocator, io: std.Io, ctx: *const Vis
         null;
 
     const has_zig_meta = is_mutable or is_comptime or is_packed or is_extern or comptime_conditional or error_set_names != null;
-    const lang_meta: LangMeta = if (has_zig_meta) .{ .zig = .{
+    const lang_meta_ptr = if (has_zig_meta) try zig_meta.allocAndAttach(allocator, ctx.g, .{
         .is_mutable = is_mutable,
         .is_comptime = is_comptime,
         .is_packed = is_packed,
         .is_extern = is_extern,
         .comptime_conditional = comptime_conditional,
         .error_set_names = error_set_names,
-    } } else .{ .none = {} };
+    }) else null;
 
     // For import declarations, store the import path extracted from the AST.
     const sig: ?[]const u8 = if (kind == .import_decl)
@@ -283,7 +282,7 @@ fn processVariableDecl(allocator: std.mem.Allocator, io: std.Io, ctx: *const Vis
         .line_end = ts_node.endPoint().row + 1,
         .col_start = if (ast.getIdentifierNode(ts_node, ctx.k)) |id_node| id_node.startPoint().column else null,
         .col_end = if (ast.getIdentifierNode(ts_node, ctx.k)) |id_node| id_node.endPoint().column else null,
-        .lang_meta = lang_meta,
+        .lang_meta = lang_meta_ptr,
     });
 
     // Recurse into struct body for nested declarations (methods, nested types).
@@ -416,11 +415,11 @@ fn processFunctionDecl(allocator: std.mem.Allocator, io: std.Io, ctx: *const Vis
             const is_extern_container = ast.hasKeyword(body_info.body, ctx.k.extern_kw);
             // Combine container qualifiers with function-level is_inline.
             const has_zig_meta = is_packed or is_extern_container or is_inline;
-            const type_lang_meta: LangMeta = if (has_zig_meta) .{ .zig = .{
+            const type_lang_meta = if (has_zig_meta) try zig_meta.allocAndAttach(allocator, ctx.g, .{
                 .is_packed = is_packed,
                 .is_extern = is_extern_container,
                 .is_inline = is_inline,
-            } } else .{ .none = {} };
+            }) else null;
 
             const type_id = try ctx.g.addNode(allocator, .{
                 .id = .root,
@@ -450,11 +449,11 @@ fn processFunctionDecl(allocator: std.mem.Allocator, io: std.Io, ctx: *const Vis
 
     // Regular function path: extract function-specific qualifiers.
     const is_extern = ast.hasKeyword(ts_node, ctx.k.extern_kw);
-    const lang_meta: LangMeta = if (is_extern or is_inline) .{ .zig = .{
+    const fn_lang_meta = if (is_extern or is_inline) try zig_meta.allocAndAttach(allocator, ctx.g, .{
         .is_extern = is_extern,
         .is_inline = is_inline,
         .calling_convention = if (is_extern) ast.extractCallingConvention(ctx.source, ts_node, ctx.k) else null,
-    } } else .{ .none = {} };
+    }) else null;
 
     // Find the block body for metric computation and inner type discovery.
     const block_body = findBlockChild(ts_node, ctx.k);
@@ -469,7 +468,7 @@ fn processFunctionDecl(allocator: std.mem.Allocator, io: std.Io, ctx: *const Vis
         .visibility = visibility,
         .doc = doc,
         .signature = signature,
-        .lang_meta = lang_meta,
+        .lang_meta = fn_lang_meta,
         .metrics = metrics,
         .line_start = ts_node.startPoint().row + 1,
         .line_end = ts_node.endPoint().row + 1,
@@ -990,8 +989,8 @@ test "error_def has signature and error_set_names from AST" {
         const n = g.getNode(@enumFromInt(i)) orelse continue;
         if (n.kind == .error_def and std.mem.eql(u8, n.name, "ParseError")) {
             try std.testing.expect(n.signature != null);
-            try std.testing.expect(n.lang_meta == .zig);
-            const names = n.lang_meta.zig.error_set_names.?;
+            const zm = zig_meta.metaOf(n).?;
+            const names = zm.error_set_names.?;
             try std.testing.expectEqual(@as(usize, 3), names.len);
             try std.testing.expectEqualStrings("InvalidToken", names[0]);
             try std.testing.expectEqualStrings("UnexpectedEof", names[1]);

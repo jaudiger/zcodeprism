@@ -3,7 +3,8 @@ const graph_mod = @import("../core/graph.zig");
 const types = @import("../core/types.zig");
 const node_mod = @import("../core/node.zig");
 const scope_mod = @import("../core/scope.zig");
-const lang_meta_mod = @import("../core/lang_meta.zig");
+const external_mod = @import("../core/external.zig");
+const rust_meta = @import("../languages/rust/meta.zig");
 const filter = @import("filter.zig");
 const pagination = @import("pagination.zig");
 
@@ -15,7 +16,7 @@ const EdgeId = types.EdgeId;
 const NodeKind = types.NodeKind;
 const Visibility = types.Visibility;
 const Language = types.Language;
-const ExternalInfo = lang_meta_mod.ExternalInfo;
+const ExternalInfo = external_mod.ExternalInfo;
 const Scope = scope_mod.Scope;
 
 pub const DeadCodeEntry = struct {
@@ -69,7 +70,7 @@ pub fn findDeadCode(allocator: std.mem.Allocator, fg: FrozenGraph, options: Dead
         }
 
         // Impl blocks are organizational containers, not referenceable entities.
-        if (n.lang_meta == .rust and n.lang_meta.rust.sub_kind == .impl_block) continue;
+        if (rust_meta.metaOf(&n)) |m| if (m.sub_kind == .impl_block) continue;
 
         if (n.external != .none) continue;
         if (!options.include_public and n.visibility == .public) continue;

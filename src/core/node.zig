@@ -1,14 +1,13 @@
 const std = @import("std");
 const types = @import("types.zig");
-const lang_meta_mod = @import("lang_meta.zig");
+const external_mod = @import("external.zig");
 const metrics_mod = @import("metrics.zig");
 
 const NodeId = types.NodeId;
 const NodeKind = types.NodeKind;
 const Visibility = types.Visibility;
 const Language = types.Language;
-const LangMeta = lang_meta_mod.LangMeta;
-const ExternalInfo = lang_meta_mod.ExternalInfo;
+const ExternalInfo = external_mod.ExternalInfo;
 
 /// A semantic code element in the code graph (function, type, field, etc.).
 ///
@@ -84,9 +83,11 @@ pub const Node = struct {
     /// Null until the metrics pass populates them.
     metrics: ?metrics_mod.Metrics = null,
 
-    /// Language-specific metadata (Zig qualifier flags, Rust attribute info, etc.).
-    /// Defaults to `.none` for nodes that carry no language-specific info.
-    lang_meta: LangMeta = .{ .none = {} },
+    /// Opaque pointer to language-specific metadata struct, interpreted via
+    /// the matching `src/languages/<lang>/meta.zig` accessor selected by
+    /// `language`. Null when the node carries no language-specific info.
+    /// Lifetime is tied to `graph.owned_buffers`.
+    lang_meta: ?*const anyopaque = null,
 
     /// External origin info for phantom nodes (stdlib or dependency).
     /// Defaults to `.none` for project-internal nodes.

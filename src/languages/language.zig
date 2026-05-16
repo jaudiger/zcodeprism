@@ -1,9 +1,6 @@
 const std = @import("std");
 const logging = @import("../logging.zig");
 
-pub const LangMeta = @import("../core/lang_meta.zig").LangMeta;
-pub const ExternalInfo = @import("../core/lang_meta.zig").ExternalInfo;
-
 /// Classification of an import statement for topo-sort ordering and
 /// phantom node resolution.
 pub const ImportKind = enum {

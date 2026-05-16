@@ -5,6 +5,7 @@ const source_scan = @import("../../parser/source_scan.zig");
 const source_utils = @import("source_utils.zig");
 const types = @import("../../core/types.zig");
 const node_utils = @import("node_utils.zig");
+const rust_meta = @import("meta.zig");
 
 const Graph = graph_mod.Graph;
 const PhantomManager = phantom_mod.PhantomManager;
@@ -41,8 +42,8 @@ pub fn resolveImplementsEdges(
         const clamped_end = @min(scope_end, items.len);
         for (items[file_idx..clamped_end], file_idx..) |n, idx| {
             if (n.kind != .type_def) continue;
-            if (n.lang_meta != .rust) continue;
-            if (n.lang_meta.rust.sub_kind != .impl_block) continue;
+            const m = rust_meta.metaOf(&n) orelse continue;
+            if (m.sub_kind != .impl_block) continue;
             const sig = n.signature orelse continue;
             const trait_name = extractTraitFromImplSig(sig) orelse continue;
             if (count >= buf.len) break;

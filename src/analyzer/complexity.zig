@@ -11,7 +11,7 @@ const Node = node_mod.Node;
 const NodeId = types.NodeId;
 const NodeKind = types.NodeKind;
 const Language = types.Language;
-const ExternalInfo = @import("../core/lang_meta.zig").ExternalInfo;
+const ExternalInfo = @import("../core/external.zig").ExternalInfo;
 const Scope = scope_mod.Scope;
 
 pub const ComplexityEntry = struct {

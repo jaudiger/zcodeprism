@@ -5,6 +5,7 @@ const types_mod = @import("../../core/types.zig");
 const phantom_mod = @import("../../core/phantom.zig");
 const shared_types = @import("types.zig");
 const scope_index_mod = @import("../../core/scope_index.zig");
+const rust_meta = @import("../rust/meta.zig");
 
 const Graph = graph_mod.Graph;
 const Node = node_mod.Node;
@@ -46,8 +47,8 @@ pub fn findTypeCrossFile(graph: *const Graph, name: []const u8, ctx: *const Edge
             if (!std.mem.eql(u8, n.name, name)) continue;
             // Skip Rust impl_blocks and type_aliases: they share the type name
             // but are not the defining declaration.
-            if (n.lang_meta == .rust) {
-                const sk = n.lang_meta.rust.sub_kind;
+            if (rust_meta.metaOf(&n)) |m| {
+                const sk = m.sub_kind;
                 if (sk == .impl_block or sk == .type_alias) continue;
             }
             match = @enumFromInt(child_idx);

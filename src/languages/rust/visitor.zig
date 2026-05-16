@@ -4,14 +4,13 @@ const logging = @import("../../logging.zig");
 const metrics_mod = @import("../../core/metrics.zig");
 const node_mod = @import("../../core/node.zig");
 const types = @import("../../core/types.zig");
-const lang = @import("../language.zig");
 const ts = @import("tree-sitter");
 const ts_api = @import("../../parser/tree_sitter_api.zig");
 const ast = @import("ast_analysis.zig");
 const cf = @import("cross_file.zig");
 const eb = @import("edge_builder.zig");
 const pc = @import("parse_context.zig");
-const rust_meta = @import("../../core/lang_meta.zig");
+const rust_meta = @import("meta.zig");
 const phantom_mod = @import("../../core/phantom.zig");
 
 const Metrics = metrics_mod.Metrics;
@@ -29,9 +28,6 @@ const NodeId = types.NodeId;
 const NodeKind = types.NodeKind;
 const Visibility = types.Visibility;
 const Language = types.Language;
-const LangMeta = lang.LangMeta;
-const RustMeta = rust_meta.RustMeta;
-const RustSubKind = rust_meta.RustSubKind;
 
 /// Bundles shared state threaded through all process* functions.
 const VisitorContext = struct {
@@ -93,7 +89,7 @@ pub fn parse(allocator: std.mem.Allocator, io: std.Io, source: []const u8, g: *G
         .line_end = if (line_count > 0) line_count else null,
         .doc = module_doc,
         .file_path = file_path,
-        .lang_meta = if (inner_attrs != null) .{ .rust = .{ .inner_attributes = inner_attrs } } else .{ .none = {} },
+        .lang_meta = if (inner_attrs != null) try rust_meta.allocAndAttach(allocator, g, .{ .inner_attributes = inner_attrs }) else null,
     });
 
     const ctx = VisitorContext{ .g = g, .source = source, .k = &k, .log = log };
@@ -300,7 +296,7 @@ fn processFunctionItem(allocator: std.mem.Allocator, io: std.Io, ctx: *const Vis
         .doc = doc,
         .signature = signature,
         .metrics = metrics,
-        .lang_meta = .{ .rust = .{
+        .lang_meta = try rust_meta.allocAndAttach(allocator, ctx.g, .{
             .is_unsafe = is_unsafe,
             .is_async = is_async,
             .is_const = is_const,
@@ -308,7 +304,7 @@ fn processFunctionItem(allocator: std.mem.Allocator, io: std.Io, ctx: *const Vis
             .abi = abi,
             .attributes = attributes,
             .visibility_scope = vis_info.scope,
-        } },
+        }),
     });
 
     try emitParameterNodes(allocator, io, ctx, ts_node, fn_id);
@@ -339,7 +335,7 @@ fn processFunctionSignatureItem(allocator: std.mem.Allocator, io: std.Io, ctx: *
         .col_end = if (ast.getIdentifierNode(ts_node, ctx.k)) |id| id.endPoint().column else null,
         .doc = doc,
         .signature = signature,
-        .lang_meta = .{ .rust = .{ .sub_kind = .fn_signature, .attributes = attributes, .visibility_scope = vis_info.scope } },
+        .lang_meta = try rust_meta.allocAndAttach(allocator, ctx.g, .{ .sub_kind = .fn_signature, .attributes = attributes, .visibility_scope = vis_info.scope }),
     });
 
     try emitParameterNodes(allocator, io, ctx, ts_node, fn_id);
@@ -405,7 +401,7 @@ fn processStructItem(allocator: std.mem.Allocator, io: std.Io, ctx: *const Visit
         .col_end = if (ast.getTypeIdentifierNode(ts_node, ctx.k)) |id| id.endPoint().column else null,
         .doc = doc,
         .signature = signature,
-        .lang_meta = .{ .rust = .{ .derives = derives, .attributes = attributes, .visibility_scope = vis_info.scope } },
+        .lang_meta = try rust_meta.allocAndAttach(allocator, ctx.g, .{ .derives = derives, .attributes = attributes, .visibility_scope = vis_info.scope }),
     });
 
     // Recurse into field_declaration_list for fields.
@@ -439,7 +435,7 @@ fn processEnumItem(allocator: std.mem.Allocator, io: std.Io, ctx: *const Visitor
         .col_end = if (ast.getTypeIdentifierNode(ts_node, ctx.k)) |id| id.endPoint().column else null,
         .doc = doc,
         .signature = signature,
-        .lang_meta = .{ .rust = .{ .derives = derives, .attributes = attributes, .visibility_scope = vis_info.scope } },
+        .lang_meta = try rust_meta.allocAndAttach(allocator, ctx.g, .{ .derives = derives, .attributes = attributes, .visibility_scope = vis_info.scope }),
     });
 
     // Recurse into enum_variant_list for variants.
@@ -473,7 +469,7 @@ fn processUnionItem(allocator: std.mem.Allocator, io: std.Io, ctx: *const Visito
         .col_end = if (ast.getTypeIdentifierNode(ts_node, ctx.k)) |id| id.endPoint().column else null,
         .doc = doc,
         .signature = signature,
-        .lang_meta = .{ .rust = .{ .derives = derives, .attributes = attributes, .visibility_scope = vis_info.scope } },
+        .lang_meta = try rust_meta.allocAndAttach(allocator, ctx.g, .{ .derives = derives, .attributes = attributes, .visibility_scope = vis_info.scope }),
     });
 
     // Recurse into field_declaration_list for fields.
@@ -506,7 +502,7 @@ fn processTraitItem(allocator: std.mem.Allocator, io: std.Io, ctx: *const Visito
         .col_end = if (ast.getTypeIdentifierNode(ts_node, ctx.k)) |id| id.endPoint().column else null,
         .doc = doc,
         .signature = signature,
-        .lang_meta = .{ .rust = .{ .sub_kind = .trait_, .attributes = attributes, .visibility_scope = vis_info.scope } },
+        .lang_meta = try rust_meta.allocAndAttach(allocator, ctx.g, .{ .sub_kind = .trait_, .attributes = attributes, .visibility_scope = vis_info.scope }),
     });
 
     // Recurse into declaration_list for trait methods.
@@ -535,7 +531,7 @@ fn processImplItem(allocator: std.mem.Allocator, io: std.Io, ctx: *const Visitor
         .line_start = ts_node.startPoint().row + 1,
         .line_end = ts_node.endPoint().row + 1,
         .doc = doc,
-        .lang_meta = .{ .rust = .{ .sub_kind = .impl_block, .visibility_scope = vis_info.scope } },
+        .lang_meta = try rust_meta.allocAndAttach(allocator, ctx.g, .{ .sub_kind = .impl_block, .visibility_scope = vis_info.scope }),
         .signature = signature,
     });
 
@@ -566,7 +562,7 @@ fn processConstItem(allocator: std.mem.Allocator, ctx: *const VisitorContext, ts
         .col_start = if (ast.getIdentifierNode(ts_node, ctx.k)) |id| id.startPoint().column else null,
         .col_end = if (ast.getIdentifierNode(ts_node, ctx.k)) |id| id.endPoint().column else null,
         .doc = doc,
-        .lang_meta = .{ .rust = .{ .attributes = attributes, .visibility_scope = vis_info.scope } },
+        .lang_meta = try rust_meta.allocAndAttach(allocator, ctx.g, .{ .attributes = attributes, .visibility_scope = vis_info.scope }),
     });
 }
 
@@ -593,7 +589,7 @@ fn processStaticItem(allocator: std.mem.Allocator, ctx: *const VisitorContext, t
         .col_start = if (ast.getIdentifierNode(ts_node, ctx.k)) |id| id.startPoint().column else null,
         .col_end = if (ast.getIdentifierNode(ts_node, ctx.k)) |id| id.endPoint().column else null,
         .doc = doc,
-        .lang_meta = .{ .rust = .{ .sub_kind = .static_item, .attributes = attributes, .visibility_scope = vis_info.scope } },
+        .lang_meta = try rust_meta.allocAndAttach(allocator, ctx.g, .{ .sub_kind = .static_item, .attributes = attributes, .visibility_scope = vis_info.scope }),
     });
 }
 
@@ -622,7 +618,7 @@ fn processTypeItem(allocator: std.mem.Allocator, ctx: *const VisitorContext, ts_
         .col_end = if (ast.getTypeIdentifierNode(ts_node, ctx.k)) |id| id.endPoint().column else null,
         .doc = doc,
         .signature = signature,
-        .lang_meta = .{ .rust = .{ .sub_kind = .type_alias, .attributes = attributes, .visibility_scope = vis_info.scope } },
+        .lang_meta = try rust_meta.allocAndAttach(allocator, ctx.g, .{ .sub_kind = .type_alias, .attributes = attributes, .visibility_scope = vis_info.scope }),
     });
 }
 
@@ -654,7 +650,7 @@ fn processMacroDefinition(allocator: std.mem.Allocator, ctx: *const VisitorConte
         .col_start = if (ast.getIdentifierNode(ts_node, ctx.k)) |id| id.startPoint().column else null,
         .col_end = if (ast.getIdentifierNode(ts_node, ctx.k)) |id| id.endPoint().column else null,
         .doc = doc,
-        .lang_meta = .{ .rust = .{ .sub_kind = .macro_rules, .attributes = attributes, .visibility_scope = vis_info.scope } },
+        .lang_meta = try rust_meta.allocAndAttach(allocator, ctx.g, .{ .sub_kind = .macro_rules, .attributes = attributes, .visibility_scope = vis_info.scope }),
     });
 }
 
@@ -683,7 +679,7 @@ fn processModItem(allocator: std.mem.Allocator, io: std.Io, ctx: *const VisitorC
             .line_start = ts_node.startPoint().row + 1,
             .line_end = ts_node.endPoint().row + 1,
             .doc = doc,
-            .lang_meta = .{ .rust = .{ .attributes = attributes, .inner_attributes = inner_attrs, .visibility_scope = vis_info.scope } },
+            .lang_meta = try rust_meta.allocAndAttach(allocator, ctx.g, .{ .attributes = attributes, .inner_attributes = inner_attrs, .visibility_scope = vis_info.scope }),
         });
         try recurseIntoBody(allocator, io, ctx, ts_node, node_id);
     } else {
@@ -698,7 +694,7 @@ fn processModItem(allocator: std.mem.Allocator, io: std.Io, ctx: *const VisitorC
             .line_end = ts_node.endPoint().row + 1,
             .doc = doc,
             .signature = name,
-            .lang_meta = .{ .rust = .{ .attributes = attributes, .visibility_scope = vis_info.scope } },
+            .lang_meta = try rust_meta.allocAndAttach(allocator, ctx.g, .{ .attributes = attributes, .visibility_scope = vis_info.scope }),
         });
     }
 }
@@ -725,7 +721,7 @@ fn processUseDeclaration(allocator: std.mem.Allocator, io: std.Io, ctx: *const V
         .line_end = ts_node.endPoint().row + 1,
         .doc = doc,
         .signature = signature,
-        .lang_meta = .{ .rust = .{ .attributes = attributes, .visibility_scope = vis_info.scope } },
+        .lang_meta = try rust_meta.allocAndAttach(allocator, ctx.g, .{ .attributes = attributes, .visibility_scope = vis_info.scope }),
     });
 }
 
@@ -756,7 +752,7 @@ fn processFieldDeclaration(allocator: std.mem.Allocator, io: std.Io, ctx: *const
             .line_start = ts_node.startPoint().row + 1,
             .line_end = ts_node.endPoint().row + 1,
             .doc = doc,
-            .lang_meta = .{ .rust = .{ .attributes = attributes, .visibility_scope = vis_info.scope } },
+            .lang_meta = try rust_meta.allocAndAttach(allocator, ctx.g, .{ .attributes = attributes, .visibility_scope = vis_info.scope }),
         });
     }
 }
@@ -784,7 +780,7 @@ fn processEnumVariant(allocator: std.mem.Allocator, io: std.Io, ctx: *const Visi
         .col_start = if (ast.getIdentifierNode(ts_node, ctx.k)) |id| id.startPoint().column else null,
         .col_end = if (ast.getIdentifierNode(ts_node, ctx.k)) |id| id.endPoint().column else null,
         .doc = doc,
-        .lang_meta = .{ .rust = .{ .attributes = attributes } },
+        .lang_meta = try rust_meta.allocAndAttach(allocator, ctx.g, .{ .attributes = attributes }),
     });
 
     var i: u32 = 0;
@@ -828,7 +824,7 @@ fn processAssociatedType(allocator: std.mem.Allocator, io: std.Io, ctx: *const V
         .col_start = if (ast.getTypeIdentifierNode(ts_node, ctx.k)) |id| id.startPoint().column else null,
         .col_end = if (ast.getTypeIdentifierNode(ts_node, ctx.k)) |id| id.endPoint().column else null,
         .doc = doc,
-        .lang_meta = .{ .rust = .{ .sub_kind = .associated_type, .attributes = attributes } },
+        .lang_meta = try rust_meta.allocAndAttach(allocator, ctx.g, .{ .sub_kind = .associated_type, .attributes = attributes }),
     });
 }
 
@@ -903,7 +899,7 @@ fn processTupleFields(allocator: std.mem.Allocator, io: std.Io, ctx: *const Visi
             .line_start = child.startPoint().row + 1,
             .line_end = child.endPoint().row + 1,
             .signature = ts_api.nodeText(ctx.source, child),
-            .lang_meta = if (attrs != null) .{ .rust = .{ .attributes = attrs } } else .{ .none = {} },
+            .lang_meta = if (attrs != null) try rust_meta.allocAndAttach(allocator, ctx.g, .{ .attributes = attrs }) else null,
         });
         field_index += 1;
         pending_vis = .private;

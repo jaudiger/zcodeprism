@@ -4,13 +4,12 @@
 const std = @import("std");
 const graph_mod = @import("../core/graph.zig");
 const types = @import("../core/types.zig");
-const lang = @import("../languages/language.zig");
+const zig_meta = @import("../languages/zig/meta.zig");
 const logging = @import("../logging.zig");
 
 const Graph = graph_mod.Graph;
 const NodeId = types.NodeId;
 const EdgeType = types.EdgeType;
-const LangMeta = lang.LangMeta;
 const Logger = logging.Logger;
 const Field = logging.Field;
 
@@ -43,8 +42,8 @@ pub fn propagateErrorSets(allocator: std.mem.Allocator, graph: *Graph, logger: L
     // Seed fn_errors from error_def nodes and their uses_type callers.
     for (graph.nodes.items, 0..) |n, i| {
         if (n.kind != .error_def) continue;
-        if (n.lang_meta != .zig) continue;
-        const names = n.lang_meta.zig.error_set_names orelse continue;
+        const zm = zig_meta.metaOf(&n) orelse continue;
+        const names = zm.error_set_names orelse continue;
 
         for (graph.edges.items) |e| {
             if (e.edge_type != .uses_type) continue;
@@ -112,9 +111,12 @@ pub fn propagateErrorSets(allocator: std.mem.Allocator, graph: *Graph, logger: L
     while (it.next()) |entry| {
         const idx = @intFromEnum(entry.key_ptr.*);
         if (idx >= graph.nodes.items.len) continue;
-        var n = &graph.nodes.items[idx];
-        if (n.lang_meta != .zig) continue;
-        n.lang_meta.zig.inferred_errors = entry.value_ptr.slices;
+        const n = &graph.nodes.items[idx];
+        if (zig_meta.metaOfMut(n)) |zm| {
+            zm.inferred_errors = entry.value_ptr.slices;
+        } else {
+            n.lang_meta = try zig_meta.allocAndAttach(allocator, graph, .{ .inferred_errors = entry.value_ptr.slices });
+        }
     }
 }
 
@@ -209,22 +211,22 @@ test "propagation: direct, multi-hop, union, and no-call boundary" {
         .name = "ErrorX",
         .kind = .error_def,
         .language = .zig,
-        .lang_meta = .{ .zig = .{ .error_set_names = &.{"X"} } },
+        .lang_meta = try zig_meta.allocAndAttach(allocator, &g, .{ .error_set_names = &.{"X"} }),
     });
     const err_y = try g.addNode(allocator, .{
         .id = .root,
         .name = "ErrorY",
         .kind = .error_def,
         .language = .zig,
-        .lang_meta = .{ .zig = .{ .error_set_names = &.{"Y"} } },
+        .lang_meta = try zig_meta.allocAndAttach(allocator, &g, .{ .error_set_names = &.{"Y"} }),
     });
-    const fn_a = try g.addNode(allocator, .{ .id = .root, .name = "fnA", .kind = .function, .language = .zig, .lang_meta = .{ .zig = .{} } });
-    const fn_b = try g.addNode(allocator, .{ .id = .root, .name = "fnB", .kind = .function, .language = .zig, .lang_meta = .{ .zig = .{} } });
-    const fn_c = try g.addNode(allocator, .{ .id = .root, .name = "fnC", .kind = .function, .language = .zig, .lang_meta = .{ .zig = .{} } });
-    const fn_d = try g.addNode(allocator, .{ .id = .root, .name = "fnD", .kind = .function, .language = .zig, .lang_meta = .{ .zig = .{} } });
-    const fn_e = try g.addNode(allocator, .{ .id = .root, .name = "fnE", .kind = .function, .language = .zig, .lang_meta = .{ .zig = .{} } });
-    const fn_f = try g.addNode(allocator, .{ .id = .root, .name = "fnF", .kind = .function, .language = .zig, .lang_meta = .{ .zig = .{} } });
-    const fn_g = try g.addNode(allocator, .{ .id = .root, .name = "fnG", .kind = .function, .language = .zig, .lang_meta = .{ .zig = .{} } });
+    const fn_a = try g.addNode(allocator, .{ .id = .root, .name = "fnA", .kind = .function, .language = .zig, .lang_meta = try zig_meta.allocAndAttach(allocator, &g, .{}) });
+    const fn_b = try g.addNode(allocator, .{ .id = .root, .name = "fnB", .kind = .function, .language = .zig, .lang_meta = try zig_meta.allocAndAttach(allocator, &g, .{}) });
+    const fn_c = try g.addNode(allocator, .{ .id = .root, .name = "fnC", .kind = .function, .language = .zig, .lang_meta = try zig_meta.allocAndAttach(allocator, &g, .{}) });
+    const fn_d = try g.addNode(allocator, .{ .id = .root, .name = "fnD", .kind = .function, .language = .zig, .lang_meta = try zig_meta.allocAndAttach(allocator, &g, .{}) });
+    const fn_e = try g.addNode(allocator, .{ .id = .root, .name = "fnE", .kind = .function, .language = .zig, .lang_meta = try zig_meta.allocAndAttach(allocator, &g, .{}) });
+    const fn_f = try g.addNode(allocator, .{ .id = .root, .name = "fnF", .kind = .function, .language = .zig, .lang_meta = try zig_meta.allocAndAttach(allocator, &g, .{}) });
+    const fn_g = try g.addNode(allocator, .{ .id = .root, .name = "fnG", .kind = .function, .language = .zig, .lang_meta = try zig_meta.allocAndAttach(allocator, &g, .{}) });
 
     // fn_a uses_type err_x
     _ = try g.addEdgeIfNew(allocator, .{ .source_id = fn_a, .target_id = err_x, .edge_type = .uses_type });
@@ -244,37 +246,37 @@ test "propagation: direct, multi-hop, union, and no-call boundary" {
     try propagateErrorSets(allocator, &g, Logger.noop);
 
     // Assert: fn_a has inferred {X} (direct uses_type)
-    const a_errors = g.nodes.items[@intFromEnum(fn_a)].lang_meta.zig.inferred_errors.?;
+    const a_errors = zig_meta.metaOf(&g.nodes.items[@intFromEnum(fn_a)]).?.inferred_errors.?;
     try std.testing.expectEqual(@as(usize, 1), a_errors.len);
     try std.testing.expectEqualStrings("X", a_errors[0]);
 
     // Assert: fn_b has inferred {X} (1-hop call)
-    const b_errors = g.nodes.items[@intFromEnum(fn_b)].lang_meta.zig.inferred_errors.?;
+    const b_errors = zig_meta.metaOf(&g.nodes.items[@intFromEnum(fn_b)]).?.inferred_errors.?;
     try std.testing.expectEqual(@as(usize, 1), b_errors.len);
     try std.testing.expectEqualStrings("X", b_errors[0]);
 
     // Assert: fn_c has inferred {X} (2-hop)
-    const c_errors = g.nodes.items[@intFromEnum(fn_c)].lang_meta.zig.inferred_errors.?;
+    const c_errors = zig_meta.metaOf(&g.nodes.items[@intFromEnum(fn_c)]).?.inferred_errors.?;
     try std.testing.expectEqual(@as(usize, 1), c_errors.len);
 
     // Assert: fn_d has inferred {X} (3-hop)
-    const d_errors = g.nodes.items[@intFromEnum(fn_d)].lang_meta.zig.inferred_errors.?;
+    const d_errors = zig_meta.metaOf(&g.nodes.items[@intFromEnum(fn_d)]).?.inferred_errors.?;
     try std.testing.expectEqual(@as(usize, 1), d_errors.len);
 
     // Assert: fn_e has inferred {X, Y} (union from two sources)
-    const e_errors = g.nodes.items[@intFromEnum(fn_e)].lang_meta.zig.inferred_errors.?;
+    const e_errors = zig_meta.metaOf(&g.nodes.items[@intFromEnum(fn_e)]).?.inferred_errors.?;
     try std.testing.expectEqual(@as(usize, 2), e_errors.len);
 
     // Assert: fn_f has no inferred_errors (uses_type, not calls)
     try std.testing.expectEqual(
         @as(?[]const []const u8, null),
-        g.nodes.items[@intFromEnum(fn_f)].lang_meta.zig.inferred_errors,
+        zig_meta.metaOf(&g.nodes.items[@intFromEnum(fn_f)]).?.inferred_errors,
     );
 
     // Assert: fn_g has no inferred_errors (void, no edges)
     try std.testing.expectEqual(
         @as(?[]const []const u8, null),
-        g.nodes.items[@intFromEnum(fn_g)].lang_meta.zig.inferred_errors,
+        zig_meta.metaOf(&g.nodes.items[@intFromEnum(fn_g)]).?.inferred_errors,
     );
 }
 
@@ -289,16 +291,16 @@ test "propagation: union of two error_def seeds on the same function" {
         .name = "ErrA",
         .kind = .error_def,
         .language = .zig,
-        .lang_meta = .{ .zig = .{ .error_set_names = &.{"A"} } },
+        .lang_meta = try zig_meta.allocAndAttach(allocator, &g, .{ .error_set_names = &.{"A"} }),
     });
     const err_b = try g.addNode(allocator, .{
         .id = .root,
         .name = "ErrB",
         .kind = .error_def,
         .language = .zig,
-        .lang_meta = .{ .zig = .{ .error_set_names = &.{"B"} } },
+        .lang_meta = try zig_meta.allocAndAttach(allocator, &g, .{ .error_set_names = &.{"B"} }),
     });
-    const fn_x = try g.addNode(allocator, .{ .id = .root, .name = "fnX", .kind = .function, .language = .zig, .lang_meta = .{ .zig = .{} } });
+    const fn_x = try g.addNode(allocator, .{ .id = .root, .name = "fnX", .kind = .function, .language = .zig, .lang_meta = try zig_meta.allocAndAttach(allocator, &g, .{}) });
     _ = try g.addEdgeIfNew(allocator, .{ .source_id = fn_x, .target_id = err_a, .edge_type = .uses_type });
     _ = try g.addEdgeIfNew(allocator, .{ .source_id = fn_x, .target_id = err_b, .edge_type = .uses_type });
 
@@ -306,7 +308,7 @@ test "propagation: union of two error_def seeds on the same function" {
     try propagateErrorSets(allocator, &g, Logger.noop);
 
     // Assert
-    const errors = g.nodes.items[@intFromEnum(fn_x)].lang_meta.zig.inferred_errors.?;
+    const errors = zig_meta.metaOf(&g.nodes.items[@intFromEnum(fn_x)]).?.inferred_errors.?;
     try std.testing.expectEqual(@as(usize, 2), errors.len);
 }
 
@@ -321,17 +323,17 @@ test "propagation: caller already has all callee errors makes no copy" {
         .name = "ErrXY",
         .kind = .error_def,
         .language = .zig,
-        .lang_meta = .{ .zig = .{ .error_set_names = &.{ "X", "Y" } } },
+        .lang_meta = try zig_meta.allocAndAttach(allocator, &g, .{ .error_set_names = &.{ "X", "Y" } }),
     });
     const err_x = try g.addNode(allocator, .{
         .id = .root,
         .name = "ErrX",
         .kind = .error_def,
         .language = .zig,
-        .lang_meta = .{ .zig = .{ .error_set_names = &.{"X"} } },
+        .lang_meta = try zig_meta.allocAndAttach(allocator, &g, .{ .error_set_names = &.{"X"} }),
     });
-    const fn_a = try g.addNode(allocator, .{ .id = .root, .name = "fnA", .kind = .function, .language = .zig, .lang_meta = .{ .zig = .{} } });
-    const fn_b = try g.addNode(allocator, .{ .id = .root, .name = "fnB", .kind = .function, .language = .zig, .lang_meta = .{ .zig = .{} } });
+    const fn_a = try g.addNode(allocator, .{ .id = .root, .name = "fnA", .kind = .function, .language = .zig, .lang_meta = try zig_meta.allocAndAttach(allocator, &g, .{}) });
+    const fn_b = try g.addNode(allocator, .{ .id = .root, .name = "fnB", .kind = .function, .language = .zig, .lang_meta = try zig_meta.allocAndAttach(allocator, &g, .{}) });
     _ = try g.addEdgeIfNew(allocator, .{ .source_id = fn_a, .target_id = err_x, .edge_type = .uses_type });
     _ = try g.addEdgeIfNew(allocator, .{ .source_id = fn_b, .target_id = err_xy, .edge_type = .uses_type });
     _ = try g.addEdgeIfNew(allocator, .{ .source_id = fn_b, .target_id = fn_a, .edge_type = .calls });
@@ -340,7 +342,7 @@ test "propagation: caller already has all callee errors makes no copy" {
     try propagateErrorSets(allocator, &g, Logger.noop);
 
     // Assert: fn_b already had X from its own seed; calling fn_a adds nothing
-    const b_errors = g.nodes.items[@intFromEnum(fn_b)].lang_meta.zig.inferred_errors.?;
+    const b_errors = zig_meta.metaOf(&g.nodes.items[@intFromEnum(fn_b)]).?.inferred_errors.?;
     try std.testing.expectEqual(@as(usize, 2), b_errors.len);
 }
 
@@ -356,10 +358,10 @@ test "propagation: deduplicates names across multiple call hops" {
         .name = "ErrX",
         .kind = .error_def,
         .language = .zig,
-        .lang_meta = .{ .zig = .{ .error_set_names = &.{"X"} } },
+        .lang_meta = try zig_meta.allocAndAttach(allocator, &g, .{ .error_set_names = &.{"X"} }),
     });
-    const fn_a = try g.addNode(allocator, .{ .id = .root, .name = "fnA", .kind = .function, .language = .zig, .lang_meta = .{ .zig = .{} } });
-    const fn_b = try g.addNode(allocator, .{ .id = .root, .name = "fnB", .kind = .function, .language = .zig, .lang_meta = .{ .zig = .{} } });
+    const fn_a = try g.addNode(allocator, .{ .id = .root, .name = "fnA", .kind = .function, .language = .zig, .lang_meta = try zig_meta.allocAndAttach(allocator, &g, .{}) });
+    const fn_b = try g.addNode(allocator, .{ .id = .root, .name = "fnB", .kind = .function, .language = .zig, .lang_meta = try zig_meta.allocAndAttach(allocator, &g, .{}) });
     _ = try g.addEdgeIfNew(allocator, .{ .source_id = fn_a, .target_id = err_x, .edge_type = .uses_type });
     _ = try g.addEdgeIfNew(allocator, .{ .source_id = fn_b, .target_id = err_x, .edge_type = .uses_type });
     _ = try g.addEdgeIfNew(allocator, .{ .source_id = fn_b, .target_id = fn_a, .edge_type = .calls });
@@ -368,7 +370,7 @@ test "propagation: deduplicates names across multiple call hops" {
     try propagateErrorSets(allocator, &g, Logger.noop);
 
     // Assert
-    const b_errors = g.nodes.items[@intFromEnum(fn_b)].lang_meta.zig.inferred_errors.?;
+    const b_errors = zig_meta.metaOf(&g.nodes.items[@intFromEnum(fn_b)]).?.inferred_errors.?;
     try std.testing.expectEqual(@as(usize, 1), b_errors.len);
 }
 
@@ -383,9 +385,9 @@ test "propagation: large fan-in does not duplicate" {
         .name = "BigErr",
         .kind = .error_def,
         .language = .zig,
-        .lang_meta = .{ .zig = .{ .error_set_names = &.{ "E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9", "E10" } } },
+        .lang_meta = try zig_meta.allocAndAttach(allocator, &g, .{ .error_set_names = &.{ "E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9", "E10" } }),
     });
-    const fn_a = try g.addNode(allocator, .{ .id = .root, .name = "fnA", .kind = .function, .language = .zig, .lang_meta = .{ .zig = .{} } });
+    const fn_a = try g.addNode(allocator, .{ .id = .root, .name = "fnA", .kind = .function, .language = .zig, .lang_meta = try zig_meta.allocAndAttach(allocator, &g, .{}) });
     _ = try g.addEdgeIfNew(allocator, .{ .source_id = fn_a, .target_id = err_def, .edge_type = .uses_type });
 
     var callers: [30]NodeId = undefined;
@@ -394,7 +396,7 @@ test "propagation: large fan-in does not duplicate" {
         const name = std.fmt.bufPrint(&name_buf, "caller{d}", .{i}) catch unreachable;
         const owned_name = try allocator.dupe(u8, name);
         defer allocator.free(owned_name);
-        c.* = try g.addNode(allocator, .{ .id = .root, .name = owned_name, .kind = .function, .language = .zig, .lang_meta = .{ .zig = .{} } });
+        c.* = try g.addNode(allocator, .{ .id = .root, .name = owned_name, .kind = .function, .language = .zig, .lang_meta = try zig_meta.allocAndAttach(allocator, &g, .{}) });
         _ = try g.addEdgeIfNew(allocator, .{ .source_id = c.*, .target_id = fn_a, .edge_type = .calls });
     }
 
@@ -403,7 +405,7 @@ test "propagation: large fan-in does not duplicate" {
 
     // Assert: every caller has exactly 10 errors, no duplicates
     for (callers) |c| {
-        const errors = g.nodes.items[@intFromEnum(c)].lang_meta.zig.inferred_errors.?;
+        const errors = zig_meta.metaOf(&g.nodes.items[@intFromEnum(c)]).?.inferred_errors.?;
         try std.testing.expectEqual(@as(usize, 10), errors.len);
     }
 }

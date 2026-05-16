@@ -2,6 +2,7 @@ const std = @import("std");
 const graph_mod = @import("../core/graph.zig");
 const node_mod = @import("../core/node.zig");
 const types = @import("../core/types.zig");
+const rust_meta = @import("../languages/rust/meta.zig");
 
 const Graph = graph_mod.Graph;
 const FrozenGraph = graph_mod.FrozenGraph;
@@ -330,19 +331,19 @@ pub fn assignChildrenIds(
     if (depth_remaining) |dr| if (dr == 0) return;
     const next_depth: ?u32 = if (depth_remaining) |dr| dr - 1 else null;
 
-    const parent_is_impl = switch (g.nodes.items[parent_idx].kind) {
-        .type_def => switch (g.nodes.items[parent_idx].lang_meta) {
-            .rust => |pm| pm.sub_kind == .impl_block,
-            else => false,
-        },
-        else => false,
+    const parent_is_impl = blk: {
+        const parent_node = g.nodes.items[parent_idx];
+        if (parent_node.kind != .type_def) break :blk false;
+        const m = rust_meta.metaOf(&parent_node) orelse break :blk false;
+        break :blk m.sub_kind == .impl_block;
     };
 
     for (children_index.childrenOf(parent_idx)) |child_idx| {
         const n = g.nodes.items[child_idx];
         switch (n.kind) {
-            .type_def => switch (n.lang_meta) {
-                .rust => |rm| switch (rm.sub_kind) {
+            .type_def => {
+                const rust_sub = if (rust_meta.metaOf(&n)) |m| m.sub_kind else null;
+                if (rust_sub) |sk| switch (sk) {
                     .impl_block => {
                         // Method container, not a type definition. No struct entry;
                         // recurse so methods inside receive fn: IDs.
@@ -366,13 +367,12 @@ pub fn assignChildrenIds(
                         try state.type_indices.append(allocator, child_idx);
                         try assignChildrenIds(allocator, g, child_idx, ids, filter, children_index, state, next_depth);
                     },
-                },
-                else => {
+                } else {
                     state.ty_counter += 1;
                     ids[child_idx] = .{ .prefix = "ty:", .num = state.ty_counter };
                     try state.type_indices.append(allocator, child_idx);
                     try assignChildrenIds(allocator, g, child_idx, ids, filter, children_index, state, next_depth);
-                },
+                }
             },
             .union_def => {
                 state.un_counter += 1;
@@ -392,10 +392,7 @@ pub fn assignChildrenIds(
                 const add_to_fn_indices = switch (parent_node.kind) {
                     .file, .module => true,
                     // Impl block methods count as top-level functions in the output.
-                    .type_def => switch (parent_node.lang_meta) {
-                        .rust => |rm| rm.sub_kind == .impl_block,
-                        else => false,
-                    },
+                    .type_def => if (rust_meta.metaOf(&parent_node)) |m| m.sub_kind == .impl_block else false,
                     else => false,
                 };
                 if (add_to_fn_indices) {

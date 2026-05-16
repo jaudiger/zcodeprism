@@ -9,7 +9,7 @@ const NodeKind = zcodeprism.types.NodeKind;
 const EdgeType = zcodeprism.types.EdgeType;
 const EdgeSource = zcodeprism.types.EdgeSource;
 const Visibility = zcodeprism.types.Visibility;
-const LangMeta = zcodeprism.language.LangMeta;
+const zig_meta = zcodeprism.zig_meta;
 const Logger = zcodeprism.logging.Logger;
 const GraphIndex = zcodeprism.graph_index_mod.GraphIndex;
 const parse = zcodeprism.visitor.parse;
@@ -1478,55 +1478,45 @@ test "container layout qualifiers: packed and extern detected on structs and uni
     try std.testing.expect(gen_packed != null);
 
     // Normal struct: no zig meta (neither packed nor extern)
-    try std.testing.expectEqual(LangMeta{ .none = {} }, normal.?.lang_meta);
+    try std.testing.expect(normal.?.lang_meta == null);
 
     // Packed struct: is_packed=true, is_extern=false
-    switch (packed_s.?.lang_meta) {
-        .zig => |zm| {
-            try std.testing.expect(zm.is_packed);
-            try std.testing.expect(!zm.is_extern);
-        },
-        .rust, .none => return error.ExpectedZigMeta,
-    }
+    if (zig_meta.metaOf(packed_s.?)) |zm| {
+        try std.testing.expect(zm.is_packed);
+        try std.testing.expect(!zm.is_extern);
+    } else return error.ExpectedZigMeta;
 
     // Packed struct with backing type: same as packed
-    switch (packed_backed.?.lang_meta) {
-        .zig => |zm| try std.testing.expect(zm.is_packed),
-        .rust, .none => return error.ExpectedZigMeta,
-    }
+    if (zig_meta.metaOf(packed_backed.?)) |zm| {
+        try std.testing.expect(zm.is_packed);
+    } else return error.ExpectedZigMeta;
 
     // Extern struct: is_extern=true, is_packed=false
-    switch (ext_s.?.lang_meta) {
-        .zig => |zm| {
-            try std.testing.expect(zm.is_extern);
-            try std.testing.expect(!zm.is_packed);
-        },
-        .rust, .none => return error.ExpectedZigMeta,
-    }
+    if (zig_meta.metaOf(ext_s.?)) |zm| {
+        try std.testing.expect(zm.is_extern);
+        try std.testing.expect(!zm.is_packed);
+    } else return error.ExpectedZigMeta;
 
     // Packed union: is_packed=true
     try std.testing.expectEqual(NodeKind.union_def, packed_u.?.kind);
-    switch (packed_u.?.lang_meta) {
-        .zig => |zm| try std.testing.expect(zm.is_packed),
-        .rust, .none => return error.ExpectedZigMeta,
-    }
+    if (zig_meta.metaOf(packed_u.?)) |zm| {
+        try std.testing.expect(zm.is_packed);
+    } else return error.ExpectedZigMeta;
 
     // Extern union: is_extern=true
     try std.testing.expectEqual(NodeKind.union_def, ext_u.?.kind);
-    switch (ext_u.?.lang_meta) {
-        .zig => |zm| try std.testing.expect(zm.is_extern),
-        .rust, .none => return error.ExpectedZigMeta,
-    }
+    if (zig_meta.metaOf(ext_u.?)) |zm| {
+        try std.testing.expect(zm.is_extern);
+    } else return error.ExpectedZigMeta;
 
     // Normal union: no zig meta
-    try std.testing.expectEqual(LangMeta{ .none = {} }, normal_u.?.lang_meta);
+    try std.testing.expect(normal_u.?.lang_meta == null);
 
     // Type-returning function returning packed struct: is_packed=true
     try std.testing.expectEqual(NodeKind.type_def, gen_packed.?.kind);
-    switch (gen_packed.?.lang_meta) {
-        .zig => |zm| try std.testing.expect(zm.is_packed),
-        .rust, .none => return error.ExpectedZigMeta,
-    }
+    if (zig_meta.metaOf(gen_packed.?)) |zm| {
+        try std.testing.expect(zm.is_packed);
+    } else return error.ExpectedZigMeta;
 }
 
 test "type-returning function signature preserved" {
@@ -1602,10 +1592,9 @@ test "type-returning function signature preserved" {
         try std.testing.expect(wrapper_node.?.signature != null);
 
         // Assert: is_inline is true in lang_meta
-        switch (wrapper_node.?.lang_meta) {
-            .zig => |zm| try std.testing.expect(zm.is_inline),
-            .rust, .none => return error.ExpectedZigMeta,
-        }
+        if (zig_meta.metaOf(wrapper_node.?)) |zm| {
+            try std.testing.expect(zm.is_inline);
+        } else return error.ExpectedZigMeta;
     }
 }
 
@@ -1638,10 +1627,9 @@ test "conditional expressions classified as constant with comptime_conditional" 
         try std.testing.expectEqual(NodeKind.constant, system_node.?.kind);
 
         // Assert: system has lang_meta.zig.comptime_conditional == true
-        switch (system_node.?.lang_meta) {
-            .zig => |zm| try std.testing.expect(zm.comptime_conditional),
-            .rust, .none => return error.ExpectedZigMeta,
-        }
+        if (zig_meta.metaOf(system_node.?)) |zm| {
+            try std.testing.expect(zm.comptime_conditional);
+        } else return error.ExpectedZigMeta;
 
         // Assert: system has visibility .public
         try std.testing.expectEqual(Visibility.public, system_node.?.visibility);
@@ -1693,10 +1681,9 @@ test "conditional expressions classified as constant with comptime_conditional" 
         try std.testing.expectEqual(NodeKind.constant, backend_node.?.kind);
 
         // Assert: backend has lang_meta.zig.comptime_conditional == true
-        switch (backend_node.?.lang_meta) {
-            .zig => |zm| try std.testing.expect(zm.comptime_conditional),
-            .rust, .none => return error.ExpectedZigMeta,
-        }
+        if (zig_meta.metaOf(backend_node.?)) |zm| {
+            try std.testing.expect(zm.comptime_conditional);
+        } else return error.ExpectedZigMeta;
 
         // Assert: no child function init has parent backend
         var backend_id: ?NodeId = null;
@@ -1763,10 +1750,8 @@ test "conditional expressions classified as constant with comptime_conditional" 
         try std.testing.expect(found_defaults);
 
         // Assert: Config does NOT have comptime_conditional == true
-        switch (config_node.?.lang_meta) {
-            .zig => |zm| try std.testing.expect(!zm.comptime_conditional),
-            .rust => return error.ExpectedZigMeta,
-            .none => {}, // no zig meta is also acceptable (means no flags set)
+        if (zig_meta.metaOf(config_node.?)) |zm| {
+            try std.testing.expect(!zm.comptime_conditional);
         }
     }
 }

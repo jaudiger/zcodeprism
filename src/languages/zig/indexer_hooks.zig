@@ -9,6 +9,8 @@ const logging = @import("../../logging.zig");
 const types = @import("../../core/types.zig");
 const lang = @import("../language.zig");
 const lang_support = @import("../language_support.zig");
+const zig_meta = @import("meta.zig");
+const external_mod = @import("../../core/external.zig");
 const lsp_client = @import("../../lsp/client.zig");
 
 const Graph = graph_mod.Graph;
@@ -18,7 +20,7 @@ const NodeId = types.NodeId;
 const Language = types.Language;
 const ImportEntry = lang.ImportEntry;
 const ImportKind = lang.ImportKind;
-const ExternalInfo = lang.ExternalInfo;
+const ExternalInfo = external_mod.ExternalInfo;
 const BuildConfig = lang.BuildConfig;
 const Logger = logging.Logger;
 const LspClient = lsp_client.LspClient;
@@ -318,9 +320,12 @@ fn handleZigHover(allocator: std.mem.Allocator, graph: *Graph, src_idx: usize, h
     try graph.addOwnedBuffer(allocator, names.flat_buf);
     errdefer allocator.free(names.slices);
     try graph.addOwnedSlice(allocator, []const u8, names.slices);
-    var zm = if (graph.nodes.items[src_idx].lang_meta == .zig) graph.nodes.items[src_idx].lang_meta.zig else @import("../../core/lang_meta.zig").ZigMeta{};
-    zm.inferred_errors = names.slices;
-    graph.nodes.items[src_idx].lang_meta = .{ .zig = zm };
+    const node_ptr = &graph.nodes.items[src_idx];
+    if (zig_meta.metaOfMut(node_ptr)) |zm| {
+        zm.inferred_errors = names.slices;
+    } else {
+        node_ptr.lang_meta = try zig_meta.allocAndAttach(allocator, graph, .{ .inferred_errors = names.slices });
+    }
     result.errors_inferred += 1;
     result.hover_successes += 1;
     result.worklist_resolved += 1;

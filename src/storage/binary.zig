@@ -5,7 +5,9 @@ const node_mod = @import("../core/node.zig");
 const edge_mod = @import("../core/edge.zig");
 const types = @import("../core/types.zig");
 const metrics_mod = @import("../core/metrics.zig");
-const lang = @import("../languages/language.zig");
+const lang_meta_mod = @import("../languages/lang_meta.zig");
+const zig_meta_mod = @import("../languages/zig/meta.zig");
+const external_mod = @import("../core/external.zig");
 
 const Graph = graph_mod.Graph;
 const FrozenGraph = graph_mod.FrozenGraph;
@@ -17,8 +19,7 @@ const EdgeSource = types.EdgeSource;
 const NodeKind = types.NodeKind;
 const Visibility = types.Visibility;
 const Metrics = metrics_mod.Metrics;
-const LangMeta = lang.LangMeta;
-const ExternalInfo = lang.ExternalInfo;
+const ExternalInfo = external_mod.ExternalInfo;
 
 /// Magic bytes identifying a ZCodePrism binary file ("ZCPRISM\0").
 pub const MAGIC: [8]u8 = "ZCPRISM\x00".*;
@@ -278,7 +279,7 @@ pub fn save(allocator: std.mem.Allocator, io: std.Io, fg: FrozenGraph, path: []c
             },
             else => {},
         }
-        total_string_bytes += n.lang_meta.binarySize();
+        total_string_bytes += lang_meta_mod.binarySize(n);
         total_string_bytes += @tagName(n.kind).len;
         total_string_bytes += @tagName(n.visibility).len;
         if (n.language) |l| total_string_bytes += @tagName(l).len;
@@ -310,7 +311,7 @@ pub fn save(allocator: std.mem.Allocator, io: std.Io, fg: FrozenGraph, path: []c
             .ext_version = try st.internOptional(allocator, ext_version),
             .lang_meta = blk: {
                 var meta_buf: [256]u8 = undefined;
-                const meta_len = n.lang_meta.encodeBinary(&meta_buf);
+                const meta_len = lang_meta_mod.encodeBinary(n, &meta_buf);
                 break :blk if (meta_len > 0) try st.intern(allocator, meta_buf[0..meta_len]) else .{ .offset = 0, .len = 0 };
             },
             .kind = try st.intern(allocator, @tagName(n.kind)),
@@ -537,11 +538,10 @@ pub fn load(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !Graph {
             else => .{ .none = {} },
         };
 
-        // LangMeta
-        const lang_meta: LangMeta = if (lang_meta_ref.len > 0) blk: {
+        const lang_meta: ?*const anyopaque = if (lang_meta_ref.len > 0 and language != null) blk: {
             try validateStringRef(st_data, lang_meta_ref);
-            break :blk LangMeta.decodeBinary(st_data[lang_meta_ref.offset..][0..lang_meta_ref.len]);
-        } else .{ .none = {} };
+            break :blk try lang_meta_mod.decodeBinaryAndAttach(allocator, &g, language.?, st_data[lang_meta_ref.offset..][0..lang_meta_ref.len]);
+        } else null;
 
         // Metrics
         const metrics: ?Metrics = if (has_metrics) blk: {
@@ -733,7 +733,7 @@ fn createTestGraph(allocator: std.mem.Allocator) !Graph {
             .nesting_depth_max = 3,
             .structural_hash = 0xCAFEBABE12345678,
         },
-        .lang_meta = .{ .zig = .{ .is_comptime = false, .is_inline = true } },
+        .lang_meta = try zig_meta_mod.allocAndAttach(allocator, &g, .{ .is_comptime = false, .is_inline = true }),
     });
 
     // Node 2: type_def with external=none
@@ -1031,7 +1031,7 @@ test "binary preserves ZigMeta" {
         .name = "comptime_fn",
         .kind = .function,
         .language = .zig,
-        .lang_meta = .{ .zig = .{ .is_comptime = true } },
+        .lang_meta = try zig_meta_mod.allocAndAttach(std.testing.allocator, &g, .{ .is_comptime = true }),
     });
 
     var tmp = std.testing.tmpDir(.{});
@@ -1048,11 +1048,11 @@ test "binary preserves ZigMeta" {
     defer loaded.deinit(std.testing.allocator);
 
     // Assert
-    const meta = loaded.getNode(.root).?.lang_meta;
-    try std.testing.expect(meta.zig.is_comptime);
+    const meta = zig_meta_mod.metaOf(loaded.getNode(.root).?).?;
+    try std.testing.expect(meta.is_comptime);
 }
 
-test "binary preserves LangMeta.none" {
+test "binary preserves null lang_meta" {
     // Arrange
     var g = Graph.init("/tmp/test-project");
     defer g.deinit(std.testing.allocator);
@@ -1062,7 +1062,6 @@ test "binary preserves LangMeta.none" {
         .name = "plain",
         .kind = .function,
         .language = .zig,
-        .lang_meta = .{ .none = {} },
     });
 
     var tmp = std.testing.tmpDir(.{});
@@ -1079,7 +1078,7 @@ test "binary preserves LangMeta.none" {
     defer loaded.deinit(std.testing.allocator);
 
     // Assert
-    try std.testing.expectEqual(LangMeta.none, loaded.getNode(.root).?.lang_meta);
+    try std.testing.expect(loaded.getNode(.root).?.lang_meta == null);
 }
 
 test "binary round-trip preserves union_def kind" {
@@ -1123,7 +1122,7 @@ test "binary round-trip preserves is_packed metadata" {
         .name = "PackedStruct",
         .kind = .type_def,
         .language = .zig,
-        .lang_meta = .{ .zig = .{ .is_packed = true } },
+        .lang_meta = try zig_meta_mod.allocAndAttach(std.testing.allocator, &g, .{ .is_packed = true }),
     });
 
     _ = try g.addNode(std.testing.allocator, .{
@@ -1131,7 +1130,7 @@ test "binary round-trip preserves is_packed metadata" {
         .name = "ExternStruct",
         .kind = .type_def,
         .language = .zig,
-        .lang_meta = .{ .zig = .{ .is_extern = true } },
+        .lang_meta = try zig_meta_mod.allocAndAttach(std.testing.allocator, &g, .{ .is_extern = true }),
     });
 
     var tmp = std.testing.tmpDir(.{});
@@ -1148,13 +1147,13 @@ test "binary round-trip preserves is_packed metadata" {
     defer loaded.deinit(std.testing.allocator);
 
     // Assert
-    const packed_meta = loaded.getNode(@enumFromInt(0)).?.lang_meta;
-    try std.testing.expect(packed_meta.zig.is_packed);
-    try std.testing.expect(!packed_meta.zig.is_extern);
+    const packed_meta = zig_meta_mod.metaOf(loaded.getNode(@enumFromInt(0)).?).?;
+    try std.testing.expect(packed_meta.is_packed);
+    try std.testing.expect(!packed_meta.is_extern);
 
-    const extern_meta = loaded.getNode(@enumFromInt(1)).?.lang_meta;
-    try std.testing.expect(extern_meta.zig.is_extern);
-    try std.testing.expect(!extern_meta.zig.is_packed);
+    const extern_meta = zig_meta_mod.metaOf(loaded.getNode(@enumFromInt(1)).?).?;
+    try std.testing.expect(extern_meta.is_extern);
+    try std.testing.expect(!extern_meta.is_packed);
 }
 
 // Append tests

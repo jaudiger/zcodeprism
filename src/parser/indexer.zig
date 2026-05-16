@@ -12,6 +12,8 @@ const phantom_mod = @import("../core/phantom.zig");
 const metrics_mod = @import("../core/metrics.zig");
 const source_scan = @import("source_scan.zig");
 const enrichment = @import("../enrichment/enrichment.zig");
+const lang_meta_mod = @import("../languages/lang_meta.zig");
+const zig_meta = @import("../languages/zig/meta.zig");
 const worklist_mod = @import("../lsp/worklist.zig");
 const LspWorklist = worklist_mod.LspWorklist;
 const WorklistEntry = worklist_mod.WorklistEntry;
@@ -28,7 +30,7 @@ const EdgeType = types.EdgeType;
 const EdgeSource = types.EdgeSource;
 const Visibility = types.Visibility;
 const Language = types.Language;
-const ExternalInfo = lang.ExternalInfo;
+const ExternalInfo = @import("../core/external.zig").ExternalInfo;
 const Registry = registry_mod.Registry;
 const PhantomManager = phantom_mod.PhantomManager;
 const GraphIndex = graph_index_mod.GraphIndex;
@@ -250,7 +252,7 @@ pub fn indexDirectory(
     for (graph.nodes.items) |n| {
         if (n.kind != .function) continue;
         if (n.language != .zig) continue;
-        if (n.lang_meta == .zig and n.lang_meta.zig.inferred_errors != null) continue;
+        if (zig_meta.metaOf(&n)) |zm| if (zm.inferred_errors != null) continue;
         const file_path = n.file_path orelse continue;
         const line_start = n.line_start orelse continue;
         const lsp_line: u32 = if (line_start > 0) line_start - 1 else 0;
@@ -651,7 +653,7 @@ fn resolveCrossLanguageEdges(
     for (nodes, 0..) |n, idx| {
         if (n.kind != .function) continue;
         if (n.language == null) continue;
-        const conv = n.lang_meta.ffiConvention() orelse continue;
+        const conv = lang_meta_mod.ffiConvention(n) orelse continue;
         if (!isFfiDefinition(n)) continue;
         const key = FfiKey{ .name = n.name, .convention = conv };
         const gop = try defn_map.getOrPut(allocator, key);
@@ -664,7 +666,7 @@ fn resolveCrossLanguageEdges(
     for (nodes) |proto| {
         if (proto.kind != .function) continue;
         const proto_lang = proto.language orelse continue;
-        const conv = proto.lang_meta.ffiConvention() orelse continue;
+        const conv = lang_meta_mod.ffiConvention(proto) orelse continue;
         if (!isFfiPrototype(proto)) continue;
 
         const key = FfiKey{ .name = proto.name, .convention = conv };

@@ -11,7 +11,9 @@ const EdgeType = zcodeprism.types.EdgeType;
 const EdgeSource = zcodeprism.types.EdgeSource;
 const Language = zcodeprism.types.Language;
 const Visibility = zcodeprism.types.Visibility;
-const LangMeta = zcodeprism.language.LangMeta;
+const rust_meta = zcodeprism.rust_meta;
+const RustMeta = rust_meta.RustMeta;
+const RustSubKind = rust_meta.RustSubKind;
 const Logger = zcodeprism.logging.Logger;
 const GraphIndex = zcodeprism.graph_index_mod.GraphIndex;
 const parse = zcodeprism.rust_visitor.parse;
@@ -118,7 +120,7 @@ test "parses trait" {
     // Assert
     const node = helpers.findNode(&g, "Drawable", .type_def);
     try std.testing.expect(node != null);
-    try std.testing.expectEqual(LangMeta{ .rust = .{ .sub_kind = .trait_ } }, node.?.lang_meta);
+    try std.testing.expectEqual(RustSubKind.trait_, rust_meta.metaOf(node.?).?.sub_kind);
 }
 
 test "parses impl block" {
@@ -133,7 +135,7 @@ test "parses impl block" {
     var found = false;
     for (g.nodes.items) |n| {
         if (n.kind == .type_def) {
-            if (n.lang_meta == .rust and n.lang_meta.rust.sub_kind == .impl_block) {
+            if (if (rust_meta.metaOf(&n)) |m| m.sub_kind == .impl_block else false) {
                 found = true;
                 break;
             }
@@ -177,8 +179,8 @@ test "parses static item" {
     // Assert
     const node = helpers.findNode(&g, "COUNTER", .constant);
     try std.testing.expect(node != null);
-    try std.testing.expect(node.?.lang_meta == .rust);
-    try std.testing.expectEqual(zcodeprism.lang_meta.RustSubKind.static_item, node.?.lang_meta.rust.sub_kind);
+    try std.testing.expect(rust_meta.metaOf(node.?) != null);
+    try std.testing.expectEqual(RustSubKind.static_item, rust_meta.metaOf(node.?).?.sub_kind);
 }
 
 test "parses type alias" {
@@ -192,8 +194,8 @@ test "parses type alias" {
     // Assert
     const node = helpers.findNode(&g, "Result", .type_def);
     try std.testing.expect(node != null);
-    try std.testing.expect(node.?.lang_meta == .rust);
-    try std.testing.expectEqual(zcodeprism.lang_meta.RustSubKind.type_alias, node.?.lang_meta.rust.sub_kind);
+    try std.testing.expect(rust_meta.metaOf(node.?) != null);
+    try std.testing.expectEqual(RustSubKind.type_alias, rust_meta.metaOf(node.?).?.sub_kind);
 }
 
 test "parses macro_rules" {
@@ -207,8 +209,8 @@ test "parses macro_rules" {
     // Assert
     const node = helpers.findNode(&g, "say_hello", .function);
     try std.testing.expect(node != null);
-    try std.testing.expect(node.?.lang_meta == .rust);
-    try std.testing.expectEqual(zcodeprism.lang_meta.RustSubKind.macro_rules, node.?.lang_meta.rust.sub_kind);
+    try std.testing.expect(rust_meta.metaOf(node.?) != null);
+    try std.testing.expectEqual(RustSubKind.macro_rules, rust_meta.metaOf(node.?).?.sub_kind);
 }
 
 test "parses test function" {
@@ -252,13 +254,13 @@ test "captures attributes and doc comments on use declarations" {
         const sig = n.signature orelse continue;
 
         if (std.mem.indexOf(u8, sig, "HashMap") != null) {
-            try std.testing.expect(n.lang_meta == .rust);
-            try std.testing.expect(n.lang_meta.rust.attributes != null);
-            try std.testing.expect(std.mem.indexOf(u8, n.lang_meta.rust.attributes.?, "cfg") != null);
+            try std.testing.expect(rust_meta.metaOf(&n) != null);
+            try std.testing.expect(rust_meta.metaOf(&n).?.attributes != null);
+            try std.testing.expect(std.mem.indexOf(u8, rust_meta.metaOf(&n).?.attributes.?, "cfg") != null);
             found_cfg = true;
         } else if (std.mem.eql(u8, sig, "use std::fmt")) {
-            try std.testing.expect(n.lang_meta == .rust);
-            try std.testing.expectEqual(@as(?[]const u8, null), n.lang_meta.rust.attributes);
+            try std.testing.expect(rust_meta.metaOf(&n) != null);
+            try std.testing.expectEqual(@as(?[]const u8, null), rust_meta.metaOf(&n).?.attributes);
             found_plain = true;
         } else if (std.mem.indexOf(u8, sig, "std::io") != null) {
             try std.testing.expect(n.doc != null);
@@ -349,8 +351,8 @@ test "detects unsafe" {
     // Assert
     const node = helpers.findNode(&g, "dangerous_operation", .function);
     try std.testing.expect(node != null);
-    try std.testing.expect(node.?.lang_meta == .rust);
-    try std.testing.expect(node.?.lang_meta.rust.is_unsafe);
+    try std.testing.expect(rust_meta.metaOf(node.?) != null);
+    try std.testing.expect(rust_meta.metaOf(node.?).?.is_unsafe);
 }
 
 test "detects async" {
@@ -364,8 +366,8 @@ test "detects async" {
     // Assert
     const node = helpers.findNode(&g, "fetch_data", .function);
     try std.testing.expect(node != null);
-    try std.testing.expect(node.?.lang_meta == .rust);
-    try std.testing.expect(node.?.lang_meta.rust.is_async);
+    try std.testing.expect(rust_meta.metaOf(node.?) != null);
+    try std.testing.expect(rust_meta.metaOf(node.?).?.is_async);
 }
 
 test "detects const fn" {
@@ -379,8 +381,8 @@ test "detects const fn" {
     // Assert
     const node = helpers.findNode(&g, "const_add", .function);
     try std.testing.expect(node != null);
-    try std.testing.expect(node.?.lang_meta == .rust);
-    try std.testing.expect(node.?.lang_meta.rust.is_const);
+    try std.testing.expect(rust_meta.metaOf(node.?) != null);
+    try std.testing.expect(rust_meta.metaOf(node.?).?.is_const);
 }
 
 test "detects extern with abi" {
@@ -394,10 +396,10 @@ test "detects extern with abi" {
     // Assert
     const node = helpers.findNode(&g, "c_callback", .function);
     try std.testing.expect(node != null);
-    try std.testing.expect(node.?.lang_meta == .rust);
-    try std.testing.expect(node.?.lang_meta.rust.is_extern);
-    try std.testing.expect(node.?.lang_meta.rust.abi != null);
-    try std.testing.expectEqualStrings("C", node.?.lang_meta.rust.abi.?);
+    try std.testing.expect(rust_meta.metaOf(node.?) != null);
+    try std.testing.expect(rust_meta.metaOf(node.?).?.is_extern);
+    try std.testing.expect(rust_meta.metaOf(node.?).?.abi != null);
+    try std.testing.expectEqualStrings("C", rust_meta.metaOf(node.?).?.abi.?);
 }
 
 test "extracts derives" {
@@ -411,9 +413,9 @@ test "extracts derives" {
     // Assert
     const node = helpers.findNode(&g, "Color", .enum_def);
     try std.testing.expect(node != null);
-    try std.testing.expect(node.?.lang_meta == .rust);
-    try std.testing.expect(node.?.lang_meta.rust.derives != null);
-    const derives = node.?.lang_meta.rust.derives.?;
+    try std.testing.expect(rust_meta.metaOf(node.?) != null);
+    try std.testing.expect(rust_meta.metaOf(node.?).?.derives != null);
+    const derives = rust_meta.metaOf(node.?).?.derives.?;
     try std.testing.expect(std.mem.indexOf(u8, derives, "Debug") != null);
     try std.testing.expect(std.mem.indexOf(u8, derives, "Clone") != null);
 }
@@ -452,7 +454,7 @@ test "creates uses_type edge from signature and body" {
 
     const point_id = for (g.nodes.items, 0..) |n, i| {
         if (n.kind == .type_def and std.mem.eql(u8, n.name, "Point") and
-            (n.lang_meta != .rust or n.lang_meta.rust.sub_kind != .impl_block))
+            (if (rust_meta.metaOf(&n)) |m| m.sub_kind != .impl_block else true))
             break @as(NodeId, @enumFromInt(i));
     } else return error.NodeNotFound;
 
@@ -558,9 +560,8 @@ test "parses generic impl blocks and their methods" {
     var wrapper_impl_count: usize = 0;
     for (g.nodes.items) |n| {
         if (n.kind == .type_def and
-            n.lang_meta == .rust and
-            n.lang_meta.rust.sub_kind == .impl_block and
-            std.mem.eql(u8, n.name, "Wrapper"))
+            std.mem.eql(u8, n.name, "Wrapper") and
+            (if (rust_meta.metaOf(&n)) |m| m.sub_kind == .impl_block else false))
         {
             wrapper_impl_count += 1;
         }
@@ -587,11 +588,10 @@ test "trait impl for reference type names node after target type" {
     var found = false;
     for (g.nodes.items) |n| {
         if (n.kind == .type_def and
-            n.lang_meta == .rust and
-            n.lang_meta.rust.sub_kind == .impl_block and
             std.mem.eql(u8, n.name, "Wrapper") and
             n.signature != null and
-            std.mem.eql(u8, n.signature.?, "impl<'a, T> IntoIterator for &'a Wrapper<T>"))
+            std.mem.eql(u8, n.signature.?, "impl<'a, T> IntoIterator for &'a Wrapper<T>") and
+            (if (rust_meta.metaOf(&n)) |m| m.sub_kind == .impl_block else false))
         {
             found = true;
             break;
@@ -693,8 +693,8 @@ test "captures non-derive attributes on struct" {
     // Assert
     const node = helpers.findNode(&g, "Annotated", .type_def);
     try std.testing.expect(node != null);
-    try std.testing.expect(node.?.lang_meta == .rust);
-    const attrs = node.?.lang_meta.rust.attributes;
+    try std.testing.expect(rust_meta.metaOf(node.?) != null);
+    const attrs = rust_meta.metaOf(node.?).?.attributes;
     try std.testing.expect(attrs != null);
     try std.testing.expect(std.mem.indexOf(u8, attrs.?, "cfg") != null);
     try std.testing.expect(std.mem.indexOf(u8, attrs.?, "allow") != null);
@@ -711,8 +711,8 @@ test "captures non-derive attributes on function" {
     // Assert
     const node = helpers.findNode(&g, "heavily_attributed", .function);
     try std.testing.expect(node != null);
-    try std.testing.expect(node.?.lang_meta == .rust);
-    const attrs = node.?.lang_meta.rust.attributes;
+    try std.testing.expect(rust_meta.metaOf(node.?) != null);
+    const attrs = rust_meta.metaOf(node.?).?.attributes;
     try std.testing.expect(attrs != null);
     try std.testing.expect(std.mem.indexOf(u8, attrs.?, "inline") != null);
     try std.testing.expect(std.mem.indexOf(u8, attrs.?, "must_use") != null);
@@ -730,9 +730,9 @@ test "struct with only derive has null attributes" {
     // Assert: Color has #[derive(Debug, Clone)] but no other attributes
     const node = helpers.findNode(&g, "Color", .enum_def);
     try std.testing.expect(node != null);
-    try std.testing.expect(node.?.lang_meta == .rust);
-    try std.testing.expect(node.?.lang_meta.rust.derives != null);
-    try std.testing.expectEqual(@as(?[]const u8, null), node.?.lang_meta.rust.attributes);
+    try std.testing.expect(rust_meta.metaOf(node.?) != null);
+    try std.testing.expect(rust_meta.metaOf(node.?).?.derives != null);
+    try std.testing.expectEqual(@as(?[]const u8, null), rust_meta.metaOf(node.?).?.attributes);
 }
 
 test "captures attributes on struct fields" {
@@ -746,16 +746,16 @@ test "captures attributes on struct fields" {
     // Assert: attributed field has serde rename captured
     const id_node = helpers.findNode(&g, "id", .field);
     try std.testing.expect(id_node != null);
-    try std.testing.expect(id_node.?.lang_meta == .rust);
-    const attrs = id_node.?.lang_meta.rust.attributes;
+    try std.testing.expect(rust_meta.metaOf(id_node.?) != null);
+    const attrs = rust_meta.metaOf(id_node.?).?.attributes;
     try std.testing.expect(attrs != null);
     try std.testing.expect(std.mem.indexOf(u8, attrs.?, "serde") != null);
 
     // Assert: unattributed field has null attributes
     const plain_node = helpers.findNode(&g, "plain", .field);
     try std.testing.expect(plain_node != null);
-    try std.testing.expect(plain_node.?.lang_meta == .rust);
-    try std.testing.expectEqual(@as(?[]const u8, null), plain_node.?.lang_meta.rust.attributes);
+    try std.testing.expect(rust_meta.metaOf(plain_node.?) != null);
+    try std.testing.expectEqual(@as(?[]const u8, null), rust_meta.metaOf(plain_node.?).?.attributes);
 }
 
 test "captures attributes on enum variants" {
@@ -769,24 +769,24 @@ test "captures attributes on enum variants" {
     // Assert: #[default] on Active
     const active = helpers.findNode(&g, "Active", .field);
     try std.testing.expect(active != null);
-    try std.testing.expect(active.?.lang_meta == .rust);
-    const active_attrs = active.?.lang_meta.rust.attributes;
+    try std.testing.expect(rust_meta.metaOf(active.?) != null);
+    const active_attrs = rust_meta.metaOf(active.?).?.attributes;
     try std.testing.expect(active_attrs != null);
     try std.testing.expect(std.mem.indexOf(u8, active_attrs.?, "default") != null);
 
     // Assert: #[serde(rename = "off")] on Inactive
     const inactive = helpers.findNode(&g, "Inactive", .field);
     try std.testing.expect(inactive != null);
-    try std.testing.expect(inactive.?.lang_meta == .rust);
-    const inactive_attrs = inactive.?.lang_meta.rust.attributes;
+    try std.testing.expect(rust_meta.metaOf(inactive.?) != null);
+    const inactive_attrs = rust_meta.metaOf(inactive.?).?.attributes;
     try std.testing.expect(inactive_attrs != null);
     try std.testing.expect(std.mem.indexOf(u8, inactive_attrs.?, "serde") != null);
 
     // Assert: unattributed variant has null attributes
     const plain = helpers.findNode(&g, "Plain", .field);
     try std.testing.expect(plain != null);
-    try std.testing.expect(plain.?.lang_meta == .rust);
-    try std.testing.expectEqual(@as(?[]const u8, null), plain.?.lang_meta.rust.attributes);
+    try std.testing.expect(rust_meta.metaOf(plain.?) != null);
+    try std.testing.expectEqual(@as(?[]const u8, null), rust_meta.metaOf(plain.?).?.attributes);
 }
 
 // --- Visibility inheritance tests ---
@@ -825,8 +825,8 @@ test "macro_export makes macro public" {
     const node = helpers.findNode(&g, "exported_macro", .function);
     try std.testing.expect(node != null);
     try std.testing.expectEqual(Visibility.public, node.?.visibility);
-    try std.testing.expect(node.?.lang_meta == .rust);
-    try std.testing.expectEqual(zcodeprism.lang_meta.RustSubKind.macro_rules, node.?.lang_meta.rust.sub_kind);
+    try std.testing.expect(rust_meta.metaOf(node.?) != null);
+    try std.testing.expectEqual(RustSubKind.macro_rules, rust_meta.metaOf(node.?).?.sub_kind);
 }
 
 test "macro without macro_export stays private" {
@@ -855,8 +855,8 @@ test "associated type inherits trait visibility" {
     // so it inherits the trait's public visibility.
     const output_node = helpers.findNode(&g, "Output", .type_def);
     try std.testing.expect(output_node != null);
-    try std.testing.expect(output_node.?.lang_meta == .rust);
-    try std.testing.expectEqual(zcodeprism.lang_meta.RustSubKind.associated_type, output_node.?.lang_meta.rust.sub_kind);
+    try std.testing.expect(rust_meta.metaOf(output_node.?) != null);
+    try std.testing.expectEqual(RustSubKind.associated_type, rust_meta.metaOf(output_node.?).?.sub_kind);
     try std.testing.expectEqual(Visibility.public, output_node.?.visibility);
 }
 
@@ -901,10 +901,9 @@ test "attaches doc comment to impl blocks" {
     var found_trait = false;
     for (g.nodes.items) |n| {
         if (n.kind == .type_def and
-            n.lang_meta == .rust and
-            n.lang_meta.rust.sub_kind == .impl_block and
             std.mem.eql(u8, n.name, "Point") and
-            n.doc != null)
+            n.doc != null and
+            (if (rust_meta.metaOf(&n)) |m| m.sub_kind == .impl_block else false))
         {
             if (n.signature != null and
                 std.mem.eql(u8, n.signature.?, "impl Point") and
@@ -954,9 +953,9 @@ test "attributed tuple variant has one field with type signature and attribute i
     try std.testing.expect(f.signature != null);
     try std.testing.expect(std.mem.indexOf(u8, f.signature.?, "Error") != null);
     try std.testing.expect(std.mem.indexOf(u8, f.signature.?, "#[") == null);
-    try std.testing.expect(f.lang_meta == .rust);
-    try std.testing.expect(f.lang_meta.rust.attributes != null);
-    try std.testing.expect(std.mem.indexOf(u8, f.lang_meta.rust.attributes.?, "from") != null);
+    try std.testing.expect(rust_meta.metaOf(f) != null);
+    try std.testing.expect(rust_meta.metaOf(f).?.attributes != null);
+    try std.testing.expect(std.mem.indexOf(u8, rust_meta.metaOf(f).?.attributes.?, "from") != null);
 }
 
 test "tuple variant with multiple fields and attributes has correct indices" {
@@ -1001,7 +1000,7 @@ test "tuple variant without attributes has no lang_meta on fields" {
         if (n.parent_id != null and n.parent_id.? == variant_id and
             n.kind == .field and std.mem.eql(u8, n.name, "0"))
         {
-            try std.testing.expect(n.lang_meta == .none);
+            try std.testing.expect(n.lang_meta == null);
             return;
         }
     }
@@ -1025,9 +1024,9 @@ test "tuple struct field attribute stored in lang_meta" {
         if (n.parent_id != null and n.parent_id.? == wrapper_id and
             n.kind == .field and std.mem.eql(u8, n.name, "0"))
         {
-            try std.testing.expect(n.lang_meta == .rust);
-            try std.testing.expect(n.lang_meta.rust.attributes != null);
-            try std.testing.expect(std.mem.indexOf(u8, n.lang_meta.rust.attributes.?, "serde") != null);
+            try std.testing.expect(rust_meta.metaOf(&n) != null);
+            try std.testing.expect(rust_meta.metaOf(&n).?.attributes != null);
+            try std.testing.expect(std.mem.indexOf(u8, rust_meta.metaOf(&n).?.attributes.?, "serde") != null);
             try std.testing.expectEqual(Visibility.public, n.visibility);
             return;
         }
@@ -1049,26 +1048,26 @@ test "captures attributes, derives, and test marker when placed before doc comme
     const fn_node = helpers.findNode(&g, "attr_before_doc", .function);
     try std.testing.expect(fn_node != null);
     try std.testing.expect(fn_node.?.doc != null);
-    try std.testing.expect(fn_node.?.lang_meta == .rust);
-    try std.testing.expect(fn_node.?.lang_meta.rust.attributes != null);
-    try std.testing.expect(std.mem.indexOf(u8, fn_node.?.lang_meta.rust.attributes.?, "allow") != null);
+    try std.testing.expect(rust_meta.metaOf(fn_node.?) != null);
+    try std.testing.expect(rust_meta.metaOf(fn_node.?).?.attributes != null);
+    try std.testing.expect(std.mem.indexOf(u8, rust_meta.metaOf(fn_node.?).?.attributes.?, "allow") != null);
 
     // Assert: struct with #[derive(...)] #[allow(...)] before /// doc
     const struct_node = helpers.findNode(&g, "DeriveBeforeDoc", .type_def);
     try std.testing.expect(struct_node != null);
     try std.testing.expect(struct_node.?.doc != null);
-    try std.testing.expect(struct_node.?.lang_meta == .rust);
-    try std.testing.expect(struct_node.?.lang_meta.rust.derives != null);
-    try std.testing.expect(std.mem.indexOf(u8, struct_node.?.lang_meta.rust.derives.?, "Debug") != null);
-    try std.testing.expect(struct_node.?.lang_meta.rust.attributes != null);
-    try std.testing.expect(std.mem.indexOf(u8, struct_node.?.lang_meta.rust.attributes.?, "allow") != null);
+    try std.testing.expect(rust_meta.metaOf(struct_node.?) != null);
+    try std.testing.expect(rust_meta.metaOf(struct_node.?).?.derives != null);
+    try std.testing.expect(std.mem.indexOf(u8, rust_meta.metaOf(struct_node.?).?.derives.?, "Debug") != null);
+    try std.testing.expect(rust_meta.metaOf(struct_node.?).?.attributes != null);
+    try std.testing.expect(std.mem.indexOf(u8, rust_meta.metaOf(struct_node.?).?.attributes.?, "allow") != null);
 
     // Assert: #[test] after #[allow(...)] and /// doc still detected as test_def
     const test_node = helpers.findNode(&g, "test_attr_before_doc", .test_def);
     try std.testing.expect(test_node != null);
-    try std.testing.expect(test_node.?.lang_meta == .rust);
-    try std.testing.expect(test_node.?.lang_meta.rust.attributes != null);
-    try std.testing.expect(std.mem.indexOf(u8, test_node.?.lang_meta.rust.attributes.?, "allow") != null);
+    try std.testing.expect(rust_meta.metaOf(test_node.?) != null);
+    try std.testing.expect(rust_meta.metaOf(test_node.?).?.attributes != null);
+    try std.testing.expect(std.mem.indexOf(u8, rust_meta.metaOf(test_node.?).?.attributes.?, "allow") != null);
 }
 
 test "sandwiched derive excluded from attrs without losing surrounding attributes" {
@@ -1082,10 +1081,10 @@ test "sandwiched derive excluded from attrs without losing surrounding attribute
     // Assert
     const node = helpers.findNode(&g, "SandwichedDerive", .type_def);
     try std.testing.expect(node != null);
-    try std.testing.expect(node.?.lang_meta == .rust);
-    try std.testing.expect(node.?.lang_meta.rust.derives != null);
-    try std.testing.expect(std.mem.indexOf(u8, node.?.lang_meta.rust.derives.?, "Debug") != null);
-    const attrs = node.?.lang_meta.rust.attributes;
+    try std.testing.expect(rust_meta.metaOf(node.?) != null);
+    try std.testing.expect(rust_meta.metaOf(node.?).?.derives != null);
+    try std.testing.expect(std.mem.indexOf(u8, rust_meta.metaOf(node.?).?.derives.?, "Debug") != null);
+    const attrs = rust_meta.metaOf(node.?).?.attributes;
     try std.testing.expect(attrs != null);
     try std.testing.expect(std.mem.indexOf(u8, attrs.?, "repr") != null);
     try std.testing.expect(std.mem.indexOf(u8, attrs.?, "serde") != null);
@@ -1103,10 +1102,10 @@ test "macro_export appears in attrs" {
     // Assert
     const node = helpers.findNode(&g, "exported", .function);
     try std.testing.expect(node != null);
-    try std.testing.expect(node.?.lang_meta == .rust);
-    try std.testing.expectEqual(node.?.lang_meta.rust.sub_kind, .macro_rules);
+    try std.testing.expect(rust_meta.metaOf(node.?) != null);
+    try std.testing.expectEqual(rust_meta.metaOf(node.?).?.sub_kind, .macro_rules);
     try std.testing.expectEqual(node.?.visibility, .public);
-    const attrs = node.?.lang_meta.rust.attributes;
+    const attrs = rust_meta.metaOf(node.?).?.attributes;
     try std.testing.expect(attrs != null);
     try std.testing.expect(std.mem.indexOf(u8, attrs.?, "macro_export") != null);
 }

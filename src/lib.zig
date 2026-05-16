@@ -34,9 +34,15 @@ pub const types = @import("core/types.zig");
 /// Workspace mode: multi-project assembly under a virtual root.
 pub const workspace = @import("core/workspace.zig");
 
-/// Language-specific metadata (LangMeta) and external provenance (ExternalInfo).
-pub const lang_meta = @import("core/lang_meta.zig");
-/// Language-agnostic metadata and external-info types.
+/// External provenance (ExternalInfo) for phantom nodes.
+pub const external = @import("core/external.zig");
+/// Dispatch module: serialization and accessors that route to per-language meta modules.
+pub const lang_meta = @import("languages/lang_meta.zig");
+/// Per-language Rust metadata (RustMeta, RustSubKind) and accessors.
+pub const rust_meta = @import("languages/rust/meta.zig");
+/// Per-language Zig metadata (ZigMeta) and accessors.
+pub const zig_meta = @import("languages/zig/meta.zig");
+/// Language-agnostic import/build types.
 pub const language = @import("languages/language.zig");
 /// Language feature detection and capability queries.
 pub const language_support = @import("languages/language_support.zig");

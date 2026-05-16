@@ -5,6 +5,7 @@ const helpers = @import("test-helpers");
 const Graph = zcodeprism.graph.Graph;
 const EdgeSource = zcodeprism.types.EdgeSource;
 const NodeKind = zcodeprism.types.NodeKind;
+const zig_meta = zcodeprism.zig_meta;
 const indexer = zcodeprism.indexer;
 const enricher = zcodeprism.lsp.enricher;
 
@@ -44,8 +45,8 @@ test "graph is complete without LSP" {
     const process_fn = helpers.findNode(&graph, "processConfig", .function);
     try std.testing.expect(process_fn != null);
     if (process_fn) |f| {
-        if (f.lang_meta == .zig) {
-            try std.testing.expectEqual(@as(?[]const []const u8, null), f.lang_meta.zig.inferred_errors);
+        if (zig_meta.metaOf(f)) |zm| {
+            try std.testing.expectEqual(@as(?[]const []const u8, null), zm.inferred_errors);
         }
     }
 }
@@ -110,8 +111,8 @@ test "LSP enrichment adds edges and populates errors" {
     var has_inferred = false;
     for (graph.nodes.items) |n| {
         if (n.kind != .function) continue;
-        if (n.lang_meta == .zig) {
-            if (n.lang_meta.zig.inferred_errors != null) {
+        if (zig_meta.metaOf(&n)) |zm| {
+            if (zm.inferred_errors != null) {
                 has_inferred = true;
                 break;
             }

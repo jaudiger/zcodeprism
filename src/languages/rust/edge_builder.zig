@@ -9,7 +9,7 @@ const cf = @import("cross_file.zig");
 const source_scan = @import("../../parser/source_scan.zig");
 const pc = @import("parse_context.zig");
 const logging = @import("../../logging.zig");
-const rust_meta = @import("../../core/lang_meta.zig");
+const rust_meta = @import("meta.zig");
 const phantom_mod = @import("../../core/phantom.zig");
 const shared_resolve = @import("../shared/resolve.zig");
 const shared_lookup = @import("../shared/lookup.zig");
@@ -1198,8 +1198,8 @@ fn findMethodInImplBlocks(g: *const Graph, type_id: NodeId, name: []const u8, gr
     for (scope_index.childrenOf(file_id)) |sibling_idx| {
         const sib = g.nodes.items[sibling_idx];
         if (sib.kind != .type_def) continue;
-        if (sib.lang_meta != .rust) continue;
-        if (sib.lang_meta.rust.sub_kind != .impl_block) continue;
+        const m = rust_meta.metaOf(&sib) orelse continue;
+        if (m.sub_kind != .impl_block) continue;
         if (!std.mem.eql(u8, sib.name, type_name)) continue;
 
         const impl_id: NodeId = @enumFromInt(sibling_idx);
@@ -1235,10 +1235,9 @@ fn findMethodInTypeOrImpls(
     const items = graph.nodes.items;
     const end = @min(scope_end, items.len);
     for (items[scope_start..end], scope_start..) |n, idx| {
-        if (n.kind == .type_def and n.lang_meta == .rust and
-            n.lang_meta.rust.sub_kind == .impl_block and
-            std.mem.eql(u8, n.name, type_name))
-        {
+        if (n.kind != .type_def or !std.mem.eql(u8, n.name, type_name)) continue;
+        const m = rust_meta.metaOf(&n) orelse continue;
+        if (m.sub_kind == .impl_block) {
             const impl_id: NodeId = @enumFromInt(idx);
             for (scope_index.childrenOf(impl_id)) |child_idx| {
                 const child = items[child_idx];
@@ -1316,8 +1315,8 @@ pub fn isTypeNode(n: Node) bool {
 pub fn isTypeDefNode(n: Node) bool {
     if (n.kind == .enum_def or n.kind == .union_def) return true;
     if (n.kind != .type_def) return false;
-    if (n.lang_meta == .rust) {
-        const sk = n.lang_meta.rust.sub_kind;
+    if (rust_meta.metaOf(&n)) |m| {
+        const sk = m.sub_kind;
         if (sk == .impl_block or sk == .trait_ or sk == .type_alias or sk == .associated_type) return false;
     }
     return true;
@@ -1328,12 +1327,9 @@ fn findImplNode(graph: *const Graph, line: u32, scope_start: usize, scope_end: u
     const items = graph.nodes.items;
     const end = @min(scope_end, items.len);
     for (items[scope_start..end], scope_start..) |n, idx| {
-        if (n.kind == .type_def and n.lang_meta == .rust and
-            n.lang_meta.rust.sub_kind == .impl_block and
-            n.line_start != null and n.line_start.? == line)
-        {
-            return @enumFromInt(idx);
-        }
+        if (n.kind != .type_def or n.line_start == null or n.line_start.? != line) continue;
+        const m = rust_meta.metaOf(&n) orelse continue;
+        if (m.sub_kind == .impl_block) return @enumFromInt(idx);
     }
     return null;
 }

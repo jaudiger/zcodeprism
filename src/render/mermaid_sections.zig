@@ -3,6 +3,7 @@ const graph_mod = @import("../core/graph.zig");
 const node_mod = @import("../core/node.zig");
 const types = @import("../core/types.zig");
 const common = @import("common.zig");
+const rust_meta = @import("../languages/rust/meta.zig");
 
 const Graph = graph_mod.Graph;
 const Node = node_mod.Node;
@@ -127,14 +128,11 @@ fn renderNodeShape(
         },
         .type_def => {
             // ty_N[["struct: name"]] by default; Rust traits and type aliases get precise labels.
-            const label: []const u8 = switch (n.lang_meta) {
-                .rust => |rm| switch (rm.sub_kind) {
-                    .trait_ => "trait",
-                    .type_alias => "type",
-                    else => "struct",
-                },
+            const label: []const u8 = if (rust_meta.metaOf(&n)) |m| switch (m.sub_kind) {
+                .trait_ => "trait",
+                .type_alias => "type",
                 else => "struct",
-            };
+            } else "struct";
             try out.appendSlice(allocator, "[[\"");
             try out.appendSlice(allocator, label);
             try out.appendSlice(allocator, ": ");

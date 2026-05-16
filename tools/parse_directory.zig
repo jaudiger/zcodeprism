@@ -201,7 +201,7 @@ pub fn main(init: std.process.Init) !void {
         if (n.signature) |sig| {
             try stdout.print("  sig=\"{s}\"", .{sig});
         }
-        try n.lang_meta.writeDebug(stdout);
+        try zcodeprism.lang_meta.writeDebug(n, stdout);
         try stdout.print("\n", .{});
     }
 

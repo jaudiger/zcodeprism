@@ -2,14 +2,14 @@ const std = @import("std");
 const graph_mod = @import("graph.zig");
 const types = @import("types.zig");
 const node_mod = @import("node.zig");
-const lang_meta_mod = @import("lang_meta.zig");
+const external_mod = @import("external.zig");
 
 const Graph = graph_mod.Graph;
 const Node = node_mod.Node;
 const NodeId = types.NodeId;
 const NodeKind = types.NodeKind;
 const Language = types.Language;
-const ExternalInfo = lang_meta_mod.ExternalInfo;
+const ExternalInfo = external_mod.ExternalInfo;
 
 /// File-relative path and 0-based source position of a single usage site.
 /// Slice fields are borrowed and must outlive this struct.

@@ -5,7 +5,7 @@ const node_mod = @import("node.zig");
 const edge_mod = @import("edge.zig");
 const scope_mod = @import("scope.zig");
 const regex_mod = @import("../regex.zig");
-const lang_meta_mod = @import("lang_meta.zig");
+const external_mod = @import("external.zig");
 
 const Graph = graph_mod.Graph;
 const FrozenGraph = graph_mod.FrozenGraph;
@@ -18,7 +18,7 @@ const NodeKind = types.NodeKind;
 const EdgeType = types.EdgeType;
 const Visibility = types.Visibility;
 const Language = types.Language;
-const ExternalInfo = lang_meta_mod.ExternalInfo;
+const ExternalInfo = external_mod.ExternalInfo;
 const Regex = regex_mod.Regex;
 const Scope = scope_mod.Scope;
 const testing = std.testing;

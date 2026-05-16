@@ -6,7 +6,8 @@ const node_mod = @import("../core/node.zig");
 const edge_mod = @import("../core/edge.zig");
 const generation_mod = @import("../core/generation.zig");
 const metrics_mod = @import("../core/metrics.zig");
-const lang_mod = @import("../core/lang_meta.zig");
+const external_mod = @import("../core/external.zig");
+const lang_meta_mod = @import("../languages/lang_meta.zig");
 const source_map = @import("../parser/source_map.zig");
 const cursor_manager_mod = @import("../explorer/cursor_manager.zig");
 const tree_sitter_api = @import("../parser/tree_sitter_api.zig");
@@ -34,8 +35,7 @@ const Language = types.Language;
 const GraphGeneration = generation_mod.GraphGeneration;
 const CursorManager = cursor_manager_mod.CursorManager;
 const CursorOptions = cursor_manager_mod.CursorOptions;
-const ExternalInfo = lang_mod.ExternalInfo;
-const LangMeta = lang_mod.LangMeta;
+const ExternalInfo = external_mod.ExternalInfo;
 const JsonWriter = json_writer_mod.JsonWriter;
 
 /// Errors returned by MCP tool handlers.
@@ -306,7 +306,7 @@ fn writeFullNode(w: JsonWriter, n: *const Node, id: NodeId, project_root: []cons
     try w.optionalFieldHashHex("content_hash", n.content_hash);
     try writeOptionalMetrics(w, n.metrics);
     try w.field("lang_meta");
-    n.lang_meta.writeJson(w.s) catch return error.OutOfMemory;
+    lang_meta_mod.writeJson(n.*, w.s) catch return error.OutOfMemory;
     if (source_text) |src| {
         try w.fieldValue("source", src);
     }
