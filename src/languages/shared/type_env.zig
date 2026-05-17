@@ -50,11 +50,6 @@ pub const TypeEnv = struct {
     }
 
     pub fn findParamOrigin(self: *const TypeEnv, name: []const u8) ?SymbolOrigin {
-        for (self.param_origins.items) |*b| {
-            if (std.mem.eql(u8, b.name, name)) {
-                return .{ .file_id = b.file_id, .chain = b.chain[0..b.chain_len] };
-            }
-        }
-        return null;
+        return shared_types.findOriginByName(self.param_origins.items, name);
     }
 };

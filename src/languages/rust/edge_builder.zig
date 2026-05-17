@@ -69,7 +69,7 @@ const ScanContext = struct {
         } else if (kid == self.k.identifier) {
             const name = ts_api.nodeText(self.base.source, node);
             if (name.len > 0 and std.ascii.isUpper(name[0]) and !isPrimitiveOrSelf(name)) {
-                if (findTypeCrossFile(self.base.graph, name, self.base.edge_ctx, &self.base.graph_index.scope, self.base.phantom_mgr)) |tid| {
+                if (shared_lookup.findTypeCrossFile(self.base.graph, name, self.base.edge_ctx, &self.base.graph_index.scope, self.base.phantom_mgr)) |tid| {
                     _ = try self.base.graph.addEdgeIfNew(allocator, .{ .source_id = self.base.caller_id, .target_id = tid, .edge_type = .uses_type });
                 }
             }
@@ -151,7 +151,7 @@ fn processFunction(
                 .graph_index = graph_index,
                 .io = io,
                 .log = log,
-                .resolve_return_type = cf.resolveReturnTypeScope,
+                .return_type_resolver = cf.return_type_resolver,
                 .find_in_type_scope = findMethodInImplBlocks,
             },
         },
@@ -461,7 +461,7 @@ fn scanFieldTypesRecursive(
             const type_name = ts_api.nodeText(source, child);
             if (!isPrimitiveOrSelf(type_name)) {
                 const target_id = findTypeByNameScoped(graph, type_name, edge_ctx.scope_start, edge_ctx.scope_end, null, &graph_index.scope) orelse
-                    findTypeCrossFile(graph, type_name, edge_ctx, &graph_index.scope, phantom_mgr);
+                    shared_lookup.findTypeCrossFile(graph, type_name, edge_ctx, &graph_index.scope, phantom_mgr);
                 if (target_id) |tid| {
                     _ = try graph.addEdgeIfNew(allocator, .{ .source_id = owner_id, .target_id = tid, .edge_type = .uses_type });
                 } else {
@@ -537,7 +537,7 @@ fn resolveScopedFieldType(
         .graph_index = graph_index,
         .io = io,
         .log = log,
-        .resolve_return_type = cf.resolveReturnTypeScope,
+        .return_type_resolver = cf.return_type_resolver,
         .find_in_type_scope = findMethodInImplBlocks,
     };
     var edge_buf: [cf.max_chain_depth]cf.ResolvedEdge = undefined;
@@ -886,7 +886,7 @@ fn handleTypeRef(allocator: std.mem.Allocator, sctx: *const ScanContext, id_node
     const type_name = ts_api.nodeText(sctx.base.source, id_node);
     if (isPrimitiveOrSelf(type_name)) return;
     const target_id = findTypeByNameScoped(sctx.base.graph, type_name, sctx.base.edge_ctx.scope_start, sctx.base.edge_ctx.scope_end, sctx.base.caller_parent_id, &sctx.base.graph_index.scope) orelse
-        findTypeCrossFile(sctx.base.graph, type_name, sctx.base.edge_ctx, &sctx.base.graph_index.scope, sctx.base.phantom_mgr);
+        shared_lookup.findTypeCrossFile(sctx.base.graph, type_name, sctx.base.edge_ctx, &sctx.base.graph_index.scope, sctx.base.phantom_mgr);
     if (target_id) |tid| {
         _ = try sctx.base.graph.addEdgeIfNew(allocator, .{ .source_id = sctx.base.caller_id, .target_id = tid, .edge_type = .uses_type });
     } else {
@@ -909,7 +909,7 @@ fn scanSignatureForTypeRefs(allocator: std.mem.Allocator, sctx: *const ScanConte
             const type_name = ts_api.nodeText(sctx.base.source, child);
             if (!isPrimitiveOrSelf(type_name)) {
                 const target_id = findTypeByNameScoped(sctx.base.graph, type_name, scope_start, scope_end, sctx.base.caller_parent_id, &sctx.base.graph_index.scope) orelse
-                    findTypeCrossFile(sctx.base.graph, type_name, sctx.base.edge_ctx, &sctx.base.graph_index.scope, sctx.base.phantom_mgr);
+                    shared_lookup.findTypeCrossFile(sctx.base.graph, type_name, sctx.base.edge_ctx, &sctx.base.graph_index.scope, sctx.base.phantom_mgr);
                 if (target_id) |tid| {
                     _ = try sctx.base.graph.addEdgeIfNew(allocator, .{ .source_id = sctx.base.caller_id, .target_id = tid, .edge_type = .uses_type });
                 }
@@ -936,7 +936,7 @@ fn scanNodeForTypeRefs(allocator: std.mem.Allocator, sctx: *const ScanContext, n
             const type_name = ts_api.nodeText(sctx.base.source, child);
             if (!isPrimitiveOrSelf(type_name)) {
                 const target_id = findTypeByNameScoped(sctx.base.graph, type_name, scope_start, scope_end, sctx.base.caller_parent_id, &sctx.base.graph_index.scope) orelse
-                    findTypeCrossFile(sctx.base.graph, type_name, sctx.base.edge_ctx, &sctx.base.graph_index.scope, sctx.base.phantom_mgr);
+                    shared_lookup.findTypeCrossFile(sctx.base.graph, type_name, sctx.base.edge_ctx, &sctx.base.graph_index.scope, sctx.base.phantom_mgr);
                 if (target_id) |tid| {
                     _ = try sctx.base.graph.addEdgeIfNew(allocator, .{ .source_id = sctx.base.caller_id, .target_id = tid, .edge_type = .uses_type });
                 }
@@ -981,10 +981,6 @@ fn leafIdentifierPos(node: ts.Node, k: *const KindIds) ts.Point {
         }
     }
     return node.startPoint();
-}
-
-fn findTypeCrossFile(graph: *const Graph, name: []const u8, edge_ctx: *const EdgeContext, scope_index: *const ScopeIndex, phantom_mgr: *const PhantomManager) ?NodeId {
-    return shared_lookup.findTypeCrossFile(graph, name, edge_ctx, scope_index, phantom_mgr);
 }
 
 /// Extract the type name from a let_declaration.

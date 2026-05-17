@@ -24,12 +24,28 @@ pub const SymbolOrigin = struct {
 /// any post-import extraction chain.
 pub const ImportEntry = struct {
     name: []const u8,
-    target: NodeId,
+    file_id: NodeId,
     chain: [max_chain_depth][]const u8 = undefined,
     chain_len: usize = 0,
     /// True when the binding comes from a public re-export declaration.
     is_reexport: bool = false,
 };
+
+/// Build a SymbolOrigin by scanning a slice of name-keyed records.
+/// Works for any record with `name: []const u8`, `file_id: NodeId`,
+/// `chain: [N][]const u8`, and `chain_len: usize` (ImportEntry, ParamOrigin, ...).
+/// Returns null if no entry matches `name`.
+pub fn findOriginByName(items: anytype, name: []const u8) ?SymbolOrigin {
+    for (items) |*entry| {
+        if (std.mem.eql(u8, entry.name, name)) {
+            return .{
+                .file_id = entry.file_id,
+                .chain = entry.chain[0..entry.chain_len],
+            };
+        }
+    }
+    return null;
+}
 
 /// A glob import target paired with its visibility at the import site.
 pub const GlobTarget = struct {
@@ -56,23 +72,13 @@ pub const EdgeContext = struct {
     /// Look up the target file NodeId for an import binding by name.
     /// Returns the file_id only, ignoring any extraction chain.
     pub fn findImportTarget(self: *const EdgeContext, name: []const u8) ?NodeId {
-        for (self.imports.items) |entry| {
-            if (std.mem.eql(u8, entry.name, name)) return entry.target;
-        }
-        return null;
+        const origin = findOriginByName(self.imports.items, name) orelse return null;
+        return origin.file_id;
     }
 
     /// Look up the full SymbolOrigin (file id + extraction chain) for an import binding by name.
     pub fn findImportOrigin(self: *const EdgeContext, name: []const u8) ?SymbolOrigin {
-        for (self.imports.items) |*entry| {
-            if (std.mem.eql(u8, entry.name, name)) {
-                return .{
-                    .file_id = entry.target,
-                    .chain = entry.chain[0..entry.chain_len],
-                };
-            }
-        }
-        return null;
+        return findOriginByName(self.imports.items, name);
     }
 };
 

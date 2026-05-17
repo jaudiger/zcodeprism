@@ -123,7 +123,7 @@ fn processDeclarationEdges(
                 .graph_index = graph_index,
                 .io = io,
                 .log = log,
-                .resolve_return_type = cf.resolveReturnTypeScope,
+                .return_type_resolver = cf.return_type_resolver,
                 .find_in_type_scope = null,
             },
         },
@@ -430,7 +430,7 @@ fn walkForEdgesInner(allocator: std.mem.Allocator, io: std.Io, g: *Graph, source
     if (kid == k.function_declaration) {
         if (ast.getIdentifierName(source, ts_node, k)) |name| {
             const decl_line = ts_node.startPoint().row + 1;
-            if (findFunctionByNameAndLine(g, name, decl_line, ctx.scope_start, ctx.scope_end)) |fn_id| {
+            if (shared_lookup.findFunctionByNameAndLine(g, name, decl_line, ctx.scope_start, ctx.scope_end)) |fn_id| {
                 try processDeclarationEdges(allocator, io, g, source, ts_node, fn_id, ctx, k, graph_index, phantom_mgr, field_types, wl, log);
                 try processParameterTypeEdges(allocator, g, source, ts_node, fn_id, ctx, k, graph_index, phantom_mgr, field_types, wl, log);
             } else {
@@ -455,7 +455,7 @@ fn walkForEdgesInner(allocator: std.mem.Allocator, io: std.Io, g: *Graph, source
             null;
         if (name) |n| {
             const decl_line = ts_node.startPoint().row + 1;
-            if (findFunctionByNameAndLine(g, n, decl_line, ctx.scope_start, ctx.scope_end)) |container_id| {
+            if (shared_lookup.findFunctionByNameAndLine(g, n, decl_line, ctx.scope_start, ctx.scope_end)) |container_id| {
                 try processContainerFieldEdges(allocator, g, source, ts_node, container_id, ctx, k, graph_index, phantom_mgr, field_types, wl, log);
             } else {
                 log.trace("container not found in graph", &.{
@@ -593,7 +593,7 @@ fn handleFieldAccess(allocator: std.mem.Allocator, sctx: *const ScanContext, fie
         resolveChainToType(sctx.base.graph, type_id, chain[1 .. chain_len - 1], sctx.field_types, &sctx.base.graph_index.scope) orelse return
     else
         type_id;
-    if (findFieldByName(sctx.base.graph, target_type_id, field_name, &sctx.base.graph_index.scope)) |field_id| {
+    if (shared_lookup.findFieldByName(sctx.base.graph, target_type_id, field_name, &sctx.base.graph_index.scope)) |field_id| {
         _ = try sctx.base.graph.addEdgeIfNew(allocator, .{ .source_id = sctx.base.caller_id, .target_id = field_id, .edge_type = .accesses_field });
     }
 }
@@ -608,7 +608,7 @@ fn handleBareEnumLiteral(allocator: std.mem.Allocator, sctx: *const ScanContext,
     const variant_name = ts_api.nodeText(sctx.base.source, name_node);
 
     if (inferExpectedType(sctx, field_expr)) |type_id| {
-        if (findFieldByName(sctx.base.graph, type_id, variant_name, &sctx.base.graph_index.scope)) |field_id| {
+        if (shared_lookup.findFieldByName(sctx.base.graph, type_id, variant_name, &sctx.base.graph_index.scope)) |field_id| {
             _ = try sctx.base.graph.addEdgeIfNew(allocator, .{ .source_id = sctx.base.caller_id, .target_id = field_id, .edge_type = .accesses_field });
             return;
         }
@@ -702,7 +702,7 @@ fn resolveExprType(sctx: *const ScanContext, expr: ts.Node) ?NodeId {
         const chain_len = cf.collectFieldExprChain(sctx.base.source, expr, &chain, sctx.k);
         if (chain_len >= 2) {
             const root_type_id = sctx.base.type_env.local.get(chain[0]) orelse return null;
-            const field_id = findFieldByName(sctx.base.graph, root_type_id, chain[chain_len - 1], &sctx.base.graph_index.scope) orelse return null;
+            const field_id = shared_lookup.findFieldByName(sctx.base.graph, root_type_id, chain[chain_len - 1], &sctx.base.graph_index.scope) orelse return null;
             return sctx.field_types.get(field_id);
         }
     }
@@ -757,7 +757,7 @@ fn handleTypeRef(allocator: std.mem.Allocator, sctx: *const ScanContext, id_node
     const name = ts_api.nodeText(sctx.base.source, id_node);
     const target_id =
         findTypeByNameScoped(sctx.base.graph, name, sctx.base.edge_ctx.scope_start, sctx.base.edge_ctx.scope_end, sctx.base.caller_parent_id, &sctx.base.graph_index.scope) orelse
-        findTypeCrossFile(sctx.base.graph, name, sctx.base.edge_ctx, &sctx.base.graph_index.scope, sctx.base.phantom_mgr) orelse
+        shared_lookup.findTypeCrossFile(sctx.base.graph, name, sctx.base.edge_ctx, &sctx.base.graph_index.scope, sctx.base.phantom_mgr) orelse
         return;
     const target_node = sctx.base.graph.getNode(target_id);
     const is_own_child = if (target_node) |tn| tn.parent_id != null and tn.parent_id.? == sctx.base.caller_id else false;
@@ -775,7 +775,7 @@ fn handleStructLiteral(allocator: std.mem.Allocator, sctx: *const ScanContext, v
     var fields: [max_struct_fields][]const u8 = undefined;
     const field_count = collectStructLiteralFields(sctx.base.source, var_decl, &fields);
     for (fields[0..field_count]) |field_name| {
-        if (findFieldByName(sctx.base.graph, type_id, field_name, &sctx.base.graph_index.scope)) |field_id| {
+        if (shared_lookup.findFieldByName(sctx.base.graph, type_id, field_name, &sctx.base.graph_index.scope)) |field_id| {
             _ = try sctx.base.graph.addEdgeIfNew(allocator, .{ .source_id = sctx.base.caller_id, .target_id = field_id, .edge_type = .accesses_field });
         }
     }
@@ -793,7 +793,7 @@ fn handleReturnStructLiteral(allocator: std.mem.Allocator, sctx: *const ScanCont
     var fields: [max_struct_fields][]const u8 = undefined;
     const field_count = collectStructLiteralFields(sctx.base.source, return_node, &fields);
     for (fields[0..field_count]) |field_name| {
-        if (findFieldByName(sctx.base.graph, return_type_id, field_name, &sctx.base.graph_index.scope)) |field_id| {
+        if (shared_lookup.findFieldByName(sctx.base.graph, return_type_id, field_name, &sctx.base.graph_index.scope)) |field_id| {
             _ = try sctx.base.graph.addEdgeIfNew(allocator, .{ .source_id = sctx.base.caller_id, .target_id = field_id, .edge_type = .accesses_field });
         }
     }
@@ -1217,7 +1217,7 @@ fn processContainerFieldEdges(
         if (child.kindId() == k.container_field) {
             const field_name = ast.getIdentifierName(source, child, k);
             fctx.field_id = if (field_name) |fn_name|
-                findFieldByName(g, owner_id, fn_name, &graph_index.scope)
+                shared_lookup.findFieldByName(g, owner_id, fn_name, &graph_index.scope)
             else
                 null;
             try scanContainerField(allocator, &fctx, child);
@@ -1268,7 +1268,7 @@ fn emitFieldTypeRef(allocator: std.mem.Allocator, fctx: *const FieldScanContext,
     const owner_parent_id: ?NodeId = if (owner_node) |n| n.parent_id else null;
     const target_id =
         findTypeByNameScoped(fctx.g, name, fctx.edge_ctx.scope_start, fctx.edge_ctx.scope_end, owner_parent_id, &fctx.graph_index.scope) orelse
-        findTypeCrossFile(fctx.g, name, fctx.edge_ctx, &fctx.graph_index.scope, fctx.phantom_mgr);
+        shared_lookup.findTypeCrossFile(fctx.g, name, fctx.edge_ctx, &fctx.graph_index.scope, fctx.phantom_mgr);
     if (target_id) |tid| {
         const target_node = fctx.g.getNode(tid);
         const is_own_child = if (target_node) |tn| tn.parent_id != null and tn.parent_id.? == fctx.owner_id else false;
@@ -1333,18 +1333,6 @@ fn handleFieldQualifiedType(allocator: std.mem.Allocator, fctx: *const FieldScan
 
 const max_struct_fields = 32;
 
-fn findFieldByName(g: *const Graph, type_id: NodeId, field_name: []const u8, scope_index: *const ScopeIndex) ?NodeId {
-    return shared_lookup.findFieldByName(g, type_id, field_name, scope_index);
-}
-
-fn findTypeCrossFile(g: *const Graph, name: []const u8, ctx: *const EdgeContext, scope_index: *const ScopeIndex, phantom_mgr: *const PhantomManager) ?NodeId {
-    return shared_lookup.findTypeCrossFile(g, name, ctx, scope_index, phantom_mgr);
-}
-
-fn findTypeByNameScoped(g: *const Graph, name: []const u8, scope_start: usize, scope_end: usize, caller_parent_id: ?NodeId, scope_index: *const ScopeIndex) ?NodeId {
-    return shared_lookup.findTypeByNameScoped(g, name, scope_start, scope_end, caller_parent_id, scope_index, isTypeReference);
-}
-
 /// Check whether a graph node represents a type reference with the given name.
 /// Matches type containers (type_def, enum_def, union_def), PascalCase constants
 /// (type aliases), and PascalCase import_decl nodes.
@@ -1356,12 +1344,12 @@ pub fn isTypeReference(n: @import("../../core/node.zig").Node, name: []const u8)
     return false;
 }
 
-fn findFunctionByNameScoped(g: *const Graph, name: []const u8, scope_start: usize, scope_end: usize, caller_parent_id: ?NodeId, scope_index: *const ScopeIndex) ?NodeId {
-    return shared_lookup.findFunctionByNameScoped(g, name, scope_start, scope_end, caller_parent_id, scope_index, &.{});
+fn findTypeByNameScoped(g: *const Graph, name: []const u8, scope_start: usize, scope_end: usize, caller_parent_id: ?NodeId, scope_index: *const ScopeIndex) ?NodeId {
+    return shared_lookup.findTypeByNameScoped(g, name, scope_start, scope_end, caller_parent_id, scope_index, isTypeReference);
 }
 
-fn findFunctionByNameAndLine(g: *const Graph, name: []const u8, line: u32, scope_start: usize, scope_end: usize) ?NodeId {
-    return shared_lookup.findFunctionByNameAndLine(g, name, line, scope_start, scope_end);
+fn findFunctionByNameScoped(g: *const Graph, name: []const u8, scope_start: usize, scope_end: usize, caller_parent_id: ?NodeId, scope_index: *const ScopeIndex) ?NodeId {
+    return shared_lookup.findFunctionByNameScoped(g, name, scope_start, scope_end, caller_parent_id, scope_index, &.{});
 }
 
 /// Find a test_def node by name within the given scope range.

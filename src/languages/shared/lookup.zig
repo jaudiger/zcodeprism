@@ -27,13 +27,13 @@ pub fn findTypeCrossFile(graph: *const Graph, name: []const u8, ctx: *const Edge
     for (ctx.imports.items) |entry| {
         var already = false;
         for (unique_targets[0..unique_count]) |existing| {
-            if (existing == entry.target) {
+            if (existing == entry.file_id) {
                 already = true;
                 break;
             }
         }
         if (!already and unique_count < unique_targets.len) {
-            unique_targets[unique_count] = entry.target;
+            unique_targets[unique_count] = entry.file_id;
             unique_count += 1;
         }
     }

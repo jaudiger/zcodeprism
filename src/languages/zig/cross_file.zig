@@ -178,7 +178,7 @@ pub fn buildImportMap(allocator: std.mem.Allocator, g: *const Graph, source: []c
 
         // Find the target file node in the graph using directory-relative resolution.
         if (pc.resolveFileImport(file_index, importer_path, import_path)) |target_id| {
-            var entry = ImportEntry{ .name = name, .target = target_id };
+            var entry = ImportEntry{ .name = name, .file_id = target_id };
             var ext_chain: [max_chain_depth][]const u8 = undefined;
             const ext_len = extractImportExtractionChain(source, child, &ext_chain, k);
             for (0..ext_len) |ci| {
@@ -225,7 +225,7 @@ fn buildAliasMemberMap(
 
             const origin = ctx.findImportOrigin(chain[0]) orelse break;
 
-            var entry = ImportEntry{ .name = alias_name, .target = origin.file_id };
+            var entry = ImportEntry{ .name = alias_name, .file_id = origin.file_id };
             var new_len: usize = 0;
             for (origin.chain) |seg| {
                 if (new_len >= max_chain_depth) break;
@@ -286,92 +286,72 @@ pub fn extractExpressionImportRoot(source: []const u8, node: ts.Node, ctx: *cons
     return null;
 }
 
-/// Resolve a function's return type to a type node in the graph.
-/// Parses the return type from the function's stored signature text, stripping
-/// error unions, pointers, and optional markers. Handles import-qualified types
-/// (import-qualified names) by resolving the import in the containing file.
-/// Returns the type's NodeId for use as scope in further chain resolution,
-/// or null if the return type cannot be resolved.
-pub fn resolveReturnTypeScope(g: *const Graph, fn_id: NodeId, graph_index: *const GraphIndex) ?NodeId {
-    const scope_index = &graph_index.scope;
-    const fn_node = g.getNode(fn_id) orelse return null;
-    const sig = fn_node.signature orelse return null;
+/// Zig-specific return-type signature parser. Matches the
+/// `shared_resolve.ParseReturnSegmentsFn` contract.
+pub fn parseReturnTypeSegments(
+    sig: []const u8,
+    out: *[max_chain_depth][]const u8,
+    count: *usize,
+) void {
+    count.* = 0;
 
-    // Extract return type: text after the last ')' in the signature.
-    const paren_pos = std.mem.lastIndexOfScalar(u8, sig, ')') orelse return null;
-    if (paren_pos + 1 >= sig.len) return null;
+    // Return type is the text after the last ')' in the signature.
+    const paren_pos = std.mem.lastIndexOfScalar(u8, sig, ')') orelse return;
+    if (paren_pos + 1 >= sig.len) return;
     var return_text = std.mem.trim(u8, sig[paren_pos + 1 ..], " \t\n\r");
-    if (return_text.len == 0) return null;
+    if (return_text.len == 0) return;
 
-    // Strip error union prefix.
     if (std.mem.indexOfScalar(u8, return_text, '!')) |bang_pos| {
         return_text = return_text[bang_pos + 1 ..];
     }
 
-    // Strip pointer/optional markers.
     while (return_text.len > 0 and (return_text[0] == '*' or return_text[0] == '?')) {
         return_text = return_text[1..];
     }
-    // Strip "const " prefix (from *const T).
     if (std.mem.startsWith(u8, return_text, "const ")) {
         return_text = return_text[6..];
     }
     return_text = std.mem.trim(u8, return_text, " \t\n\r");
-    if (return_text.len == 0) return null;
+    if (return_text.len == 0) return;
 
-    // Split on '.' to get segments.
-    var segments: [max_chain_depth][]const u8 = undefined;
-    var seg_count: usize = 0;
     var iter = std.mem.splitScalar(u8, return_text, '.');
     while (iter.next()) |seg| {
-        if (seg_count >= max_chain_depth) break;
-        // Trim and extract only identifier characters.
+        if (count.* >= max_chain_depth) break;
         var s = std.mem.trim(u8, seg, " \t\n\r");
         var end: usize = 0;
         while (end < s.len and source_scan.isIdentChar(s[end])) : (end += 1) {}
         if (end == 0) continue;
-        segments[seg_count] = s[0..end];
-        seg_count += 1;
+        out[count.*] = s[0..end];
+        count.* += 1;
     }
-    if (seg_count == 0) return null;
-
-    // Import-qualified return type: resolve the import prefix then the type name.
-    if (seg_count >= 2) {
-        const fn_file_id = g.findContainingFile(fn_id) orelse return null;
-        const target_file_id = findImportInFile(g, fn_file_id, segments[0], graph_index) orelse return null;
-        return g.findTypeAmongChildren(scope_index.childrenOf(target_file_id), segments[1]);
-    }
-
-    // Bare type name: look among siblings in the same scope.
-    const fn_parent = fn_node.parent_id orelse return null;
-    return g.findTypeAmongChildren(scope_index.childrenOf(fn_parent), segments[0]);
 }
 
-/// Find an import_decl child of a file node that matches the given name,
-/// and return the target file's NodeId by resolving the import path.
-fn findImportInFile(g: *const Graph, file_id: NodeId, import_name: []const u8, graph_index: *const GraphIndex) ?NodeId {
-    const scope_index = &graph_index.scope;
-    const file_index = &graph_index.files;
-    // Get the file node's file_path for directory-relative resolution.
-    const file_node = g.getNode(file_id) orelse return null;
-    const importer_path = file_node.file_path;
+/// Zig-specific `import_decl` resolver. Matches the
+/// `shared_resolve.ResolveModuleTargetFn` contract.
+pub fn resolveModuleTarget(
+    file_index: *const @import("../../core/file_index.zig").FileIndex,
+    importer_path: ?[]const u8,
+    decl: @import("../../core/node.zig").Node,
+) ?NodeId {
+    const import_path = decl.signature orelse return null;
+    return pc.resolveFileImport(file_index, importer_path, import_path);
+}
 
-    for (scope_index.childrenOf(file_id)) |child_idx| {
-        const n = g.nodes.items[child_idx];
-        if (n.kind != .import_decl) continue;
-        if (!std.mem.eql(u8, n.name, import_name)) continue;
-        const import_path = n.signature orelse continue;
-        return pc.resolveFileImport(file_index, importer_path, import_path);
-    }
-    return null;
+/// The Zig instance of `shared_resolve.ReturnTypeResolver`.
+pub const return_type_resolver = shared_resolve.ReturnTypeResolver{
+    .parse_return_type_segments = parseReturnTypeSegments,
+    .resolve_module_target = resolveModuleTarget,
+};
+
+/// Resolve a function's return type to a type node using Zig's signature
+/// parser and module-target resolver.
+pub fn resolveReturnTypeScope(g: *const Graph, fn_id: NodeId, graph_index: *const GraphIndex) ?NodeId {
+    return shared_resolve.resolveReturnTypeScope(g, fn_id, graph_index, &return_type_resolver);
 }
 
 /// Resolve a variable's target file through the return type of its initializer.
-/// For a variable assigned from an import-qualified function call, extracts the
-/// full chain, walks it in the target file to locate the called function, then
-/// resolves that function's return type to find the file containing the result type.
-/// Returns the resolved file NodeId, or null if resolution fails (caller should
-/// fall back to the original import target).
+/// Extracts the qualified chain from the Zig AST then delegates to the shared
+/// algorithm.
 pub fn resolveVarTargetThroughReturnType(
     g: *const Graph,
     source: []const u8,
@@ -381,8 +361,6 @@ pub fn resolveVarTargetThroughReturnType(
     graph_index: *const GraphIndex,
     log: Logger,
 ) ?NodeId {
-    const scope_index = &graph_index.scope;
-    // Extract the full chain from the assignment expression.
     var chain: [max_chain_depth][]const u8 = undefined;
     var chain_len: usize = 0;
 
@@ -408,62 +386,12 @@ pub fn resolveVarTargetThroughReturnType(
         }
     }
 
-    if (chain_len == 0) {
-        log.trace("var target: chain extraction failed", &.{});
-        return null;
-    }
-
-    // Look up the origin for the root name (includes extraction chain).
-    const origin = ctx.findImportOrigin(chain[0]) orelse return null;
-
-    // Build effective chain: origin.chain ++ chain[1..chain_len].
-    var effective: [max_chain_depth][]const u8 = undefined;
-    var eff_len: usize = 0;
-    for (origin.chain) |seg| {
-        if (eff_len >= max_chain_depth) break;
-        effective[eff_len] = seg;
-        eff_len += 1;
-    }
-    for (chain[1..chain_len]) |seg| {
-        if (eff_len >= max_chain_depth) break;
-        effective[eff_len] = seg;
-        eff_len += 1;
-    }
-
-    if (eff_len == 0) return null;
-
-    // Walk effective chain to find the function node in the target file.
-    var scope_id = origin.file_id;
-    var last_fn_id: ?NodeId = null;
-
-    for (effective[0..eff_len]) |segment| {
-        var matched: ?NodeId = null;
-        for (scope_index.childrenOf(scope_id)) |child_idx| {
-            const n = g.nodes.items[child_idx];
-            if (!std.mem.eql(u8, n.name, segment)) continue;
-            matched = @enumFromInt(child_idx);
-            break;
-        }
-        if (matched == null) {
-            if (std.mem.eql(u8, segment, "Self")) continue;
-            return null;
-        }
-        const node = g.getNode(matched.?) orelse return null;
-        if (node.kind == .function) {
-            last_fn_id = matched;
-        }
-        if (node.kind.isTypeContainer()) {
-            scope_id = matched.?;
-        } else {
-            scope_id = node.parent_id orelse return null;
-        }
-    }
-
-    const fn_id = last_fn_id orelse return null;
-
-    // Resolve the function's return type to a type node.
-    const return_type_id = resolveReturnTypeScope(g, fn_id, graph_index) orelse return null;
-
-    // Return the file containing the return type.
-    return g.findContainingFile(return_type_id);
+    return shared_resolve.resolveVarTargetThroughReturnType(
+        g,
+        ctx,
+        chain[0..chain_len],
+        graph_index,
+        &return_type_resolver,
+        log,
+    );
 }
