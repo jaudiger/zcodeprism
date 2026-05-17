@@ -102,6 +102,7 @@ pub fn runLspEnrichment(
     var lsp_pool = zcodeprism.lsp.pool.LspPool.init(.{});
     defer lsp_pool.deinit(allocator, io);
 
-    const result = try zcodeprism.lsp.enricher.enrichAllLanguages(allocator, io, graph, wl, &lsp_pool, .{ .logger = log });
+    const allocs = zcodeprism.indexer.IndexAllocators.single(allocator);
+    const result = try zcodeprism.lsp.enricher.enrichAllLanguages(allocs, io, graph, wl, &lsp_pool, .{ .logger = log });
     result.format(stdout) catch {};
 }

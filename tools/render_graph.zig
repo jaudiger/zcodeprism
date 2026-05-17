@@ -227,7 +227,7 @@ pub fn main(init: std.process.Init) !void {
         var wl = zcodeprism.lsp.worklist.LspWorklist{};
         defer wl.deinit(allocator);
 
-        _ = indexer.indexDirectory(allocator, io, input_path, &graph, &wl, .{
+        _ = indexer.indexDirectory(indexer.IndexAllocators.single(allocator), io, input_path, &graph, &wl, .{
             .exclude_paths = common_flags.exclude.items,
             .logger = log,
         }) catch |err| {

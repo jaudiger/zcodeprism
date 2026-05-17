@@ -19,7 +19,7 @@ test "graph is complete without LSP" {
     defer graph.deinit(allocator);
 
     // Act
-    _ = try indexer.indexDirectory(allocator, std.testing.io, fixture_path, &graph, null, .{});
+    _ = try indexer.indexDirectory(indexer.IndexAllocators.single(allocator), std.testing.io, fixture_path, &graph, null, .{});
 
     // Assert
     try std.testing.expect(graph.nodeCount() > 0);
@@ -68,7 +68,7 @@ test "LSP enrichment adds edges and populates errors" {
 
     var wl = zcodeprism.lsp.worklist.LspWorklist{};
     defer wl.deinit(allocator);
-    _ = try indexer.indexDirectory(allocator, std.testing.io, fixture_path, &graph, &wl, .{});
+    _ = try indexer.indexDirectory(indexer.IndexAllocators.single(allocator), std.testing.io, fixture_path, &graph, &wl, .{});
 
     const pre_lsp_edge_count = graph.edgeCount();
 
@@ -76,7 +76,7 @@ test "LSP enrichment adds edges and populates errors" {
     const zig_support = zcodeprism.registry.Registry.getByExtension(".zig").?;
     var lsp_pool = zcodeprism.lsp.pool.LspPool.init(.{});
     defer lsp_pool.deinit(allocator, std.testing.io);
-    const result = try enricher.enrich(allocator, std.testing.io, &graph, zig_support, &wl, &lsp_pool, .{
+    const result = try enricher.enrich(indexer.IndexAllocators.single(allocator), std.testing.io, &graph, zig_support, &wl, &lsp_pool, .{
         .project_root = fixture_path,
     });
 
@@ -120,7 +120,7 @@ test "rust graph is complete without rust-analyzer" {
     defer graph.deinit(allocator);
 
     // Act
-    _ = try indexer.indexDirectory(allocator, std.testing.io, fixture_path, &graph, null, .{});
+    _ = try indexer.indexDirectory(indexer.IndexAllocators.single(allocator), std.testing.io, fixture_path, &graph, null, .{});
 
     // Assert
     try std.testing.expect(graph.nodeCount() > 0);
@@ -150,7 +150,7 @@ test "rust-analyzer enrichment adds edges" {
 
     var wl = zcodeprism.lsp.worklist.LspWorklist{};
     defer wl.deinit(allocator);
-    _ = try indexer.indexDirectory(allocator, std.testing.io, fixture_path, &graph, &wl, .{});
+    _ = try indexer.indexDirectory(indexer.IndexAllocators.single(allocator), std.testing.io, fixture_path, &graph, &wl, .{});
 
     const pre_lsp_edge_count = graph.edgeCount();
 
@@ -158,7 +158,7 @@ test "rust-analyzer enrichment adds edges" {
     const rust_support = zcodeprism.registry.Registry.getByExtension(".rs").?;
     var lsp_pool = zcodeprism.lsp.pool.LspPool.init(.{});
     defer lsp_pool.deinit(allocator, std.testing.io);
-    const result = try enricher.enrich(allocator, std.testing.io, &graph, rust_support, &wl, &lsp_pool, .{
+    const result = try enricher.enrich(indexer.IndexAllocators.single(allocator), std.testing.io, &graph, rust_support, &wl, &lsp_pool, .{
         .project_root = fixture_path,
     });
 

@@ -15,6 +15,7 @@ const query_mod = zcodeprism.query;
 const coupling_mod = zcodeprism.analyzer.coupling;
 
 const indexDirectory = zcodeprism.indexer.indexDirectory;
+const IndexAllocators = zcodeprism.indexer.IndexAllocators;
 const writeFixtureFiles = helpers.writeFixtureFiles;
 
 const mixed_project_files: []const helpers.FileEntry = &.{
@@ -30,7 +31,7 @@ fn setupMixedProject(tmp_dir: *std.testing.TmpDir) ![:0]const u8 {
 fn indexMixedProject(graph: *Graph, tmp_dir: *std.testing.TmpDir) !zcodeprism.indexer.IndexResult {
     const project_root = try setupMixedProject(tmp_dir);
     defer std.testing.allocator.free(project_root);
-    return indexDirectory(std.testing.allocator, std.testing.io, project_root, graph, null, .{});
+    return indexDirectory(IndexAllocators.single(std.testing.allocator), std.testing.io, project_root, graph, null, .{});
 }
 
 test "unified graph contains both zig and rust file nodes" {

@@ -41,7 +41,9 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, options: Options) !Result {
     var wl = worklist_mod.LspWorklist{};
     defer wl.deinit(allocator);
 
-    const idx_result = try indexer.indexDirectory(allocator, io, options.project_root, &graph, &wl, .{
+    const allocs = indexer.IndexAllocators.single(allocator);
+
+    const idx_result = try indexer.indexDirectory(allocs, io, options.project_root, &graph, &wl, .{
         .exclude_paths = options.exclude_paths,
         .logger = options.logger,
         .budget_bytes = options.budget_bytes,
@@ -50,7 +52,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, options: Options) !Result {
     var pool = lsp_pool_mod.LspPool.init(.{});
     defer pool.deinit(allocator, io);
 
-    const lsp_result = try lsp_enricher.enrichAllLanguages(allocator, io, &graph, &wl, &pool, .{
+    const lsp_result = try lsp_enricher.enrichAllLanguages(allocs, io, &graph, &wl, &pool, .{
         .logger = options.logger,
         .project_root = options.project_root,
     });

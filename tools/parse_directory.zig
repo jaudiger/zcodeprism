@@ -99,7 +99,7 @@ pub fn main(init: std.process.Init) !void {
     var wl = zcodeprism.lsp.worklist.LspWorklist{};
     defer wl.deinit(allocator);
 
-    const result = indexer.indexDirectory(allocator, io, dir_path, &graph, &wl, options) catch |err| {
+    const result = indexer.indexDirectory(indexer.IndexAllocators.single(allocator), io, dir_path, &graph, &wl, options) catch |err| {
         try stdout.print("Index error: {}\n", .{err});
         try stdout.flush();
         std.process.exit(1);

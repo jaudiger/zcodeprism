@@ -104,6 +104,11 @@ pub const PoolOptions = struct {
 
 /// Manages long-lived LSP server connections, one per Language.
 /// Not thread-safe. Single-threaded usage only.
+///
+/// Every method that allocates takes an allocator parameter. The caller
+/// must pass the same long-lived allocator on every call; the pool's
+/// stored state (connections, opened URIs) is freed with whatever
+/// allocator the eventual `deinit` receives.
 pub const LspPool = struct {
     connections: [lang_count]?*LspConnection = .{null} ** lang_count,
     idle_timeout_ns: u64,

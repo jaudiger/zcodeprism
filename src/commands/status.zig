@@ -3,6 +3,7 @@ const types = @import("../core/types.zig");
 const graph_mod = @import("../core/graph.zig");
 const storage = @import("../storage/storage.zig");
 const source_hash = @import("source_hash.zig");
+const indexer = @import("../parser/indexer.zig");
 
 const Graph = graph_mod.Graph;
 
@@ -28,7 +29,7 @@ pub const Result = struct {
 /// summary counters and a runtime source hash.
 pub fn run(allocator: std.mem.Allocator, io: std.Io, options: Options) !Result {
     var graph = if (options.workspace_path) |ws_path|
-        try storage.workspace_loader.loadAndAssemble(allocator, io, ws_path)
+        try storage.workspace_loader.loadAndAssemble(indexer.IndexAllocators.single(allocator), io, ws_path)
     else
         try storage.binary.load(allocator, io, storage.graph_binary_path);
     defer graph.deinit(allocator);

@@ -11,6 +11,7 @@ const enrichment = @import("../enrichment/enrichment.zig");
 const logging = @import("../logging.zig");
 const client_mod = @import("client.zig");
 const pool_mod = @import("pool.zig");
+const indexer_mod = @import("../parser/indexer.zig");
 
 const worklist_mod = @import("worklist.zig");
 const LspWorklist = worklist_mod.LspWorklist;
@@ -23,6 +24,7 @@ const Field = logging.Field;
 const LspClient = client_mod.LspClient;
 const LspPool = pool_mod.LspPool;
 const Registry = registry_mod.Registry;
+const IndexAllocators = indexer_mod.IndexAllocators;
 
 /// Options for the LSP enrichment pass.
 pub const EnrichOptions = struct {
@@ -37,8 +39,13 @@ pub const EnrichOptions = struct {
 /// opens project files on cold start, delegates to the language's enrichFn
 /// callback, re-freezes the graph, and re-runs post-freeze enrichment.
 /// Returns a zero-valued result when lsp_config or enrichFn is null.
+///
+/// `allocs.graph` owns any graph mutations the enrichment makes.
+/// `allocs.scratch` owns transient LSP buffers and is also passed to
+/// every pool method, so the pool's stored state lives on
+/// `allocs.scratch`'s lifetime.
 pub fn enrich(
-    allocator: std.mem.Allocator,
+    allocs: IndexAllocators,
     io: std.Io,
     graph: *Graph,
     language_support_val: *const LanguageSupport,
@@ -56,7 +63,7 @@ pub fn enrich(
         .rust => "rust",
     };
 
-    const conn = pool.acquire(allocator, io, language_support_val.language, &lsp_config, root, log) catch {
+    const conn = pool.acquire(allocs.scratch, io, language_support_val.language, &lsp_config, root, log) catch {
         log.warn("LSP: failed to acquire connection", &.{Field.string("server", lsp_config.server_name)});
         return .{};
     };
@@ -64,9 +71,9 @@ pub fn enrich(
 
     var warmup_elapsed: u64 = 0;
     if (conn.openedFileCount() == 0) {
-        conn.openAllFiles(allocator, io, graph, lang_id, root, log);
+        conn.openAllFiles(allocs.scratch, io, graph, lang_id, root, log);
 
-        const warmup = conn.client.drainNotifications(allocator, io, options.warmup_timeout_ms, log);
+        const warmup = conn.client.drainNotifications(allocs.scratch, io, options.warmup_timeout_ms, log);
         log.debug("LSP warmup", &.{
             Field.uint("notifications", @as(u64, warmup.notifications_drained)),
             Field.uint("ms", warmup.elapsed_ms),
@@ -75,7 +82,7 @@ pub fn enrich(
         warmup_elapsed = warmup.elapsed_ms;
     }
 
-    var result = try enrich_fn(allocator, io, graph, &conn.client, wl, log);
+    var result = try enrich_fn(allocs.graph, io, graph, &conn.client, wl, log);
     result.warmup_ms = warmup_elapsed;
 
     log.info("LSP enrichment complete", &.{
@@ -99,13 +106,13 @@ pub fn enrich(
     });
 
     // Re-freeze to rebuild adjacency with any new edges.
-    _ = graph.freeze(allocator) catch {
+    _ = graph.freeze(allocs.graph) catch {
         log.warn("LSP: re-freeze failed", &.{});
         return result;
     };
 
     // Re-run post-freeze enrichment.
-    enrichment.enrichPostFreeze(allocator, graph, .{ .logger = log }) catch {
+    enrichment.enrichPostFreeze(allocs.graph, graph, .{ .logger = log }) catch {
         log.warn("LSP: post-freeze enrichment failed", &.{});
     };
 
@@ -115,7 +122,7 @@ pub fn enrich(
 /// Run `enrich` over every registered language, accumulating results.
 /// Returns the first error encountered.
 pub fn enrichAllLanguages(
-    allocator: std.mem.Allocator,
+    allocs: IndexAllocators,
     io: std.Io,
     graph: *Graph,
     wl: *const LspWorklist,
@@ -124,7 +131,7 @@ pub fn enrichAllLanguages(
 ) !EnrichResult {
     var result = EnrichResult{};
     for (Registry.allLanguages()) |ls| {
-        const r = try enrich(allocator, io, graph, ls, wl, pool, options);
+        const r = try enrich(allocs, io, graph, ls, wl, pool, options);
         result.accumulate(r);
     }
     return result;
@@ -159,7 +166,7 @@ test "enricher handles no-op cases" {
     // Act
     var wl = worklist_mod.LspWorklist{};
     defer wl.deinit(std.testing.allocator);
-    const result = try enrich(std.testing.allocator, std.testing.io, &graph, &no_lsp, &wl, &pool, .{});
+    const result = try enrich(IndexAllocators.single(std.testing.allocator), std.testing.io, &graph, &no_lsp, &wl, &pool, .{});
 
     // Assert
     try std.testing.expectEqual(@as(usize, 0), result.edges_promoted);

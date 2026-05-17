@@ -12,6 +12,7 @@ const EdgeSource = zcodeprism.types.EdgeSource;
 const Language = zcodeprism.types.Language;
 
 const indexDirectory = zcodeprism.indexer.indexDirectory;
+const IndexAllocators = zcodeprism.indexer.IndexAllocators;
 
 const writeFixtureFiles = helpers.writeFixtureFiles;
 
@@ -43,7 +44,7 @@ fn setupProjectFixtures(tmp_dir: *std.testing.TmpDir) ![:0]const u8 {
 fn indexProjectFixtures(graph: *Graph, tmp_dir: *std.testing.TmpDir) !zcodeprism.indexer.IndexResult {
     const project_root = try setupProjectFixtures(tmp_dir);
     defer std.testing.allocator.free(project_root);
-    return indexDirectory(std.testing.allocator, std.testing.io, project_root, graph, null, .{});
+    return indexDirectory(IndexAllocators.single(std.testing.allocator), std.testing.io, project_root, graph, null, .{});
 }
 
 test "indexes all rs files" {
@@ -215,8 +216,8 @@ test "incremental skips unchanged files" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{ .incremental = true }) catch |err| return err;
-    const result2 = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{ .incremental = true }) catch |err| return err;
+    _ = indexDirectory(IndexAllocators.single(std.testing.allocator), std.testing.io, project_root, &g, null, .{ .incremental = true }) catch |err| return err;
+    const result2 = indexDirectory(IndexAllocators.single(std.testing.allocator), std.testing.io, project_root, &g, null, .{ .incremental = true }) catch |err| return err;
 
     // Assert
     try std.testing.expect(result2.files_skipped > 0);
@@ -237,7 +238,7 @@ test "single file project" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
+    _ = indexDirectory(IndexAllocators.single(std.testing.allocator), std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
     // Assert
     try std.testing.expectEqual(@as(usize, 1), helpers.countNodesByKind(&g, .file));
@@ -259,7 +260,7 @@ test "directory with no rs files" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
+    _ = indexDirectory(IndexAllocators.single(std.testing.allocator), std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
     // Assert
     try std.testing.expectEqual(@as(usize, 0), helpers.countNodesByKind(&g, .file));
@@ -286,7 +287,7 @@ test "mod foo resolves to foo.rs" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
+    _ = indexDirectory(IndexAllocators.single(std.testing.allocator), std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
     // Assert
     const lib_file = helpers.findNode(&g, "lib.rs", .file) orelse return error.TestExpectedEqual;
@@ -322,7 +323,7 @@ test "module-prefix import resolves to qualified phantom" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = try indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{});
+    _ = try indexDirectory(IndexAllocators.single(std.testing.allocator), std.testing.io, project_root, &g, null, .{});
 
     // Assert
     var found_qualified = false;
@@ -396,7 +397,7 @@ test "aliased use import resolves to qualified phantom" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = try indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{});
+    _ = try indexDirectory(IndexAllocators.single(std.testing.allocator), std.testing.io, project_root, &g, null, .{});
 
     // Assert
     var found_qualified = false;
@@ -468,7 +469,7 @@ test "phantom module kind and edge type follow Rust naming convention" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = try indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{});
+    _ = try indexDirectory(IndexAllocators.single(std.testing.allocator), std.testing.io, project_root, &g, null, .{});
 
     // Assert
     for (g.nodes.items) |n| {
@@ -517,7 +518,7 @@ test "mod foo resolves to foo/mod.rs" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
+    _ = indexDirectory(IndexAllocators.single(std.testing.allocator), std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
     // Assert
     const lib_file = helpers.findNode(&g, "lib.rs", .file) orelse return error.TestExpectedEqual;
@@ -598,7 +599,7 @@ test "transitive re-export resolves through chain" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = try indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{});
+    _ = try indexDirectory(IndexAllocators.single(std.testing.allocator), std.testing.io, project_root, &g, null, .{});
 
     // Assert
     const deep_file = helpers.findNode(&g, "deep.rs", .file) orelse return error.TestExpectedEqual;
@@ -640,7 +641,7 @@ test "pub use emits exports edge to resolved type" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = try indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{});
+    _ = try indexDirectory(IndexAllocators.single(std.testing.allocator), std.testing.io, project_root, &g, null, .{});
 
     // Assert
     const deep_file = helpers.findNode(&g, "deep.rs", .file) orelse return error.TestExpectedEqual;
@@ -672,7 +673,7 @@ test "glob import resolves public symbols but not private ones" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = try indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{});
+    _ = try indexDirectory(IndexAllocators.single(std.testing.allocator), std.testing.io, project_root, &g, null, .{});
 
     // Assert
     const lib_file = helpers.findNode(&g, "lib.rs", .file) orelse return error.TestExpectedEqual;
@@ -740,7 +741,7 @@ test "scoped field type creates phantom uses_type edge" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = try indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{});
+    _ = try indexDirectory(IndexAllocators.single(std.testing.allocator), std.testing.io, project_root, &g, null, .{});
 
     // Assert
     var found_error = false;
@@ -813,7 +814,7 @@ test "Cargo.toml: crate module and dependencies" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = try indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{});
+    _ = try indexDirectory(IndexAllocators.single(std.testing.allocator), std.testing.io, project_root, &g, null, .{});
 
     // Assert
     try std.testing.expect(helpers.findNode(&g, "main.rs", .file) != null);
@@ -859,7 +860,7 @@ test "Cargo.toml: no dependencies" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = try indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{});
+    _ = try indexDirectory(IndexAllocators.single(std.testing.allocator), std.testing.io, project_root, &g, null, .{});
 
     // Assert
     try std.testing.expect(helpers.findNode(&g, "lib.rs", .file) != null);
@@ -882,7 +883,7 @@ test "Cargo.toml: workspace members" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = try indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{});
+    _ = try indexDirectory(IndexAllocators.single(std.testing.allocator), std.testing.io, project_root, &g, null, .{});
 
     // Assert
     var lib_count: usize = 0;

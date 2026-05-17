@@ -12,6 +12,7 @@ const EdgeSource = zcodeprism.types.EdgeSource;
 const Language = zcodeprism.types.Language;
 
 const indexDirectory = zcodeprism.indexer.indexDirectory;
+const IndexAllocators = zcodeprism.indexer.IndexAllocators;
 
 const writeFixtureFiles = helpers.writeFixtureFiles;
 
@@ -31,7 +32,7 @@ fn setupProjectFixtures(tmp_dir: *std.testing.TmpDir) ![:0]const u8 {
 fn indexProjectFixtures(graph: *Graph, tmp_dir: *std.testing.TmpDir) !zcodeprism.indexer.IndexResult {
     const project_root = try setupProjectFixtures(tmp_dir);
     defer std.testing.allocator.free(project_root);
-    return indexDirectory(std.testing.allocator, std.testing.io, project_root, graph, null, .{});
+    return indexDirectory(IndexAllocators.single(std.testing.allocator), std.testing.io, project_root, graph, null, .{});
 }
 
 fn writeCollisionFixtures(io: std.Io, dir: std.Io.Dir) !void {
@@ -251,10 +252,10 @@ test "incremental indexing skips unchanged files" {
     defer tmp_dir.cleanup();
     const project_root = setupProjectFixtures(&tmp_dir) catch return error.SkipZigTest;
     defer std.testing.allocator.free(project_root);
-    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{ .incremental = true }) catch |err| return err;
+    _ = indexDirectory(IndexAllocators.single(std.testing.allocator), std.testing.io, project_root, &g, null, .{ .incremental = true }) catch |err| return err;
 
     // Act
-    const result = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{ .incremental = true }) catch |err| return err;
+    const result = indexDirectory(IndexAllocators.single(std.testing.allocator), std.testing.io, project_root, &g, null, .{ .incremental = true }) catch |err| return err;
 
     // Assert
     try std.testing.expect(result.files_skipped > 0);
@@ -268,14 +269,14 @@ test "incremental indexing detects changed file" {
     defer tmp_dir.cleanup();
     const project_root = setupProjectFixtures(&tmp_dir) catch return error.SkipZigTest;
     defer std.testing.allocator.free(project_root);
-    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{ .incremental = true }) catch |err| return err;
+    _ = indexDirectory(IndexAllocators.single(std.testing.allocator), std.testing.io, project_root, &g, null, .{ .incremental = true }) catch |err| return err;
     try tmp_dir.dir.writeFile(std.testing.io, .{
         .sub_path = "utils.zig",
         .data = "pub fn changed() void {}\n",
     });
 
     // Act
-    const result = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{ .incremental = true }) catch |err| return err;
+    const result = indexDirectory(IndexAllocators.single(std.testing.allocator), std.testing.io, project_root, &g, null, .{ .incremental = true }) catch |err| return err;
 
     // Assert
     try std.testing.expect(result.files_indexed > 0);
@@ -289,7 +290,7 @@ test "content_hash changes when file changes" {
     defer tmp_dir.cleanup();
     const project_root = setupProjectFixtures(&tmp_dir) catch return error.SkipZigTest;
     defer std.testing.allocator.free(project_root);
-    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
+    _ = indexDirectory(IndexAllocators.single(std.testing.allocator), std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
     const utils_node = helpers.findNode(&g, "utils.zig", .file) orelse return error.TestExpectedEqual;
     const old_hash = utils_node.content_hash orelse return error.TestExpectedEqual;
@@ -302,7 +303,7 @@ test "content_hash changes when file changes" {
     // Act
     var g2 = Graph.init("/tmp/project");
     defer g2.deinit(std.testing.allocator);
-    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g2, null, .{}) catch |err| return err;
+    _ = indexDirectory(IndexAllocators.single(std.testing.allocator), std.testing.io, project_root, &g2, null, .{}) catch |err| return err;
 
     // Assert
     const utils_node2 = helpers.findNode(&g2, "utils.zig", .file) orelse return error.TestExpectedEqual;
@@ -325,7 +326,7 @@ test "indexing a single-file project produces one file node" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
+    _ = indexDirectory(IndexAllocators.single(std.testing.allocator), std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
     // Assert
     try std.testing.expectEqual(@as(usize, 1), helpers.countNodesByKind(&g, .file));
@@ -347,7 +348,7 @@ test "indexing a directory with no zig files produces empty graph" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
+    _ = indexDirectory(IndexAllocators.single(std.testing.allocator), std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
     // Assert
     try std.testing.expectEqual(@as(usize, 0), helpers.countNodesByKind(&g, .file));
@@ -366,7 +367,7 @@ test "exclude_paths skips listed files" {
     const exclude = [_][]const u8{"parser.zig"};
 
     // Act
-    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{
+    _ = indexDirectory(IndexAllocators.single(std.testing.allocator), std.testing.io, project_root, &g, null, .{
         .exclude_paths = &exclude,
     }) catch |err| return err;
 
@@ -449,7 +450,7 @@ test "name collision: cross-file init/deinit resolution" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
+    _ = indexDirectory(IndexAllocators.single(std.testing.allocator), std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
     const alpha_file = helpers.findNode(&g, "alpha.zig", .file) orelse return error.TestExpectedEqual;
     const beta_file = helpers.findNode(&g, "beta.zig", .file) orelse return error.TestExpectedEqual;
@@ -496,7 +497,7 @@ test "test block resolves method call on import-assigned variable" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
+    _ = indexDirectory(IndexAllocators.single(std.testing.allocator), std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
     // Assert
     const provider_file = helpers.findNode(&g, "provider.zig", .file) orelse return error.TestExpectedEqual;
@@ -525,7 +526,7 @@ test "parameter method call: basic parameter" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
+    _ = indexDirectory(IndexAllocators.single(std.testing.allocator), std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
     const service_file = helpers.findNode(&g, "service.zig", .file) orelse return error.TestExpectedEqual;
     const consumer_file = helpers.findNode(&g, "consumer.zig", .file) orelse return error.TestExpectedEqual;
@@ -557,7 +558,7 @@ test "parameter method call: pointer parameter" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
+    _ = indexDirectory(IndexAllocators.single(std.testing.allocator), std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
     const service_file = helpers.findNode(&g, "service.zig", .file) orelse return error.TestExpectedEqual;
     const param_file = helpers.findNode(&g, "pointer_param.zig", .file) orelse return error.TestExpectedEqual;
@@ -582,7 +583,7 @@ test "parameter method call: optional parameter" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
+    _ = indexDirectory(IndexAllocators.single(std.testing.allocator), std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
     const service_file = helpers.findNode(&g, "service.zig", .file) orelse return error.TestExpectedEqual;
     const param_file = helpers.findNode(&g, "optional_param.zig", .file) orelse return error.TestExpectedEqual;
@@ -604,7 +605,7 @@ test "parameter method call: chained cross-file" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
+    _ = indexDirectory(IndexAllocators.single(std.testing.allocator), std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
     const swc_file = helpers.findNode(&g, "service_with_client.zig", .file) orelse return error.TestExpectedEqual;
     const client_file = helpers.findNode(&g, "client.zig", .file) orelse return error.TestExpectedEqual;
@@ -630,7 +631,7 @@ test "parameter method call: multiple parameters" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
+    _ = indexDirectory(IndexAllocators.single(std.testing.allocator), std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
     const service_file = helpers.findNode(&g, "service.zig", .file) orelse return error.TestExpectedEqual;
     const client_file = helpers.findNode(&g, "client.zig", .file) orelse return error.TestExpectedEqual;
@@ -663,7 +664,7 @@ test "parameter method call: self method calling parameter method" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
+    _ = indexDirectory(IndexAllocators.single(std.testing.allocator), std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
     const service_file = helpers.findNode(&g, "service.zig", .file) orelse return error.TestExpectedEqual;
     const self_file = helpers.findNode(&g, "self_calls_param.zig", .file) orelse return error.TestExpectedEqual;
@@ -688,7 +689,7 @@ test "parameter method call: return value from imported function" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
+    _ = indexDirectory(IndexAllocators.single(std.testing.allocator), std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
     const factory_file = helpers.findNode(&g, "factory.zig", .file) orelse return error.TestExpectedEqual;
     const service_file = helpers.findNode(&g, "service.zig", .file) orelse return error.TestExpectedEqual;
@@ -714,7 +715,7 @@ test "no calls edge when parameter method is not called" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
+    _ = indexDirectory(IndexAllocators.single(std.testing.allocator), std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
     // Assert
     const service_file = helpers.findNode(&g, "service.zig", .file) orelse return error.TestExpectedEqual;
@@ -738,7 +739,7 @@ test "dir imports: same-directory resolution with duplicate basenames" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
+    _ = indexDirectory(IndexAllocators.single(std.testing.allocator), std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
     // Assert
     var crypto_helpers_id: ?NodeId = null;
@@ -779,7 +780,7 @@ test "dir imports: dot-slash prefix resolves to same directory" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
+    _ = indexDirectory(IndexAllocators.single(std.testing.allocator), std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
     // Assert
     var crypto_hmac_id: ?NodeId = null;
@@ -808,7 +809,7 @@ test "dir imports: subdirectory import resolves across directories" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
+    _ = indexDirectory(IndexAllocators.single(std.testing.allocator), std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
     // Assert
     var compress_flate_id: ?NodeId = null;
@@ -837,7 +838,7 @@ test "dir imports: parent directory import resolves across directories" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
+    _ = indexDirectory(IndexAllocators.single(std.testing.allocator), std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
     // Assert
     var compress_flate_inner_id: ?NodeId = null;
@@ -866,7 +867,7 @@ test "dir imports: subdirectory import from root" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
+    _ = indexDirectory(IndexAllocators.single(std.testing.allocator), std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
     // Assert
     var root_id: ?NodeId = null;
@@ -895,7 +896,7 @@ test "dir imports: cross-file call edges resolve to correct targets" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
+    _ = indexDirectory(IndexAllocators.single(std.testing.allocator), std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
     // Find file nodes
     var crypto_aegis_id: ?NodeId = null;
@@ -965,7 +966,7 @@ test "inner struct call: cross-file edges from test block inner struct" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
+    _ = indexDirectory(IndexAllocators.single(std.testing.allocator), std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
     // Assert
     const provider_file = helpers.findNode(&g, "provider.zig", .file) orelse return error.TestExpectedEqual;
@@ -1014,7 +1015,7 @@ test "direct extraction type: qualified method call creates cross-file calls edg
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
+    _ = indexDirectory(IndexAllocators.single(std.testing.allocator), std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
     // Assert
     const provider_file = helpers.findNode(&g, "provider.zig", .file) orelse return error.TestExpectedEqual;
@@ -1045,7 +1046,7 @@ test "direct extraction fn: bare call creates cross-file calls edge" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
+    _ = indexDirectory(IndexAllocators.single(std.testing.allocator), std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
     // Assert
     const provider_file = helpers.findNode(&g, "provider.zig", .file) orelse return error.TestExpectedEqual;
@@ -1070,7 +1071,7 @@ test "directory nodes created for each directory" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
+    _ = indexDirectory(IndexAllocators.single(std.testing.allocator), std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
     // Assert
     var found_crypto = false;
@@ -1118,7 +1119,7 @@ test "file parent_id points to directory" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
+    _ = indexDirectory(IndexAllocators.single(std.testing.allocator), std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
     // Assert
     for (g.nodes.items) |n| {
@@ -1140,7 +1141,7 @@ test "directory parent_id chain" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
+    _ = indexDirectory(IndexAllocators.single(std.testing.allocator), std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
     // Assert
     var flate_node: ?*const Node = null;
@@ -1213,7 +1214,7 @@ test "incremental indexing does not duplicate directory nodes" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{ .incremental = true }) catch |err| return err;
+    _ = indexDirectory(IndexAllocators.single(std.testing.allocator), std.testing.io, project_root, &g, null, .{ .incremental = true }) catch |err| return err;
     const count_after_first = helpers.countNodesByKind(&g, .directory);
 
     // Capture NodeIds of directory nodes after first run.
@@ -1229,7 +1230,7 @@ test "incremental indexing does not duplicate directory nodes" {
         }
     }
 
-    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{ .incremental = true }) catch |err| return err;
+    _ = indexDirectory(IndexAllocators.single(std.testing.allocator), std.testing.io, project_root, &g, null, .{ .incremental = true }) catch |err| return err;
     const count_after_second = helpers.countNodesByKind(&g, .directory);
 
     // Assert
@@ -1258,7 +1259,7 @@ test "no zig files produces zero directory nodes" {
     defer std.testing.allocator.free(project_root);
 
     // Act
-    _ = indexDirectory(std.testing.allocator, std.testing.io, project_root, &g, null, .{}) catch |err| return err;
+    _ = indexDirectory(IndexAllocators.single(std.testing.allocator), std.testing.io, project_root, &g, null, .{}) catch |err| return err;
 
     // Assert
     try std.testing.expectEqual(@as(usize, 0), helpers.countNodesByKind(&g, .directory));
