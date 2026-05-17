@@ -24,6 +24,8 @@ const Logger = logging.Logger;
 const EnrichResult = lang_support.EnrichResult;
 const Server = mcp.server.Server;
 
+const zero_hash: types.ContentHash = .{0} ** types.hash_len;
+
 /// Options for `serve`.
 pub const Options = struct {
     project_root: []const u8,
@@ -40,7 +42,7 @@ fn handleSigterm(_: std.c.SIG) callconv(.c) void {
     _ = std.c.close(sigterm_stdin_fd);
 }
 
-/// Start the MCP server on stdio with a background re-index watcher.
+/// Start the MCP server on stdio with background indexing.
 /// Returns when stdin reaches EOF (natural close or SIGTERM-driven).
 pub fn run(allocator: std.mem.Allocator, io: std.Io, options: Options) !void {
     sigterm_stdin_fd = std.Io.File.stdin().handle;
@@ -50,37 +52,12 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, options: Options) !void {
         .flags = 0,
     }, null);
 
-    const initial_gen = try GraphGeneration.create(allocator, io, 1, .{0} ** types.hash_len);
-    var initial_gen_owned = true;
-    errdefer if (initial_gen_owned) initial_gen.release();
-
-    var wl = LspWorklist{};
-    defer wl.deinit(allocator);
-
-    if (options.workspace_path) |ws| {
-        initial_gen.graph = try workspace_loader.loadAndAssemble(initial_gen.arena.allocator(), io, ws);
-    } else {
-        _ = try indexer.indexDirectory(allocator, io, options.project_root, &initial_gen.graph, &wl, .{
-            .exclude_paths = options.exclude_paths,
-            .logger = options.logger,
-            .budget_bytes = options.budget_bytes,
-        });
-    }
+    const initial_gen = try GraphGeneration.create(allocator, io, 1, zero_hash);
 
     var lsp_pool = LspPool.init(.{});
     defer lsp_pool.deinit(allocator, io);
 
-    if (options.workspace_path == null) {
-        _ = lsp_enricher.enrichAllLanguages(allocator, io, &initial_gen.graph, &wl, &lsp_pool, .{
-            .logger = options.logger,
-            .project_root = options.project_root,
-        }) catch EnrichResult{};
-    }
-
-    initial_gen.source_hash = source_hash.computeRuntimeSourceHash(&initial_gen.graph);
-
     var gen_manager = GenerationManager.init(initial_gen);
-    initial_gen_owned = false;
     defer gen_manager.deinit();
 
     var server = Server.init(&gen_manager);
@@ -136,11 +113,15 @@ const WatcherContext = struct {
 };
 
 fn watcherThreadFn(ctx: *WatcherContext) void {
+    var generation_id: u64 = 1;
+
+    generation_id += 1;
+    _ = reindexAndSwap(ctx, generation_id);
+
     var file_watcher = FileWatcher.init(ctx.allocator, ctx.io, ctx.watch_root, ctx.exclude_paths) catch return;
     defer file_watcher.deinit(ctx.allocator);
 
     var debouncer = Debouncer.init(500);
-    var generation_id: u64 = 1;
 
     while (true) {
         if (!file_watcher.waitForEvents()) break;
@@ -156,24 +137,29 @@ fn watcherThreadFn(ctx: *WatcherContext) void {
         }
 
         generation_id += 1;
-        const new_gen = GraphGeneration.create(ctx.allocator, ctx.io, generation_id, .{0} ** types.hash_len) catch continue;
-        if (!reindexInto(ctx, new_gen)) {
-            new_gen.release();
-            continue;
-        }
-
-        new_gen.source_hash = source_hash.computeRuntimeSourceHash(&new_gen.graph);
-
-        const new_guard = new_gen.acquire();
-        ctx.gen_manager.swap(ctx.io, new_gen);
-        notifyGraphUpdated(ctx, new_gen);
-        new_guard.deinit();
+        _ = reindexAndSwap(ctx, generation_id);
     }
+}
+
+fn reindexAndSwap(ctx: *WatcherContext, generation_id: u64) bool {
+    const new_gen = GraphGeneration.create(ctx.allocator, ctx.io, generation_id, zero_hash) catch return false;
+    if (!reindexInto(ctx, new_gen)) {
+        new_gen.release();
+        return false;
+    }
+
+    new_gen.source_hash = source_hash.computeRuntimeSourceHash(&new_gen.graph);
+
+    const guard = new_gen.acquire();
+    defer guard.deinit();
+    ctx.gen_manager.swap(ctx.io, new_gen);
+    notifyGraphUpdated(ctx, new_gen);
+    return true;
 }
 
 fn reindexInto(ctx: *WatcherContext, gen: *GraphGeneration) bool {
     if (ctx.workspace_path) |ws| {
-        gen.graph = workspace_loader.loadAndAssemble(gen.arena.allocator(), ctx.io, ws) catch return false;
+        gen.graph = workspace_loader.loadAndAssemble(ctx.allocator, ctx.io, ws) catch return false;
         return true;
     }
 
