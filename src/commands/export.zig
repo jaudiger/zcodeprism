@@ -50,7 +50,8 @@ pub fn renderGraph(
     writer: *std.Io.Writer,
 ) !void {
     const fg = FrozenGraph{ .graph = @constCast(graph) };
-    const project_name = projectName(io, graph.project_root);
+    var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const project_name = projectName(io, graph.project_root, &cwd_buf);
     const filter = render_common.FilterOptions{
         .include_test_nodes = options.include_test_nodes,
         .include_external_nodes = options.include_external_nodes,
@@ -81,10 +82,9 @@ pub fn renderGraph(
     }
 }
 
-fn projectName(io: std.Io, project_root: []const u8) []const u8 {
+fn projectName(io: std.Io, project_root: []const u8, cwd_buf: *[std.fs.max_path_bytes]u8) []const u8 {
     const base = std.fs.path.basename(project_root);
     if (base.len > 0) return base;
-    var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const n = std.process.currentPath(io, &cwd_buf) catch return "project";
+    const n = std.process.currentPath(io, cwd_buf) catch return "project";
     return std.fs.path.basename(cwd_buf[0..n]);
 }
