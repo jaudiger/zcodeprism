@@ -319,7 +319,32 @@ pub const Regex = struct {
         return buf;
     }
 
-    // -- Matching --
+    /// Mode selector for the unified matcher. `.search` returns whether a
+    /// match exists, honoring `anchored_end`. `.exact` returns the end
+    /// position after consuming the steps from `pos`; `anchored_end` is
+    /// ignored.
+    const MatchMode = enum { search, exact };
+
+    fn MatchResult(comptime mode: MatchMode) type {
+        return switch (mode) {
+            .search => bool,
+            .exact => ?usize,
+        };
+    }
+
+    fn matchFailure(comptime mode: MatchMode) MatchResult(mode) {
+        return switch (mode) {
+            .search => false,
+            .exact => null,
+        };
+    }
+
+    fn matchHit(comptime mode: MatchMode, r: MatchResult(mode)) bool {
+        return switch (mode) {
+            .search => r,
+            .exact => r != null,
+        };
+    }
 
     /// Returns true if the pattern matches anywhere in haystack.
     pub fn matches(self: Regex, haystack: []const u8) bool {
@@ -332,234 +357,133 @@ pub const Regex = struct {
     fn branchMatches(branch: Branch, haystack: []const u8) bool {
         var budget: usize = max_match_steps;
         if (branch.anchored_start) {
-            return matchRec(branch.steps, haystack, 0, 0, branch.anchored_end, &budget);
+            return matchRec(.search, branch.steps, haystack, 0, 0, branch.anchored_end, &budget);
         }
-        // Use literal prefix to jump to candidate positions
         if (branch.literal_prefix.len > 0) {
             var offset: usize = 0;
             while (std.mem.indexOf(u8, haystack[offset..], branch.literal_prefix)) |rel| {
                 const start = offset + rel;
-                if (matchRec(branch.steps, haystack, start, 0, branch.anchored_end, &budget)) return true;
+                if (matchRec(.search, branch.steps, haystack, start, 0, branch.anchored_end, &budget)) return true;
                 offset = start + 1;
             }
             return false;
         }
         for (0..haystack.len + 1) |start| {
-            if (matchRec(branch.steps, haystack, start, 0, branch.anchored_end, &budget)) return true;
+            if (matchRec(.search, branch.steps, haystack, start, 0, branch.anchored_end, &budget)) return true;
         }
         return false;
     }
 
-    fn matchRec(steps: []const Step, haystack: []const u8, pos: usize, step_idx: usize, anchored_end: bool, budget: *usize) bool {
-        if (budget.* == 0) return false;
+    fn matchRec(comptime mode: MatchMode, steps: []const Step, haystack: []const u8, pos: usize, step_idx: usize, anchored_end: bool, budget: *usize) MatchResult(mode) {
+        if (budget.* == 0) return matchFailure(mode);
         budget.* -= 1;
 
         if (step_idx >= steps.len) {
-            if (anchored_end) return pos == haystack.len;
-            return true;
+            return switch (mode) {
+                .search => if (anchored_end) pos == haystack.len else true,
+                .exact => pos,
+            };
         }
 
         const step = steps[step_idx];
         const next = step_idx + 1;
 
-        // Word boundary is zero-width, handle separately
         if (step.atom == .word_boundary) {
-            if (!checkWordBoundary(haystack, pos)) return false;
-            return matchRec(steps, haystack, pos, next, anchored_end, budget);
+            if (!checkWordBoundary(haystack, pos)) return matchFailure(mode);
+            return matchRec(mode, steps, haystack, pos, next, anchored_end, budget);
         }
 
-        // Group atoms consume variable length
         if (step.atom == .group) {
-            return matchGroupStep(steps, haystack, pos, step.atom.group, next, step.quant, anchored_end, budget);
+            return matchGroupStep(mode, steps, haystack, pos, step.atom.group, next, step.quant, anchored_end, budget);
         }
 
-        // Fixed-width atoms (consume exactly 1 char)
         switch (step.quant) {
             .one => {
-                if (!atomMatchesOne(step.atom, haystack, pos)) return false;
-                return matchRec(steps, haystack, pos + 1, next, anchored_end, budget);
+                if (!atomMatchesOne(step.atom, haystack, pos)) return matchFailure(mode);
+                return matchRec(mode, steps, haystack, pos + 1, next, anchored_end, budget);
             },
-            .star => return matchGreedy(steps, haystack, pos, step.atom, next, 0, anchored_end, budget),
-            .plus => return matchGreedy(steps, haystack, pos, step.atom, next, 1, anchored_end, budget),
+            .star => return matchGreedy(mode, steps, haystack, pos, step.atom, next, 0, anchored_end, budget),
+            .plus => return matchGreedy(mode, steps, haystack, pos, step.atom, next, 1, anchored_end, budget),
             .question => {
-                if (atomMatchesOne(step.atom, haystack, pos) and matchRec(steps, haystack, pos + 1, next, anchored_end, budget))
-                    return true;
-                return matchRec(steps, haystack, pos, next, anchored_end, budget);
+                if (atomMatchesOne(step.atom, haystack, pos)) {
+                    const r = matchRec(mode, steps, haystack, pos + 1, next, anchored_end, budget);
+                    if (matchHit(mode, r)) return r;
+                }
+                return matchRec(mode, steps, haystack, pos, next, anchored_end, budget);
             },
         }
     }
 
     /// Greedy match for fixed-width (1-char) atoms.
-    fn matchGreedy(steps: []const Step, haystack: []const u8, pos: usize, atom: Atom, next: usize, min: usize, anchored_end: bool, budget: *usize) bool {
+    fn matchGreedy(comptime mode: MatchMode, steps: []const Step, haystack: []const u8, pos: usize, atom: Atom, next: usize, min: usize, anchored_end: bool, budget: *usize) MatchResult(mode) {
         var count: usize = 0;
         while (atomMatchesOne(atom, haystack, pos + count)) {
             count += 1;
         }
-        if (count < min) return false;
+        if (count < min) return matchFailure(mode);
 
         var c: usize = count;
         while (true) {
-            if (c >= min and matchRec(steps, haystack, pos + c, next, anchored_end, budget))
-                return true;
+            if (c >= min) {
+                const r = matchRec(mode, steps, haystack, pos + c, next, anchored_end, budget);
+                if (matchHit(mode, r)) return r;
+            }
             if (c == 0) break;
             c -= 1;
         }
-        return false;
+        return matchFailure(mode);
     }
 
-    /// Match a group step with its quantifier. Groups consume variable length
-    /// per repetition, so we use recursive greedy matching.
-    fn matchGroupStep(steps: []const Step, haystack: []const u8, pos: usize, group_branches: []const Branch, next: usize, quant: Quant, anchored_end: bool, budget: *usize) bool {
+    /// Match a group step with its quantifier.
+    fn matchGroupStep(comptime mode: MatchMode, steps: []const Step, haystack: []const u8, pos: usize, group_branches: []const Branch, next: usize, quant: Quant, anchored_end: bool, budget: *usize) MatchResult(mode) {
         switch (quant) {
             .one => {
                 if (tryGroupAt(group_branches, haystack, pos, budget)) |consumed| {
-                    return matchRec(steps, haystack, pos + consumed, next, anchored_end, budget);
+                    return matchRec(mode, steps, haystack, pos + consumed, next, anchored_end, budget);
                 }
-                return false;
+                return matchFailure(mode);
             },
-            .star => return matchGroupRepeat(steps, haystack, pos, group_branches, next, 0, anchored_end, budget),
-            .plus => return matchGroupRepeat(steps, haystack, pos, group_branches, next, 1, anchored_end, budget),
+            .star => return matchGroupRepeat(mode, steps, haystack, pos, group_branches, next, 0, anchored_end, budget),
+            .plus => return matchGroupRepeat(mode, steps, haystack, pos, group_branches, next, 1, anchored_end, budget),
             .question => {
                 if (tryGroupAt(group_branches, haystack, pos, budget)) |consumed| {
-                    if (matchRec(steps, haystack, pos + consumed, next, anchored_end, budget))
-                        return true;
+                    const r = matchRec(mode, steps, haystack, pos + consumed, next, anchored_end, budget);
+                    if (matchHit(mode, r)) return r;
                 }
-                return matchRec(steps, haystack, pos, next, anchored_end, budget);
+                return matchRec(mode, steps, haystack, pos, next, anchored_end, budget);
             },
         }
     }
 
-    /// Greedy repetition of a group. Tries to match as many reps as possible,
-    /// then backtracks. Each rep must consume at least 1 char to prevent
-    /// infinite loops on patterns like (a*)*.
-    fn matchGroupRepeat(steps: []const Step, haystack: []const u8, pos: usize, group_branches: []const Branch, next: usize, min_remaining: usize, anchored_end: bool, budget: *usize) bool {
-        if (budget.* == 0) return false;
+    /// Greedy repetition of a group. Each rep must consume at least one
+    /// character.
+    fn matchGroupRepeat(comptime mode: MatchMode, steps: []const Step, haystack: []const u8, pos: usize, group_branches: []const Branch, next: usize, min_remaining: usize, anchored_end: bool, budget: *usize) MatchResult(mode) {
+        if (budget.* == 0) return matchFailure(mode);
         budget.* -= 1;
 
-        // Greedy: try one more rep first
         if (pos < haystack.len) {
             if (tryGroupAt(group_branches, haystack, pos, budget)) |consumed| {
                 if (consumed > 0) {
                     const new_min = if (min_remaining > 0) min_remaining - 1 else 0;
-                    if (matchGroupRepeat(steps, haystack, pos + consumed, group_branches, next, new_min, anchored_end, budget))
-                        return true;
+                    const r = matchGroupRepeat(mode, steps, haystack, pos + consumed, group_branches, next, new_min, anchored_end, budget);
+                    if (matchHit(mode, r)) return r;
                 }
             }
         }
 
-        // No more reps, check if minimum was met and try the rest
         if (min_remaining == 0) {
-            return matchRec(steps, haystack, pos, next, anchored_end, budget);
+            return matchRec(mode, steps, haystack, pos, next, anchored_end, budget);
         }
-        return false;
+        return matchFailure(mode);
     }
 
     /// Try matching any branch of a group at the given position.
     /// Returns the number of characters consumed, or null.
     fn tryGroupAt(group_branches: []const Branch, haystack: []const u8, pos: usize, budget: *usize) ?usize {
         for (group_branches) |branch| {
-            if (matchBranchExact(branch.steps, haystack, pos, budget)) |end_pos| {
+            if (matchRec(.exact, branch.steps, haystack, pos, 0, false, budget)) |end_pos| {
                 return end_pos - pos;
             }
-        }
-        return null;
-    }
-
-    /// Match a branch starting at pos, returning the end position if all
-    /// steps match. Unlike branchMatches, this does not try multiple start
-    /// positions and always requires all steps to match (no anchored_end
-    /// needed since group branches always consume exactly what they match).
-    fn matchBranchExact(branch_steps: []const Step, haystack: []const u8, pos: usize, budget: *usize) ?usize {
-        return matchExactRec(branch_steps, haystack, pos, 0, budget);
-    }
-
-    fn matchExactRec(steps: []const Step, haystack: []const u8, pos: usize, step_idx: usize, budget: *usize) ?usize {
-        if (budget.* == 0) return null;
-        budget.* -= 1;
-
-        if (step_idx >= steps.len) return pos;
-
-        const step = steps[step_idx];
-        const next = step_idx + 1;
-
-        if (step.atom == .word_boundary) {
-            if (!checkWordBoundary(haystack, pos)) return null;
-            return matchExactRec(steps, haystack, pos, next, budget);
-        }
-
-        if (step.atom == .group) {
-            return matchGroupExact(steps, haystack, pos, step.atom.group, next, step.quant, budget);
-        }
-
-        switch (step.quant) {
-            .one => {
-                if (!atomMatchesOne(step.atom, haystack, pos)) return null;
-                return matchExactRec(steps, haystack, pos + 1, next, budget);
-            },
-            .star => return matchGreedyExact(steps, haystack, pos, step.atom, next, 0, budget),
-            .plus => return matchGreedyExact(steps, haystack, pos, step.atom, next, 1, budget),
-            .question => {
-                if (atomMatchesOne(step.atom, haystack, pos)) {
-                    if (matchExactRec(steps, haystack, pos + 1, next, budget)) |end| return end;
-                }
-                return matchExactRec(steps, haystack, pos, next, budget);
-            },
-        }
-    }
-
-    fn matchGreedyExact(steps: []const Step, haystack: []const u8, pos: usize, atom: Atom, next: usize, min: usize, budget: *usize) ?usize {
-        var count: usize = 0;
-        while (atomMatchesOne(atom, haystack, pos + count)) {
-            count += 1;
-        }
-        if (count < min) return null;
-
-        var c: usize = count;
-        while (true) {
-            if (c >= min) {
-                if (matchExactRec(steps, haystack, pos + c, next, budget)) |end| return end;
-            }
-            if (c == 0) break;
-            c -= 1;
-        }
-        return null;
-    }
-
-    fn matchGroupExact(steps: []const Step, haystack: []const u8, pos: usize, group_branches: []const Branch, next: usize, quant: Quant, budget: *usize) ?usize {
-        switch (quant) {
-            .one => {
-                if (tryGroupAt(group_branches, haystack, pos, budget)) |consumed| {
-                    return matchExactRec(steps, haystack, pos + consumed, next, budget);
-                }
-                return null;
-            },
-            .star => return matchGroupRepeatExact(steps, haystack, pos, group_branches, next, 0, budget),
-            .plus => return matchGroupRepeatExact(steps, haystack, pos, group_branches, next, 1, budget),
-            .question => {
-                if (tryGroupAt(group_branches, haystack, pos, budget)) |consumed| {
-                    if (matchExactRec(steps, haystack, pos + consumed, next, budget)) |end| return end;
-                }
-                return matchExactRec(steps, haystack, pos, next, budget);
-            },
-        }
-    }
-
-    fn matchGroupRepeatExact(steps: []const Step, haystack: []const u8, pos: usize, group_branches: []const Branch, next: usize, min_remaining: usize, budget: *usize) ?usize {
-        if (budget.* == 0) return null;
-        budget.* -= 1;
-
-        if (pos < haystack.len) {
-            if (tryGroupAt(group_branches, haystack, pos, budget)) |consumed| {
-                if (consumed > 0) {
-                    const new_min = if (min_remaining > 0) min_remaining - 1 else 0;
-                    if (matchGroupRepeatExact(steps, haystack, pos + consumed, group_branches, next, new_min, budget)) |end|
-                        return end;
-                }
-            }
-        }
-
-        if (min_remaining == 0) {
-            return matchExactRec(steps, haystack, pos, next, budget);
         }
         return null;
     }
