@@ -215,39 +215,34 @@ const AnalyzeCommand = enum {
     impact,
 };
 
-// -- Help --
-
-fn printHelp(stdout: *std.Io.Writer) !void {
-    try stdout.print(
-        \\analyze-graph - Index a directory and run analysis algorithms on it.
-        \\
-        \\USAGE:
-        \\    zig build analyze-graph -- <directory> <command> [OPTIONS]
-        \\
-        \\COMMANDS:
-        \\    complexity               Top N most complex functions
-        \\    dead-code                Symbols with zero non-test references
-        \\    duplicates               Groups of structurally identical functions
-        \\    cycles                   Circular import dependencies among files
-        \\    coupling                 File pairs ranked by shared edge count
-        \\    impact <node_id> [...]   Transitive reverse dependents of given nodes
-        \\
-        \\OPTIONS:
-        \\    --scope <prefix>         Restrict to files matching prefix
-        \\    --include-public         Include public symbols in dead-code results
-        \\    --exclude path1,path2    Exclude paths from indexation
-        \\    --without-lsp            Skip LSP enrichment
-        \\    --limit N                Max results (default 20)
-        \\    --min-lines N            Min function lines for duplicates (default 3)
-        \\    --max-depth N            Max BFS depth for impact (default 10)
-        \\    --max-cycle-length N     Max cycle size (default 20)
-        \\    --min-coupling N         Min coupling score (default 1.0)
-        \\    -v                       Increase verbosity
-        \\    -h, --help               Show this help message
-        \\
-    , .{});
-    try stdout.flush();
-}
+const help_text =
+    \\analyze-graph - Index a directory and run analysis algorithms on it.
+    \\
+    \\USAGE:
+    \\    zig build analyze-graph -- <directory> <command> [OPTIONS]
+    \\
+    \\COMMANDS:
+    \\    complexity               Top N most complex functions
+    \\    dead-code                Symbols with zero non-test references
+    \\    duplicates               Groups of structurally identical functions
+    \\    cycles                   Circular import dependencies among files
+    \\    coupling                 File pairs ranked by shared edge count
+    \\    impact <node_id> [...]   Transitive reverse dependents of given nodes
+    \\
+    \\OPTIONS:
+    \\    --scope <prefix>         Restrict to files matching prefix
+    \\    --include-public         Include public symbols in dead-code results
+    \\    --exclude path1,path2    Exclude paths from indexation
+    \\    --without-lsp            Skip LSP enrichment
+    \\    --limit N                Max results (default 20)
+    \\    --min-lines N            Min function lines for duplicates (default 3)
+    \\    --max-depth N            Max BFS depth for impact (default 10)
+    \\    --max-cycle-length N     Max cycle size (default 20)
+    \\    --min-coupling N         Min coupling score (default 1.0)
+    \\    -v                       Increase verbosity
+    \\    -h, --help               Show this help message
+    \\
+;
 
 // -- Entry point --
 
@@ -262,20 +257,20 @@ pub fn main(init: std.process.Init) !void {
     var args = init.minimal.args.iterate();
     _ = args.next();
     const dir_arg = args.next() orelse {
-        try printHelp(stdout);
+        try tool_utils.printHelp(stdout, help_text);
         return;
     };
     if (std.mem.eql(u8, dir_arg, "--help") or std.mem.eql(u8, dir_arg, "-h")) {
-        try printHelp(stdout);
+        try tool_utils.printHelp(stdout, help_text);
         return;
     }
 
     const command = args.next() orelse {
-        try printHelp(stdout);
+        try tool_utils.printHelp(stdout, help_text);
         return;
     };
     if (std.mem.eql(u8, command, "--help") or std.mem.eql(u8, command, "-h")) {
-        try printHelp(stdout);
+        try tool_utils.printHelp(stdout, help_text);
         return;
     }
 
@@ -321,7 +316,7 @@ pub fn main(init: std.process.Init) !void {
 
     const cmd = std.meta.stringToEnum(AnalyzeCommand, command) orelse {
         try stdout.print("Unknown command: {s}\n\n", .{command});
-        try printHelp(stdout);
+        try tool_utils.printHelp(stdout, help_text);
         return;
     };
 

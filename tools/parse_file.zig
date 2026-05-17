@@ -18,28 +18,25 @@ const source_map = zcodeprism.source_map;
 
 const logging = zcodeprism.logging;
 
-fn printHelp(stdout: *std.Io.Writer) !void {
-    try stdout.print(
-        \\parse-file - Parse a source file and dump the semantic graph.
-        \\
-        \\USAGE:
-        \\    zig build parse-file -- <path-to-source-file>
-        \\
-        \\ARGUMENTS:
-        \\    <path-to-source-file>    Path to a supported source file
-        \\
-        \\OPTIONS:
-        \\    -v                       Increase verbosity (-v info, -vv debug, -vvv trace)
-        \\    --verbose                Same as -v
-        \\    -h, --help               Show this help message
-        \\
-        \\Parses a source file through the language-specific visitor and dumps all
-        \\nodes (with kind, visibility, parent chain, doc, lang_meta) and all
-        \\edges (with source/target names and edge type).
-        \\
-    , .{});
-    try stdout.flush();
-}
+const help_text =
+    \\parse-file - Parse a source file and dump the semantic graph.
+    \\
+    \\USAGE:
+    \\    zig build parse-file -- <path-to-source-file>
+    \\
+    \\ARGUMENTS:
+    \\    <path-to-source-file>    Path to a supported source file
+    \\
+    \\OPTIONS:
+    \\    -v                       Increase verbosity (-v info, -vv debug, -vvv trace)
+    \\    --verbose                Same as -v
+    \\    -h, --help               Show this help message
+    \\
+    \\Parses a source file through the language-specific visitor and dumps all
+    \\nodes (with kind, visibility, parent chain, doc, lang_meta) and all
+    \\edges (with source/target names and edge type).
+    \\
+;
 
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
@@ -54,11 +51,11 @@ pub fn main(init: std.process.Init) !void {
     _ = args.next(); // skip program name
 
     const path_arg = args.next() orelse {
-        try printHelp(stdout);
+        try tool_utils.printHelp(stdout, help_text);
         return;
     };
     if (std.mem.eql(u8, path_arg, "--help") or std.mem.eql(u8, path_arg, "-h")) {
-        try printHelp(stdout);
+        try tool_utils.printHelp(stdout, help_text);
         return;
     }
     const path = path_arg;

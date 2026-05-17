@@ -20,32 +20,29 @@ const Registry = zcodeprism.registry.Registry;
 
 const Format = enum { ctg, mermaid_fmt };
 
-fn printHelp(stdout: *std.Io.Writer) !void {
-    try stdout.print(
-        \\render-graph - Index and render a code graph in CTG or Mermaid format.
-        \\
-        \\USAGE:
-        \\    zig build render-graph -- <path> [OPTIONS]
-        \\
-        \\ARGUMENTS:
-        \\    <path>                   Path to a directory or a single source file
-        \\
-        \\OPTIONS:
-        \\    --format ctg|mermaid     Output format (default: ctg)
-        \\    --name <project-name>    Project name (default: path basename)
-        \\    --exclude path1,path2    Comma-separated paths to exclude (directory mode only)
-        \\    --scope <prefix>         Restrict output to nodes whose file path starts with prefix
-        \\    --depth N                Limit output to N levels of nesting below file nodes
-        \\    --test-nodes             Include test nodes in output
-        \\    --external-nodes         Include external nodes in output
-        \\    --without-lsp            Skip LSP enrichment (directory mode only)
-        \\    -v                       Increase verbosity (-v info, -vv debug, -vvv trace)
-        \\    --verbose                Same as -v
-        \\    -h, --help               Show this help message
-        \\
-    , .{});
-    try stdout.flush();
-}
+const help_text =
+    \\render-graph - Index and render a code graph in CTG or Mermaid format.
+    \\
+    \\USAGE:
+    \\    zig build render-graph -- <path> [OPTIONS]
+    \\
+    \\ARGUMENTS:
+    \\    <path>                   Path to a directory or a single source file
+    \\
+    \\OPTIONS:
+    \\    --format ctg|mermaid     Output format (default: ctg)
+    \\    --name <project-name>    Project name (default: path basename)
+    \\    --exclude path1,path2    Comma-separated paths to exclude (directory mode only)
+    \\    --scope <prefix>         Restrict output to nodes whose file path starts with prefix
+    \\    --depth N                Limit output to N levels of nesting below file nodes
+    \\    --test-nodes             Include test nodes in output
+    \\    --external-nodes         Include external nodes in output
+    \\    --without-lsp            Skip LSP enrichment (directory mode only)
+    \\    -v                       Increase verbosity (-v info, -vv debug, -vvv trace)
+    \\    --verbose                Same as -v
+    \\    -h, --help               Show this help message
+    \\
+;
 
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
@@ -60,11 +57,11 @@ pub fn main(init: std.process.Init) !void {
     _ = args.next(); // skip program name
 
     const input_path_arg = args.next() orelse {
-        try printHelp(stdout);
+        try tool_utils.printHelp(stdout, help_text);
         return;
     };
     if (std.mem.eql(u8, input_path_arg, "--help") or std.mem.eql(u8, input_path_arg, "-h")) {
-        try printHelp(stdout);
+        try tool_utils.printHelp(stdout, help_text);
         return;
     }
 

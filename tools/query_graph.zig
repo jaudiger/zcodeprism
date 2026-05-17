@@ -253,41 +253,36 @@ const QueryCommand = enum {
     node,
 };
 
-// -- Help --
-
-fn printHelp(stdout: *std.Io.Writer) !void {
-    try stdout.print(
-        \\query-graph - Index a directory and run query engine operations on it.
-        \\
-        \\USAGE:
-        \\    zig build query-graph -- <directory> <command> [OPTIONS]
-        \\
-        \\ARGUMENTS:
-        \\    <directory>              Path to the directory to index
-        \\
-        \\COMMANDS:
-        \\    search [QUERY]           Search nodes by name regex
-        \\    stats                    Compute graph statistics
-        \\    ancestors <node_id>      Show ancestor chain for a node
-        \\    impact <node_id>         Show transitive dependents of a node
-        \\    path <from> <to>         Find shortest path between two nodes
-        \\    edges <node_id>          Show edges for a node
-        \\    node <node_id>           Show full detail for a node
-        \\
-        \\OPTIONS:
-        \\    --kind <kind>            Filter by node kind (function, type_def, etc.)
-        \\    --scope <prefix>         Restrict to files matching prefix
-        \\    --include-tests          Include test_def nodes
-        \\    --include-external       Include external/phantom nodes
-        \\    --exclude path1,path2    Exclude paths from indexation
-        \\    --without-lsp            Skip LSP enrichment
-        \\    --limit N                Max results (default 50)
-        \\    -v                       Increase verbosity
-        \\    -h, --help               Show this help message
-        \\
-    , .{});
-    try stdout.flush();
-}
+const help_text =
+    \\query-graph - Index a directory and run query engine operations on it.
+    \\
+    \\USAGE:
+    \\    zig build query-graph -- <directory> <command> [OPTIONS]
+    \\
+    \\ARGUMENTS:
+    \\    <directory>              Path to the directory to index
+    \\
+    \\COMMANDS:
+    \\    search [QUERY]           Search nodes by name regex
+    \\    stats                    Compute graph statistics
+    \\    ancestors <node_id>      Show ancestor chain for a node
+    \\    impact <node_id>         Show transitive dependents of a node
+    \\    path <from> <to>         Find shortest path between two nodes
+    \\    edges <node_id>          Show edges for a node
+    \\    node <node_id>           Show full detail for a node
+    \\
+    \\OPTIONS:
+    \\    --kind <kind>            Filter by node kind (function, type_def, etc.)
+    \\    --scope <prefix>         Restrict to files matching prefix
+    \\    --include-tests          Include test_def nodes
+    \\    --include-external       Include external/phantom nodes
+    \\    --exclude path1,path2    Exclude paths from indexation
+    \\    --without-lsp            Skip LSP enrichment
+    \\    --limit N                Max results (default 50)
+    \\    -v                       Increase verbosity
+    \\    -h, --help               Show this help message
+    \\
+;
 
 // -- Entry point --
 
@@ -302,20 +297,20 @@ pub fn main(init: std.process.Init) !void {
     var args = init.minimal.args.iterate();
     _ = args.next();
     const dir_arg = args.next() orelse {
-        try printHelp(stdout);
+        try tool_utils.printHelp(stdout, help_text);
         return;
     };
     if (std.mem.eql(u8, dir_arg, "--help") or std.mem.eql(u8, dir_arg, "-h")) {
-        try printHelp(stdout);
+        try tool_utils.printHelp(stdout, help_text);
         return;
     }
 
     const command = args.next() orelse {
-        try printHelp(stdout);
+        try tool_utils.printHelp(stdout, help_text);
         return;
     };
     if (std.mem.eql(u8, command, "--help") or std.mem.eql(u8, command, "-h")) {
-        try printHelp(stdout);
+        try tool_utils.printHelp(stdout, help_text);
         return;
     }
 
@@ -363,7 +358,7 @@ pub fn main(init: std.process.Init) !void {
 
     const cmd = std.meta.stringToEnum(QueryCommand, command) orelse {
         try stdout.print("Unknown command: {s}\n\n", .{command});
-        try printHelp(stdout);
+        try tool_utils.printHelp(stdout, help_text);
         return;
     };
 

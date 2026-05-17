@@ -7,6 +7,12 @@ const logging = zcodeprism.logging;
 /// Standard stdout buffer size for all debug tools.
 pub const stdout_buffer_size: usize = 65536;
 
+/// Write a tool's help text to stdout and flush.
+pub fn printHelp(stdout: *std.Io.Writer, help_text: []const u8) !void {
+    try stdout.writeAll(help_text);
+    try stdout.flush();
+}
+
 /// Parses a single CLI arg and returns how many verbosity levels it adds.
 /// Handles --verbose (1) and -v/-vv/-vvv style flags.
 pub fn countVerbosity(arg: []const u8) u8 {

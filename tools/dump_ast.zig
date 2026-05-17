@@ -14,6 +14,24 @@ const Registry = zcodeprism.registry.Registry;
 const ts_api = zcodeprism.tree_sitter_api;
 const source_map = zcodeprism.source_map;
 
+const help_text =
+    \\dump-ast - Dump the raw tree-sitter AST for a source file.
+    \\
+    \\USAGE:
+    \\    zig build dump-ast -- <path-to-source-file>
+    \\
+    \\ARGUMENTS:
+    \\    <path-to-source-file>    Path to the source file to parse
+    \\
+    \\OPTIONS:
+    \\    -h, --help               Show this help message
+    \\
+    \\Shows every node kind, line/column positions, and text excerpts.
+    \\Useful for understanding what tree-sitter gives us before the
+    \\visitor interprets it.
+    \\
+;
+
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
 
@@ -26,11 +44,11 @@ pub fn main(init: std.process.Init) !void {
     _ = args.next(); // skip program name
 
     const path_arg = args.next() orelse {
-        try printHelp(stdout);
+        try tool_utils.printHelp(stdout, help_text);
         return;
     };
     if (std.mem.eql(u8, path_arg, "--help") or std.mem.eql(u8, path_arg, "-h")) {
-        try printHelp(stdout);
+        try tool_utils.printHelp(stdout, help_text);
         return;
     }
     const path = path_arg;
@@ -67,27 +85,6 @@ pub fn main(init: std.process.Init) !void {
     try dumpNode(stdout, source, root, 0);
 
     try stdout.print("\n", .{});
-    try stdout.flush();
-}
-
-fn printHelp(stdout: *std.Io.Writer) !void {
-    try stdout.print(
-        \\dump-ast - Dump the raw tree-sitter AST for a source file.
-        \\
-        \\USAGE:
-        \\    zig build dump-ast -- <path-to-source-file>
-        \\
-        \\ARGUMENTS:
-        \\    <path-to-source-file>    Path to the source file to parse
-        \\
-        \\OPTIONS:
-        \\    -h, --help               Show this help message
-        \\
-        \\Shows every node kind, line/column positions, and text excerpts.
-        \\Useful for understanding what tree-sitter gives us before the
-        \\visitor interprets it.
-        \\
-    , .{});
     try stdout.flush();
 }
 

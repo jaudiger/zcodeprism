@@ -19,30 +19,27 @@ const logging = zcodeprism.logging;
 
 const NO_FILE: usize = std.math.maxInt(usize);
 
-fn printHelp(stdout: *std.Io.Writer) !void {
-    try stdout.print(
-        \\parse-directory - Index all supported source files in a directory and dump the code graph.
-        \\
-        \\USAGE:
-        \\    zig build parse-directory -- <directory> [OPTIONS]
-        \\
-        \\ARGUMENTS:
-        \\    <directory>              Path to the directory to index
-        \\
-        \\OPTIONS:
-        \\    --exclude path1,path2    Comma-separated paths to exclude from indexation
-        \\    --without-lsp            Skip LSP enrichment
-        \\    -v                       Increase verbosity (-v info, -vv debug, -vvv trace)
-        \\    --verbose                Same as -v
-        \\    -h, --help               Show this help message
-        \\
-        \\Indexes all supported source files in the given directory, builds the full
-        \\code graph (cross-file edges, phantom nodes, metrics), and dumps everything
-        \\to stdout.
-        \\
-    , .{});
-    try stdout.flush();
-}
+const help_text =
+    \\parse-directory - Index all supported source files in a directory and dump the code graph.
+    \\
+    \\USAGE:
+    \\    zig build parse-directory -- <directory> [OPTIONS]
+    \\
+    \\ARGUMENTS:
+    \\    <directory>              Path to the directory to index
+    \\
+    \\OPTIONS:
+    \\    --exclude path1,path2    Comma-separated paths to exclude from indexation
+    \\    --without-lsp            Skip LSP enrichment
+    \\    -v                       Increase verbosity (-v info, -vv debug, -vvv trace)
+    \\    --verbose                Same as -v
+    \\    -h, --help               Show this help message
+    \\
+    \\Indexes all supported source files in the given directory, builds the full
+    \\code graph (cross-file edges, phantom nodes, metrics), and dumps everything
+    \\to stdout.
+    \\
+;
 
 fn fileDisplayName(g: *const Graph, file_idx: usize) []const u8 {
     if (file_idx == NO_FILE) return "<ext>";
@@ -62,12 +59,12 @@ pub fn main(init: std.process.Init) !void {
     var args = init.minimal.args.iterate();
     _ = args.next(); // skip program name
     const dir_arg = args.next() orelse {
-        try printHelp(stdout);
+        try tool_utils.printHelp(stdout, help_text);
         return;
     };
 
     if (std.mem.eql(u8, dir_arg, "--help") or std.mem.eql(u8, dir_arg, "-h")) {
-        try printHelp(stdout);
+        try tool_utils.printHelp(stdout, help_text);
         return;
     }
 
