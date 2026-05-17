@@ -41,30 +41,15 @@ pub const JsonWriter = struct {
         self.s.write(value) catch return error.OutOfMemory;
     }
 
-    /// objectField + write the inner value or null.
-    pub fn optionalFieldValue(self: JsonWriter, name: []const u8, value: anytype) OomError!void {
-        self.s.objectField(name) catch return error.OutOfMemory;
-        if (value) |v| {
-            self.s.write(v) catch return error.OutOfMemory;
-        } else {
-            self.s.write(null) catch return error.OutOfMemory;
-        }
+    /// Write @tagName(value) as a string.
+    pub fn tagValue(self: JsonWriter, value: anytype) OomError!void {
+        self.s.write(@tagName(value)) catch return error.OutOfMemory;
     }
 
     /// objectField + @tagName(enum_value).
     pub fn tagFieldValue(self: JsonWriter, name: []const u8, value: anytype) OomError!void {
         self.s.objectField(name) catch return error.OutOfMemory;
-        self.s.write(@tagName(value)) catch return error.OutOfMemory;
-    }
-
-    /// objectField + @tagName(inner) or null.
-    pub fn optionalTagFieldValue(self: JsonWriter, name: []const u8, value: anytype) OomError!void {
-        self.s.objectField(name) catch return error.OutOfMemory;
-        if (value) |v| {
-            self.s.write(@tagName(v)) catch return error.OutOfMemory;
-        } else {
-            self.s.write(null) catch return error.OutOfMemory;
-        }
+        try self.tagValue(value);
     }
 
     /// Write a NodeId as a hex string value.
@@ -78,16 +63,6 @@ pub const JsonWriter = struct {
     pub fn fieldNodeIdHex(self: JsonWriter, name: []const u8, id: NodeId) OomError!void {
         self.s.objectField(name) catch return error.OutOfMemory;
         try self.nodeIdHex(id);
-    }
-
-    /// objectField + NodeId hex or null.
-    pub fn optionalFieldNodeIdHex(self: JsonWriter, name: []const u8, id: ?NodeId) OomError!void {
-        self.s.objectField(name) catch return error.OutOfMemory;
-        if (id) |nid| {
-            try self.nodeIdHex(nid);
-        } else {
-            self.s.write(null) catch return error.OutOfMemory;
-        }
     }
 
     /// objectField + u64 as a zero-padded 16-char hex string.
@@ -104,11 +79,16 @@ pub const JsonWriter = struct {
         self.s.write(@as([]const u8, &hex_buf)) catch return error.OutOfMemory;
     }
 
-    /// objectField + ContentHash as hex or null.
-    pub fn optionalFieldHashHex(self: JsonWriter, name: []const u8, hash: ?types.ContentHash) OomError!void {
+    /// objectField + writeInner(self, v) for the unwrapped value, or null.
+    pub fn optionalField(
+        self: JsonWriter,
+        name: []const u8,
+        value: anytype,
+        comptime writeInner: anytype,
+    ) OomError!void {
         self.s.objectField(name) catch return error.OutOfMemory;
-        if (hash) |h| {
-            try self.hashHex(h);
+        if (value) |v| {
+            try writeInner(self, v);
         } else {
             self.s.write(null) catch return error.OutOfMemory;
         }

@@ -269,12 +269,12 @@ fn writeNodeCoreFields(w: JsonWriter, n: *const Node, id: NodeId, project_root: 
     try w.fieldNodeIdHex("id", id);
     try w.fieldValue("name", n.name);
     try w.tagFieldValue("kind", n.kind);
-    try w.optionalTagFieldValue("language", n.language);
+    try w.optionalField("language", n.language, JsonWriter.tagValue);
     try w.fieldValue("file", relativePath(n.file_path, project_root));
-    try w.optionalFieldValue("line_start", n.line_start);
-    try w.optionalFieldValue("line_end", n.line_end);
-    try w.optionalFieldValue("col_start", n.col_start);
-    try w.optionalFieldValue("col_end", n.col_end);
+    try w.optionalField("line_start", n.line_start, JsonWriter.write);
+    try w.optionalField("line_end", n.line_end, JsonWriter.write);
+    try w.optionalField("col_start", n.col_start, JsonWriter.write);
+    try w.optionalField("col_end", n.col_end, JsonWriter.write);
     try w.tagFieldValue("visibility", n.visibility);
 }
 
@@ -291,7 +291,7 @@ fn writeNodeSummary(w: JsonWriter, n: *const Node, id: NodeId, project_root: []c
     try w.beginObject();
     try writeNodeCoreFields(w, n, id, project_root);
     try writeExternalValue(w, n.external);
-    try w.optionalFieldValue("signature", n.signature);
+    try w.optionalField("signature", n.signature, JsonWriter.write);
     try writeOptionalMetrics(w, n.metrics);
     try w.endObject();
 }
@@ -299,11 +299,11 @@ fn writeNodeSummary(w: JsonWriter, n: *const Node, id: NodeId, project_root: []c
 fn writeFullNode(w: JsonWriter, n: *const Node, id: NodeId, project_root: []const u8, source_text: ?[]const u8) HandlerError!void {
     try w.beginObject();
     try writeNodeCoreFields(w, n, id, project_root);
-    try w.optionalFieldNodeIdHex("parent_id", n.parent_id);
-    try w.optionalFieldValue("doc", n.doc);
-    try w.optionalFieldValue("signature", n.signature);
+    try w.optionalField("parent_id", n.parent_id, JsonWriter.nodeIdHex);
+    try w.optionalField("doc", n.doc, JsonWriter.write);
+    try w.optionalField("signature", n.signature, JsonWriter.write);
     try writeExternalValue(w, n.external);
-    try w.optionalFieldHashHex("content_hash", n.content_hash);
+    try w.optionalField("content_hash", n.content_hash, JsonWriter.hashHex);
     try writeOptionalMetrics(w, n.metrics);
     try w.field("lang_meta");
     lang_meta_mod.writeJson(n.*, w.s) catch return error.OutOfMemory;
