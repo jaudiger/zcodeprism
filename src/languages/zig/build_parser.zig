@@ -92,6 +92,95 @@ pub const BuildInfo = struct {
     }
 };
 
+fn appendModuleEntry(
+    allocator: std.mem.Allocator,
+    modules: *std.ArrayList(BuildInfo.ModuleEntry),
+    source: []const u8,
+    var_name: []const u8,
+    value_node: ts.Node,
+) !void {
+    const rsf = extractRootSourceFile(source, value_node);
+    const name_dup = try allocator.dupe(u8, var_name);
+    errdefer allocator.free(name_dup);
+    const rsf_dup = if (rsf) |r| try allocator.dupe(u8, r) else null;
+    errdefer if (rsf_dup) |rd| allocator.free(rd);
+    try modules.append(allocator, .{ .name = name_dup, .root_source_file = rsf_dup });
+}
+
+fn appendTargetEntry(
+    allocator: std.mem.Allocator,
+    targets: *std.ArrayList(BuildInfo.TargetEntry),
+    source: []const u8,
+    kind: TargetKind,
+    fallback_name: ?[]const u8,
+    value_node: ts.Node,
+) !void {
+    const target_name = extractNameField(source, value_node) orelse fallback_name orelse return;
+    const rmv = extractRootModuleVar(source, value_node);
+    const name_dup = try allocator.dupe(u8, target_name);
+    errdefer allocator.free(name_dup);
+    const rmv_dup = if (rmv) |r| try allocator.dupe(u8, r) else null;
+    errdefer if (rmv_dup) |rd| allocator.free(rd);
+    try targets.append(allocator, .{ .name = name_dup, .kind = kind, .root_module_var = rmv_dup });
+}
+
+fn appendDependencyEntry(
+    allocator: std.mem.Allocator,
+    deps: *std.ArrayList(BuildInfo.DependencyEntry),
+    source: []const u8,
+    var_name: []const u8,
+    value_node: ts.Node,
+) !void {
+    const dep_name = extractFirstStringArg(source, value_node) orelse return;
+    const name_dup = try allocator.dupe(u8, dep_name);
+    errdefer allocator.free(name_dup);
+    const vn_dup = try allocator.dupe(u8, var_name);
+    errdefer allocator.free(vn_dup);
+    try deps.append(allocator, .{ .name = name_dup, .var_name = vn_dup });
+}
+
+fn dispatchVarDeclaration(
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    var_decl: ts.Node,
+    modules: *std.ArrayList(BuildInfo.ModuleEntry),
+    targets: *std.ArrayList(BuildInfo.TargetEntry),
+    deps: *std.ArrayList(BuildInfo.DependencyEntry),
+) !void {
+    if (!std.mem.eql(u8, var_decl.kind(), "variable_declaration")) return;
+
+    const var_name = extractVarName(source, var_decl) orelse return;
+    const value_node = findValueExpression(var_decl) orelse return;
+    if (!std.mem.eql(u8, value_node.kind(), "call_expression")) return;
+
+    const fn_name = extractCallFunctionName(source, value_node) orelse return;
+
+    if (std.mem.eql(u8, fn_name, "createModule")) {
+        try appendModuleEntry(allocator, modules, source, var_name, value_node);
+    } else if (std.mem.eql(u8, fn_name, "addExecutable")) {
+        try appendTargetEntry(allocator, targets, source, .executable, null, value_node);
+    } else if (std.mem.eql(u8, fn_name, "addLibrary")) {
+        try appendTargetEntry(allocator, targets, source, .library, null, value_node);
+    } else if (std.mem.eql(u8, fn_name, "addTest")) {
+        try appendTargetEntry(allocator, targets, source, .test_target, var_name, value_node);
+    } else if (std.mem.eql(u8, fn_name, "dependency")) {
+        try appendDependencyEntry(allocator, deps, source, var_name, value_node);
+    }
+}
+
+fn enrichModuleImports(
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    build_block: ts.Node,
+    modules: []BuildInfo.ModuleEntry,
+) !void {
+    var i: u32 = 0;
+    while (i < build_block.namedChildCount()) : (i += 1) {
+        const child = build_block.namedChild(i) orelse continue;
+        try collectAddImportCalls(allocator, source, child, modules);
+    }
+}
+
 /// Parse build.zig source text via tree-sitter and extract module,
 /// target, and dependency declarations.
 pub fn parseBuildSource(allocator: std.mem.Allocator, source: []const u8, log: Logger) !BuildInfo {
@@ -136,88 +225,15 @@ pub fn parseBuildSource(allocator: std.mem.Allocator, source: []const u8, log: L
         deps.deinit(allocator);
     }
 
-    // Find the `build` function and walk its body block.
     const build_block = findBuildFunctionBlock(source, root) orelse return .{};
 
-    // Walk variable declarations inside the build function body
-    // for createModule, addExecutable, addLibrary, addTest, and dependency calls.
     var i: u32 = 0;
     while (i < build_block.namedChildCount()) : (i += 1) {
         const child = build_block.namedChild(i) orelse continue;
-        if (!std.mem.eql(u8, child.kind(), "variable_declaration")) continue;
-
-        const var_name = extractVarName(source, child) orelse continue;
-        const value_node = findValueExpression(child) orelse continue;
-
-        if (!std.mem.eql(u8, value_node.kind(), "call_expression")) continue;
-
-        const fn_name = extractCallFunctionName(source, value_node) orelse continue;
-
-        if (std.mem.eql(u8, fn_name, "createModule")) {
-            const rsf = extractRootSourceFile(source, value_node);
-            const name_dup = try allocator.dupe(u8, var_name);
-            errdefer allocator.free(name_dup);
-            const rsf_dup = if (rsf) |r| try allocator.dupe(u8, r) else null;
-            errdefer if (rsf_dup) |rd| allocator.free(rd);
-            try modules.append(allocator, .{
-                .name = name_dup,
-                .root_source_file = rsf_dup,
-            });
-        } else if (std.mem.eql(u8, fn_name, "addExecutable")) {
-            const target_name = extractNameField(source, value_node) orelse continue;
-            const rmv = extractRootModuleVar(source, value_node);
-            const name_dup = try allocator.dupe(u8, target_name);
-            errdefer allocator.free(name_dup);
-            const rmv_dup = if (rmv) |r| try allocator.dupe(u8, r) else null;
-            errdefer if (rmv_dup) |rd| allocator.free(rd);
-            try targets.append(allocator, .{
-                .name = name_dup,
-                .kind = .executable,
-                .root_module_var = rmv_dup,
-            });
-        } else if (std.mem.eql(u8, fn_name, "addLibrary")) {
-            const target_name = extractNameField(source, value_node) orelse continue;
-            const rmv = extractRootModuleVar(source, value_node);
-            const name_dup = try allocator.dupe(u8, target_name);
-            errdefer allocator.free(name_dup);
-            const rmv_dup = if (rmv) |r| try allocator.dupe(u8, r) else null;
-            errdefer if (rmv_dup) |rd| allocator.free(rd);
-            try targets.append(allocator, .{
-                .name = name_dup,
-                .kind = .library,
-                .root_module_var = rmv_dup,
-            });
-        } else if (std.mem.eql(u8, fn_name, "addTest")) {
-            const target_name = extractNameField(source, value_node) orelse var_name;
-            const rmv = extractRootModuleVar(source, value_node);
-            const name_dup = try allocator.dupe(u8, target_name);
-            errdefer allocator.free(name_dup);
-            const rmv_dup = if (rmv) |r| try allocator.dupe(u8, r) else null;
-            errdefer if (rmv_dup) |rd| allocator.free(rd);
-            try targets.append(allocator, .{
-                .name = name_dup,
-                .kind = .test_target,
-                .root_module_var = rmv_dup,
-            });
-        } else if (std.mem.eql(u8, fn_name, "dependency")) {
-            const dep_name = extractFirstStringArg(source, value_node) orelse continue;
-            const name_dup = try allocator.dupe(u8, dep_name);
-            errdefer allocator.free(name_dup);
-            const vn_dup = try allocator.dupe(u8, var_name);
-            errdefer allocator.free(vn_dup);
-            try deps.append(allocator, .{
-                .name = name_dup,
-                .var_name = vn_dup,
-            });
-        }
+        try dispatchVarDeclaration(allocator, source, child, &modules, &targets, &deps);
     }
 
-    // Collect addImport calls and associate them with modules.
-    i = 0;
-    while (i < build_block.namedChildCount()) : (i += 1) {
-        const child = build_block.namedChild(i) orelse continue;
-        try collectAddImportCalls(allocator, source, child, modules.items);
-    }
+    try enrichModuleImports(allocator, source, build_block, modules.items);
 
     return .{
         .modules = if (modules.items.len > 0) try modules.toOwnedSlice(allocator) else null,

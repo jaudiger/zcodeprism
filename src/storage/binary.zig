@@ -256,6 +256,130 @@ const Layout = struct {
     }
 };
 
+/// Upper bound on string table bytes: every string reference summed without
+/// dedup.
+fn measureStringBytes(g: *const Graph) usize {
+    var total: usize = 0;
+    for (g.nodes.items) |n| {
+        total += n.name.len;
+        if (n.file_path) |fp| total += fp.len;
+        if (n.signature) |s| total += s.len;
+        if (n.doc) |d| total += d.len;
+        switch (n.external) {
+            .dependency => |d| if (d.version) |v| {
+                total += v.len;
+            },
+            else => {},
+        }
+        total += lang_meta_mod.binarySize(n);
+        total += @tagName(n.kind).len;
+        total += @tagName(n.visibility).len;
+        if (n.language) |l| total += @tagName(l).len;
+    }
+    for (g.edges.items) |e| {
+        total += @tagName(e.edge_type).len;
+        total += @tagName(e.source).len;
+    }
+    total += g.project_root.len;
+    return total;
+}
+
+fn internNodeRefs(allocator: std.mem.Allocator, st: *StringTable, g: *const Graph, node_refs: []NodeRefs) !void {
+    for (g.nodes.items, 0..) |n, i| {
+        const ext_version: ?[]const u8 = switch (n.external) {
+            .dependency => |d| d.version,
+            else => null,
+        };
+        var meta_buf: [256]u8 = undefined;
+        const meta_len = lang_meta_mod.encodeBinary(n, &meta_buf);
+        node_refs[i] = .{
+            .name = try st.intern(allocator, n.name),
+            .file_path = try st.internOptional(allocator, n.file_path),
+            .signature = try st.internOptional(allocator, n.signature),
+            .doc = try st.internOptional(allocator, n.doc),
+            .ext_version = try st.internOptional(allocator, ext_version),
+            .lang_meta = if (meta_len > 0) try st.intern(allocator, meta_buf[0..meta_len]) else .{ .offset = 0, .len = 0 },
+            .kind = try st.intern(allocator, @tagName(n.kind)),
+            .language = if (n.language) |l| try st.intern(allocator, @tagName(l)) else .{ .offset = 0, .len = 0 },
+            .visibility = try st.intern(allocator, @tagName(n.visibility)),
+        };
+    }
+}
+
+fn internEdgeRefs(allocator: std.mem.Allocator, st: *StringTable, g: *const Graph, edge_refs: [][2]StringRef) !void {
+    for (g.edges.items, 0..) |e, i| {
+        edge_refs[i] = .{
+            try st.intern(allocator, @tagName(e.edge_type)),
+            try st.intern(allocator, @tagName(e.source)),
+        };
+    }
+}
+
+fn writeNodeRecord(buf: []u8, base: usize, n: Node, refs: NodeRefs) void {
+    @memset(buf[base..][0..NODE_RECORD_SIZE], 0);
+
+    std.mem.writeInt(u64, buf[base..][0..8], @intFromEnum(n.id), .little);
+    if (n.parent_id) |pid| {
+        std.mem.writeInt(u64, buf[base + 8 ..][0..8], @intFromEnum(pid), .little);
+    }
+    if (n.line_start) |ls| {
+        std.mem.writeInt(u32, buf[base + 16 ..][0..4], ls, .little);
+    }
+    if (n.line_end) |le| {
+        std.mem.writeInt(u32, buf[base + 20 ..][0..4], le, .little);
+    }
+    if (n.col_start) |cs| {
+        std.mem.writeInt(u32, buf[base + 24 ..][0..4], cs, .little);
+    }
+    if (n.col_end) |ce| {
+        std.mem.writeInt(u32, buf[base + 28 ..][0..4], ce, .little);
+    }
+    buf[base + 32] = switch (n.external) {
+        .none => 0,
+        .stdlib => 1,
+        .dependency => 2,
+    };
+
+    var flags: u8 = 0;
+    if (n.content_hash != null) flags |= FLAG_HAS_CONTENT_HASH;
+    if (n.metrics != null) flags |= FLAG_HAS_METRICS;
+    if (n.parent_id != null) flags |= FLAG_HAS_PARENT;
+    if (n.line_start != null) flags |= FLAG_HAS_LINE_START;
+    if (n.line_end != null) flags |= FLAG_HAS_LINE_END;
+    if (n.col_start != null) flags |= FLAG_HAS_COL_START;
+    if (n.col_end != null) flags |= FLAG_HAS_COL_END;
+    buf[base + 33] = flags;
+
+    if (n.content_hash) |ch| {
+        @memcpy(buf[base + 36 ..][0..types.hash_len], &ch);
+    }
+
+    writeStringRef(buf, base + 56, refs.kind);
+    writeStringRef(buf, base + 64, refs.language);
+    writeStringRef(buf, base + 72, refs.visibility);
+    writeStringRef(buf, base + 80, refs.name);
+    writeStringRef(buf, base + 88, refs.file_path);
+    writeStringRef(buf, base + 96, refs.signature);
+    writeStringRef(buf, base + 104, refs.doc);
+    writeStringRef(buf, base + 112, refs.ext_version);
+    writeStringRef(buf, base + 120, refs.lang_meta);
+}
+
+fn writeEdgeRecord(buf: []u8, base: usize, e: Edge, refs: [2]StringRef) void {
+    std.mem.writeInt(u64, buf[base..][0..8], @intFromEnum(e.source_id), .little);
+    std.mem.writeInt(u64, buf[base + 8 ..][0..8], @intFromEnum(e.target_id), .little);
+    writeStringRef(buf, base + 16, refs[0]);
+    writeStringRef(buf, base + 24, refs[1]);
+}
+
+fn writeMetricsRecord(buf: []u8, base: usize, n: Node) void {
+    if (n.metrics) |m| {
+        m.encodeBinary(buf[base..][0..Metrics.BINARY_SIZE]);
+    } else {
+        @memset(buf[base..][0..METRICS_RECORD_SIZE], 0);
+    }
+}
+
 /// Serialize a graph to the binary storage format and write it to `path`.
 /// The caller owns `g`; this function does not modify it.
 pub fn save(allocator: std.mem.Allocator, io: std.Io, fg: FrozenGraph, path: []const u8) !void {
@@ -265,32 +389,10 @@ pub fn save(allocator: std.mem.Allocator, io: std.Io, fg: FrozenGraph, path: []c
 
     const node_refs = try allocator.alloc(NodeRefs, if (nc > 0) nc else 1);
     defer allocator.free(node_refs);
+    const edge_refs = try allocator.alloc([2]StringRef, if (ec > 0) ec else 1);
+    defer allocator.free(edge_refs);
 
-    // Measure: upper bound on string table bytes for stable dedup pointers.
-    var total_string_bytes: usize = 0;
-    for (g.nodes.items) |n| {
-        total_string_bytes += n.name.len;
-        if (n.file_path) |fp| total_string_bytes += fp.len;
-        if (n.signature) |s| total_string_bytes += s.len;
-        if (n.doc) |d| total_string_bytes += d.len;
-        switch (n.external) {
-            .dependency => |d| if (d.version) |v| {
-                total_string_bytes += v.len;
-            },
-            else => {},
-        }
-        total_string_bytes += lang_meta_mod.binarySize(n);
-        total_string_bytes += @tagName(n.kind).len;
-        total_string_bytes += @tagName(n.visibility).len;
-        if (n.language) |l| total_string_bytes += @tagName(l).len;
-    }
-    for (g.edges.items) |e| {
-        total_string_bytes += @tagName(e.edge_type).len;
-        total_string_bytes += @tagName(e.source).len;
-    }
-    total_string_bytes += g.project_root.len;
-
-    var st = try StringTable.init(allocator, total_string_bytes);
+    var st = try StringTable.init(allocator, measureStringBytes(g));
     defer st.deinit(allocator);
 
     const project_root_ref = if (g.project_root.len > 0)
@@ -298,49 +400,18 @@ pub fn save(allocator: std.mem.Allocator, io: std.Io, fg: FrozenGraph, path: []c
     else
         StringRef{ .offset = 0, .len = 0 };
 
-    for (g.nodes.items, 0..) |n, i| {
-        const ext_version: ?[]const u8 = switch (n.external) {
-            .dependency => |d| d.version,
-            else => null,
-        };
-        node_refs[i] = .{
-            .name = try st.intern(allocator, n.name),
-            .file_path = try st.internOptional(allocator, n.file_path),
-            .signature = try st.internOptional(allocator, n.signature),
-            .doc = try st.internOptional(allocator, n.doc),
-            .ext_version = try st.internOptional(allocator, ext_version),
-            .lang_meta = blk: {
-                var meta_buf: [256]u8 = undefined;
-                const meta_len = lang_meta_mod.encodeBinary(n, &meta_buf);
-                break :blk if (meta_len > 0) try st.intern(allocator, meta_buf[0..meta_len]) else .{ .offset = 0, .len = 0 };
-            },
-            .kind = try st.intern(allocator, @tagName(n.kind)),
-            .language = if (n.language) |l| try st.intern(allocator, @tagName(l)) else .{ .offset = 0, .len = 0 },
-            .visibility = try st.intern(allocator, @tagName(n.visibility)),
-        };
-    }
-
-    const edge_refs = try allocator.alloc([2]StringRef, if (ec > 0) ec else 1);
-    defer allocator.free(edge_refs);
-    for (g.edges.items, 0..) |e, i| {
-        edge_refs[i] = .{
-            try st.intern(allocator, @tagName(e.edge_type)),
-            try st.intern(allocator, @tagName(e.source)),
-        };
-    }
+    try internNodeRefs(allocator, &st, g, node_refs);
+    try internEdgeRefs(allocator, &st, g, edge_refs);
 
     const layout = Layout.compute(nc, ec, st.bytes.items.len);
 
-    // Allocate
     const buf = try allocator.alloc(u8, layout.total_size);
     defer allocator.free(buf);
 
-    // Zero the alignment-padding gaps between table sections.
     @memset(buf[layout.node_table_offset + nc * NODE_RECORD_SIZE .. layout.edge_table_offset], 0);
     @memset(buf[layout.edge_table_offset + ec * EDGE_RECORD_SIZE .. layout.metrics_table_offset], 0);
     @memset(buf[layout.metrics_table_offset + nc * METRICS_RECORD_SIZE .. layout.string_table_offset], 0);
 
-    // Fill: header
     writeHeader(buf, .{
         .node_count = @intCast(nc),
         .edge_count = @intCast(ec),
@@ -352,86 +423,16 @@ pub fn save(allocator: std.mem.Allocator, io: std.Io, fg: FrozenGraph, path: []c
         .project_root = project_root_ref,
     });
 
-    // Fill: node records
     for (g.nodes.items, 0..) |n, i| {
-        const base = layout.node_table_offset + i * NODE_RECORD_SIZE;
-        const refs = node_refs[i];
-        @memset(buf[base..][0..NODE_RECORD_SIZE], 0);
-
-        // [0..8] id
-        std.mem.writeInt(u64, buf[base..][0..8], @intFromEnum(n.id), .little);
-        // [8..16] parent_id
-        if (n.parent_id) |pid| {
-            std.mem.writeInt(u64, buf[base + 8 ..][0..8], @intFromEnum(pid), .little);
-        }
-        // [16..20] line_start
-        if (n.line_start) |ls| {
-            std.mem.writeInt(u32, buf[base + 16 ..][0..4], ls, .little);
-        }
-        // [20..24] line_end
-        if (n.line_end) |le| {
-            std.mem.writeInt(u32, buf[base + 20 ..][0..4], le, .little);
-        }
-        // [24..28] col_start
-        if (n.col_start) |cs| {
-            std.mem.writeInt(u32, buf[base + 24 ..][0..4], cs, .little);
-        }
-        // [28..32] col_end
-        if (n.col_end) |ce| {
-            std.mem.writeInt(u32, buf[base + 28 ..][0..4], ce, .little);
-        }
-        // [32] external_kind
-        buf[base + 32] = switch (n.external) {
-            .none => 0,
-            .stdlib => 1,
-            .dependency => 2,
-        };
-        // [33] flags
-        var flags: u8 = 0;
-        if (n.content_hash != null) flags |= FLAG_HAS_CONTENT_HASH;
-        if (n.metrics != null) flags |= FLAG_HAS_METRICS;
-        if (n.parent_id != null) flags |= FLAG_HAS_PARENT;
-        if (n.line_start != null) flags |= FLAG_HAS_LINE_START;
-        if (n.line_end != null) flags |= FLAG_HAS_LINE_END;
-        if (n.col_start != null) flags |= FLAG_HAS_COL_START;
-        if (n.col_end != null) flags |= FLAG_HAS_COL_END;
-        buf[base + 33] = flags;
-        // [36..52] content_hash
-        if (n.content_hash) |ch| {
-            @memcpy(buf[base + 36 ..][0..types.hash_len], &ch);
-        }
-        // [56..128] 9 string refs
-        writeStringRef(buf, base + 56, refs.kind);
-        writeStringRef(buf, base + 64, refs.language);
-        writeStringRef(buf, base + 72, refs.visibility);
-        writeStringRef(buf, base + 80, refs.name);
-        writeStringRef(buf, base + 88, refs.file_path);
-        writeStringRef(buf, base + 96, refs.signature);
-        writeStringRef(buf, base + 104, refs.doc);
-        writeStringRef(buf, base + 112, refs.ext_version);
-        writeStringRef(buf, base + 120, refs.lang_meta);
+        writeNodeRecord(buf, layout.node_table_offset + i * NODE_RECORD_SIZE, n, node_refs[i]);
     }
-
-    // Fill: edge records
     for (g.edges.items, 0..) |e, i| {
-        const base = layout.edge_table_offset + i * EDGE_RECORD_SIZE;
-        std.mem.writeInt(u64, buf[base..][0..8], @intFromEnum(e.source_id), .little);
-        std.mem.writeInt(u64, buf[base + 8 ..][0..8], @intFromEnum(e.target_id), .little);
-        writeStringRef(buf, base + 16, edge_refs[i][0]);
-        writeStringRef(buf, base + 24, edge_refs[i][1]);
+        writeEdgeRecord(buf, layout.edge_table_offset + i * EDGE_RECORD_SIZE, e, edge_refs[i]);
     }
-
-    // Fill: metrics records (zero for nodes without metrics)
     for (g.nodes.items, 0..) |n, i| {
-        const base = layout.metrics_table_offset + i * METRICS_RECORD_SIZE;
-        if (n.metrics) |m| {
-            m.encodeBinary(buf[base..][0..Metrics.BINARY_SIZE]);
-        } else {
-            @memset(buf[base..][0..METRICS_RECORD_SIZE], 0);
-        }
+        writeMetricsRecord(buf, layout.metrics_table_offset + i * METRICS_RECORD_SIZE, n);
     }
 
-    // Fill: string table
     if (layout.string_table_size > 0) {
         @memcpy(buf[layout.string_table_offset..][0..layout.string_table_size], st.bytes.items);
     }

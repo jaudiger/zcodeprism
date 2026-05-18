@@ -194,49 +194,43 @@ pub fn writeJson(meta: RustMeta, stream: *std.json.Stringify) !void {
     try stream.endObject();
 }
 
+fn dupeOptString(allocator: std.mem.Allocator, graph: *Graph, obj: std.json.ObjectMap, key: []const u8) !?[]const u8 {
+    const v = obj.get(key) orelse return null;
+    return switch (v) {
+        .string => |s| try graph.dupeAndOwn(allocator, s),
+        else => null,
+    };
+}
+
+fn getBoolOr(obj: std.json.ObjectMap, key: []const u8, default: bool) bool {
+    const v = obj.get(key) orelse return default;
+    return v == .bool and v.bool;
+}
+
+fn parseEnumString(comptime E: type, obj: std.json.ObjectMap, key: []const u8, default: E) E {
+    const v = obj.get(key) orelse return default;
+    if (v != .string) return default;
+    inline for (@typeInfo(E).@"enum".fields) |f| {
+        if (std.mem.eql(u8, v.string, f.name)) return @enumFromInt(f.value);
+    }
+    return default;
+}
+
 /// Parse a Rust-typed lang_meta JSON object and attach the result to `graph`.
 /// String fields are duped into `graph.owned_buffers`.
 pub fn parseJsonAndAttach(allocator: std.mem.Allocator, graph: *Graph, obj: std.json.ObjectMap) !*const RustMeta {
-    const sub_kind_val: RustSubKind = blk: {
-        const sk = obj.get("sub_kind") orelse break :blk .none;
-        if (sk != .string) break :blk .none;
-        inline for (@typeInfo(RustSubKind).@"enum".fields) |f| {
-            if (std.mem.eql(u8, sk.string, f.name)) break :blk @enumFromInt(f.value);
-        }
-        break :blk .none;
-    };
-    const abi: ?[]const u8 = if (obj.get("abi")) |v| switch (v) {
-        .string => |s| try graph.dupeAndOwn(allocator, s),
-        else => null,
-    } else null;
-    const derives: ?[]const u8 = if (obj.get("derives")) |v| switch (v) {
-        .string => |s| try graph.dupeAndOwn(allocator, s),
-        else => null,
-    } else null;
-    const attributes: ?[]const u8 = if (obj.get("attributes")) |v| switch (v) {
-        .string => |s| try graph.dupeAndOwn(allocator, s),
-        else => null,
-    } else null;
-    const inner_attributes: ?[]const u8 = if (obj.get("inner_attributes")) |v| switch (v) {
-        .string => |s| try graph.dupeAndOwn(allocator, s),
-        else => null,
-    } else null;
-    const visibility_scope: ?[]const u8 = if (obj.get("visibility_scope")) |v| switch (v) {
-        .string => |s| try graph.dupeAndOwn(allocator, s),
-        else => null,
-    } else null;
     const meta = RustMeta{
-        .is_unsafe = if (obj.get("is_unsafe")) |v| (v == .bool and v.bool) else false,
-        .is_async = if (obj.get("is_async")) |v| (v == .bool and v.bool) else false,
-        .is_const = if (obj.get("is_const")) |v| (v == .bool and v.bool) else false,
-        .is_extern = if (obj.get("is_extern")) |v| (v == .bool and v.bool) else false,
-        .is_default = if (obj.get("is_default")) |v| (v == .bool and v.bool) else false,
-        .sub_kind = sub_kind_val,
-        .abi = abi,
-        .derives = derives,
-        .attributes = attributes,
-        .inner_attributes = inner_attributes,
-        .visibility_scope = visibility_scope,
+        .is_unsafe = getBoolOr(obj, "is_unsafe", false),
+        .is_async = getBoolOr(obj, "is_async", false),
+        .is_const = getBoolOr(obj, "is_const", false),
+        .is_extern = getBoolOr(obj, "is_extern", false),
+        .is_default = getBoolOr(obj, "is_default", false),
+        .sub_kind = parseEnumString(RustSubKind, obj, "sub_kind", .none),
+        .abi = try dupeOptString(allocator, graph, obj, "abi"),
+        .derives = try dupeOptString(allocator, graph, obj, "derives"),
+        .attributes = try dupeOptString(allocator, graph, obj, "attributes"),
+        .inner_attributes = try dupeOptString(allocator, graph, obj, "inner_attributes"),
+        .visibility_scope = try dupeOptString(allocator, graph, obj, "visibility_scope"),
     };
     return try allocAndAttach(allocator, graph, meta);
 }

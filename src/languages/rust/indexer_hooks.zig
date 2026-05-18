@@ -559,30 +559,20 @@ pub fn parseBuildConfig(
     };
 }
 
-/// Scan struct/enum field signatures for module-qualified type references
-/// and create phantom child nodes with uses_type edges from the owning type.
-/// Handles any crate prefix, not just std.
-fn resolveScopedFieldPhantoms(
-    allocator: std.mem.Allocator,
-    graph: *Graph,
+const PrefixEntry = struct { name: []const u8, path: []const u8, external: ExternalInfo };
+
+const MAX_SCOPED_PREFIXES: usize = 64;
+
+fn collectModulePrefixImports(
+    graph: *const Graph,
     file_idx: usize,
-    file_end_idx: usize,
-    phantom: *PhantomManager,
+    clamped_end: usize,
     graph_index: *const GraphIndex,
-    log: Logger,
-) error{OutOfMemory}!void {
-    _ = log;
-
+    importer_path: ?[]const u8,
+    prefix_buf: []PrefixEntry,
+) usize {
     const file_id: NodeId = @enumFromInt(file_idx);
-    const clamped_end = @min(file_end_idx, graph.nodes.items.len);
-
-    // Collect module-prefix imports: for `use crate::module`, map "module" -> "crate::module".
-    const max_prefixes = 64;
-    const PrefixEntry = struct { name: []const u8, path: []const u8, external: ExternalInfo };
-    var prefix_buf: [max_prefixes]PrefixEntry = undefined;
-    var prefix_count: usize = 0;
-
-    const importer_path = graph.nodes.items[file_idx].file_path;
+    var count: usize = 0;
 
     for (graph.nodes.items[file_idx..clamped_end]) |n| {
         if (n.kind != .import_decl) continue;
@@ -599,7 +589,6 @@ fn resolveScopedFieldPhantoms(
         const last_sep = std.mem.lastIndexOf(u8, path, "::") orelse continue;
         const terminal = path[last_sep + 2 ..];
         if (terminal.len == 0) continue;
-        // Only module imports (lowercase first char).
         if (terminal[0] >= 'A' and terminal[0] <= 'Z') continue;
 
         const external: ExternalInfo = if (std.mem.eql(u8, crate, "std"))
@@ -607,68 +596,104 @@ fn resolveScopedFieldPhantoms(
         else
             .{ .dependency = .{ .version = null } };
 
-        if (prefix_count < max_prefixes) {
-            prefix_buf[prefix_count] = .{ .name = terminal, .path = path, .external = external };
-            prefix_count += 1;
+        if (count < prefix_buf.len) {
+            prefix_buf[count] = .{ .name = terminal, .path = path, .external = external };
+            count += 1;
         }
     }
-    if (prefix_count == 0) return;
+    return count;
+}
 
-    // Scan field nodes for scoped type references matching a module-prefix import.
+fn walkToOwningType(graph: *const Graph, start_id: NodeId) NodeId {
+    var owner_id = start_id;
+    var hops: usize = 0;
+    while (hops < 10) : (hops += 1) {
+        const owner = graph.getNode(owner_id) orelse break;
+        if (owner.kind == .type_def or owner.kind == .enum_def or owner.kind == .union_def) break;
+        owner_id = owner.parent_id orelse break;
+    }
+    return owner_id;
+}
+
+fn resolveOneScopedField(
+    allocator: std.mem.Allocator,
+    graph: *Graph,
+    phantom: *PhantomManager,
+    field_node: node_mod.Node,
+    prefixes: []const PrefixEntry,
+    importer_path: ?[]const u8,
+) error{OutOfMemory}!void {
+    const sig = field_node.signature orelse return;
+
+    const colon_pos = std.mem.indexOf(u8, sig, "::") orelse return;
+    if (colon_pos == 0) return;
+    const field_prefix = sig[0..colon_pos];
+
+    const remainder = sig[colon_pos + 2 ..];
+    if (remainder.len == 0) return;
+    var name_end: usize = 0;
+    while (name_end < remainder.len and source_scan.isIdentChar(remainder[name_end])) : (name_end += 1) {}
+    if (name_end == 0) return;
+    const type_name = remainder[0..name_end];
+    if (type_name[0] < 'A' or type_name[0] > 'Z') return;
+
+    for (prefixes) |entry| {
+        if (!std.mem.eql(u8, field_prefix, entry.name)) continue;
+
+        var full_buf: [256]u8 = undefined;
+        const needed = entry.path.len + 2 + type_name.len;
+        if (needed > full_buf.len) continue;
+        @memcpy(full_buf[0..entry.path.len], entry.path);
+        full_buf[entry.path.len] = ':';
+        full_buf[entry.path.len + 1] = ':';
+        @memcpy(full_buf[entry.path.len + 2 ..][0..type_name.len], type_name);
+
+        var qname_buf: [256]u8 = undefined;
+        const qname = impl_resolve.rustPathToDot(full_buf[0..needed], &qname_buf) orelse continue;
+
+        const leaf_id = try phantom.getOrCreate(allocator, qname, .rust, entry.external);
+
+        if (usageSiteFromNode(field_node, importer_path, type_name)) |s| {
+            try phantom.recordUsageSite(allocator, leaf_id, s);
+        }
+
+        const start_id = field_node.parent_id orelse return;
+        const owner_id = walkToOwningType(graph, start_id);
+
+        _ = try graph.addEdgeIfNew(allocator, .{
+            .source_id = owner_id,
+            .target_id = leaf_id,
+            .edge_type = .uses_type,
+            .source = .phantom,
+        });
+        return;
+    }
+}
+
+/// Scan struct/enum field signatures for module-qualified type references
+/// and create phantom child nodes with uses_type edges from the owning type.
+/// Handles any crate prefix, not just std.
+fn resolveScopedFieldPhantoms(
+    allocator: std.mem.Allocator,
+    graph: *Graph,
+    file_idx: usize,
+    file_end_idx: usize,
+    phantom: *PhantomManager,
+    graph_index: *const GraphIndex,
+    log: Logger,
+) error{OutOfMemory}!void {
+    _ = log;
+
+    const clamped_end = @min(file_end_idx, graph.nodes.items.len);
+    const importer_path = graph.nodes.items[file_idx].file_path;
+
+    var prefix_buf: [MAX_SCOPED_PREFIXES]PrefixEntry = undefined;
+    const prefix_count = collectModulePrefixImports(graph, file_idx, clamped_end, graph_index, importer_path, &prefix_buf);
+    if (prefix_count == 0) return;
+    const prefixes = prefix_buf[0..prefix_count];
+
     for (graph.nodes.items[file_idx..clamped_end]) |n| {
         if (n.kind != .field) continue;
-        const sig = n.signature orelse continue;
-
-        const colon_pos = std.mem.indexOf(u8, sig, "::") orelse continue;
-        if (colon_pos == 0) continue;
-        const field_prefix = sig[0..colon_pos];
-
-        const remainder = sig[colon_pos + 2 ..];
-        if (remainder.len == 0) continue;
-        var name_end: usize = 0;
-        while (name_end < remainder.len and source_scan.isIdentChar(remainder[name_end])) : (name_end += 1) {}
-        if (name_end == 0) continue;
-        const type_name = remainder[0..name_end];
-        // Only PascalCase type names.
-        if (type_name[0] < 'A' or type_name[0] > 'Z') continue;
-
-        for (prefix_buf[0..prefix_count]) |entry| {
-            if (!std.mem.eql(u8, field_prefix, entry.name)) continue;
-
-            var full_buf: [256]u8 = undefined;
-            const needed = entry.path.len + 2 + type_name.len;
-            if (needed > full_buf.len) continue;
-            @memcpy(full_buf[0..entry.path.len], entry.path);
-            full_buf[entry.path.len] = ':';
-            full_buf[entry.path.len + 1] = ':';
-            @memcpy(full_buf[entry.path.len + 2 ..][0..type_name.len], type_name);
-
-            var qname_buf: [256]u8 = undefined;
-            const qname = impl_resolve.rustPathToDot(full_buf[0..needed], &qname_buf) orelse continue;
-
-            const leaf_id = try phantom.getOrCreate(allocator, qname, .rust, entry.external);
-
-            // Record the field's position as the usage site for this phantom.
-            if (usageSiteFromNode(n, importer_path, type_name)) |s| {
-                try phantom.recordUsageSite(allocator, leaf_id, s);
-            }
-
-            // Walk up from the field to find the owning struct/enum.
-            var owner_id = n.parent_id orelse continue;
-            var hops: usize = 0;
-            while (hops < 10) : (hops += 1) {
-                const owner = graph.getNode(owner_id) orelse break;
-                if (owner.kind == .type_def or owner.kind == .enum_def or owner.kind == .union_def) break;
-                owner_id = owner.parent_id orelse break;
-            }
-
-            _ = try graph.addEdgeIfNew(allocator, .{
-                .source_id = owner_id,
-                .target_id = leaf_id,
-                .edge_type = .uses_type,
-                .source = .phantom,
-            });
-            break;
-        }
+        try resolveOneScopedField(allocator, graph, phantom, n, prefixes, importer_path);
     }
 }

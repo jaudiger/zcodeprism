@@ -109,6 +109,65 @@ pub fn isDescendantOf(graph: *const Graph, node_id: NodeId, ancestor_id: NodeId)
     return false;
 }
 
+fn skipLineComment(source: []const u8, start: usize) usize {
+    var i = start;
+    while (i < source.len and source[i] != '\n') : (i += 1) {}
+    if (i < source.len) i += 1;
+    return i;
+}
+
+const BlockCommentStep = struct { i: usize, depth: u32 };
+
+fn skipBlockComment(source: []const u8, syntax: CommentSyntax, depth: u32, start: usize) BlockCommentStep {
+    if (syntax.block_comment_nests) {
+        if (startsWithAt(source, start, syntax.block_comment_open.?)) {
+            return .{ .i = start + syntax.block_comment_open.?.len, .depth = depth + 1 };
+        }
+    }
+    if (startsWithAt(source, start, syntax.block_comment_close.?)) {
+        return .{ .i = start + syntax.block_comment_close.?.len, .depth = depth - 1 };
+    }
+    return .{ .i = start + 1, .depth = depth };
+}
+
+const StringScanStep = struct { i: usize, in_string: bool };
+
+fn scanStringLiteral(h: *std.hash.Wyhash, source: []const u8, start: usize) StringScanStep {
+    var i = start;
+    while (i < source.len and source[i] != '\\' and source[i] != '"') : (i += 1) {}
+    if (i > start) h.update(source[start..i]);
+    if (i >= source.len) return .{ .i = i, .in_string = true };
+    if (source[i] == '\\') {
+        i += 1;
+        if (i < source.len) {
+            h.update(source[i..][0..1]);
+            i += 1;
+        }
+        return .{ .i = i, .in_string = true };
+    }
+    h.update(source[i..][0..1]);
+    return .{ .i = i + 1, .in_string = false };
+}
+
+const CharScanStep = struct { i: usize, in_char: bool };
+
+fn scanCharLiteral(h: *std.hash.Wyhash, source: []const u8, start: usize) CharScanStep {
+    var i = start;
+    while (i < source.len and source[i] != '\\' and source[i] != '\'') : (i += 1) {}
+    if (i > start) h.update(source[start..i]);
+    if (i >= source.len) return .{ .i = i, .in_char = true };
+    if (source[i] == '\\') {
+        i += 1;
+        if (i < source.len) {
+            h.update(source[i..][0..1]);
+            i += 1;
+        }
+        return .{ .i = i, .in_char = true };
+    }
+    h.update(source[i..][0..1]);
+    return .{ .i = i + 1, .in_char = false };
+}
+
 /// Hash the structural skeleton of a source fragment. Identifiers become
 /// a fixed placeholder, numeric literals another, comments are stripped
 /// according to `syntax`, and whitespace runs collapse to a single space.
@@ -129,63 +188,29 @@ pub fn computeStructuralHash(fn_source: []const u8, syntax: CommentSyntax) u64 {
         const c = fn_source[i];
 
         if (in_line_comment) {
-            if (c == '\n') in_line_comment = false;
-            i += 1;
+            i = skipLineComment(fn_source, i);
+            in_line_comment = false;
             continue;
         }
 
         if (block_comment_depth > 0) {
-            if (syntax.block_comment_nests) {
-                if (startsWithAt(fn_source, i, syntax.block_comment_open.?)) {
-                    block_comment_depth += 1;
-                    i += syntax.block_comment_open.?.len;
-                    continue;
-                }
-            }
-            if (startsWithAt(fn_source, i, syntax.block_comment_close.?)) {
-                block_comment_depth -= 1;
-                i += syntax.block_comment_close.?.len;
-            } else {
-                i += 1;
-            }
+            const step = skipBlockComment(fn_source, syntax, block_comment_depth, i);
+            i = step.i;
+            block_comment_depth = step.depth;
             continue;
         }
 
         if (in_string) {
-            const run_start = i;
-            while (i < fn_source.len and fn_source[i] != '\\' and fn_source[i] != '"') : (i += 1) {}
-            if (i > run_start) h.update(fn_source[run_start..i]);
-            if (i >= fn_source.len) continue;
-            if (fn_source[i] == '\\') {
-                i += 1;
-                if (i < fn_source.len) {
-                    h.update(fn_source[i..][0..1]);
-                    i += 1;
-                }
-            } else {
-                h.update(fn_source[i..][0..1]);
-                in_string = false;
-                i += 1;
-            }
+            const step = scanStringLiteral(&h, fn_source, i);
+            i = step.i;
+            in_string = step.in_string;
             continue;
         }
 
         if (in_char) {
-            const run_start = i;
-            while (i < fn_source.len and fn_source[i] != '\\' and fn_source[i] != '\'') : (i += 1) {}
-            if (i > run_start) h.update(fn_source[run_start..i]);
-            if (i >= fn_source.len) continue;
-            if (fn_source[i] == '\\') {
-                i += 1;
-                if (i < fn_source.len) {
-                    h.update(fn_source[i..][0..1]);
-                    i += 1;
-                }
-            } else {
-                h.update(fn_source[i..][0..1]);
-                in_char = false;
-                i += 1;
-            }
+            const step = scanCharLiteral(&h, fn_source, i);
+            i = step.i;
+            in_char = step.in_char;
             continue;
         }
 

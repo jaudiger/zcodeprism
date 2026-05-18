@@ -852,47 +852,66 @@ fn handleFieldAccess(allocator: std.mem.Allocator, sctx: *const ScanContext, fie
 
 /// Emit uses_type and accesses_field edges for a struct_expression node.
 /// Handles both field_initializer and shorthand_field_initializer.
-fn handleStructExpr(allocator: std.mem.Allocator, sctx: *const ScanContext, struct_node: ts.Node) !void {
-    var type_name: ?[]const u8 = null;
+fn extractStructTypeName(sctx: *const ScanContext, struct_node: ts.Node) ?[]const u8 {
     var i: u32 = 0;
     while (i < struct_node.childCount()) : (i += 1) {
         const child = struct_node.child(i) orelse continue;
         const ck = child.kindId();
         if (ck == sctx.k.type_identifier) {
-            type_name = ts_api.nodeText(sctx.base.source, child);
-            break;
+            return ts_api.nodeText(sctx.base.source, child);
         }
         if (ck == sctx.k.scoped_type_identifier) {
             const nc = child.namedChildCount();
             if (nc > 0) {
                 if (child.namedChild(nc - 1)) |last| {
-                    type_name = ts_api.nodeText(sctx.base.source, last);
+                    return ts_api.nodeText(sctx.base.source, last);
                 }
             }
-            break;
+            return null;
         }
     }
+    return null;
+}
 
-    var type_id_opt: ?NodeId = null;
-    if (type_name) |tname| {
-        if (std.mem.eql(u8, tname, "Self") or std.mem.eql(u8, tname, "self")) {
-            type_id_opt = sctx.base.type_env.local.get(tname);
-        } else {
-            type_id_opt = findTypeByNameScoped(sctx.base.graph, tname, sctx.base.edge_ctx.scope_start, sctx.base.edge_ctx.scope_end, sctx.base.caller_parent_id, &sctx.base.graph_index.scope);
-        }
-    }
+fn resolveStructTypeAndEdge(
+    allocator: std.mem.Allocator,
+    sctx: *const ScanContext,
+    type_name: []const u8,
+    struct_node: ts.Node,
+) !?NodeId {
+    const type_id_opt: ?NodeId = if (std.mem.eql(u8, type_name, "Self") or std.mem.eql(u8, type_name, "self"))
+        sctx.base.type_env.local.get(type_name)
+    else
+        findTypeByNameScoped(sctx.base.graph, type_name, sctx.base.edge_ctx.scope_start, sctx.base.edge_ctx.scope_end, sctx.base.caller_parent_id, &sctx.base.graph_index.scope);
 
     const type_id = type_id_opt orelse {
-        if (type_name) |tname| {
-            const pos = struct_node.startPoint();
-            try sctx.base.appendWorklist(allocator, pos, .type_definition, tname);
-        }
-        return;
+        const pos = struct_node.startPoint();
+        try sctx.base.appendWorklist(allocator, pos, .type_definition, type_name);
+        return null;
     };
     _ = try sctx.base.graph.addEdgeIfNew(allocator, .{ .source_id = sctx.base.caller_id, .target_id = type_id, .edge_type = .uses_type });
+    return type_id;
+}
 
-    var explicit_fields: [max_struct_explicit_fields][]const u8 = undefined;
-    var explicit_count: usize = 0;
+fn recordExplicitField(
+    explicit_fields: *[max_struct_explicit_fields][]const u8,
+    explicit_count: *usize,
+    field_name: []const u8,
+) void {
+    if (explicit_count.* < max_struct_explicit_fields) {
+        explicit_fields[explicit_count.*] = field_name;
+        explicit_count.* += 1;
+    }
+}
+
+fn scanStructFieldInitializers(
+    allocator: std.mem.Allocator,
+    sctx: *const ScanContext,
+    type_id: NodeId,
+    struct_node: ts.Node,
+    explicit_fields: *[max_struct_explicit_fields][]const u8,
+    explicit_count: *usize,
+) !?[]const u8 {
     var base_var_name: ?[]const u8 = null;
 
     var j: u32 = 0;
@@ -906,62 +925,69 @@ fn handleStructExpr(allocator: std.mem.Allocator, sctx: *const ScanContext, stru
             const fi_kid = fi.kindId();
 
             if (fi_kid == sctx.k.field_initializer) {
-                if (fi.namedChild(0)) |fn_node| {
-                    if (fn_node.kindId() == sctx.k.field_identifier) {
-                        const field_name = ts_api.nodeText(sctx.base.source, fn_node);
-                        if (explicit_count < max_struct_explicit_fields) {
-                            explicit_fields[explicit_count] = field_name;
-                            explicit_count += 1;
-                        }
-                        if (shared_lookup.findFieldByName(sctx.base.graph, type_id, field_name, &sctx.base.graph_index.scope)) |field_id| {
-                            _ = try sctx.base.graph.addEdgeIfNew(allocator, .{ .source_id = sctx.base.caller_id, .target_id = field_id, .edge_type = .accesses_field });
-                        }
-                    }
+                const fn_node = fi.namedChild(0) orelse continue;
+                if (fn_node.kindId() != sctx.k.field_identifier) continue;
+                const field_name = ts_api.nodeText(sctx.base.source, fn_node);
+                recordExplicitField(explicit_fields, explicit_count, field_name);
+                if (shared_lookup.findFieldByName(sctx.base.graph, type_id, field_name, &sctx.base.graph_index.scope)) |field_id| {
+                    _ = try sctx.base.graph.addEdgeIfNew(allocator, .{ .source_id = sctx.base.caller_id, .target_id = field_id, .edge_type = .accesses_field });
                 }
             } else if (fi_kid == sctx.k.shorthand_field_initializer) {
-                if (fi.namedChild(0)) |id_node| {
-                    if (id_node.kindId() == sctx.k.identifier) {
-                        const field_name = ts_api.nodeText(sctx.base.source, id_node);
-                        if (explicit_count < max_struct_explicit_fields) {
-                            explicit_fields[explicit_count] = field_name;
-                            explicit_count += 1;
-                        }
-                        if (shared_lookup.findFieldByName(sctx.base.graph, type_id, field_name, &sctx.base.graph_index.scope)) |field_id| {
-                            _ = try sctx.base.graph.addEdgeIfNew(allocator, .{ .source_id = sctx.base.caller_id, .target_id = field_id, .edge_type = .accesses_field });
-                        }
-                    }
+                const id_node = fi.namedChild(0) orelse continue;
+                if (id_node.kindId() != sctx.k.identifier) continue;
+                const field_name = ts_api.nodeText(sctx.base.source, id_node);
+                recordExplicitField(explicit_fields, explicit_count, field_name);
+                if (shared_lookup.findFieldByName(sctx.base.graph, type_id, field_name, &sctx.base.graph_index.scope)) |field_id| {
+                    _ = try sctx.base.graph.addEdgeIfNew(allocator, .{ .source_id = sctx.base.caller_id, .target_id = field_id, .edge_type = .accesses_field });
                 }
             } else if (fi_kid == sctx.k.base_field_initializer) {
-                if (fi.namedChild(0)) |id_node| {
-                    if (id_node.kindId() == sctx.k.identifier) {
-                        base_var_name = ts_api.nodeText(sctx.base.source, id_node);
-                    }
-                }
+                const id_node = fi.namedChild(0) orelse continue;
+                if (id_node.kindId() != sctx.k.identifier) continue;
+                base_var_name = ts_api.nodeText(sctx.base.source, id_node);
             }
         }
     }
 
-    if (base_var_name) |bname| {
-        if (sctx.base.type_env.local.get(bname)) |base_type_id| {
-            for (sctx.base.graph_index.scope.childrenOf(base_type_id)) |child_idx| {
-                const n = sctx.base.graph.nodes.items[child_idx];
-                if (n.kind != .field) continue;
-                var is_explicit = false;
-                for (explicit_fields[0..explicit_count]) |ef| {
-                    if (std.mem.eql(u8, ef, n.name)) {
-                        is_explicit = true;
-                        break;
-                    }
-                }
-                if (!is_explicit) {
-                    _ = try sctx.base.graph.addEdgeIfNew(allocator, .{
-                        .source_id = sctx.base.caller_id,
-                        .target_id = @enumFromInt(child_idx),
-                        .edge_type = .accesses_field,
-                    });
-                }
+    return base_var_name;
+}
+
+fn applyStructBaseSpread(
+    allocator: std.mem.Allocator,
+    sctx: *const ScanContext,
+    base_var_name: []const u8,
+    explicit_fields: []const []const u8,
+) !void {
+    const base_type_id = sctx.base.type_env.local.get(base_var_name) orelse return;
+    for (sctx.base.graph_index.scope.childrenOf(base_type_id)) |child_idx| {
+        const n = sctx.base.graph.nodes.items[child_idx];
+        if (n.kind != .field) continue;
+        var is_explicit = false;
+        for (explicit_fields) |ef| {
+            if (std.mem.eql(u8, ef, n.name)) {
+                is_explicit = true;
+                break;
             }
         }
+        if (!is_explicit) {
+            _ = try sctx.base.graph.addEdgeIfNew(allocator, .{
+                .source_id = sctx.base.caller_id,
+                .target_id = @enumFromInt(child_idx),
+                .edge_type = .accesses_field,
+            });
+        }
+    }
+}
+
+fn handleStructExpr(allocator: std.mem.Allocator, sctx: *const ScanContext, struct_node: ts.Node) !void {
+    const type_name = extractStructTypeName(sctx, struct_node) orelse return;
+    const type_id = (try resolveStructTypeAndEdge(allocator, sctx, type_name, struct_node)) orelse return;
+
+    var explicit_fields: [max_struct_explicit_fields][]const u8 = undefined;
+    var explicit_count: usize = 0;
+    const base_var_name = try scanStructFieldInitializers(allocator, sctx, type_id, struct_node, &explicit_fields, &explicit_count);
+
+    if (base_var_name) |bname| {
+        try applyStructBaseSpread(allocator, sctx, bname, explicit_fields[0..explicit_count]);
     }
 }
 

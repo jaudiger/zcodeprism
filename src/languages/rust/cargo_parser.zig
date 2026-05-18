@@ -66,6 +66,99 @@ pub const CargoInfo = struct {
     }
 };
 
+fn replaceDup(allocator: Allocator, dst: *?[]u8, value: []const u8) !void {
+    if (dst.*) |old| allocator.free(old);
+    dst.* = try allocator.dupe(u8, value);
+}
+
+fn flushBinTarget(
+    allocator: Allocator,
+    list: *std.ArrayList(CargoInfo.TargetEntry),
+    bin_name: *?[]u8,
+    bin_path: *?[]u8,
+) !void {
+    if (bin_name.* == null) return;
+    try list.append(allocator, .{ .name = bin_name.*.?, .path = bin_path.* });
+    bin_name.* = null;
+    bin_path.* = null;
+}
+
+fn handlePackageKV(allocator: Allocator, result: *CargoInfo, kv: KV) !void {
+    if (std.mem.eql(u8, kv.key, "name")) {
+        try replaceDup(allocator, &result.package_name, kv.value);
+    } else if (std.mem.eql(u8, kv.key, "version")) {
+        try replaceDup(allocator, &result.package_version, kv.value);
+    }
+}
+
+fn handleBinOrLibKV(allocator: Allocator, name: *?[]u8, path: *?[]u8, kv: KV) !void {
+    if (std.mem.eql(u8, kv.key, "name")) {
+        try replaceDup(allocator, name, kv.value);
+    } else if (std.mem.eql(u8, kv.key, "path")) {
+        try replaceDup(allocator, path, kv.value);
+    }
+}
+
+fn handleMembersArrayLine(
+    allocator: Allocator,
+    list: *std.ArrayList([]u8),
+    in_members_array: *bool,
+    trimmed: []const u8,
+) !void {
+    if (extractQuotedValue(trimmed)) |val| {
+        const m = try allocator.dupe(u8, val);
+        errdefer allocator.free(m);
+        try list.append(allocator, m);
+    }
+    if (std.mem.indexOfScalar(u8, trimmed, ']') != null) {
+        in_members_array.* = false;
+    }
+}
+
+fn handleWorkspaceLine(
+    allocator: Allocator,
+    list: *std.ArrayList([]u8),
+    in_members_array: *bool,
+    trimmed: []const u8,
+) !void {
+    if (!std.mem.startsWith(u8, trimmed, "members")) return;
+    const bracket = std.mem.indexOfScalar(u8, trimmed, '[') orelse return;
+    const rest = trimmed[bracket + 1 ..];
+    if (std.mem.indexOfScalar(u8, rest, ']')) |close| {
+        try collectArrayMembers(allocator, rest[0..close], list);
+    } else {
+        try collectArrayMembers(allocator, rest, list);
+        in_members_array.* = true;
+    }
+}
+
+fn finalizeCargoInfo(
+    allocator: Allocator,
+    result: *CargoInfo,
+    deps: *std.ArrayList(CargoInfo.DepEntry),
+    dev_deps: *std.ArrayList(CargoInfo.DepEntry),
+    bin_targets: *std.ArrayList(CargoInfo.TargetEntry),
+    workspace_members: *std.ArrayList([]u8),
+    lib_name: ?[]u8,
+    lib_path: ?[]u8,
+) !void {
+    if (deps.items.len > 0) {
+        result.dependencies = try deps.toOwnedSlice(allocator);
+    }
+    if (dev_deps.items.len > 0) {
+        result.dev_dependencies = try dev_deps.toOwnedSlice(allocator);
+    }
+    if (bin_targets.items.len > 0) {
+        result.bin_targets = try bin_targets.toOwnedSlice(allocator);
+    }
+    if (workspace_members.items.len > 0) {
+        result.workspace_members = try workspace_members.toOwnedSlice(allocator);
+    }
+    if (lib_name != null or lib_path != null) {
+        result.lib_target = .{ .name = lib_name, .path = lib_path };
+    }
+}
+
 /// Parse a Cargo.toml content string and extract package, dependency, target,
 /// and workspace information.
 pub fn parseCargoToml(allocator: Allocator, content: []const u8, log: Logger) !CargoInfo {
@@ -84,11 +177,16 @@ pub fn parseCargoToml(allocator: Allocator, content: []const u8, log: Logger) !C
     var section: Section = .none;
     var in_members_array = false;
 
-    // Per-section accumulators for [[bin]] and [lib].
     var bin_name: ?[]u8 = null;
     var bin_path: ?[]u8 = null;
     var lib_name: ?[]u8 = null;
     var lib_path: ?[]u8 = null;
+    errdefer {
+        if (bin_name) |n| allocator.free(n);
+        if (bin_path) |p| allocator.free(p);
+        if (lib_name) |n| allocator.free(n);
+        if (lib_path) |p| allocator.free(p);
+    }
 
     var line_iter = std.mem.splitScalar(u8, content, '\n');
     while (line_iter.next()) |raw_line| {
@@ -98,133 +196,39 @@ pub fn parseCargoToml(allocator: Allocator, content: []const u8, log: Logger) !C
         if (trimmed.len == 0) continue;
         if (trimmed[0] == '#') continue;
 
-        // Check for section headers.
         if (trimmed[0] == '[') {
-            // Flush any pending [[bin]] section.
-            if (section == .bin and bin_name != null) {
-                try bin_targets.append(allocator, .{ .name = bin_name.?, .path = bin_path });
-                bin_name = null;
-                bin_path = null;
-            }
-
+            if (section == .bin) try flushBinTarget(allocator, &bin_targets, &bin_name, &bin_path);
             in_members_array = false;
             section = parseSection(trimmed);
             continue;
         }
 
-        // Inside members = [...] array, collect quoted strings.
         if (in_members_array) {
-            if (std.mem.indexOfScalar(u8, trimmed, ']') != null) {
-                // Collect any member on the closing line, then end.
-                if (extractQuotedValue(trimmed)) |val| {
-                    const m = try allocator.dupe(u8, val);
-                    errdefer allocator.free(m);
-                    try workspace_members.append(allocator, m);
-                }
-                in_members_array = false;
-                continue;
-            }
-            if (extractQuotedValue(trimmed)) |val| {
-                const m = try allocator.dupe(u8, val);
-                errdefer allocator.free(m);
-                try workspace_members.append(allocator, m);
-            }
+            try handleMembersArrayLine(allocator, &workspace_members, &in_members_array, trimmed);
             continue;
         }
 
         switch (section) {
-            .package => {
-                if (parseKeyValue(trimmed)) |kv| {
-                    if (std.mem.eql(u8, kv.key, "name")) {
-                        if (result.package_name != null) allocator.free(result.package_name.?);
-                        result.package_name = try allocator.dupe(u8, kv.value);
-                    } else if (std.mem.eql(u8, kv.key, "version")) {
-                        if (result.package_version != null) allocator.free(result.package_version.?);
-                        result.package_version = try allocator.dupe(u8, kv.value);
-                    }
-                }
-            },
+            .package => if (parseKeyValue(trimmed)) |kv| try handlePackageKV(allocator, &result, kv),
             .dependencies => try parseDep(allocator, trimmed, &deps),
             .dev_dependencies => try parseDep(allocator, trimmed, &dev_deps),
-            .bin => {
-                if (parseKeyValue(trimmed)) |kv| {
-                    if (std.mem.eql(u8, kv.key, "name")) {
-                        if (bin_name) |old| allocator.free(old);
-                        bin_name = try allocator.dupe(u8, kv.value);
-                    } else if (std.mem.eql(u8, kv.key, "path")) {
-                        if (bin_path) |old| allocator.free(old);
-                        bin_path = try allocator.dupe(u8, kv.value);
-                    }
-                }
-            },
-            .lib => {
-                if (parseKeyValue(trimmed)) |kv| {
-                    if (std.mem.eql(u8, kv.key, "name")) {
-                        if (lib_name) |old| allocator.free(old);
-                        lib_name = try allocator.dupe(u8, kv.value);
-                    } else if (std.mem.eql(u8, kv.key, "path")) {
-                        if (lib_path) |old| allocator.free(old);
-                        lib_path = try allocator.dupe(u8, kv.value);
-                    }
-                }
-            },
-            .workspace => {
-                // Detect "members = [" (possibly with entries on same line).
-                if (std.mem.startsWith(u8, trimmed, "members")) {
-                    if (std.mem.indexOfScalar(u8, trimmed, '[')) |bracket| {
-                        const rest = trimmed[bracket + 1 ..];
-                        if (std.mem.indexOfScalar(u8, rest, ']')) |close| {
-                            // Single-line array.
-                            try collectArrayMembers(allocator, rest[0..close], &workspace_members);
-                        } else {
-                            // Multi-line array starts here.
-                            try collectArrayMembers(allocator, rest, &workspace_members);
-                            in_members_array = true;
-                        }
-                    }
-                }
-            },
+            .bin => if (parseKeyValue(trimmed)) |kv| try handleBinOrLibKV(allocator, &bin_name, &bin_path, kv),
+            .lib => if (parseKeyValue(trimmed)) |kv| try handleBinOrLibKV(allocator, &lib_name, &lib_path, kv),
+            .workspace => try handleWorkspaceLine(allocator, &workspace_members, &in_members_array, trimmed),
             .none => {},
         }
     }
 
-    // Flush trailing [[bin]] section.
-    if (section == .bin and bin_name != null) {
-        try bin_targets.append(allocator, .{ .name = bin_name.?, .path = bin_path });
-        bin_name = null;
-        bin_path = null;
-    }
+    if (section == .bin) try flushBinTarget(allocator, &bin_targets, &bin_name, &bin_path);
 
-    // Clean up any unflushed bin/lib fragments on early returns above.
-    errdefer {
-        if (bin_name) |n| allocator.free(n);
-        if (bin_path) |p| allocator.free(p);
-        if (lib_name) |n| allocator.free(n);
-        if (lib_path) |p| allocator.free(p);
-    }
+    try finalizeCargoInfo(allocator, &result, &deps, &dev_deps, &bin_targets, &workspace_members, lib_name, lib_path);
 
-    if (deps.items.len > 0) {
-        result.dependencies = try deps.toOwnedSlice(allocator);
-    }
-    if (dev_deps.items.len > 0) {
-        result.dev_dependencies = try dev_deps.toOwnedSlice(allocator);
-    }
-    if (bin_targets.items.len > 0) {
-        result.bin_targets = try bin_targets.toOwnedSlice(allocator);
-    }
-    if (workspace_members.items.len > 0) {
-        result.workspace_members = try workspace_members.toOwnedSlice(allocator);
-    }
-    if (lib_name != null or lib_path != null) {
-        result.lib_target = .{ .name = lib_name, .path = lib_path };
-    }
+    errdefer comptime unreachable;
 
     log.debug("parsed Cargo.toml", &.{
         logging.Field.string("package", result.package_name orelse "(none)"),
         logging.Field.uint("deps", if (result.dependencies) |d| d.len else 0),
     });
-
-    errdefer comptime unreachable;
 
     return result;
 }

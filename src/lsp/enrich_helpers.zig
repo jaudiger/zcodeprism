@@ -116,6 +116,143 @@ pub fn parseHoverContents(text: []const u8) HoverContents {
     };
 }
 
+/// Map an LSP location to a graph declaration node within the project. Returns
+/// null when the location falls outside the project or onto a file node.
+fn locationToDeclaration(
+    graph: *const Graph,
+    file_map: *const std.StringHashMapUnmanaged(NodeId),
+    loc: protocol.Location,
+) ?NodeId {
+    const rel = resolveDefinitionToRelPath(loc.uri, graph.project_root) orelse return null;
+    const file_node_id = file_map.get(rel) orelse return null;
+    const target_id = findDeclarationAtLine(graph, file_node_id, loc.range.start.line);
+    if (target_id == file_node_id) return null;
+    return target_id;
+}
+
+fn processDefinitionEntry(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    graph: *Graph,
+    client: *LspClient,
+    file_map: *const std.StringHashMapUnmanaged(NodeId),
+    uri: []const u8,
+    entry: WorklistEntry,
+    result: *EnrichResult,
+    logger: Logger,
+) error{OutOfMemory}!void {
+    result.definition_queries += 1;
+    const locs = (client.textDocumentDefinition(allocator, io, uri, entry.line, entry.col) catch return) orelse return;
+    defer protocol.freeLocationArray(allocator, locs);
+    for (locs) |loc| {
+        const target_id = locationToDeclaration(graph, file_map, loc) orelse continue;
+        const added = graph.addEdgeIfNew(allocator, .{
+            .source_id = entry.source_node_id,
+            .target_id = target_id,
+            .edge_type = .calls,
+            .source = .lsp,
+        }) catch return error.OutOfMemory;
+        if (added) {
+            result.edges_promoted += 1;
+            result.definition_successes += 1;
+            result.worklist_resolved += 1;
+            const target_name = if (graph.getNode(target_id)) |n| n.name else "?";
+            logger.debug("promoted call edge via definition", &.{
+                Field.string("hint", entry.hint_name orelse "?"),
+                Field.string("target", target_name),
+            });
+        }
+        break;
+    }
+}
+
+fn processTypeDefinitionEntry(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    graph: *Graph,
+    client: *LspClient,
+    file_map: *const std.StringHashMapUnmanaged(NodeId),
+    uri: []const u8,
+    entry: WorklistEntry,
+    result: *EnrichResult,
+) error{OutOfMemory}!void {
+    result.type_definition_queries += 1;
+    const locs = (client.textDocumentTypeDefinition(allocator, io, uri, entry.line, entry.col) catch return) orelse return;
+    defer protocol.freeLocationArray(allocator, locs);
+    for (locs) |loc| {
+        const target_id = locationToDeclaration(graph, file_map, loc) orelse continue;
+        const added = graph.addEdgeIfNew(allocator, .{
+            .source_id = entry.source_node_id,
+            .target_id = target_id,
+            .edge_type = .uses_type,
+            .source = .lsp,
+        }) catch return error.OutOfMemory;
+        if (added) {
+            result.edges_added += 1;
+            result.type_definition_successes += 1;
+            result.worklist_resolved += 1;
+        }
+        break;
+    }
+}
+
+fn processHoverEntry(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    graph: *Graph,
+    client: *LspClient,
+    uri: []const u8,
+    entry: WorklistEntry,
+    result: *EnrichResult,
+    handleHover: ?*const fn (std.mem.Allocator, *Graph, usize, protocol.Hover, *EnrichResult) error{OutOfMemory}!void,
+    logger: Logger,
+) error{OutOfMemory}!void {
+    const src_idx = @intFromEnum(entry.source_node_id);
+    if (src_idx >= graph.nodes.items.len) return;
+    result.hover_queries += 1;
+    const hover = (client.textDocumentHover(allocator, io, uri, entry.line, entry.col) catch {
+        logger.debug("hover query failed", &.{Field.string("hint", entry.hint_name orelse "?")});
+        return;
+    }) orelse return;
+    defer protocol.freeHover(allocator, hover);
+    if (handleHover) |handler| {
+        try handler(allocator, graph, src_idx, hover, result);
+    }
+}
+
+fn processReferencesEntry(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    graph: *Graph,
+    client: *LspClient,
+    file_map: *const std.StringHashMapUnmanaged(NodeId),
+    uri: []const u8,
+    entry: WorklistEntry,
+    result: *EnrichResult,
+) error{OutOfMemory}!void {
+    result.reference_queries += 1;
+    const locs = (client.textDocumentReferences(allocator, io, uri, entry.line, entry.col, false) catch return) orelse return;
+    defer protocol.freeLocationArray(allocator, locs);
+    var resolved_any = false;
+    for (locs) |loc| {
+        const ref_id = locationToDeclaration(graph, file_map, loc) orelse continue;
+        const added = graph.addEdgeIfNew(allocator, .{
+            .source_id = ref_id,
+            .target_id = entry.source_node_id,
+            .edge_type = .calls,
+            .source = .lsp,
+        }) catch return error.OutOfMemory;
+        if (added) {
+            result.edges_added += 1;
+            resolved_any = true;
+        }
+    }
+    if (resolved_any) {
+        result.reference_successes += 1;
+        result.worklist_resolved += 1;
+    }
+}
+
 /// Send each worklist entry to the appropriate LSP method and integrate
 /// the result as a new graph edge or node metadata. The `handleHover`
 /// callback processes hover results in a language-specific way; pass null
@@ -138,96 +275,10 @@ pub fn dispatchWorklist(
         defer allocator.free(uri);
 
         switch (entry.query_kind) {
-            .definition => {
-                result.definition_queries += 1;
-                const locs = (client.textDocumentDefinition(allocator, io, uri, entry.line, entry.col) catch continue) orelse continue;
-                defer protocol.freeLocationArray(allocator, locs);
-                for (locs) |loc| {
-                    const rel = resolveDefinitionToRelPath(loc.uri, graph.project_root) orelse continue;
-                    const file_node_id = file_map.get(rel) orelse continue;
-                    const target_id = findDeclarationAtLine(graph, file_node_id, loc.range.start.line);
-                    if (target_id == file_node_id) continue;
-                    const added = graph.addEdgeIfNew(allocator, .{
-                        .source_id = entry.source_node_id,
-                        .target_id = target_id,
-                        .edge_type = .calls,
-                        .source = .lsp,
-                    }) catch return error.OutOfMemory;
-                    if (added) {
-                        result.edges_promoted += 1;
-                        result.definition_successes += 1;
-                        result.worklist_resolved += 1;
-                        const target_name = if (graph.getNode(target_id)) |n| n.name else "?";
-                        logger.debug("promoted call edge via definition", &.{
-                            Field.string("hint", entry.hint_name orelse "?"),
-                            Field.string("target", target_name),
-                        });
-                    }
-                    break;
-                }
-            },
-            .type_definition => {
-                result.type_definition_queries += 1;
-                const locs = (client.textDocumentTypeDefinition(allocator, io, uri, entry.line, entry.col) catch continue) orelse continue;
-                defer protocol.freeLocationArray(allocator, locs);
-                for (locs) |loc| {
-                    const rel = resolveDefinitionToRelPath(loc.uri, graph.project_root) orelse continue;
-                    const file_node_id = file_map.get(rel) orelse continue;
-                    const target_id = findDeclarationAtLine(graph, file_node_id, loc.range.start.line);
-                    if (target_id == file_node_id) continue;
-                    const added = graph.addEdgeIfNew(allocator, .{
-                        .source_id = entry.source_node_id,
-                        .target_id = target_id,
-                        .edge_type = .uses_type,
-                        .source = .lsp,
-                    }) catch return error.OutOfMemory;
-                    if (added) {
-                        result.edges_added += 1;
-                        result.type_definition_successes += 1;
-                        result.worklist_resolved += 1;
-                    }
-                    break;
-                }
-            },
-            .hover => {
-                const src_idx = @intFromEnum(entry.source_node_id);
-                if (src_idx >= graph.nodes.items.len) continue;
-                result.hover_queries += 1;
-                const hover = (client.textDocumentHover(allocator, io, uri, entry.line, entry.col) catch {
-                    logger.debug("hover query failed", &.{Field.string("hint", entry.hint_name orelse "?")});
-                    continue;
-                }) orelse continue;
-                defer protocol.freeHover(allocator, hover);
-                if (handleHover) |handler| {
-                    try handler(allocator, graph, src_idx, hover, result);
-                }
-            },
-            .references => {
-                result.reference_queries += 1;
-                const locs = (client.textDocumentReferences(allocator, io, uri, entry.line, entry.col, false) catch continue) orelse continue;
-                defer protocol.freeLocationArray(allocator, locs);
-                var resolved_any = false;
-                for (locs) |loc| {
-                    const rel = resolveDefinitionToRelPath(loc.uri, graph.project_root) orelse continue;
-                    const file_node_id = file_map.get(rel) orelse continue;
-                    const ref_id = findDeclarationAtLine(graph, file_node_id, loc.range.start.line);
-                    if (ref_id == file_node_id) continue;
-                    const added = graph.addEdgeIfNew(allocator, .{
-                        .source_id = ref_id,
-                        .target_id = entry.source_node_id,
-                        .edge_type = .calls,
-                        .source = .lsp,
-                    }) catch return error.OutOfMemory;
-                    if (added) {
-                        result.edges_added += 1;
-                        resolved_any = true;
-                    }
-                }
-                if (resolved_any) {
-                    result.reference_successes += 1;
-                    result.worklist_resolved += 1;
-                }
-            },
+            .definition => try processDefinitionEntry(allocator, io, graph, client, file_map, uri, entry, result, logger),
+            .type_definition => try processTypeDefinitionEntry(allocator, io, graph, client, file_map, uri, entry, result),
+            .hover => try processHoverEntry(allocator, io, graph, client, uri, entry, result, handleHover, logger),
+            .references => try processReferencesEntry(allocator, io, graph, client, file_map, uri, entry, result),
         }
     }
 }
