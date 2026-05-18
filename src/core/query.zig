@@ -145,7 +145,7 @@ const edge_type_count = @typeInfo(EdgeType).@"enum".fields.len;
 
 /// Options for `getImpact`.
 pub const ImpactOptions = struct {
-    /// Restrict traversal to these edge types. Null means calls + uses_type + accesses_field.
+    /// Restrict traversal to these edge types. Null means calls + uses_type + accesses_field + uses_value.
     edge_types: ?[]const EdgeType = null,
     /// Maximum traversal depth.
     max_depth: u32 = 10,
@@ -575,7 +575,7 @@ pub fn getImpact(allocator: std.mem.Allocator, fg: FrozenGraph, node_id: NodeId,
     const g = fg.graph;
     if (g.getNode(node_id) == null) return .{ .impacted = &.{}, .total_impacted = 0 };
 
-    const default_types = [_]EdgeType{ .calls, .uses_type, .accesses_field };
+    const default_types = [_]EdgeType{ .calls, .uses_type, .accesses_field, .uses_value };
     const allowed_types: []const EdgeType = options.edge_types orelse &default_types;
 
     // Reverse BFS
@@ -754,7 +754,8 @@ pub fn getEdges(allocator: std.mem.Allocator, fg: FrozenGraph, node_ids: []const
 ///   8: "std.mem.Allocator" type_def (zig, public, external=stdlib)
 ///
 /// Edges: parse->Token (uses_type), main->parse (calls),
-///         parse->Allocator (uses_type/phantom), main->Allocator (uses_type/phantom)
+///         parse->Allocator (uses_type/phantom), main->Allocator (uses_type/phantom),
+///         test_parse->parse (uses_value)
 fn buildTestGraph(allocator: std.mem.Allocator) !Graph {
     var g = Graph.init("test-project");
 
@@ -772,6 +773,7 @@ fn buildTestGraph(allocator: std.mem.Allocator) !Graph {
     _ = try g.addEdgeIfNew(allocator, .{ .source_id = @enumFromInt(6), .target_id = @enumFromInt(2), .edge_type = .calls });
     _ = try g.addEdgeIfNew(allocator, .{ .source_id = @enumFromInt(2), .target_id = @enumFromInt(8), .edge_type = .uses_type, .source = .phantom });
     _ = try g.addEdgeIfNew(allocator, .{ .source_id = @enumFromInt(6), .target_id = @enumFromInt(8), .edge_type = .uses_type, .source = .phantom });
+    _ = try g.addEdgeIfNew(allocator, .{ .source_id = @enumFromInt(7), .target_id = @enumFromInt(2), .edge_type = .uses_value });
 
     return g;
 }
@@ -1093,7 +1095,7 @@ test "getAncestors returns full chain and empty for root" {
     try testing.expectEqual(@as(usize, 0), root_anc.len);
 }
 
-test "impact: leaf has zero, core function includes callers" {
+test "getImpact returns reverse-dependency set using default edges" {
     // Arrange
     var g = try buildTestGraph(testing.allocator);
     defer g.deinit(testing.allocator);
@@ -1104,41 +1106,28 @@ test "impact: leaf has zero, core function includes callers" {
     defer leaf.deinit(testing.allocator);
     const core = try getImpact(testing.allocator, fg, nid(2), .{});
     defer core.deinit(testing.allocator);
+    const token = try getImpact(testing.allocator, fg, nid(3), .{});
+    defer token.deinit(testing.allocator);
+    const phantom = try getImpact(testing.allocator, fg, nid(8), .{});
+    defer phantom.deinit(testing.allocator);
 
     // Assert
     try testing.expectEqual(@as(u32, 0), leaf.total_impacted);
 
-    // Assert
-    try testing.expect(core.total_impacted >= 1);
     var found_main = false;
+    var found_test_parse = false;
     for (core.impacted) |id| {
         if (@intFromEnum(id) == 6) found_main = true;
+        if (@intFromEnum(id) == 7) found_test_parse = true;
     }
     try testing.expect(found_main);
+    try testing.expect(found_test_parse);
+
+    try testing.expect(token.total_impacted >= 2);
+    try testing.expect(phantom.total_impacted >= 2);
 }
 
-test "impact is transitive and works on phantom nodes" {
-    // Arrange
-    var g = try buildTestGraph(testing.allocator);
-    defer g.deinit(testing.allocator);
-    const fg = try g.freeze(testing.allocator);
-
-    // Act
-    const token_impact = try getImpact(testing.allocator, fg, nid(3), .{});
-    defer token_impact.deinit(testing.allocator);
-
-    // Act
-    const phantom_impact = try getImpact(testing.allocator, fg, nid(8), .{});
-    defer phantom_impact.deinit(testing.allocator);
-
-    // Assert
-    try testing.expect(token_impact.total_impacted >= 2);
-
-    // Assert
-    try testing.expect(phantom_impact.total_impacted >= 2);
-}
-
-test "impact respects edge_types filter" {
+test "getImpact respects edge_types filter" {
     // Arrange
     var g = try buildTestGraph(testing.allocator);
     defer g.deinit(testing.allocator);

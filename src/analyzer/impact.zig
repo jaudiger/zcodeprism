@@ -40,7 +40,7 @@ pub fn analyzeImpact(allocator: std.mem.Allocator, fg: FrozenGraph, node_ids: []
     const g = fg.graph;
     if (node_ids.len == 0) return .{ .total_impacted = 0, .dependents = &.{} };
 
-    const default_types = [_]EdgeType{ .calls, .uses_type, .accesses_field };
+    const default_types = [_]EdgeType{ .calls, .uses_type, .accesses_field, .uses_value };
     const allowed_types: []const EdgeType = options.edge_types orelse &default_types;
 
     var visited = std.AutoHashMapUnmanaged(u64, void){};
