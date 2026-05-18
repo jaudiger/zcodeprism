@@ -83,6 +83,9 @@ pub const KindIds = struct {
     field_initializer: u16,
     shorthand_field_initializer: u16,
     base_field_initializer: u16,
+    reference_expression: u16,
+    return_expression: u16,
+    assignment_expression: u16,
 
     // Literals and strings
     string_literal: u16,
@@ -192,6 +195,9 @@ pub const KindIds = struct {
             .field_initializer = lang.idForNodeKind("field_initializer", true),
             .shorthand_field_initializer = lang.idForNodeKind("shorthand_field_initializer", true),
             .base_field_initializer = lang.idForNodeKind("base_field_initializer", true),
+            .reference_expression = lang.idForNodeKind("reference_expression", true),
+            .return_expression = lang.idForNodeKind("return_expression", true),
+            .assignment_expression = lang.idForNodeKind("assignment_expression", true),
 
             .string_literal = lang.idForNodeKind("string_literal", true),
             .string_content = lang.idForNodeKind("string_content", true),

@@ -2078,3 +2078,73 @@ test "anonymous struct with type annotation creates accesses_field edge" {
     }
     try std.testing.expect(found);
 }
+
+test "uses_value edge for address-of in struct-level vtable initializer" {
+    // Arrange
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
+    const source =
+        \\const VTable = struct { log: *const fn (u8) void };
+        \\pub const Logger = struct {
+        \\    fn noopLog(_: u8) void {}
+        \\    const noop_vtable = VTable{ .log = &noopLog };
+        \\};
+    ;
+
+    // Act
+    try parseWithEdges(std.testing.allocator, source, &g);
+
+    // Assert
+    var noop_log_id: ?NodeId = null;
+    var vtable_const_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, i| {
+        if (n.kind == .function and std.mem.eql(u8, n.name, "noopLog")) noop_log_id = @enumFromInt(i);
+        if (n.kind == .constant and std.mem.eql(u8, n.name, "noop_vtable")) vtable_const_id = @enumFromInt(i);
+    }
+    try std.testing.expect(noop_log_id != null);
+    try std.testing.expect(vtable_const_id != null);
+
+    var found = false;
+    for (g.edges.items) |e| {
+        if (e.source_id == vtable_const_id.? and e.target_id == noop_log_id.? and e.edge_type == .uses_value) {
+            found = true;
+            break;
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "uses_value edge for bare function passed as call argument" {
+    // Arrange
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
+    const source =
+        \\fn helper(_: u8) bool { return true; }
+        \\fn runner(_: *const fn (u8) bool) void {}
+        \\fn invokes() void {
+        \\    runner(helper);
+        \\}
+    ;
+
+    // Act
+    try parseWithEdges(std.testing.allocator, source, &g);
+
+    // Assert
+    var helper_id: ?NodeId = null;
+    var invokes_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, i| {
+        if (n.kind == .function and std.mem.eql(u8, n.name, "helper")) helper_id = @enumFromInt(i);
+        if (n.kind == .function and std.mem.eql(u8, n.name, "invokes")) invokes_id = @enumFromInt(i);
+    }
+    try std.testing.expect(helper_id != null);
+    try std.testing.expect(invokes_id != null);
+
+    var found = false;
+    for (g.edges.items) |e| {
+        if (e.source_id == invokes_id.? and e.target_id == helper_id.? and e.edge_type == .uses_value) {
+            found = true;
+            break;
+        }
+    }
+    try std.testing.expect(found);
+}

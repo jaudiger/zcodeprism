@@ -65,6 +65,9 @@ pub const EdgeType = enum {
     calls,
     /// Source node imports the target module or file.
     imports,
+    /// Source node names the target in value position: the target is consumed
+    /// as a first-class value, not invoked and not referenced as a type.
+    uses_value,
     /// Source node references the target as a type (parameter, return, field type).
     uses_type,
     /// Source and target nodes have structurally similar signatures or bodies.
@@ -77,10 +80,11 @@ pub const EdgeType = enum {
     contains,
 
     /// Whether this edge represents actual usage (call, type ref, field access,
-    /// trait impl) as opposed to a structural or analytical relationship.
+    /// trait impl, value-position use) as opposed to a structural or
+    /// analytical relationship.
     pub fn isSemanticRef(self: EdgeType) bool {
         return switch (self) {
-            .calls, .uses_type, .accesses_field, .implements => true,
+            .calls, .uses_type, .uses_value, .accesses_field, .implements => true,
             .imports, .exports, .contains, .similar_to => false,
         };
     }
@@ -89,7 +93,7 @@ pub const EdgeType = enum {
     pub fn isFanEdge(self: EdgeType) bool {
         return switch (self) {
             .calls, .uses_type => true,
-            .accesses_field, .implements, .imports, .exports, .contains, .similar_to => false,
+            .accesses_field, .implements, .imports, .exports, .contains, .similar_to, .uses_value => false,
         };
     }
 };
@@ -198,10 +202,10 @@ test "isTypeContainer returns true for type_def, enum_def, union_def" {
     try std.testing.expect(!NodeKind.parameter.isTypeContainer());
 }
 
-test "EdgeType has exactly 8 variants" {
+test "EdgeType has exactly 9 variants" {
     comptime {
         const fields = @typeInfo(EdgeType).@"enum".fields;
-        std.debug.assert(fields.len == 8);
+        std.debug.assert(fields.len == 9);
     }
 }
 
@@ -223,6 +227,7 @@ test "isSemanticRef classifies every variant" {
     try std.testing.expect(EdgeType.uses_type.isSemanticRef());
     try std.testing.expect(EdgeType.accesses_field.isSemanticRef());
     try std.testing.expect(EdgeType.implements.isSemanticRef());
+    try std.testing.expect(EdgeType.uses_value.isSemanticRef());
     try std.testing.expect(!EdgeType.imports.isSemanticRef());
     try std.testing.expect(!EdgeType.exports.isSemanticRef());
     try std.testing.expect(!EdgeType.contains.isSemanticRef());
@@ -238,4 +243,5 @@ test "isFanEdge classifies every variant" {
     try std.testing.expect(!EdgeType.exports.isFanEdge());
     try std.testing.expect(!EdgeType.contains.isFanEdge());
     try std.testing.expect(!EdgeType.similar_to.isFanEdge());
+    try std.testing.expect(!EdgeType.uses_value.isFanEdge());
 }

@@ -1190,3 +1190,54 @@ test "let-bound struct literal field access creates accesses_field edge" {
     // Assert
     try std.testing.expect(helpers.hasEdge(&g, fn_id, x_id, .accesses_field));
 }
+
+test "uses_value edge for static initializer naming a function" {
+    // Arrange
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
+    const source =
+        \\fn callback() {}
+        \\static HANDLER: fn() = callback;
+    ;
+
+    // Act
+    try parseWithEdges(std.testing.allocator, source, &g);
+
+    // Assert
+    var callback_id: ?NodeId = null;
+    var handler_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, i| {
+        if (n.kind == .function and std.mem.eql(u8, n.name, "callback")) callback_id = @enumFromInt(i);
+        if (n.kind == .constant and std.mem.eql(u8, n.name, "HANDLER")) handler_id = @enumFromInt(i);
+    }
+    try std.testing.expect(callback_id != null);
+    try std.testing.expect(handler_id != null);
+    try std.testing.expect(helpers.hasEdge(&g, handler_id.?, callback_id.?, .uses_value));
+}
+
+test "uses_value edge for bare function passed as call argument" {
+    // Arrange
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
+    const source =
+        \\fn helper() -> bool { true }
+        \\fn runner(_: fn() -> bool) {}
+        \\fn invokes() {
+        \\    runner(helper);
+        \\}
+    ;
+
+    // Act
+    try parseWithEdges(std.testing.allocator, source, &g);
+
+    // Assert
+    var helper_id: ?NodeId = null;
+    var invokes_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, i| {
+        if (n.kind == .function and std.mem.eql(u8, n.name, "helper")) helper_id = @enumFromInt(i);
+        if (n.kind == .function and std.mem.eql(u8, n.name, "invokes")) invokes_id = @enumFromInt(i);
+    }
+    try std.testing.expect(helper_id != null);
+    try std.testing.expect(invokes_id != null);
+    try std.testing.expect(helpers.hasEdge(&g, invokes_id.?, helper_id.?, .uses_value));
+}

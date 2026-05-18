@@ -1,6 +1,7 @@
 const std = @import("std");
 const types = @import("../../core/types.zig");
 const shared_types = @import("../shared/types.zig");
+const shared_ast = @import("../shared/ast.zig");
 const ts = @import("tree-sitter");
 const ts_api = @import("../../parser/tree_sitter_api.zig");
 const pc = @import("parse_context.zig");
@@ -92,19 +93,7 @@ pub fn getIdentifierNode(ts_node: ts.Node, k: *const KindIds) ?ts.Node {
 
 /// Return the text of the first `identifier` child of `ts_node`, or null if none exists.
 pub fn getIdentifierName(source: []const u8, ts_node: ts.Node, k: *const KindIds) ?[]const u8 {
-    const child = getIdentifierNode(ts_node, k) orelse return null;
-    const raw = ts_api.nodeText(source, child);
-    return stripQuotedIdentifier(raw);
-}
-
-/// Strip the `@"..."` quoting from a Zig identifier, returning the inner name.
-/// Returns `raw` unchanged if it is not quoted.
-pub fn stripQuotedIdentifier(raw: []const u8) []const u8 {
-    // Handle @"name" syntax for unicode or keyword identifiers.
-    if (raw.len >= 3 and raw[0] == '@' and raw[1] == '"' and raw[raw.len - 1] == '"') {
-        return raw[2 .. raw.len - 1];
-    }
-    return raw;
+    return shared_ast.getIdentifierName(source, ts_node, k.identifier);
 }
 
 /// Extract the test name from a `test_declaration` node.
@@ -135,7 +124,7 @@ pub fn getTestName(source: []const u8, ts_node: ts.Node, k: *const KindIds) []co
         if (kid == k.identifier) {
             // Decl-reference test name: test Value { } or test @"edge case" { }
             const text = ts_api.nodeText(source, child);
-            return stripQuotedIdentifier(text);
+            return shared_ast.stripQuotedIdentifier(text);
         }
     }
     return "test";

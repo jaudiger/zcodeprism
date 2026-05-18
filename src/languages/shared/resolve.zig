@@ -2,6 +2,7 @@ const std = @import("std");
 const graph_mod = @import("../../core/graph.zig");
 const node_mod = @import("../../core/node.zig");
 const types_mod = @import("../../core/types.zig");
+const EdgeType = types_mod.EdgeType;
 const graph_index_mod = @import("../../core/graph_index.zig");
 const file_index_mod = @import("../../core/file_index.zig");
 const logging = @import("../../logging.zig");
@@ -188,23 +189,27 @@ pub fn resolveVarTargetThroughReturnType(
 }
 
 /// Resolve an import-qualified identifier chain against a target file.
-/// Walks the chain segment by segment, narrowing scope to direct children of each
-/// resolved node. Emits uses_type for type containers and calls for terminal
-/// function references when is_call is true. Handles Self aliases and
-/// mid-chain function calls by following return types via the resolver in rctx.
+/// Walks the chain segment by segment, narrowing scope to direct children of
+/// each resolved node. Emits uses_type for type containers along the way.
+/// When the terminal segment resolves to a function, `terminal_edge` controls
+/// the emitted edge: `.calls` for invocations, `.uses_value` for value-position
+/// references, `null` for traversal-only (no terminal edge). Mid-chain
+/// functions emit `.calls` only when `terminal_edge == .calls`; their return
+/// type is then followed for further resolution. Handles Self aliases.
 ///
 /// Returns the number of resolved edges written to `out`.
 pub fn resolveQualifiedCall(
     g: *const Graph,
     target_file_id: NodeId,
     chain: []const []const u8,
-    is_call: bool,
+    terminal_edge: ?EdgeType,
     rctx: *const ResolveContext,
     out: []ResolvedEdge,
 ) usize {
     const scope_index = &rctx.graph_index.scope;
     var current_scope_id = target_file_id;
     var count: usize = 0;
+    const emits_calls_midchain = terminal_edge == EdgeType.calls;
 
     for (chain, 0..) |segment, seg_idx| {
         const is_last = (seg_idx == chain.len - 1);
@@ -243,13 +248,15 @@ pub fn resolveQualifiedCall(
 
         const resolved_node = g.getNode(resolved_id) orelse return count;
 
-        if (is_last and is_call and resolved_node.kind == .function) {
-            if (count < out.len) {
-                out[count] = .{ .target_id = resolved_id, .edge_type = .calls };
-                count += 1;
+        if (is_last and resolved_node.kind == .function) {
+            if (terminal_edge) |et| {
+                if (count < out.len) {
+                    out[count] = .{ .target_id = resolved_id, .edge_type = et };
+                    count += 1;
+                }
             }
         } else if (!is_last and resolved_node.kind == .function) {
-            if (is_call and count < out.len) {
+            if (emits_calls_midchain and count < out.len) {
                 out[count] = .{ .target_id = resolved_id, .edge_type = .calls };
                 count += 1;
             }
@@ -279,6 +286,9 @@ pub fn resolveQualifiedCall(
 }
 
 /// Resolve a qualified chain and add the resulting edges to the graph.
+/// `terminal_edge` selects the edge kind emitted at the terminal function:
+/// `.calls` for invocations, `.uses_value` for value-position references,
+/// `null` to traverse without emitting a terminal edge.
 /// Returns true if at least one edge was resolved.
 pub fn addResolvedEdges(
     allocator: std.mem.Allocator,
@@ -286,7 +296,7 @@ pub fn addResolvedEdges(
     caller_id: NodeId,
     target_file_id: NodeId,
     chain: []const []const u8,
-    is_call: bool,
+    terminal_edge: ?EdgeType,
     rctx: *const ResolveContext,
 ) !bool {
     var edge_buf: [max_chain_depth]ResolvedEdge = undefined;
@@ -294,7 +304,7 @@ pub fn addResolvedEdges(
         graph,
         target_file_id,
         chain,
-        is_call,
+        terminal_edge,
         rctx,
         &edge_buf,
     );
@@ -316,7 +326,7 @@ pub fn resolveOriginCall(
     caller_id: NodeId,
     origin: SymbolOrigin,
     call_chain: []const []const u8,
-    is_call: bool,
+    terminal_edge: ?EdgeType,
     rctx: *const ResolveContext,
 ) !bool {
     var merged: [max_chain_depth][]const u8 = undefined;
@@ -332,5 +342,5 @@ pub fn resolveOriginCall(
         len += 1;
     }
     if (len == 0) return false;
-    return try addResolvedEdges(allocator, graph, caller_id, origin.file_id, merged[0..len], is_call, rctx);
+    return try addResolvedEdges(allocator, graph, caller_id, origin.file_id, merged[0..len], terminal_edge, rctx);
 }

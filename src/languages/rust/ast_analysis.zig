@@ -1,6 +1,7 @@
 const std = @import("std");
 const ts = @import("tree-sitter");
 const ts_api = @import("../../parser/tree_sitter_api.zig");
+const shared_ast = @import("../shared/ast.zig");
 const pc = @import("parse_context.zig");
 const types = @import("../../core/types.zig");
 
@@ -35,8 +36,7 @@ pub fn getTypeIdentifierNode(node: ts.Node, k: *const KindIds) ?ts.Node {
 
 /// Extract the `identifier` child text from a declaration node.
 pub fn getIdentifierName(source: []const u8, node: ts.Node, k: *const KindIds) ?[]const u8 {
-    const child = getIdentifierNode(node, k) orelse return null;
-    return ts_api.nodeText(source, child);
+    return shared_ast.getIdentifierName(source, node, k.identifier);
 }
 
 /// Extract the `type_identifier` child text from a declaration node.

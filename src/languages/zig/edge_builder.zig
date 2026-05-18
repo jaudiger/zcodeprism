@@ -12,6 +12,8 @@ const phantom_mod = @import("../../core/phantom.zig");
 const shared_resolve = @import("../shared/resolve.zig");
 const shared_lookup = @import("../shared/lookup.zig");
 const shared_scan = @import("../shared/scan.zig");
+const shared_types = @import("../shared/types.zig");
+const shared_ast = @import("../shared/ast.zig");
 const type_env_mod = @import("../shared/type_env.zig");
 const worklist_mod = @import("../../lsp/worklist.zig");
 
@@ -63,6 +65,7 @@ const ScanContext = struct {
                     false;
             } else false;
             if (!is_call_fn_ref) {
+                if (try handleQualifiedValueUse(allocator, self, node)) return;
                 if (node.namedChildCount() < 2) {
                     try handleBareEnumLiteral(allocator, self, node);
                 } else {
@@ -70,7 +73,7 @@ const ScanContext = struct {
                 }
             }
         } else if (kid == self.k.identifier or kid == self.k.property_identifier) {
-            try handleTypeRef(allocator, self, node);
+            try handleIdentifier(allocator, self, node);
         } else if (kid == self.k.variable_declaration) {
             const is_named_literal = extractStructLiteralType(self.base.source, node) != null;
             const is_anon_literal = !is_named_literal and hasAnonymousStructLiteralRHS(self.base.source, node);
@@ -447,6 +450,8 @@ fn walkForEdgesInner(allocator: std.mem.Allocator, io: std.Io, g: *Graph, source
         } else {
             log.trace("test not found in graph", &.{Field.string("name", test_name)});
         }
+    } else if (kid == k.variable_declaration) {
+        try processConstantInitEdges(allocator, io, g, source, ts_node, ctx, k, graph_index, phantom_mgr, wl, log);
     } else if (kid == k.struct_declaration or kid == k.enum_declaration or kid == k.union_declaration) {
         const parent = ts_node.parent();
         const name: ?[]const u8 = if (parent) |p|
@@ -489,7 +494,10 @@ fn scanSignatureForTypeRefs(allocator: std.mem.Allocator, sctx: *const ScanConte
 fn scanNodeForTypeRefs(allocator: std.mem.Allocator, sctx: *const ScanContext, node: ts.Node) !void {
     const kid = node.kindId();
     if (kid == sctx.k.identifier or kid == sctx.k.property_identifier) {
-        try handleTypeRef(allocator, sctx, node);
+        const name = ts_api.nodeText(sctx.base.source, node);
+        if (lookupAsType(sctx, name)) |target_id| {
+            _ = try sctx.base.emitEdge(allocator, target_id, .uses_type);
+        }
         return;
     }
     var i: u32 = 0;
@@ -508,7 +516,7 @@ fn handleCall(allocator: std.mem.Allocator, sctx: *const ScanContext, call_node:
             if (findFunctionByNameScoped(sctx.base.graph, callee_name, sctx.base.edge_ctx.scope_start, sctx.base.edge_ctx.scope_end, sctx.base.caller_parent_id, &sctx.base.graph_index.scope)) |callee_id| {
                 _ = try sctx.base.graph.addEdgeIfNew(allocator, .{ .source_id = sctx.base.caller_id, .target_id = callee_id, .edge_type = .calls });
             } else if (sctx.base.edge_ctx.findImportOrigin(callee_name)) |origin| {
-                if (origin.chain.len == 0 or !try sctx.base.resolveOriginCall(allocator, origin, &.{}, true)) {
+                if (origin.chain.len == 0 or !try sctx.base.resolveOriginCall(allocator, origin, &.{}, .calls)) {
                     const pos = call_node.startPoint();
                     try sctx.base.appendWorklist(allocator, pos, .definition, callee_name);
                 }
@@ -527,12 +535,12 @@ fn handleCall(allocator: std.mem.Allocator, sctx: *const ScanContext, call_node:
                 const leaf_name = chain[chain_len - 1];
 
                 const resolved_via_origin = if (sctx.base.edge_ctx.findImportOrigin(root_name)) |origin|
-                    try sctx.base.resolveOriginCall(allocator, origin, chain[1..chain_len], true)
+                    try sctx.base.resolveOriginCall(allocator, origin, chain[1..chain_len], .calls)
                 else
                     false;
 
                 const resolved_via_cross = !resolved_via_origin and if (sctx.base.type_env.cross_file.get(root_name)) |target_file_id|
-                    try sctx.base.addResolvedEdges(allocator, target_file_id, chain[1..chain_len], true)
+                    try sctx.base.addResolvedEdges(allocator, target_file_id, chain[1..chain_len], .calls)
                 else
                     false;
 
@@ -548,7 +556,7 @@ fn handleCall(allocator: std.mem.Allocator, sctx: *const ScanContext, call_node:
                         }
                     }
                 } else if (sctx.base.type_env.findParamOrigin(root_name)) |origin| {
-                    if (!try sctx.base.resolveOriginCall(allocator, origin, chain[1..chain_len], true)) {
+                    if (!try sctx.base.resolveOriginCall(allocator, origin, chain[1..chain_len], .calls)) {
                         const pos = leafIdentifierPos(field_expr, call_node, sctx.k);
                         try sctx.base.appendWorklist(allocator, pos, .definition, leaf_name);
                     }
@@ -752,18 +760,107 @@ fn resolveParamType(sctx: *const ScanContext, callee_id: NodeId, param_index: u3
     return null;
 }
 
-/// Emit uses_type for an identifier that resolves to a type in scope or cross-file.
-fn handleTypeRef(allocator: std.mem.Allocator, sctx: *const ScanContext, id_node: ts.Node) !void {
+/// Resolve `name` to a type node: try the caller's scope first, then the
+/// cross-file import + phantom registry. Returns null when the name does not
+/// designate a type.
+fn lookupAsType(sctx: *const ScanContext, name: []const u8) ?NodeId {
+    return findTypeByNameScoped(sctx.base.graph, name, sctx.base.edge_ctx.scope_start, sctx.base.edge_ctx.scope_end, sctx.base.caller_parent_id, &sctx.base.graph_index.scope) orelse
+        shared_lookup.findTypeCrossFile(sctx.base.graph, name, sctx.base.edge_ctx, &sctx.base.graph_index.scope, sctx.base.phantom_mgr);
+}
+
+/// Dispatch an identifier into the correct edge kind. If the name resolves to
+/// a type, emit `uses_type`. Otherwise, when the identifier sits in
+/// value-taking syntactic position, route to `emitValueUse`.
+fn handleIdentifier(allocator: std.mem.Allocator, sctx: *const ScanContext, id_node: ts.Node) !void {
     const name = ts_api.nodeText(sctx.base.source, id_node);
-    const target_id =
-        findTypeByNameScoped(sctx.base.graph, name, sctx.base.edge_ctx.scope_start, sctx.base.edge_ctx.scope_end, sctx.base.caller_parent_id, &sctx.base.graph_index.scope) orelse
-        shared_lookup.findTypeCrossFile(sctx.base.graph, name, sctx.base.edge_ctx, &sctx.base.graph_index.scope, sctx.base.phantom_mgr) orelse
+    if (lookupAsType(sctx, name)) |target_id| {
+        _ = try sctx.base.emitEdge(allocator, target_id, .uses_type);
         return;
-    const target_node = sctx.base.graph.getNode(target_id);
-    const is_own_child = if (target_node) |tn| tn.parent_id != null and tn.parent_id.? == sctx.base.caller_id else false;
-    if (!is_own_child) {
-        _ = try sctx.base.graph.addEdgeIfNew(allocator, .{ .source_id = sctx.base.caller_id, .target_id = target_id, .edge_type = .uses_type });
     }
+    if (!isValuePosition(id_node, sctx.k)) return;
+    _ = try sctx.base.emitValueUse(allocator, name, &.{});
+}
+
+/// True when `node` sits in a syntactic position that consumes its value:
+/// operand of an address-of unary, call argument, RHS of an assignment or
+/// variable declaration, or value of a return expression.
+fn isValuePosition(node: ts.Node, k: *const KindIds) bool {
+    const parent = node.parent() orelse return false;
+    const pk = parent.kindId();
+    if (pk == k.unary_expression) return unaryOpIs(parent, k.amp_op);
+    if (pk == k.arguments or pk == k.return_expression) return true;
+    if (pk == k.variable_declaration) return shared_scan.matchesParentField(parent, node, "value");
+    if (pk == k.assignment_expression) return shared_scan.matchesParentField(parent, node, "right");
+    return false;
+}
+
+/// True when `unary_node`'s leading operator token has the given kind id.
+fn unaryOpIs(unary_node: ts.Node, op_kid: u16) bool {
+    const first = unary_node.child(0) orelse return false;
+    return first.kindId() == op_kid;
+}
+
+/// Resolve a `field_expression` in value position to a function and emit
+/// `.uses_value`. Dispatches on the receiver shape: an anonymous
+/// `struct_declaration` literal, an in-scope import root, or a local
+/// variable bound through TypeEnv. Returns true when the dispatcher
+/// handled the field_expression.
+fn handleQualifiedValueUse(allocator: std.mem.Allocator, sctx: *const ScanContext, field_expr: ts.Node) !bool {
+    if (!isValuePosition(field_expr, sctx.k)) return false;
+
+    const receiver = field_expr.namedChild(0) orelse return false;
+
+    if (receiver.kindId() == sctx.k.struct_declaration) {
+        const field_name_node = field_expr.namedChild(1) orelse return false;
+        const field_kid = field_name_node.kindId();
+        if (field_kid != sctx.k.identifier and field_kid != sctx.k.property_identifier) return false;
+        const field_name = shared_ast.stripQuotedIdentifier(ts_api.nodeText(sctx.base.source, field_name_node));
+        return try emitAnonStructValueUse(allocator, sctx, receiver, field_name);
+    }
+
+    var chain: [cf.max_chain_depth][]const u8 = undefined;
+    const chain_len = cf.collectFieldExprChain(sctx.base.source, field_expr, &chain, sctx.k);
+    if (chain_len < 2) return false;
+    const root = chain[0];
+
+    if (sctx.base.edge_ctx.findImportOrigin(root)) |origin| {
+        _ = try sctx.base.resolveOriginCall(allocator, origin, chain[1..chain_len], .uses_value);
+        return true;
+    }
+
+    if (sctx.base.type_env.local.get(root)) |type_id| {
+        return try sctx.base.addResolvedEdges(allocator, type_id, chain[1..chain_len], .uses_value);
+    }
+
+    return false;
+}
+
+/// Locate a function declared inline as a direct child of an anonymous
+/// `struct_declaration` receiver and emit a `.uses_value` edge to it.
+fn emitAnonStructValueUse(
+    allocator: std.mem.Allocator,
+    sctx: *const ScanContext,
+    receiver: ts.Node,
+    field_name: []const u8,
+) !bool {
+    var i: u32 = 0;
+    while (i < receiver.childCount()) : (i += 1) {
+        const child = receiver.child(i) orelse continue;
+        if (child.kindId() != sctx.k.function_declaration) continue;
+        const child_name = shared_ast.getIdentifierName(sctx.base.source, child, sctx.k.identifier) orelse continue;
+        if (!std.mem.eql(u8, child_name, field_name)) continue;
+        const line: u32 = @intCast(child.startPoint().row + 1);
+        const fn_id = shared_lookup.findNodeByNameAndLine(
+            sctx.base.graph,
+            child_name,
+            line,
+            sctx.base.edge_ctx.scope_start,
+            sctx.base.edge_ctx.scope_end,
+            &.{.function},
+        ) orelse continue;
+        return try sctx.base.emitEdge(allocator, fn_id, .uses_value);
+    }
+    return false;
 }
 
 /// Emit uses_type and accesses_field for a variable_declaration whose RHS is a struct literal.
@@ -1270,9 +1367,7 @@ fn emitFieldTypeRef(allocator: std.mem.Allocator, fctx: *const FieldScanContext,
         findTypeByNameScoped(fctx.g, name, fctx.edge_ctx.scope_start, fctx.edge_ctx.scope_end, owner_parent_id, &fctx.graph_index.scope) orelse
         shared_lookup.findTypeCrossFile(fctx.g, name, fctx.edge_ctx, &fctx.graph_index.scope, fctx.phantom_mgr);
     if (target_id) |tid| {
-        const target_node = fctx.g.getNode(tid);
-        const is_own_child = if (target_node) |tn| tn.parent_id != null and tn.parent_id.? == fctx.owner_id else false;
-        if (!is_own_child) {
+        if (shared_scan.edgeCarriesNewInformation(fctx.g, fctx.owner_id, tid)) {
             _ = try fctx.g.addEdgeIfNew(allocator, .{ .source_id = fctx.owner_id, .target_id = tid, .edge_type = .uses_type });
         }
         if (fctx.field_id) |fid| {
@@ -1350,6 +1445,80 @@ fn findTypeByNameScoped(g: *const Graph, name: []const u8, scope_start: usize, s
 
 fn findFunctionByNameScoped(g: *const Graph, name: []const u8, scope_start: usize, scope_end: usize, caller_parent_id: ?NodeId, scope_index: *const ScopeIndex) ?NodeId {
     return shared_lookup.findFunctionByNameScoped(g, name, scope_start, scope_end, caller_parent_id, scope_index, &.{});
+}
+
+/// Minimal scan context for walking a constant's initializer with the shared
+/// `walkBody` machinery. Carries only the state needed to identify a value-
+/// position identifier and emit a `.uses_value` edge. The `dispatch` and
+/// `isBoundary` methods satisfy the contract of `shared_scan.walkBody`.
+const ConstInitScanContext = struct {
+    base: shared_scan.BaseScanContext,
+    k: *const KindIds,
+
+    pub fn isBoundary(self: *const @This(), node: ts.Node) bool {
+        const kid = node.kindId();
+        return kid == self.k.function_declaration or kid == self.k.test_declaration;
+    }
+
+    pub fn dispatch(self: *const @This(), allocator: std.mem.Allocator, node: ts.Node, depth: u32) !void {
+        _ = depth;
+        const kid = node.kindId();
+        if (kid != self.k.identifier and kid != self.k.property_identifier) return;
+        if (!isValuePosition(node, self.k)) return;
+        const name = ts_api.nodeText(self.base.source, node);
+        _ = try self.base.emitValueUse(allocator, name, &.{});
+    }
+};
+
+/// Match a constant declaration to its graph node and scan its initializer
+/// for value-position identifiers that name in-scope functions. Each match
+/// becomes a `.uses_value` edge from the constant to the function.
+fn processConstantInitEdges(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    g: *Graph,
+    source: []const u8,
+    var_decl: ts.Node,
+    ctx: *const EdgeContext,
+    k: *const KindIds,
+    graph_index: *const GraphIndex,
+    phantom_mgr: *const PhantomManager,
+    wl: *LspWorklist,
+    log: Logger,
+) !void {
+    const name = ast.getIdentifierName(source, var_decl, k) orelse return;
+    const decl_line = var_decl.startPoint().row + 1;
+    const const_id = shared_lookup.findNodeByNameAndLine(g, name, decl_line, ctx.scope_start, ctx.scope_end, &.{.constant}) orelse return;
+    const const_parent_id = shared_scan.BaseScanContext.parentOf(g, const_id);
+
+    var type_env = TypeEnv{};
+    defer type_env.deinit(allocator);
+
+    const sctx = ConstInitScanContext{
+        .base = .{
+            .graph = g,
+            .source = source,
+            .caller_id = const_id,
+            .caller_parent_id = const_parent_id,
+            .fn_node = var_decl,
+            .edge_ctx = ctx,
+            .type_env = &type_env,
+            .graph_index = graph_index,
+            .phantom_mgr = phantom_mgr,
+            .wl = wl,
+            .io = io,
+            .log = log,
+            .resolve = .{
+                .graph_index = graph_index,
+                .io = io,
+                .log = log,
+                .return_type_resolver = cf.return_type_resolver,
+                .find_in_type_scope = null,
+            },
+        },
+        .k = k,
+    };
+    try shared_scan.walkBody(ConstInitScanContext, allocator, &sctx, var_decl, 0);
 }
 
 /// Find a test_def node by name within the given scope range.

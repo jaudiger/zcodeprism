@@ -551,7 +551,7 @@ pub fn renderEdges(
 fn mermaidArrow(et: EdgeType) []const u8 {
     return switch (et) {
         .calls, .uses_type, .accesses_field => "-->",
-        .imports => "-.->",
+        .imports, .uses_value => "-.->",
         .implements => "==>",
         .similar_to, .exports, .contains => "-->",
     };

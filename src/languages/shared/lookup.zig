@@ -125,26 +125,38 @@ pub fn findTypeByNameScoped(graph: *const Graph, name: []const u8, scope_start: 
     return sole_match;
 }
 
-/// Find a function node by name and line number within a scope range.
-/// Tries .function kind first, then falls back to type containers
-/// (for generic type-returning functions stored as type_def).
-pub fn findFunctionByNameAndLine(graph: *const Graph, name: []const u8, line: u32, scope_start: usize, scope_end: usize) ?NodeId {
+/// Find a graph node by name and line within a scope range, optionally
+/// restricted to a set of kinds. Pass an empty slice to match any kind.
+/// Returns the first match in scope order.
+pub fn findNodeByNameAndLine(
+    graph: *const Graph,
+    name: []const u8,
+    line: u32,
+    scope_start: usize,
+    scope_end: usize,
+    kinds: []const NodeKind,
+) ?NodeId {
     const items = graph.nodes.items;
     const end = @min(scope_end, items.len);
     for (items[scope_start..end], scope_start..) |n, i| {
-        if (n.kind == .function and std.mem.eql(u8, n.name, name) and
-            n.line_start != null and n.line_start.? == line)
-        {
-            return @enumFromInt(i);
-        }
+        if (n.line_start == null or n.line_start.? != line) continue;
+        if (!std.mem.eql(u8, n.name, name)) continue;
+        if (kinds.len == 0) return @enumFromInt(i);
+        for (kinds) |k| if (n.kind == k) return @enumFromInt(i);
     }
+    return null;
+}
+
+/// Find a function node by name and line. Prefers `.function`; falls back to
+/// type containers.
+pub fn findFunctionByNameAndLine(graph: *const Graph, name: []const u8, line: u32, scope_start: usize, scope_end: usize) ?NodeId {
+    if (findNodeByNameAndLine(graph, name, line, scope_start, scope_end, &.{.function})) |id| return id;
+    const items = graph.nodes.items;
+    const end = @min(scope_end, items.len);
     for (items[scope_start..end], scope_start..) |n, i| {
-        if (n.kind.isTypeContainer() and
-            std.mem.eql(u8, n.name, name) and
-            n.line_start != null and n.line_start.? == line)
-        {
-            return @enumFromInt(i);
-        }
+        if (n.line_start == null or n.line_start.? != line) continue;
+        if (!std.mem.eql(u8, n.name, name)) continue;
+        if (n.kind.isTypeContainer()) return @enumFromInt(i);
     }
     return null;
 }

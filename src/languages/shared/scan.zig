@@ -2,11 +2,14 @@ const std = @import("std");
 const ts = @import("tree-sitter");
 const graph_mod = @import("../../core/graph.zig");
 const types_mod = @import("../../core/types.zig");
+const EdgeType = types_mod.EdgeType;
+const NodeKind = types_mod.NodeKind;
 const graph_index_mod = @import("../../core/graph_index.zig");
 const phantom_mod = @import("../../core/phantom.zig");
 const logging = @import("../../logging.zig");
 const shared_types = @import("types.zig");
 const shared_resolve = @import("resolve.zig");
+const shared_lookup = @import("lookup.zig");
 const type_env_mod = @import("type_env.zig");
 const worklist_mod = @import("../../lsp/worklist.zig");
 
@@ -73,7 +76,7 @@ pub const BaseScanContext = struct {
         allocator: std.mem.Allocator,
         target_file_id: NodeId,
         chain: []const []const u8,
-        is_call: bool,
+        terminal_edge: ?EdgeType,
     ) !bool {
         return shared_resolve.addResolvedEdges(
             allocator,
@@ -81,7 +84,7 @@ pub const BaseScanContext = struct {
             self.caller_id,
             target_file_id,
             chain,
-            is_call,
+            terminal_edge,
             &self.resolve,
         );
     }
@@ -91,7 +94,7 @@ pub const BaseScanContext = struct {
         allocator: std.mem.Allocator,
         origin: SymbolOrigin,
         call_chain: []const []const u8,
-        is_call: bool,
+        terminal_edge: ?EdgeType,
     ) !bool {
         return shared_resolve.resolveOriginCall(
             allocator,
@@ -99,11 +102,102 @@ pub const BaseScanContext = struct {
             self.caller_id,
             origin,
             call_chain,
-            is_call,
+            terminal_edge,
             &self.resolve,
         );
     }
+
+    /// True when an edge from `caller_id` to `target_id` is neither a
+    /// self-reference nor a direct parent->child relation.
+    pub fn shouldEmitEdgeTo(self: *const BaseScanContext, target_id: NodeId) bool {
+        return edgeCarriesNewInformation(self.graph, self.caller_id, target_id);
+    }
+
+    /// Add an edge from `caller_id` to `target_id` of the given type, but only
+    /// when `shouldEmitEdgeTo` accepts the pair. Returns whether the write was
+    /// attempted (regardless of whether the edge was new in the graph).
+    pub fn emitEdge(
+        self: *const BaseScanContext,
+        allocator: std.mem.Allocator,
+        target_id: NodeId,
+        edge_type: EdgeType,
+    ) !bool {
+        if (!self.shouldEmitEdgeTo(target_id)) return false;
+        _ = try self.graph.addEdgeIfNew(allocator, .{
+            .source_id = self.caller_id,
+            .target_id = target_id,
+            .edge_type = edge_type,
+        });
+        return true;
+    }
+
+    /// Resolve `name` to a function in scope (or via cross-file imports) and
+    /// emit a `.uses_value` edge from the caller. `extra_kinds` is forwarded
+    /// to scoped function lookup. Returns true if any edge was emitted.
+    pub fn emitValueUse(
+        self: *const BaseScanContext,
+        allocator: std.mem.Allocator,
+        name: []const u8,
+        extra_kinds: []const NodeKind,
+    ) !bool {
+        if (shared_lookup.findFunctionByNameScoped(
+            self.graph,
+            name,
+            self.edge_ctx.scope_start,
+            self.edge_ctx.scope_end,
+            self.caller_parent_id,
+            &self.graph_index.scope,
+            extra_kinds,
+        )) |fn_id| {
+            const fn_node = self.graph.getNode(fn_id) orelse return false;
+            if (fn_node.kind != .function) return false;
+            return try self.emitEdge(allocator, fn_id, .uses_value);
+        }
+        if (self.edge_ctx.findImportOrigin(name)) |origin| {
+            if (origin.chain.len == 0) return false;
+            return try self.resolveOriginCall(allocator, origin, &.{}, .uses_value);
+        }
+        return false;
+    }
 };
+
+/// True when `node`'s parent has one of the given kind ids.
+pub fn parentKindIsAny(node: ts.Node, kinds: []const u16) bool {
+    const parent = node.parent() orelse return false;
+    const pk = parent.kindId();
+    for (kinds) |kid| if (pk == kid) return true;
+    return false;
+}
+
+/// True when `parent.childByFieldName(field_name)` resolves to `child`.
+/// When the grammar does not expose the named field, falls back to a
+/// positional check: `child` appears after the first child whose kind name
+/// ends with `=` (covering `=`, `+=`, `-=`, etc.).
+pub fn matchesParentField(parent: ts.Node, child: ts.Node, field_name: []const u8) bool {
+    if (parent.childByFieldName(field_name)) |value_child| {
+        return value_child.startByte() == child.startByte() and value_child.endByte() == child.endByte();
+    }
+    var past_assign = false;
+    var i: u32 = 0;
+    while (i < parent.childCount()) : (i += 1) {
+        const c = parent.child(i) orelse continue;
+        if (!past_assign) {
+            if (std.mem.endsWith(u8, c.kind(), "=")) past_assign = true;
+            continue;
+        }
+        if (c.startByte() == child.startByte() and c.endByte() == child.endByte()) return true;
+    }
+    return false;
+}
+
+/// True when `source_id` and `target_id` are distinct nodes and `target_id`
+/// is not a direct child of `source_id`.
+pub fn edgeCarriesNewInformation(graph: *const graph_mod.Graph, source_id: NodeId, target_id: NodeId) bool {
+    if (target_id == source_id) return false;
+    const target_node = graph.getNode(target_id) orelse return false;
+    if (target_node.parent_id) |pid| if (pid == source_id) return false;
+    return true;
+}
 
 /// Generic post-order body walker with a depth cap.
 ///

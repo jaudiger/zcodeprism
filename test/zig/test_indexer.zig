@@ -1265,3 +1265,39 @@ test "no zig files produces zero directory nodes" {
     try std.testing.expectEqual(@as(usize, 0), helpers.countNodesByKind(&g, .directory));
     try std.testing.expectEqual(@as(usize, 0), g.nodeCount());
 }
+
+test "uses_value edge for cross-file function passed by qualified name" {
+    // Arrange
+    var g = Graph.init("/tmp/project");
+    defer g.deinit(std.testing.allocator);
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try writeFixtureFiles(std.testing.io, tmp_dir.dir, &.{
+        .{ .sub_path = "provider.zig", .data =
+        \\pub fn helper(_: u8) bool { return true; }
+        },
+        .{ .sub_path = "consumer.zig", .data =
+        \\const provider = @import("provider.zig");
+        \\fn runner(_: *const fn (u8) bool) void {}
+        \\pub fn invokes() void {
+        \\    runner(provider.helper);
+        \\}
+        },
+    });
+    const project_root = try tmp_dir.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(project_root);
+
+    // Act
+    _ = indexDirectory(IndexAllocators.single(std.testing.allocator), std.testing.io, project_root, &g, null, .{}) catch |err| return err;
+
+    // Assert
+    var helper_id: ?NodeId = null;
+    var invokes_id: ?NodeId = null;
+    for (g.nodes.items, 0..) |n, i| {
+        if (n.kind == .function and std.mem.eql(u8, n.name, "helper")) helper_id = @enumFromInt(i);
+        if (n.kind == .function and std.mem.eql(u8, n.name, "invokes")) invokes_id = @enumFromInt(i);
+    }
+    try std.testing.expect(helper_id != null);
+    try std.testing.expect(invokes_id != null);
+    try std.testing.expect(helpers.hasEdge(&g, invokes_id.?, helper_id.?, .uses_value));
+}
