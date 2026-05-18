@@ -16,6 +16,7 @@ const shared_types = @import("../shared/types.zig");
 const shared_ast = @import("../shared/ast.zig");
 const type_env_mod = @import("../shared/type_env.zig");
 const worklist_mod = @import("../../lsp/worklist.zig");
+const zig_meta = @import("meta.zig");
 
 const LspWorklist = worklist_mod.LspWorklist;
 
@@ -338,7 +339,7 @@ fn buildTypeEnvFromBlock(
                 if (cond_chain_len >= 2) {
                     const root = cond_chain[0];
                     if (type_env.local.get(root)) |root_tid| {
-                        if (resolveChainToType(g, root_tid, cond_chain[1..cond_chain_len], field_types, &graph_index.scope)) |resolved_tid| {
+                        if (resolveChainToType(g, root_tid, cond_chain[1..cond_chain_len], field_types, &graph_index.scope, ctx.scope_start, ctx.scope_end, caller_parent_id)) |resolved_tid| {
                             try type_env.bindLocal(allocator, cap, resolved_tid);
                         }
                     }
@@ -585,7 +586,9 @@ fn handleCall(allocator: std.mem.Allocator, sctx: *const ScanContext, call_node:
 }
 
 /// Emit accesses_field for a field_expression whose receiver is in type_env.
-/// Appends a type_definition worklist entry when the receiver type is unknown.
+/// When the receiver type is a comptime switch alias, emits one edge per
+/// candidate type that owns a matching field. Appends a type_definition
+/// worklist entry when the receiver type is unknown.
 fn handleFieldAccess(allocator: std.mem.Allocator, sctx: *const ScanContext, field_expr: ts.Node) !void {
     var chain: [cf.max_chain_depth][]const u8 = undefined;
     const chain_len = cf.collectFieldExprChain(sctx.base.source, field_expr, &chain, sctx.k);
@@ -598,12 +601,55 @@ fn handleFieldAccess(allocator: std.mem.Allocator, sctx: *const ScanContext, fie
         return;
     };
     const target_type_id = if (chain_len > 2)
-        resolveChainToType(sctx.base.graph, type_id, chain[1 .. chain_len - 1], sctx.field_types, &sctx.base.graph_index.scope) orelse return
+        resolveChainToType(
+            sctx.base.graph,
+            type_id,
+            chain[1 .. chain_len - 1],
+            sctx.field_types,
+            &sctx.base.graph_index.scope,
+            sctx.base.edge_ctx.scope_start,
+            sctx.base.edge_ctx.scope_end,
+            sctx.base.caller_parent_id,
+        ) orelse return
     else
         type_id;
+    if (try emitFieldAccessOverAlias(allocator, sctx, target_type_id, field_name)) return;
     if (shared_lookup.findFieldByName(sctx.base.graph, target_type_id, field_name, &sctx.base.graph_index.scope)) |field_id| {
         _ = try sctx.base.graph.addEdgeIfNew(allocator, .{ .source_id = sctx.base.caller_id, .target_id = field_id, .edge_type = .accesses_field });
     }
+}
+
+/// If `scope_id` is a comptime switch alias, emit `.accesses_field` edges
+/// to the matching field on each candidate type. Returns true when the
+/// node was a comptime alias, false otherwise.
+fn emitFieldAccessOverAlias(
+    allocator: std.mem.Allocator,
+    sctx: *const ScanContext,
+    scope_id: NodeId,
+    field_name: []const u8,
+) !bool {
+    const node = sctx.base.graph.nodes.items[@intFromEnum(scope_id)];
+    if (node.kind != .constant) return false;
+    const zm = zig_meta.metaOf(&node) orelse return false;
+    const arm_names = zm.comptime_switch_arm_names orelse return false;
+    if (arm_names.len == 0) return false;
+
+    for (arm_names) |arm_name| {
+        if (std.mem.eql(u8, arm_name, node.name)) continue;
+        const arm_type_id = findTypeByNameScoped(
+            sctx.base.graph,
+            arm_name,
+            sctx.base.edge_ctx.scope_start,
+            sctx.base.edge_ctx.scope_end,
+            sctx.base.caller_parent_id,
+            &sctx.base.graph_index.scope,
+        ) orelse continue;
+        if (arm_type_id == scope_id) continue;
+        if (shared_lookup.findFieldByName(sctx.base.graph, arm_type_id, field_name, &sctx.base.graph_index.scope)) |field_id| {
+            _ = try sctx.base.graph.addEdgeIfNew(allocator, .{ .source_id = sctx.base.caller_id, .target_id = field_id, .edge_type = .accesses_field });
+        }
+    }
+    return true;
 }
 
 /// Resolve a bare enum literal (`.variant`) to its parent enum type and emit
@@ -896,6 +942,9 @@ fn handleReturnStructLiteral(allocator: std.mem.Allocator, sctx: *const ScanCont
     }
 }
 
+/// Maximum recursion depth for comptime-alias expansion.
+const max_alias_depth: u8 = 4;
+
 /// Traverse a chain starting from a known type scope, following field -> type
 /// transitions via the field_types map. Returns true if the leaf function was
 /// found and a calls edge was emitted.
@@ -905,8 +954,22 @@ fn resolveLocalChain(
     start_type_id: NodeId,
     chain: []const []const u8,
 ) !bool {
+    return resolveLocalChainWithDepth(allocator, sctx, start_type_id, chain, 0);
+}
+
+fn resolveLocalChainWithDepth(
+    allocator: std.mem.Allocator,
+    sctx: *const ScanContext,
+    start_type_id: NodeId,
+    chain: []const []const u8,
+    depth: u8,
+) !bool {
     var current_scope = start_type_id;
     for (chain, 0..) |segment, seg_idx| {
+        if (try tryExpandComptimeAlias(allocator, sctx, current_scope, chain[seg_idx..], depth)) |any_resolved| {
+            return any_resolved;
+        }
+
         const is_last = seg_idx == chain.len - 1;
         const matched_id = findChildByName(sctx.base.graph, &sctx.base.graph_index.scope, current_scope, segment) orelse return false;
         const matched_node = sctx.base.graph.nodes.items[@intFromEnum(matched_id)];
@@ -940,18 +1003,80 @@ fn resolveLocalChain(
     return false;
 }
 
+/// If `scope_id` names a `.constant` carrying `comptime_switch_arm_names`,
+/// fan out the remaining `chain` over each candidate type and emit `.calls`
+/// edges for every leaf that resolves. Returns null when the node is not a
+/// comptime alias, true when at least one candidate resolved the chain, and
+/// false when no candidate matched.
+fn tryExpandComptimeAlias(
+    allocator: std.mem.Allocator,
+    sctx: *const ScanContext,
+    scope_id: NodeId,
+    chain: []const []const u8,
+    depth: u8,
+) error{OutOfMemory}!?bool {
+    if (chain.len == 0) return null;
+    if (depth >= max_alias_depth) return null;
+    const node = sctx.base.graph.nodes.items[@intFromEnum(scope_id)];
+    if (node.kind != .constant) return null;
+    const zm = zig_meta.metaOf(&node) orelse return null;
+    const arm_names = zm.comptime_switch_arm_names orelse return null;
+    if (arm_names.len == 0) return null;
+
+    var any_resolved = false;
+    for (arm_names) |arm_name| {
+        if (std.mem.eql(u8, arm_name, node.name)) continue;
+        const arm_type_id = findTypeByNameScoped(
+            sctx.base.graph,
+            arm_name,
+            sctx.base.edge_ctx.scope_start,
+            sctx.base.edge_ctx.scope_end,
+            sctx.base.caller_parent_id,
+            &sctx.base.graph_index.scope,
+        ) orelse continue;
+        if (arm_type_id == scope_id) continue;
+        if (try resolveLocalChainWithDepth(allocator, sctx, arm_type_id, chain, depth + 1)) {
+            any_resolved = true;
+        }
+    }
+    return any_resolved;
+}
+
 /// Traverse a chain from a known type scope to resolve the final type.
 /// Used by if-capture and field access to determine the type at the end
-/// of a multi-segment field expression.
+/// of a multi-segment field expression. When the walk crosses through a
+/// comptime switch alias with remaining segments to resolve, fans out
+/// across each candidate type and returns the first whose subchain
+/// resolves to a type.
 fn resolveChainToType(
     g: *const Graph,
     start_type_id: NodeId,
     chain: []const []const u8,
     field_types: *const NodeTypeMap,
-    scope_index: *const @import("../../core/scope_index.zig").ScopeIndex,
+    scope_index: *const ScopeIndex,
+    scope_start: usize,
+    scope_end: usize,
+    caller_parent_id: ?NodeId,
+) ?NodeId {
+    return resolveChainToTypeWithDepth(g, start_type_id, chain, field_types, scope_index, scope_start, scope_end, caller_parent_id, 0);
+}
+
+fn resolveChainToTypeWithDepth(
+    g: *const Graph,
+    start_type_id: NodeId,
+    chain: []const []const u8,
+    field_types: *const NodeTypeMap,
+    scope_index: *const ScopeIndex,
+    scope_start: usize,
+    scope_end: usize,
+    caller_parent_id: ?NodeId,
+    depth: u8,
 ) ?NodeId {
     var current = start_type_id;
-    for (chain) |segment| {
+    for (chain, 0..) |segment, seg_idx| {
+        if (tryExpandComptimeAliasToType(g, current, chain[seg_idx..], field_types, scope_index, scope_start, scope_end, caller_parent_id, depth)) |resolved| {
+            return resolved;
+        }
         const child_id = findChildByName(g, scope_index, current, segment) orelse return null;
         const child_node = g.nodes.items[@intFromEnum(child_id)];
         if (child_node.kind.isTypeContainer()) {
@@ -965,6 +1090,40 @@ fn resolveChainToType(
         }
     }
     return current;
+}
+
+/// If `scope_id` names a `.constant` carrying `comptime_switch_arm_names`,
+/// fan out the remaining `chain` over each candidate type and return the
+/// first candidate whose subchain resolves to a type. Returns null when
+/// the node is not a comptime alias or no candidate resolved the chain.
+fn tryExpandComptimeAliasToType(
+    g: *const Graph,
+    scope_id: NodeId,
+    chain: []const []const u8,
+    field_types: *const NodeTypeMap,
+    scope_index: *const ScopeIndex,
+    scope_start: usize,
+    scope_end: usize,
+    caller_parent_id: ?NodeId,
+    depth: u8,
+) ?NodeId {
+    if (chain.len == 0) return null;
+    if (depth >= max_alias_depth) return null;
+    const node = g.nodes.items[@intFromEnum(scope_id)];
+    if (node.kind != .constant) return null;
+    const zm = zig_meta.metaOf(&node) orelse return null;
+    const arm_names = zm.comptime_switch_arm_names orelse return null;
+    if (arm_names.len == 0) return null;
+
+    for (arm_names) |arm_name| {
+        if (std.mem.eql(u8, arm_name, node.name)) continue;
+        const arm_type_id = findTypeByNameScoped(g, arm_name, scope_start, scope_end, caller_parent_id, scope_index) orelse continue;
+        if (arm_type_id == scope_id) continue;
+        if (resolveChainToTypeWithDepth(g, arm_type_id, chain, field_types, scope_index, scope_start, scope_end, caller_parent_id, depth + 1)) |resolved| {
+            return resolved;
+        }
+    }
+    return null;
 }
 
 /// Find a direct child of scope_id with the given name.

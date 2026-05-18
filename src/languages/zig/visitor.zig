@@ -251,7 +251,13 @@ fn processVariableDecl(allocator: std.mem.Allocator, io: std.Io, ctx: *const Vis
     else
         null;
 
-    const has_zig_meta = is_mutable or is_comptime or is_packed or is_extern or comptime_conditional or error_set_names != null;
+    const switch_arm_names: ?[]const []const u8 = if (kind == .constant and comptime_conditional)
+        try ast.extractSwitchArmTypeNames(allocator, ctx.g, ctx.source, ts_node, ctx.k)
+    else
+        null;
+
+    const has_zig_meta = is_mutable or is_comptime or is_packed or is_extern or comptime_conditional or
+        error_set_names != null or switch_arm_names != null;
     const lang_meta_ptr = if (has_zig_meta) try zig_meta.allocAndAttach(allocator, ctx.g, .{
         .is_mutable = is_mutable,
         .is_comptime = is_comptime,
@@ -259,6 +265,7 @@ fn processVariableDecl(allocator: std.mem.Allocator, io: std.Io, ctx: *const Vis
         .is_extern = is_extern,
         .comptime_conditional = comptime_conditional,
         .error_set_names = error_set_names,
+        .comptime_switch_arm_names = switch_arm_names,
     }) else null;
 
     // For import declarations, store the import path extracted from the AST.

@@ -15,6 +15,7 @@ pub const ZigMeta = struct {
     error_set_names: ?[]const []const u8 = null,
     inferred_errors: ?[]const []const u8 = null,
     comptime_conditional: bool = false,
+    comptime_switch_arm_names: ?[]const []const u8 = null,
 };
 
 /// Tag byte that identifies a Zig payload in the binary encoding.

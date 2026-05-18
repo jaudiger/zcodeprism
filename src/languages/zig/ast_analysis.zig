@@ -1,4 +1,5 @@
 const std = @import("std");
+const graph_mod = @import("../../core/graph.zig");
 const types = @import("../../core/types.zig");
 const shared_types = @import("../shared/types.zig");
 const shared_ast = @import("../shared/ast.zig");
@@ -6,6 +7,7 @@ const ts = @import("tree-sitter");
 const ts_api = @import("../../parser/tree_sitter_api.zig");
 const pc = @import("parse_context.zig");
 
+const Graph = graph_mod.Graph;
 const NodeKind = types.NodeKind;
 const Visibility = types.Visibility;
 const KindIds = pc.KindIds;
@@ -378,4 +380,87 @@ pub fn classifyRecursive(source: []const u8, ts_node: ts.Node, k: *const KindIds
         classifyRecursive(source, child, k, result, depth + 1);
         if (result.kind != .constant) return;
     }
+}
+
+/// Collect PascalCase bare-identifier RHSs from the switch arms of a
+/// `variable_declaration` whose value is a direct `switch_expression`.
+/// Skips arms whose RHS is not a plain identifier. The returned slices
+/// borrow into a graph-owned buffer. Returns null when the RHS is not a
+/// switch or no arm qualifies.
+pub fn extractSwitchArmTypeNames(
+    allocator: std.mem.Allocator,
+    g: *Graph,
+    source: []const u8,
+    var_decl: ts.Node,
+    k: *const KindIds,
+) error{OutOfMemory}!?[]const []const u8 {
+    const sw_node = findRhsSwitch(var_decl, k) orelse return null;
+
+    var count: usize = 0;
+    var flat_len: usize = 0;
+    var i: u32 = 0;
+    while (i < sw_node.namedChildCount()) : (i += 1) {
+        const case = sw_node.namedChild(i) orelse continue;
+        if (case.kindId() != k.switch_case) continue;
+        const value = lastNamedChild(case) orelse continue;
+        if (value.kindId() != k.identifier) continue;
+        const end = value.endByte();
+        const start = value.startByte();
+        if (end <= start or end > source.len) continue;
+        if (!isPascalIdentifier(source[start..end])) continue;
+        count += 1;
+        flat_len += end - start;
+    }
+    if (count == 0) return null;
+
+    const flat_buf = try allocator.alloc(u8, flat_len);
+    errdefer allocator.free(flat_buf);
+    const slices = try allocator.alloc([]const u8, count);
+    errdefer allocator.free(slices);
+
+    var pos: usize = 0;
+    var si: usize = 0;
+    i = 0;
+    while (i < sw_node.namedChildCount()) : (i += 1) {
+        const case = sw_node.namedChild(i) orelse continue;
+        if (case.kindId() != k.switch_case) continue;
+        const value = lastNamedChild(case) orelse continue;
+        if (value.kindId() != k.identifier) continue;
+        const end = value.endByte();
+        const start = value.startByte();
+        if (end <= start or end > source.len) continue;
+        if (!isPascalIdentifier(source[start..end])) continue;
+        const len = end - start;
+        @memcpy(flat_buf[pos..][0..len], source[start..end]);
+        slices[si] = flat_buf[pos..][0..len];
+        pos += len;
+        si += 1;
+    }
+    std.debug.assert(pos == flat_len);
+    std.debug.assert(si == count);
+
+    try g.addOwnedBuffer(allocator, flat_buf);
+    try g.addOwnedSlice(allocator, []const u8, slices);
+
+    return slices;
+}
+
+fn findRhsSwitch(var_decl: ts.Node, k: *const KindIds) ?ts.Node {
+    var i: u32 = 0;
+    while (i < var_decl.namedChildCount()) : (i += 1) {
+        const child = var_decl.namedChild(i) orelse continue;
+        if (child.kindId() == k.switch_expression) return child;
+    }
+    return null;
+}
+
+fn lastNamedChild(node: ts.Node) ?ts.Node {
+    const count = node.namedChildCount();
+    if (count == 0) return null;
+    return node.namedChild(count - 1);
+}
+
+fn isPascalIdentifier(text: []const u8) bool {
+    if (text.len == 0) return false;
+    return text[0] >= 'A' and text[0] <= 'Z';
 }
