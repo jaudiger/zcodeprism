@@ -67,6 +67,7 @@ happens at serve time.
 | Command | Creates |
 |---------|---------|
 | `zcodeprism init` | `.zcodeprism.zon` + `.zcodeprism/` (empty directory) |
+| `zcodeprism init --workspace` | `zcodeprism-workspace.zon` only (no project config, no data dir) |
 | `zcodeprism index` | `graph.bin` or `graph.jsonl` |
 | `zcodeprism snapshot --name X` | `.zcodeprism/snapshots/X.bin` |
 
@@ -75,7 +76,7 @@ happens at serve time.
 | Command | Behavior |
 |---------|----------|
 | `zcodeprism index` | Overwrites the graph file |
-| `zcodeprism serve --watch` | Re-indexes automatically on file changes |
+| `zcodeprism serve` | Re-indexes automatically on file changes (built-in watcher) |
 
 ### Deletion
 

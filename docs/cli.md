@@ -16,24 +16,36 @@ zcodeprism <command> [options]
 - Errors go to stderr, results go to stdout
 - `-v` / `-vv` / `-vvv` increases log verbosity on stderr
 
+## Global Flags
+
+| Flag | Description |
+|------|-------------|
+| `--project-root <path>` | Run as if invoked from this directory (chdir before dispatch) |
+| `-v`, `-vv`, `-vvv` | Increase log verbosity on stderr |
+
 ## Commands
 
 ### `zcodeprism init`
 
 Initializes a ZCodePrism project in the current directory.
 
-Creates:
+Without `--workspace`, creates:
 - `.zcodeprism.zon` (configuration file with defaults)
-- `.zcodeprism/` (data directory)
+- `.zcodeprism/` (empty data directory)
+
+With `--workspace`, writes `zcodeprism-workspace.zon` only. The two
+modes are mutually exclusive: workspace-template init does not create
+`.zcodeprism.zon` or the data directory.
 
 | Flag | Description |
 |------|-------------|
-| `--force` | Overwrite existing configuration |
-| `--workspace <path>` | Also write a workspace config template |
+| `--force` | Overwrite the file that would be created |
+| `--workspace <path>` | Write a workspace template instead of a project config (argument is accepted but currently ignored) |
 
 ```
 zcodeprism init
 zcodeprism init --force
+zcodeprism init --workspace .
 ```
 
 ### `zcodeprism index`
@@ -47,12 +59,11 @@ a full re-index from scratch.
 
 Output (stdout):
 ```
-indexed 42 files (318 functions, 56 types, 23 enums, 44 tests)
-languages: zig
-externals: 34 stdlib symbols, 12 dependency symbols (3 packages)
-source_hash: a7f3b2c9e1d4
-duration: 1.2s
+indexed 42 files (4218 nodes, 1033 edges)
 ```
+
+A trailing summary from the LSP enricher is printed when LSP is
+enabled.
 
 ```
 zcodeprism index
@@ -61,11 +72,18 @@ zcodeprism index -v
 
 ### `zcodeprism status`
 
-Shows the current graph state and statistics.
+Loads the saved graph and prints summary counters.
 
 | Flag | Description |
 |------|-------------|
 | `--workspace <path>` | Show aggregated status for a workspace |
+
+Output (stdout):
+```
+nodes: 4218 (42 files, 318 functions, 79 types)
+edges: 1033
+source_hash: a7f3b2c9e1d400112233445566778899
+```
 
 ```
 zcodeprism status
@@ -78,22 +96,27 @@ Starts the MCP server (JSON-RPC 2.0 over stdio, read-only).
 
 | Flag | Description |
 |------|-------------|
-| `--watch` | Re-index automatically when source files change |
-| `--budget <MB>` | Override memory budget |
 | `--workspace <path>` | Load a multi-project workspace |
 
-In single-project mode, the server loads the graph from `.zcodeprism/`
-at startup. With `--watch`, it re-indexes on file changes (500ms
-debounce).
+The stdio loop opens immediately so the MCP `initialize` handshake
+completes without waiting for indexing. The initial graph is empty;
+indexing runs in a background thread and a `graph/updated` notification
+fires when it lands. Tools called before the first index completes
+return empty results.
 
-In workspace mode, the server loads each project's graph and assembles
-them under a virtual root node. Node IDs are prefixed with the project
-name.
+A file watcher re-indexes automatically on source changes (500ms
+debounce). Each re-index emits another `graph/updated` notification.
+
+In single-project mode, the background thread runs the indexer plus
+LSP enrichment over the project root.
+
+In workspace mode, the background thread loads each project's saved
+graph and assembles them under a virtual root node. Node IDs are
+prefixed with the project name.
 
 ```
 zcodeprism serve
-zcodeprism serve --watch
-zcodeprism serve --workspace zcodeprism-workspace.zon --watch
+zcodeprism serve --workspace zcodeprism-workspace.zon
 ```
 
 ### `zcodeprism export`
@@ -145,11 +168,7 @@ zcodeprism snapshot --name before-refactor
 
 Semantic diff between two snapshots.
 
-Arguments: two snapshot tag names.
-
-| Flag | Description |
-|------|-------------|
-| `--output <path>` | Write to file instead of stdout |
+Arguments: two snapshot tag names. Output is written to stdout.
 
 The diff operates on the binary graph data, comparing entities by
 identity key (kind, name, file path). It detects additions, removals,
@@ -161,7 +180,7 @@ zcodeprism diff before-refactor after-refactor
 
 ### `zcodeprism --version`
 
-Prints the version string.
+Prints the version string. Also accepted as a subcommand: `zcodeprism version`.
 
 ```
 zcodeprism --version
@@ -169,7 +188,9 @@ zcodeprism --version
 
 ### `zcodeprism --help`
 
-Prints usage information.
+Prints usage information. `-h` is an accepted alias, and `zcodeprism help`
+works as a subcommand. Running `zcodeprism` with no arguments also
+prints usage.
 
 ```
 zcodeprism --help

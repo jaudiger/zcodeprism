@@ -105,8 +105,8 @@ Stored as string tag names via StringRef (not numeric):
 ### Edge Type Values
 
 Stored as string tag names via StringRef (not numeric):
-`accesses_field`, `calls`, `imports`, `uses_type`, `similar_to`,
-`exports`, `implements`, `contains`.
+`accesses_field`, `calls`, `imports`, `uses_value`, `uses_type`,
+`similar_to`, `exports`, `implements`, `contains`.
 
 ## Edge Table
 

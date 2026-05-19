@@ -61,7 +61,7 @@ part of the parseable graph. The order is fixed.
 | Line | Format | Example |
 |------|--------|---------|
 | 1 | `# zcodeprism graph -- {project_name}` | `# zcodeprism graph -- myproject` |
-| 2 | `# {N} files, {N} functions, {N} types, ...` | `# 42 files, 318 functions, 56 types, 23 enums, 89 constants, 44 tests, 46 externals` |
+| 2 | `# {N} files, {N} functions, {N} types, {N} unions, {N} enums, {N} constants, {N} tests, {N} externals` | `# 42 files, 318 functions, 56 types, 3 unions, 23 enums, 89 constants, 44 tests, 46 externals` |
 | 3 | `# languages: {csv}` | `# languages: zig, rust` |
 | 4 | `# generated {ISO-8601}` | `# generated 2026-02-14T10:30:00Z` |
 | 5 | `# snapshot: {name} \| source_hash: {hash}` | `# snapshot: main-baseline \| source_hash: a7f3b2c9e1d4` |
@@ -263,7 +263,8 @@ Edge types:
 | `implements` | type_def | type_def | Implements trait/interface |
 | `imports` | file | file | Imports via `@import` or `use` |
 | `similar_to` | function | function | Structural similarity above threshold |
-| `uses_type` | function/constant | type/enum/union/error/external | References the type |
+| `uses_type` | function/constant | type/enum/union/error/external | References the target as a type |
+| `uses_value` | function/test/constant | function | References the target as a first-class value (function pointer, vtable slot, callback) without invoking it |
 
 Example:
 

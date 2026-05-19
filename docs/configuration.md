@@ -30,13 +30,20 @@ This file should be committed to version control.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `exclude_paths` | tuple of strings | `("zig-cache", "zig-out", ".git", "target")` | Paths excluded from indexing |
-| `languages` | tuple of enums | auto-detect by file extension | Languages to enable: `.zig`, `.rust` |
-| `lsp.zls_path` | optional string | `null` (search in PATH) | Path to the ZLS binary |
-| `lsp.rust_analyzer_path` | optional string | `null` (search in PATH) | Path to the rust-analyzer binary |
+| `exclude_paths` | tuple of strings | see below | Paths excluded from indexing |
+| `languages` | tuple of enums | all registered languages | Languages to enable: `.zig`, `.rust` |
+| `lsp.zls_path` | optional string | `null` (resolve `zls` from `PATH`) | Path to the ZLS binary |
+| `lsp.rust_analyzer_path` | optional string | `null` (resolve `rust-analyzer` from `PATH`) | Path to the rust-analyzer binary |
 | `storage.path` | string | `".zcodeprism/"` | Data directory (relative to project root) |
 | `storage.format` | enum | `.binary` | Storage format: `.binary` or `.jsonl` |
 | `memory.budget_mb` | integer | `512` | Memory budget in megabytes |
+
+### Default `exclude_paths`
+
+The template written by `zcodeprism init` sets
+`{ "zig-cache", "zig-out", ".git", "target" }`. When no
+`.zcodeprism.zon` is present, the built-in default is
+`{ ".git", ".zcodeprism", "zig-out", "zig-cache", "target" }`.
 
 ### Storage Format
 
@@ -82,7 +89,7 @@ When absent, ZCodePrism operates in single-project mode.
 ### Constraints
 
 - Each project `name` must be unique within the workspace
-- Names may contain `[a-zA-Z0-9_-]`, max 32 characters
+- Names are 1 to 64 characters long
 - Names must not contain `:` (reserved as ID separator)
 - Two projects cannot share the same resolved path
 - `path = "."` is valid (project colocated with workspace file)

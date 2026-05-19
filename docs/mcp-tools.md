@@ -47,11 +47,15 @@ Two global filters reduce noise. Both default to false.
 
 ### Node Kinds
 
-13 universal kinds shared across all languages:
+12 universal kinds shared across all languages, used for the `kind`
+parameter:
 
 `file`, `module`, `function`, `type_def`, `enum_def`, `field`,
-`parameter`, `constant`, `test_def`, `error_def`, `import_decl`,
-`union_def`, `directory`.
+`constant`, `test_def`, `error_def`, `import_decl`, `union_def`,
+`directory`.
+
+The graph itself also models `parameter` nodes, but the MCP `kind`
+filter does not expose them.
 
 Language-specific sub-kinds are in the `lang_meta` object.
 
@@ -138,17 +142,14 @@ Global statistics. Natural entry point for consumers.
   "edges": { "calls": 612, "imports": 134, "uses_type": 287 },
   "externals": {
     "stdlib_symbols": 34,
-    "dependency_symbols": 12,
-    "dependencies": [
-      { "name": "tree_sitter", "version": "0.24.0", "referenced_symbols": 5 }
-    ]
+    "dependency_symbols": 12
   }
 }
 ```
 
-In workspace mode without a project-specific scope, `project_root` is
-replaced by `workspace_root` and `workspace_name`, with a `projects`
-array containing per-project breakdowns.
+Node and edge buckets omit keys with a zero count. In workspace mode
+the response shape is identical; the assembled graph is reported as a
+single unit.
 
 ---
 
@@ -271,7 +272,7 @@ Find shortest paths between two nodes.
       "length": 3,
       "nodes": ["a3f1", "b7c2", "c8d3", "d9e4"],
       "edges": [
-        { "from": "a3f1", "to": "b7c2", "type": "calls", "source": "lsp" }
+        { "from": "a3f1", "to": "b7c2", "type": "calls" }
       ]
     }
   ]
@@ -482,7 +483,7 @@ Symbols defined but never referenced.
 | `scope` | string | no | Path prefix filter |
 | `include_test_only` | boolean | no | Include symbols only referenced by tests |
 | `include_public` | boolean | no | Include public symbols (default: false) |
-| `kind` | string | no | Node kind or `"all"` (default: `"all"`, excludes structural kinds) |
+| `kind` | string | no | One of `"function"`, `"type_def"`, `"enum_def"`, `"union_def"`, `"constant"`, `"all"` (default: `"all"`) |
 | `language` | string | no | Filter by language |
 | `offset` | integer | no | Pagination offset |
 | `limit` | integer | no | Result limit (default: 50) |
@@ -498,8 +499,8 @@ Detect circular dependencies.
 | Name | Type | Required | Description |
 |------|------|----------|-------------|
 | `scope` | string | no | Path prefix filter |
-| `edge_types` | string[] | no | Edge types to check (default: `["imports"]`) |
-| `max_cycle_length` | integer | no | Maximum cycle length (default: 10) |
+| `edge_types` | string[] | no | Edge types to check; one or more of `"calls"`, `"imports"`, `"uses_type"` (default: `["imports"]`) |
+| `max_cycle_length` | integer | no | Maximum cycle length (default: 20) |
 | `language` | string | no | Filter by language |
 
 ---
@@ -513,7 +514,7 @@ Coupling metrics between modules.
 | Name | Type | Required | Description |
 |------|------|----------|-------------|
 | `scope` | string | no | Path prefix filter |
-| `granularity` | `"file"` or `"directory"` | no | Default: `"directory"` |
+| `granularity` | `"file"` or `"directory"` | no | Default: `"file"` |
 | `min_coupling` | number | no | Minimum coupling score (default: 0.3) |
 | `top_n` | integer | no | Number of results (default: 10) |
 | `external` | `"include"` or `"exclude"` | no | Include external deps (default: `"exclude"`) |
@@ -530,7 +531,7 @@ Transitive impact analysis: what is affected if nodes are modified.
 | Name | Type | Required | Description |
 |------|------|----------|-------------|
 | `node_ids` | string or string[] | yes | Node ID(s), max 20. Can be internal or phantom. |
-| `edge_types` | string[] | no | Edge types to traverse (default: `["calls", "uses_type"]`) |
+| `edge_types` | string[] | no | Edge types to traverse. Any edge type is accepted (default: `["calls", "uses_type", "accesses_field", "uses_value"]`) |
 | `max_depth` | integer | no | Maximum traversal depth (default: 10, max: 20) |
 | `include_parent_chain` | boolean | no | Include parent chain (default: true) |
 

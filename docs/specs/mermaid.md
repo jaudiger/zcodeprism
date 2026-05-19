@@ -176,6 +176,7 @@ end
 | `calls` | `-->` | solid |
 | `uses_type` | `-->` | solid |
 | `accesses_field` | `-->` | solid |
+| `uses_value` | `-.->` | dotted |
 | `imports` | `-.->` | dotted |
 | `implements` | `==>` | thick |
 | `contains` | `-->` | solid |
