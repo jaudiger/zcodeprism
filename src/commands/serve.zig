@@ -23,6 +23,8 @@ pub const Options = struct {
     workspace_path: ?[]const u8 = null,
     exclude_paths: []const []const u8 = &.{},
     budget_bytes: ?u64 = null,
+    enabled_languages: ?[]const types.Language = null,
+    lsp_paths: lsp_pool_mod.LspServerPaths = .{},
     logger: Logger = Logger.noop,
 };
 
@@ -45,7 +47,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, options: Options) !void {
 
     const initial_gen = try GraphGeneration.create(allocator, io, 1, zero_hash);
 
-    var lsp_pool = LspPool.init(.{});
+    var lsp_pool = LspPool.init(.{ .server_paths = options.lsp_paths });
     defer lsp_pool.deinit(allocator, io);
 
     var gen_manager = GenerationManager.init(initial_gen);
@@ -81,6 +83,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, options: Options) !void {
         .workspace_path = options.workspace_path,
         .watch_root = watch_root,
         .budget_bytes = options.budget_bytes,
+        .enabled_languages = options.enabled_languages,
     };
 
     var watcher = try WatcherService.start(allocator, &ctx);

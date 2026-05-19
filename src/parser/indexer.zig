@@ -73,7 +73,17 @@ pub const IndexOptions = struct {
     incremental: bool = false,
     logger: Logger = Logger.noop,
     budget_bytes: ?u64 = null,
+    /// When non-null, restrict indexing to these languages.
+    enabled_languages: ?[]const types.Language = null,
 };
+
+fn languageEnabled(enabled: ?[]const types.Language, lang_id: types.Language) bool {
+    const list = enabled orelse return true;
+    for (list) |l| {
+        if (l == lang_id) return true;
+    }
+    return false;
+}
 
 /// Summary counters returned by `indexDirectory` after a complete run.
 ///
@@ -159,6 +169,7 @@ pub fn indexDirectory(
         if (slot.*) |*bc| bc.deinit(allocs.scratch);
     };
     for (all_langs, 0..) |ls, lang_idx| {
+        if (!languageEnabled(options.enabled_languages, ls.language)) continue;
         const parse_config_fn = ls.parseBuildConfigFn orelse continue;
         if (!hasBuildFile(io, project_root, ls.build_files)) continue;
         build_configs[lang_idx] = try parse_config_fn(allocs.scratch, io, project_root, log);
@@ -209,6 +220,7 @@ pub fn indexDirectory(
     defer phantom.deinit(allocs.graph);
 
     for (all_langs, 0..) |ls, lang_idx| {
+        if (!languageEnabled(options.enabled_languages, ls.language)) continue;
         const bc = build_configs[lang_idx] orelse continue;
         try buildPhantomDependencies(allocs.graph, graph, bc, ls.language, &phantom);
     }
@@ -313,6 +325,7 @@ fn discoverFiles(
         if (entry.kind != .file) continue;
         const ext = std.fs.path.extension(entry.path);
         const file_lang = Registry.getByExtension(ext) orelse continue;
+        if (!languageEnabled(options.enabled_languages, file_lang.language)) continue;
         if (isExcluded(entry.path, options.exclude_paths)) continue;
 
         const file = dir.openFile(io, entry.path, .{}) catch {

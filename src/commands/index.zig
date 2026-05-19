@@ -4,6 +4,7 @@ const config = @import("../core/config.zig");
 const logging = @import("../logging.zig");
 const indexer = @import("../parser/indexer.zig");
 const storage = @import("../storage/storage.zig");
+const types = @import("../core/types.zig");
 const lang_support = @import("../languages/language_support.zig");
 const lsp_enricher = @import("../lsp/enricher.zig");
 const lsp_pool_mod = @import("../lsp/pool.zig");
@@ -20,6 +21,9 @@ pub const Options = struct {
     exclude_paths: []const []const u8 = &.{},
     budget_bytes: ?u64 = null,
     storage_format: config.StorageFormat = .binary,
+    storage_path: []const u8 = storage.data_dir,
+    enabled_languages: ?[]const types.Language = null,
+    lsp_paths: lsp_pool_mod.LspServerPaths = .{},
     logger: Logger = Logger.noop,
 };
 
@@ -47,20 +51,24 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, options: Options) !Result {
         .exclude_paths = options.exclude_paths,
         .logger = options.logger,
         .budget_bytes = options.budget_bytes,
+        .enabled_languages = options.enabled_languages,
     });
 
-    var pool = lsp_pool_mod.LspPool.init(.{});
+    var pool = lsp_pool_mod.LspPool.init(.{ .server_paths = options.lsp_paths });
     defer pool.deinit(allocator, io);
 
     const lsp_result = try lsp_enricher.enrichAllLanguages(allocs, io, &graph, &wl, &pool, .{
         .logger = options.logger,
         .project_root = options.project_root,
+        .enabled_languages = options.enabled_languages,
     });
 
     const fg = FrozenGraph{ .graph = &graph };
+    var layout = try storage.Layout.init(allocator, options.storage_path);
+    defer layout.deinit();
     switch (options.storage_format) {
-        .binary => try storage.binary.save(allocator, io, fg, storage.graph_binary_path),
-        .jsonl => try saveJsonl(allocator, io, fg),
+        .binary => try storage.binary.save(allocator, io, fg, layout.graph_binary),
+        .jsonl => try saveJsonl(allocator, io, fg, layout.graph_jsonl),
     }
 
     return .{
@@ -71,9 +79,9 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, options: Options) !Result {
     };
 }
 
-fn saveJsonl(allocator: std.mem.Allocator, io: std.Io, fg: FrozenGraph) !void {
+fn saveJsonl(allocator: std.mem.Allocator, io: std.Io, fg: FrozenGraph, path: []const u8) !void {
     var write_buf: [8192]u8 = undefined;
-    var aw = try storage.atomic_file.AtomicWriter.init(io, std.Io.Dir.cwd(), storage.graph_jsonl_path, &write_buf);
+    var aw = try storage.atomic_file.AtomicWriter.init(io, std.Io.Dir.cwd(), path, &write_buf);
     defer aw.deinit(io);
     try storage.jsonl.exportJsonl(allocator, fg, aw.writer());
     try aw.commit(io);

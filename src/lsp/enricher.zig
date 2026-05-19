@@ -33,6 +33,8 @@ pub const EnrichOptions = struct {
     project_root: ?[]const u8 = null,
     /// Milliseconds to wait for server readiness signals after opening files.
     warmup_timeout_ms: u32 = 5000,
+    /// When non-null, restrict enrichment to these languages.
+    enabled_languages: ?[]const lang_support.Language = null,
 };
 
 /// Top-level LSP enrichment orchestrator. Acquires a pooled connection,
@@ -131,6 +133,14 @@ pub fn enrichAllLanguages(
 ) !EnrichResult {
     var result = EnrichResult{};
     for (Registry.allLanguages()) |ls| {
+        if (options.enabled_languages) |list| {
+            var found = false;
+            for (list) |l| if (l == ls.language) {
+                found = true;
+                break;
+            };
+            if (!found) continue;
+        }
         const r = try enrich(allocs, io, graph, ls, wl, pool, options);
         result.accumulate(r);
     }

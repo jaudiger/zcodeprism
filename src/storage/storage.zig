@@ -1,4 +1,5 @@
 const std = @import("std");
+const graph_mod = @import("../core/graph.zig");
 
 /// Crash-safe atomic file write with parent-directory fsync.
 pub const atomic_file = @import("atomic_file.zig");
@@ -23,6 +24,69 @@ pub const graph_binary_path = ".zcodeprism/graph.bin";
 
 /// Default path for the indexed graph in JSONL format.
 pub const graph_jsonl_path = ".zcodeprism/graph.jsonl";
+
+/// Filenames inside a project data directory.
+const graph_binary_name = "graph.bin";
+const graph_jsonl_name = "graph.jsonl";
+
+/// Resolved filesystem paths derived from a configured data directory.
+/// The caller owns the backing buffers (allocated by `Layout.init`) and
+/// must call `Layout.deinit` to release them.
+pub const Layout = struct {
+    allocator: std.mem.Allocator,
+    data_dir: []const u8,
+    graph_binary: []const u8,
+    graph_jsonl: []const u8,
+
+    /// Allocate path strings for a data directory. Trailing slashes on
+    /// the base are stripped before joining.
+    pub fn init(allocator: std.mem.Allocator, base: []const u8) !Layout {
+        const trimmed = std.mem.trimEnd(u8, base, "/");
+        const root = if (trimmed.len == 0) "." else trimmed;
+        const bin = try std.fmt.allocPrint(allocator, "{s}/" ++ graph_binary_name, .{root});
+        errdefer allocator.free(bin);
+        const jsonl_path = try std.fmt.allocPrint(allocator, "{s}/" ++ graph_jsonl_name, .{root});
+        return .{
+            .allocator = allocator,
+            .data_dir = base,
+            .graph_binary = bin,
+            .graph_jsonl = jsonl_path,
+        };
+    }
+
+    pub fn deinit(self: *Layout) void {
+        self.allocator.free(self.graph_binary);
+        self.allocator.free(self.graph_jsonl);
+        self.* = undefined;
+    }
+};
+
+/// Load the saved graph from `layout`, picking binary or JSONL based on
+/// whichever file exists. Binary is preferred when both are present.
+pub fn loadGraph(allocator: std.mem.Allocator, io: std.Io, layout: Layout) !graph_mod.Graph {
+    if (fileExists(io, layout.graph_binary)) {
+        return binary.load(allocator, io, layout.graph_binary);
+    }
+    if (fileExists(io, layout.graph_jsonl)) {
+        return loadJsonl(allocator, io, layout.graph_jsonl);
+    }
+    return error.FileNotFound;
+}
+
+fn loadJsonl(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !graph_mod.Graph {
+    const file = try std.Io.Dir.cwd().openFile(io, path, .{});
+    defer file.close(io);
+    var rbuf: [4096]u8 = undefined;
+    var fr = file.reader(io, &rbuf);
+    const data = try fr.interface.allocRemaining(allocator, .limited(1024 * 1024 * 1024));
+    defer allocator.free(data);
+    return jsonl.importJsonl(allocator, data);
+}
+
+fn fileExists(io: std.Io, path: []const u8) bool {
+    std.Io.Dir.cwd().access(io, path, .{}) catch return false;
+    return true;
+}
 
 /// Supported persistent storage formats for graph serialization.
 ///

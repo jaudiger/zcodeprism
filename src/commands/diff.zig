@@ -10,6 +10,8 @@ const FrozenGraph = graph_mod.FrozenGraph;
 pub const Options = struct {
     tag_a: []const u8,
     tag_b: []const u8,
+    /// Data directory containing the snapshots subdirectory.
+    storage_path: []const u8 = storage.data_dir,
 };
 
 /// Load two snapshots, run the semantic diff, and write the rendered
@@ -20,10 +22,10 @@ pub fn run(
     options: Options,
     out: *std.ArrayList(u8),
 ) !void {
-    var graph_a = try storage.snapshot.loadSnapshotGraph(allocator, io, options.tag_a, storage.data_dir);
+    var graph_a = try storage.snapshot.loadSnapshotGraph(allocator, io, options.tag_a, options.storage_path);
     defer graph_a.deinit(allocator);
 
-    var graph_b = try storage.snapshot.loadSnapshotGraph(allocator, io, options.tag_b, storage.data_dir);
+    var graph_b = try storage.snapshot.loadSnapshotGraph(allocator, io, options.tag_b, options.storage_path);
     defer graph_b.deinit(allocator);
 
     const fg_a = FrozenGraph{ .graph = &graph_a };

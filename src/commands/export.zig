@@ -20,8 +20,10 @@ pub const Options = struct {
     include_test_nodes: bool = false,
     /// Include external/phantom nodes in the output.
     include_external_nodes: bool = false,
-    /// When set, load this snapshot instead of `.zcodeprism/graph.bin`.
+    /// When set, load this snapshot instead of the current saved graph.
     snapshot_tag: ?[]const u8 = null,
+    /// Data directory containing the persisted graph and snapshots.
+    storage_path: []const u8 = storage.data_dir,
 };
 
 /// Load the current graph (or a named snapshot) and render it to `writer`
@@ -33,9 +35,12 @@ pub fn run(
     writer: *std.Io.Writer,
 ) !void {
     var graph = if (options.snapshot_tag) |tag|
-        try storage.snapshot.loadSnapshotGraph(allocator, io, tag, storage.data_dir)
-    else
-        try storage.binary.load(allocator, io, storage.graph_binary_path);
+        try storage.snapshot.loadSnapshotGraph(allocator, io, tag, options.storage_path)
+    else blk: {
+        var layout = try storage.Layout.init(allocator, options.storage_path);
+        defer layout.deinit();
+        break :blk try storage.loadGraph(allocator, io, layout);
+    };
     defer graph.deinit(allocator);
 
     try renderGraph(allocator, io, &graph, options, writer);

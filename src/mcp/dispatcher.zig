@@ -258,7 +258,7 @@ const tool_defs = [_]Tool{
         .properties = &.{
             P{ .name = "scope" },
             P{ .name = "edge_types", .type = "array", .items_type = "string", .items_enum = &[_][]const u8{ "calls", "imports", "uses_type" }, .default = .{ .str_array = &.{"imports"} } },
-            P{ .name = "max_cycle_length", .type = "integer", .default = .{ .int = 10 } },
+            P{ .name = "max_cycle_length", .type = "integer", .default = .{ .int = 20 } },
             P{ .name = "language", .enum_values = &languages },
         },
     },
@@ -279,10 +279,10 @@ const tool_defs = [_]Tool{
     .{
         .name = "analysis.impact",
         .title = "Change Impact Analysis",
-        .description = "Compute the transitive set of nodes affected if one or more nodes are modified. Traverses reverse 'calls' and 'uses_type' edges plus parent chain.",
+        .description = "Compute the transitive set of nodes affected if one or more nodes are modified. Traverses reverse semantic edges (calls, uses_type, accesses_field, uses_value by default) plus parent chain.",
         .properties = &.{
             P{ .name = "node_ids", .one_of_string_or_array = true, .max_items = 20, .description = "Node(s) to analyze impact for. Can be internal or phantom (external) nodes." },
-            P{ .name = "edge_types", .type = "array", .items_type = "string", .items_enum = &[_][]const u8{ "calls", "uses_type", "imports" }, .default = .{ .str_array = &.{ "calls", "uses_type" } } },
+            P{ .name = "edge_types", .type = "array", .items_type = "string", .items_enum = &edge_types, .default = .{ .str_array = &.{ "calls", "uses_type", "accesses_field", "uses_value" } } },
             P{ .name = "max_depth", .type = "integer", .default = .{ .int = 10 }, .maximum = 20 },
             P{ .name = "include_parent_chain", .type = "boolean", .default = .{ .bool = true } },
         },

@@ -98,8 +98,27 @@ pub const LspConnection = struct {
     }
 };
 
+/// Per-language LSP server binary overrides. When a slot is null, the
+/// language's default `lsp_config.server_command` is used (resolved via
+/// `PATH`). When a slot is set, that absolute or PATH-relative command
+/// replaces the default for `acquire`.
+pub const LspServerPaths = struct {
+    paths: [lang_count]?[]const u8 = .{null} ** lang_count,
+
+    const lang_count = @typeInfo(Language).@"enum".fields.len;
+
+    pub fn set(self: *LspServerPaths, language: Language, command: ?[]const u8) void {
+        self.paths[@intFromEnum(language)] = command;
+    }
+
+    pub fn get(self: LspServerPaths, language: Language) ?[]const u8 {
+        return self.paths[@intFromEnum(language)];
+    }
+};
+
 pub const PoolOptions = struct {
     idle_timeout_ns: u64 = 60 * std.time.ns_per_s,
+    server_paths: LspServerPaths = .{},
 };
 
 /// Manages long-lived LSP server connections, one per Language.
@@ -112,12 +131,14 @@ pub const PoolOptions = struct {
 pub const LspPool = struct {
     connections: [lang_count]?*LspConnection = .{null} ** lang_count,
     idle_timeout_ns: u64,
+    server_paths: LspServerPaths,
 
     const lang_count = @typeInfo(Language).@"enum".fields.len;
 
     pub fn init(options: PoolOptions) LspPool {
         return .{
             .idle_timeout_ns = options.idle_timeout_ns,
+            .server_paths = options.server_paths,
         };
     }
 
@@ -162,7 +183,8 @@ pub const LspPool = struct {
             allocator.destroy(conn);
         }
 
-        try conn.client.start(io, lsp_config.server_command);
+        const command = self.server_paths.get(language) orelse lsp_config.server_command;
+        try conn.client.start(io, command);
         try conn.client.initialize(allocator, io, project_root, lsp_config.init_options);
         errdefer comptime unreachable;
 

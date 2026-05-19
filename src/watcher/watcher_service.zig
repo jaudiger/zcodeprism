@@ -54,6 +54,7 @@ pub const ReindexContext = struct {
     /// `zcodeprism-workspace.zon` in workspace mode.
     watch_root: []const u8,
     budget_bytes: ?u64,
+    enabled_languages: ?[]const types.Language = null,
 };
 
 /// Construct via `start`, destroy via `stop`. `stop` may be called
@@ -168,11 +169,13 @@ fn reindexInto(ctx: *ReindexContext, gen: *GraphGeneration) bool {
         .exclude_paths = ctx.exclude_paths,
         .logger = ctx.logger,
         .budget_bytes = ctx.budget_bytes,
+        .enabled_languages = ctx.enabled_languages,
     }) catch return false;
 
     _ = lsp_enricher.enrichAllLanguages(allocs, ctx.io, &gen.graph, &wl, ctx.lsp_pool, .{
         .logger = ctx.logger,
         .project_root = ctx.project_root,
+        .enabled_languages = ctx.enabled_languages,
     }) catch EnrichResult{};
     return true;
 }

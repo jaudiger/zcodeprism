@@ -5,7 +5,9 @@ const commands = zcodeprism.commands;
 const config = zcodeprism.config;
 const logging = zcodeprism.logging;
 const snapshot = zcodeprism.storage.snapshot;
+const storage = zcodeprism.storage;
 const types = zcodeprism.types;
+const lsp_pool = zcodeprism.lsp.pool;
 
 const version_string = "zcodeprism 0.1.0\n";
 
@@ -381,11 +383,16 @@ fn runIndex(allocator: std.mem.Allocator, io: std.Io, stdout: *std.Io.Writer, st
     var text_logger = logging.TextStderrLogger.init(io, logging.verbosityToLevel(verbosity));
     const logger = text_logger.logger();
 
+    var lang_buf: [lang_buf_len]types.Language = undefined;
+
     const result = commands.index.run(allocator, io, .{
         .project_root = project_root,
         .exclude_paths = full.exclude_paths orelse config.defaultExcludePaths(),
         .budget_bytes = budgetBytes(full),
-        .storage_format = if (full.storage) |s| s.format orelse .binary else .binary,
+        .storage_format = storageFormat(full),
+        .storage_path = storagePath(full),
+        .enabled_languages = enabledLanguages(full, &lang_buf),
+        .lsp_paths = lspPathsFrom(full),
         .logger = logger,
     }) catch |err| die(stderr, "indexing failed: {s}\n", .{@errorName(err)});
 
@@ -405,6 +412,11 @@ fn runExport(
     stderr: *std.Io.Writer,
     args: ExportArgs,
 ) void {
+    const cfg = loadProjectConfig(allocator, io) catch |err|
+        die(stderr, "failed to load config: {s}\n", .{@errorName(err)});
+    defer config.deinit(cfg, allocator);
+    const full = config.withDefaults(cfg);
+
     const fmt: commands.@"export".Format = switch (args.format) {
         .ctg => .ctg,
         .mermaid => .mermaid,
@@ -416,6 +428,7 @@ fn runExport(
         .include_test_nodes = args.include_test_nodes,
         .include_external_nodes = args.include_external_nodes,
         .snapshot_tag = args.snapshot,
+        .storage_path = storagePath(full),
     };
 
     if (args.output) |path| {
@@ -443,7 +456,12 @@ fn dieExport(stderr: *std.Io.Writer, err: anyerror, snapshot_tag: ?[]const u8) n
 }
 
 fn runSnapshot(allocator: std.mem.Allocator, io: std.Io, stdout: *std.Io.Writer, stderr: *std.Io.Writer, name: []const u8) void {
-    commands.snapshot.run(allocator, io, .{ .tag = name }) catch |err| switch (err) {
+    const cfg = loadProjectConfig(allocator, io) catch |err|
+        die(stderr, "failed to load config: {s}\n", .{@errorName(err)});
+    defer config.deinit(cfg, allocator);
+    const full = config.withDefaults(cfg);
+
+    commands.snapshot.run(allocator, io, .{ .tag = name, .storage_path = storagePath(full) }) catch |err| switch (err) {
         error.InvalidTagName => die(stderr, "invalid snapshot tag: {s}\n", .{name}),
         error.TagTooLong => die(stderr, "snapshot tag too long (max {d}): {s}\n", .{ snapshot.MAX_TAG_LENGTH, name }),
         error.FileNotFound => die(stderr, "failed to load graph (run 'index' first)\n", .{}),
@@ -454,10 +472,15 @@ fn runSnapshot(allocator: std.mem.Allocator, io: std.Io, stdout: *std.Io.Writer,
 }
 
 fn runDiff(allocator: std.mem.Allocator, io: std.Io, stdout: *std.Io.Writer, stderr: *std.Io.Writer, args: DiffArgs) void {
+    const cfg = loadProjectConfig(allocator, io) catch |err|
+        die(stderr, "failed to load config: {s}\n", .{@errorName(err)});
+    defer config.deinit(cfg, allocator);
+    const full = config.withDefaults(cfg);
+
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);
 
-    commands.diff.run(allocator, io, .{ .tag_a = args.tag_a, .tag_b = args.tag_b }, &out) catch |err| switch (err) {
+    commands.diff.run(allocator, io, .{ .tag_a = args.tag_a, .tag_b = args.tag_b, .storage_path = storagePath(full) }, &out) catch |err| switch (err) {
         error.SnapshotNotFound, error.InvalidTagName => die(stderr, "failed to load snapshot: {s}\n", .{@errorName(err)}),
         else => die(stderr, "diff failed: {s}\n", .{@errorName(err)}),
     };
@@ -479,17 +502,29 @@ fn runServe(allocator: std.mem.Allocator, io: std.Io, stderr: *std.Io.Writer, wo
     var text_logger = logging.TextStderrLogger.init(io, logging.verbosityToLevel(verbosity));
     const logger = text_logger.logger();
 
+    var lang_buf: [lang_buf_len]types.Language = undefined;
+
     commands.serve.run(allocator, io, .{
         .project_root = project_root,
         .workspace_path = workspace_arg,
         .exclude_paths = full.exclude_paths orelse config.defaultExcludePaths(),
         .budget_bytes = budgetBytes(full),
+        .enabled_languages = enabledLanguages(full, &lang_buf),
+        .lsp_paths = lspPathsFrom(full),
         .logger = logger,
     }) catch |err| die(stderr, "serve failed: {s}\n", .{@errorName(err)});
 }
 
 fn runStatus(allocator: std.mem.Allocator, io: std.Io, stdout: *std.Io.Writer, stderr: *std.Io.Writer, workspace_arg: ?[]const u8) void {
-    const result = commands.status.run(allocator, io, .{ .workspace_path = workspace_arg }) catch
+    const cfg = loadProjectConfig(allocator, io) catch |err|
+        die(stderr, "failed to load config: {s}\n", .{@errorName(err)});
+    defer config.deinit(cfg, allocator);
+    const full = config.withDefaults(cfg);
+
+    const result = commands.status.run(allocator, io, .{
+        .workspace_path = workspace_arg,
+        .storage_path = storagePath(full),
+    }) catch
         die(stderr, "not initialized or not indexed\n", .{});
 
     const source_hex = types.formatHash(result.source_hash);
@@ -512,6 +547,44 @@ fn runStatus(allocator: std.mem.Allocator, io: std.Io, stdout: *std.Io.Writer, s
 fn budgetBytes(full: config.Config) ?u64 {
     if (full.memory) |m| if (m.budget_mb) |mb| return @as(u64, mb) * 1024 * 1024;
     return null;
+}
+
+fn storagePath(full: config.Config) []const u8 {
+    if (full.storage) |s| if (s.path) |p| return p;
+    return storage.data_dir;
+}
+
+fn storageFormat(full: config.Config) config.StorageFormat {
+    if (full.storage) |s| if (s.format) |f| return f;
+    return .binary;
+}
+
+const lang_buf_len = @typeInfo(types.Language).@"enum".fields.len;
+
+/// Translate the config's optional `languages` list into the runtime
+/// `types.Language` slice consumed by the indexer and enricher. Writes
+/// into the caller-provided buffer; returns null when no filter is set.
+fn enabledLanguages(full: config.Config, buf: *[lang_buf_len]types.Language) ?[]const types.Language {
+    const list = full.languages orelse return null;
+    var count: usize = 0;
+    for (list) |lo| {
+        if (count >= buf.len) break;
+        buf[count] = switch (lo) {
+            .zig => .zig,
+            .rust => .rust,
+        };
+        count += 1;
+    }
+    return buf[0..count];
+}
+
+fn lspPathsFrom(full: config.Config) lsp_pool.LspServerPaths {
+    var paths = lsp_pool.LspServerPaths{};
+    if (full.lsp) |l| {
+        if (l.zls_path) |p| paths.set(.zig, p);
+        if (l.rust_analyzer_path) |p| paths.set(.rust, p);
+    }
+    return paths;
 }
 
 fn loadProjectConfig(allocator: std.mem.Allocator, io: std.Io) !config.Config {

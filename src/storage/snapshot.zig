@@ -43,11 +43,11 @@ pub fn saveSnapshot(
         else => return err,
     };
 
+    const trimmed = std.mem.trimEnd(u8, storage_path, "/");
     var path_buf: std.ArrayList(u8) = .empty;
     defer path_buf.deinit(allocator);
-    try path_buf.appendSlice(allocator, storage_path);
-    try path_buf.append(allocator, '/');
-    try path_buf.appendSlice(allocator, "snapshots/");
+    try path_buf.appendSlice(allocator, trimmed);
+    try path_buf.appendSlice(allocator, "/snapshots/");
     try path_buf.appendSlice(allocator, tag);
     try path_buf.appendSlice(allocator, ".bin");
 
@@ -63,11 +63,11 @@ pub fn loadSnapshotGraph(
 ) !Graph {
     try validateTag(tag);
 
+    const trimmed = std.mem.trimEnd(u8, storage_path, "/");
     var path_buf: std.ArrayList(u8) = .empty;
     defer path_buf.deinit(allocator);
-    try path_buf.appendSlice(allocator, storage_path);
-    try path_buf.append(allocator, '/');
-    try path_buf.appendSlice(allocator, "snapshots/");
+    try path_buf.appendSlice(allocator, trimmed);
+    try path_buf.appendSlice(allocator, "/snapshots/");
     try path_buf.appendSlice(allocator, tag);
     try path_buf.appendSlice(allocator, ".bin");
 

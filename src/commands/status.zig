@@ -12,6 +12,8 @@ pub const Options = struct {
     /// When set, load and assemble the workspace at this config path
     /// instead of the single-project graph.
     workspace_path: ?[]const u8 = null,
+    /// Data directory containing the persisted graph.
+    storage_path: []const u8 = storage.data_dir,
 };
 
 /// Aggregate statistics over the loaded graph.
@@ -30,8 +32,11 @@ pub const Result = struct {
 pub fn run(allocator: std.mem.Allocator, io: std.Io, options: Options) !Result {
     var graph = if (options.workspace_path) |ws_path|
         try storage.workspace_loader.loadAndAssemble(indexer.IndexAllocators.single(allocator), io, ws_path)
-    else
-        try storage.binary.load(allocator, io, storage.graph_binary_path);
+    else blk: {
+        var layout = try storage.Layout.init(allocator, options.storage_path);
+        defer layout.deinit();
+        break :blk try storage.loadGraph(allocator, io, layout);
+    };
     defer graph.deinit(allocator);
 
     var file_count: usize = 0;

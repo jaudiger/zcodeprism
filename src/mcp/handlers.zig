@@ -296,7 +296,7 @@ fn writeNodeSummary(w: JsonWriter, n: *const Node, id: NodeId, project_root: []c
     try w.endObject();
 }
 
-fn writeFullNode(w: JsonWriter, n: *const Node, id: NodeId, project_root: []const u8, source_text: ?[]const u8) HandlerError!void {
+fn writeFullNode(w: JsonWriter, n: *const Node, id: NodeId, project_root: []const u8, source_text: ?[]const u8, edges_graph: ?*const Graph) HandlerError!void {
     try w.beginObject();
     try writeNodeCoreFields(w, n, id, project_root);
     try w.optionalField("parent_id", n.parent_id, JsonWriter.nodeIdHex);
@@ -307,9 +307,41 @@ fn writeFullNode(w: JsonWriter, n: *const Node, id: NodeId, project_root: []cons
     try writeOptionalMetrics(w, n.metrics);
     try w.field("lang_meta");
     lang_meta_mod.writeJson(n.*, w.s) catch return error.OutOfMemory;
+    if (edges_graph) |g| try writeNodeEdgeSummary(w, g, id);
     if (source_text) |src| {
         try w.fieldValue("source", src);
     }
+    try w.endObject();
+}
+
+fn writeNodeEdgeSummary(w: JsonWriter, g: *const Graph, id: NodeId) HandlerError!void {
+    try w.field("edges");
+    try w.beginObject();
+
+    try w.field("out");
+    try w.beginArray();
+    for (g.outEdges(id)) |eid| {
+        const e = g.edges.items[@intFromEnum(eid)];
+        try w.beginObject();
+        try w.fieldNodeIdHex("to", e.target_id);
+        try w.tagFieldValue("type", e.edge_type);
+        try w.tagFieldValue("source", e.source);
+        try w.endObject();
+    }
+    try w.endArray();
+
+    try w.field("in");
+    try w.beginArray();
+    for (g.inEdges(id)) |eid| {
+        const e = g.edges.items[@intFromEnum(eid)];
+        try w.beginObject();
+        try w.fieldNodeIdHex("from", e.source_id);
+        try w.tagFieldValue("type", e.edge_type);
+        try w.tagFieldValue("source", e.source);
+        try w.endObject();
+    }
+    try w.endArray();
+
     try w.endObject();
 }
 
@@ -575,6 +607,7 @@ fn handleGetNodes(allocator: std.mem.Allocator, io: std.Io, gen: *GraphGeneratio
     defer if (node_ids.len > 0) allocator.free(node_ids);
 
     const include_source = getOptionalBool(args, "include_source", false);
+    const include_edges = getOptionalBool(args, "include_edges", true);
 
     const result = query_mod.getNodes(allocator, fg, node_ids, .{}) catch return error.OutOfMemory;
     defer result.deinit(allocator);
@@ -603,7 +636,9 @@ fn handleGetNodes(allocator: std.mem.Allocator, io: std.Io, gen: *GraphGeneratio
             }
         }
 
-        try writeFullNode(w, n, detail.id, g.project_root, if (include_source) source_text orelse @as(?[]const u8, null) else null);
+        const src_arg: ?[]const u8 = if (include_source) source_text else null;
+        const edges_arg: ?*const Graph = if (include_edges) g else null;
+        try writeFullNode(w, n, detail.id, g.project_root, src_arg, edges_arg);
     }
 
     try w.endArray();
@@ -676,7 +711,7 @@ fn handleGetEdges(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?
 
     const direction_str = getOptionalString(args, "direction") orelse "both";
     const edge_type_str = getOptionalString(args, "edge_type");
-    const include_external = getOptionalBool(args, "include_external", true);
+    const include_external = getOptionalBool(args, "include_external_nodes", false);
     const offset = getOptionalInt(args, "offset", 0);
     const limit = getOptionalInt(args, "limit", 50);
 
