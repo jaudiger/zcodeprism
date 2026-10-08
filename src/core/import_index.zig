@@ -86,9 +86,9 @@ pub const ImportIndex = struct {
 
 test "targetsOf returns import targets and empty for absent files" {
     // Arrange
-    const file_a: NodeId = @enumFromInt(0);
-    const file_b: NodeId = @enumFromInt(1);
-    const file_c: NodeId = @enumFromInt(2);
+    const file_a: NodeId = @fromBackingInt(@intCast(0));
+    const file_b: NodeId = @fromBackingInt(@intCast(1));
+    const file_c: NodeId = @fromBackingInt(@intCast(2));
     const edges: []const Edge = &.{
         .{ .source_id = file_a, .target_id = file_b, .edge_type = .imports },
         .{ .source_id = file_a, .target_id = file_c, .edge_type = .imports },
@@ -109,7 +109,7 @@ test "targetsOf returns import targets and empty for absent files" {
     try std.testing.expectEqual(file_c, b_targets[0]);
 
     try std.testing.expectEqual(@as(usize, 0), idx.targetsOf(file_c).len);
-    try std.testing.expectEqual(@as(usize, 0), idx.targetsOf(@enumFromInt(99)).len);
+    try std.testing.expectEqual(@as(usize, 0), idx.targetsOf(@fromBackingInt(@intCast(99))).len);
 }
 
 test "build on empty edges returns empty index" {
@@ -125,8 +125,8 @@ test "build on empty edges returns empty index" {
 test "build ignores non-import edges" {
     // Arrange
     const edges: []const Edge = &.{
-        .{ .source_id = .root, .target_id = @enumFromInt(1), .edge_type = .calls },
-        .{ .source_id = .root, .target_id = @enumFromInt(2), .edge_type = .uses_type },
+        .{ .source_id = .root, .target_id = @fromBackingInt(@intCast(1)), .edge_type = .calls },
+        .{ .source_id = .root, .target_id = @fromBackingInt(@intCast(2)), .edge_type = .uses_type },
     };
 
     // Act

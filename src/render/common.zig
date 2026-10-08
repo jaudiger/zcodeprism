@@ -130,7 +130,7 @@ pub fn formatIsoTimestamp(buf: []u8, io: std.Io) []const u8 {
 
     return std.fmt.bufPrint(buf, "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z", .{
         yd.year,
-        @as(u32, @intFromEnum(md.month)),
+        @as(u32, @backingInt(md.month)),
         @as(u32, md.day_index) + 1,
         ds.getHoursIntoDay(),
         ds.getMinutesIntoHour(),
@@ -183,7 +183,7 @@ pub fn edgeTypeSortKey(et: EdgeType) u8 {
 pub fn findFileId(g: *const Graph, n: Node, ids: []const ?IdEntry) ?u32 {
     var current_id = n.parent_id;
     while (current_id) |pid| {
-        const idx = @intFromEnum(pid);
+        const idx = @backingInt(pid);
         if (idx >= g.nodes.items.len) return null;
         const parent = g.nodes.items[idx];
         if (parent.kind == .file) {
@@ -511,14 +511,14 @@ fn collectScanResults(
                 try file_nodes.append(allocator, i);
             }
         } else if (filter.include_external_nodes) {
-            const is_root = if (n.parent_id) |pid| isInternal(g.nodes.items[@intFromEnum(pid)]) else true;
+            const is_root = if (n.parent_id) |pid| isInternal(g.nodes.items[@backingInt(pid)]) else true;
             if (is_root) {
                 try phantom_roots.append(allocator, i);
             }
         }
 
         if (n.parent_id) |pid| {
-            const parent_idx = @intFromEnum(pid);
+            const parent_idx = @backingInt(pid);
             if (scope) |s| {
                 if (!inScope(n.file_path, s)) continue;
             }
@@ -573,7 +573,7 @@ fn buildChildrenIndex(
     }
     for (g.nodes.items, 0..) |n, i| {
         if (n.parent_id) |pid| {
-            const parent_idx = @intFromEnum(pid);
+            const parent_idx = @backingInt(pid);
             if (scope) |s| {
                 if (!inScope(n.file_path, s)) continue;
             }

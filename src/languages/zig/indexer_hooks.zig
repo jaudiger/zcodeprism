@@ -213,7 +213,7 @@ pub fn resolvePhantoms(
     build_config: ?*const BuildConfig,
     log: Logger,
 ) error{OutOfMemory}!void {
-    const file_id: NodeId = @enumFromInt(file_idx);
+    const file_id: NodeId = @fromBackingInt(@intCast(file_idx));
     const clamped_end = @min(scope_end, graph.nodes.items.len);
     const file_path: []const u8 = graph.nodes.items[file_idx].file_path orelse "";
 
@@ -254,7 +254,7 @@ pub fn resolvePhantoms(
         if (collect_count < collected.len) {
             collected[collect_count] = .{
                 .import_name = n.name,
-                .import_decl_id = @enumFromInt(node_idx),
+                .import_decl_id = @fromBackingInt(@intCast(node_idx)),
                 .import_path = import_path,
                 .external = external,
             };
@@ -446,7 +446,7 @@ fn resolveStdPhantoms(
         if (n.kind != .function) continue;
         const ls = n.line_start orelse continue;
         const le = n.line_end orelse continue;
-        try fn_ranges.append(allocator, .{ .id = @enumFromInt(idx), .line_start = ls, .line_end = le });
+        try fn_ranges.append(allocator, .{ .id = @fromBackingInt(@intCast(idx)), .line_start = ls, .line_end = le });
     }
 
     try walkForStdRefs(allocator, graph, source, tree.rootNode(), &k, std_name, language, external, phantom, fn_ranges.items, file_path);

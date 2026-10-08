@@ -124,7 +124,7 @@ pub fn findDuplicates(allocator: std.mem.Allocator, fg: FrozenGraph, options: Du
         for (gb.indices, 0..) |idx, mi| {
             const n = &g.nodes.items[idx];
             members[mi] = .{
-                .node_id = @enumFromInt(idx),
+                .node_id = @fromBackingInt(@intCast(idx)),
                 .name = n.name,
                 .file_path = n.file_path,
             };

@@ -73,9 +73,9 @@ pub const NameIndex = struct {
 test "findByName returns matches and empty for absent names" {
     // Arrange
     const nodes: []const Node = &.{
-        .{ .id = @enumFromInt(0), .name = "init", .kind = .function, .language = .zig },
-        .{ .id = @enumFromInt(1), .name = "deinit", .kind = .function, .language = .zig },
-        .{ .id = @enumFromInt(2), .name = "init", .kind = .type_def, .language = .zig },
+        .{ .id = @fromBackingInt(@intCast(0)), .name = "init", .kind = .function, .language = .zig },
+        .{ .id = @fromBackingInt(@intCast(1)), .name = "deinit", .kind = .function, .language = .zig },
+        .{ .id = @fromBackingInt(@intCast(2)), .name = "init", .kind = .type_def, .language = .zig },
     };
 
     // Act
@@ -103,8 +103,8 @@ test "build on empty nodes returns empty index" {
 test "build skips nodes with empty names" {
     // Arrange
     const nodes: []const Node = &.{
-        .{ .id = @enumFromInt(0), .name = "", .kind = .function, .language = .zig },
-        .{ .id = @enumFromInt(1), .name = "real", .kind = .function, .language = .zig },
+        .{ .id = @fromBackingInt(@intCast(0)), .name = "", .kind = .function, .language = .zig },
+        .{ .id = @fromBackingInt(@intCast(1)), .name = "real", .kind = .function, .language = .zig },
     };
 
     // Act
@@ -120,8 +120,8 @@ test "build skips nodes with empty names" {
 test "build with offset skips earlier nodes" {
     // Arrange
     const nodes: []const Node = &.{
-        .{ .id = @enumFromInt(0), .name = "skipped", .kind = .function, .language = .zig },
-        .{ .id = @enumFromInt(1), .name = "included", .kind = .function, .language = .zig },
+        .{ .id = @fromBackingInt(@intCast(0)), .name = "skipped", .kind = .function, .language = .zig },
+        .{ .id = @fromBackingInt(@intCast(1)), .name = "included", .kind = .function, .language = .zig },
     };
 
     // Act

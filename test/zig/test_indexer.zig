@@ -506,7 +506,7 @@ test "test block resolves method call on import-assigned variable" {
     var test_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
         if (n.kind == .test_def and std.mem.eql(u8, n.name, "import var method call")) {
-            test_id = @enumFromInt(idx);
+            test_id = @fromBackingInt(@intCast(idx));
             break;
         }
     }
@@ -749,10 +749,10 @@ test "dir imports: same-directory resolution with duplicate basenames" {
     for (g.nodes.items, 0..) |n, idx| {
         if (n.kind != .file) continue;
         if (n.file_path) |fp| {
-            if (std.mem.eql(u8, fp, "crypto/helpers.zig")) crypto_helpers_id = @enumFromInt(idx);
-            if (std.mem.eql(u8, fp, "tar/helpers.zig")) tar_helpers_id = @enumFromInt(idx);
-            if (std.mem.eql(u8, fp, "crypto/aegis.zig")) crypto_aegis_id = @enumFromInt(idx);
-            if (std.mem.eql(u8, fp, "tar/reader.zig")) tar_reader_id = @enumFromInt(idx);
+            if (std.mem.eql(u8, fp, "crypto/helpers.zig")) crypto_helpers_id = @fromBackingInt(@intCast(idx));
+            if (std.mem.eql(u8, fp, "tar/helpers.zig")) tar_helpers_id = @fromBackingInt(@intCast(idx));
+            if (std.mem.eql(u8, fp, "crypto/aegis.zig")) crypto_aegis_id = @fromBackingInt(@intCast(idx));
+            if (std.mem.eql(u8, fp, "tar/reader.zig")) tar_reader_id = @fromBackingInt(@intCast(idx));
         }
     }
     try std.testing.expect(crypto_helpers_id != null);
@@ -788,8 +788,8 @@ test "dir imports: dot-slash prefix resolves to same directory" {
     for (g.nodes.items, 0..) |n, idx| {
         if (n.kind != .file) continue;
         if (n.file_path) |fp| {
-            if (std.mem.eql(u8, fp, "crypto/hmac.zig")) crypto_hmac_id = @enumFromInt(idx);
-            if (std.mem.eql(u8, fp, "crypto/helpers.zig")) crypto_helpers_id = @enumFromInt(idx);
+            if (std.mem.eql(u8, fp, "crypto/hmac.zig")) crypto_hmac_id = @fromBackingInt(@intCast(idx));
+            if (std.mem.eql(u8, fp, "crypto/helpers.zig")) crypto_helpers_id = @fromBackingInt(@intCast(idx));
         }
     }
     try std.testing.expect(crypto_hmac_id != null);
@@ -817,8 +817,8 @@ test "dir imports: subdirectory import resolves across directories" {
     for (g.nodes.items, 0..) |n, idx| {
         if (n.kind != .file) continue;
         if (n.file_path) |fp| {
-            if (std.mem.eql(u8, fp, "compress/flate.zig")) compress_flate_id = @enumFromInt(idx);
-            if (std.mem.eql(u8, fp, "compress/flate/inner.zig")) compress_flate_inner_id = @enumFromInt(idx);
+            if (std.mem.eql(u8, fp, "compress/flate.zig")) compress_flate_id = @fromBackingInt(@intCast(idx));
+            if (std.mem.eql(u8, fp, "compress/flate/inner.zig")) compress_flate_inner_id = @fromBackingInt(@intCast(idx));
         }
     }
     try std.testing.expect(compress_flate_id != null);
@@ -846,8 +846,8 @@ test "dir imports: parent directory import resolves across directories" {
     for (g.nodes.items, 0..) |n, idx| {
         if (n.kind != .file) continue;
         if (n.file_path) |fp| {
-            if (std.mem.eql(u8, fp, "compress/flate/inner.zig")) compress_flate_inner_id = @enumFromInt(idx);
-            if (std.mem.eql(u8, fp, "compress/flate.zig")) compress_flate_id = @enumFromInt(idx);
+            if (std.mem.eql(u8, fp, "compress/flate/inner.zig")) compress_flate_inner_id = @fromBackingInt(@intCast(idx));
+            if (std.mem.eql(u8, fp, "compress/flate.zig")) compress_flate_id = @fromBackingInt(@intCast(idx));
         }
     }
     try std.testing.expect(compress_flate_inner_id != null);
@@ -875,8 +875,8 @@ test "dir imports: subdirectory import from root" {
     for (g.nodes.items, 0..) |n, idx| {
         if (n.kind != .file) continue;
         if (n.file_path) |fp| {
-            if (std.mem.eql(u8, fp, "root.zig")) root_id = @enumFromInt(idx);
-            if (std.mem.eql(u8, fp, "crypto/aegis.zig")) crypto_aegis_id = @enumFromInt(idx);
+            if (std.mem.eql(u8, fp, "root.zig")) root_id = @fromBackingInt(@intCast(idx));
+            if (std.mem.eql(u8, fp, "crypto/aegis.zig")) crypto_aegis_id = @fromBackingInt(@intCast(idx));
         }
     }
     try std.testing.expect(root_id != null);
@@ -906,10 +906,10 @@ test "dir imports: cross-file call edges resolve to correct targets" {
     for (g.nodes.items, 0..) |n, idx| {
         if (n.kind != .file) continue;
         if (n.file_path) |fp| {
-            if (std.mem.eql(u8, fp, "crypto/aegis.zig")) crypto_aegis_id = @enumFromInt(idx);
-            if (std.mem.eql(u8, fp, "crypto/helpers.zig")) crypto_helpers_id = @enumFromInt(idx);
-            if (std.mem.eql(u8, fp, "tar/reader.zig")) tar_reader_id = @enumFromInt(idx);
-            if (std.mem.eql(u8, fp, "tar/helpers.zig")) tar_helpers_id = @enumFromInt(idx);
+            if (std.mem.eql(u8, fp, "crypto/aegis.zig")) crypto_aegis_id = @fromBackingInt(@intCast(idx));
+            if (std.mem.eql(u8, fp, "crypto/helpers.zig")) crypto_helpers_id = @fromBackingInt(@intCast(idx));
+            if (std.mem.eql(u8, fp, "tar/reader.zig")) tar_reader_id = @fromBackingInt(@intCast(idx));
+            if (std.mem.eql(u8, fp, "tar/helpers.zig")) tar_helpers_id = @fromBackingInt(@intCast(idx));
         }
     }
     try std.testing.expect(crypto_aegis_id != null);
@@ -983,7 +983,7 @@ test "inner struct call: cross-file edges from test block inner struct" {
     var do_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
         if (n.kind == .function and std.mem.eql(u8, n.name, "do")) {
-            do_id = @enumFromInt(idx);
+            do_id = @fromBackingInt(@intCast(idx));
             break;
         }
     }
@@ -996,7 +996,7 @@ test "inner struct call: cross-file edges from test block inner struct" {
     var direct_test_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
         if (n.kind == .test_def and std.mem.eql(u8, n.name, "direct call")) {
-            direct_test_id = @enumFromInt(idx);
+            direct_test_id = @fromBackingInt(@intCast(idx));
             break;
         }
     }
@@ -1224,7 +1224,7 @@ test "incremental indexing does not duplicate directory nodes" {
     for (g.nodes.items, 0..) |n, i| {
         if (n.kind != .directory) continue;
         if (id_count < first_run_ids.len) {
-            first_run_ids[id_count] = @enumFromInt(i);
+            first_run_ids[id_count] = @fromBackingInt(@intCast(i));
             first_run_paths[id_count] = n.file_path;
             id_count += 1;
         }
@@ -1294,8 +1294,8 @@ test "uses_value edge for cross-file function passed by qualified name" {
     var helper_id: ?NodeId = null;
     var invokes_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, i| {
-        if (n.kind == .function and std.mem.eql(u8, n.name, "helper")) helper_id = @enumFromInt(i);
-        if (n.kind == .function and std.mem.eql(u8, n.name, "invokes")) invokes_id = @enumFromInt(i);
+        if (n.kind == .function and std.mem.eql(u8, n.name, "helper")) helper_id = @fromBackingInt(@intCast(i));
+        if (n.kind == .function and std.mem.eql(u8, n.name, "invokes")) invokes_id = @fromBackingInt(@intCast(i));
     }
     try std.testing.expect(helper_id != null);
     try std.testing.expect(invokes_id != null);

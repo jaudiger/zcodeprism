@@ -166,11 +166,11 @@ pub fn diffGraphs(
     // Sort for determinism: change kind, then entity kind, then name.
     std.mem.sort(DiffEntry, entries.items, {}, struct {
         fn lessThan(_: void, x: DiffEntry, y: DiffEntry) bool {
-            const xc = @intFromEnum(x.change);
-            const yc = @intFromEnum(y.change);
+            const xc = @backingInt(x.change);
+            const yc = @backingInt(y.change);
             if (xc != yc) return xc < yc;
-            const xk = @intFromEnum(x.entity_kind);
-            const yk = @intFromEnum(y.entity_kind);
+            const xk = @backingInt(x.entity_kind);
+            const yk = @backingInt(y.entity_kind);
             if (xk != yk) return xk < yk;
             return std.mem.order(u8, x.name, y.name) == .lt;
         }

@@ -196,12 +196,12 @@ fn collectReachable(
         const next_depth = current.depth + 1;
 
         for (g.outEdges(current.id)) |eid| {
-            const e = g.edges.items[@intFromEnum(eid)];
+            const e = g.edges.items[@backingInt(eid)];
             const gop = try out.getOrPut(allocator, e.target_id);
             if (!gop.found_existing) try queue.append(allocator, .{ .id = e.target_id, .depth = next_depth });
         }
         for (g.inEdges(current.id)) |eid| {
-            const e = g.edges.items[@intFromEnum(eid)];
+            const e = g.edges.items[@backingInt(eid)];
             const gop = try out.getOrPut(allocator, e.source_id);
             if (!gop.found_existing) try queue.append(allocator, .{ .id = e.source_id, .depth = next_depth });
         }
@@ -321,7 +321,7 @@ fn writeNodeEdgeSummary(w: JsonWriter, g: *const Graph, id: NodeId) HandlerError
     try w.field("out");
     try w.beginArray();
     for (g.outEdges(id)) |eid| {
-        const e = g.edges.items[@intFromEnum(eid)];
+        const e = g.edges.items[@backingInt(eid)];
         try w.beginObject();
         try w.fieldNodeIdHex("to", e.target_id);
         try w.tagFieldValue("type", e.edge_type);
@@ -333,7 +333,7 @@ fn writeNodeEdgeSummary(w: JsonWriter, g: *const Graph, id: NodeId) HandlerError
     try w.field("in");
     try w.beginArray();
     for (g.inEdges(id)) |eid| {
-        const e = g.edges.items[@intFromEnum(eid)];
+        const e = g.edges.items[@backingInt(eid)];
         try w.beginObject();
         try w.fieldNodeIdHex("from", e.source_id);
         try w.tagFieldValue("type", e.edge_type);
@@ -495,7 +495,7 @@ fn handleStats(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?std
     if (stats.has_rust) try w.write("rust");
     try w.endArray();
 
-    try w.fieldValue("total_files", stats.node_counts[@intFromEnum(NodeKind.file)]);
+    try w.fieldValue("total_files", stats.node_counts[@backingInt(NodeKind.file)]);
     try w.fieldValue("total_lines", stats.total_lines);
 
     try w.field("source_hash");
@@ -509,10 +509,10 @@ fn handleStats(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?std
     // Node counts by kind
     try w.field("nodes");
     try w.beginObject();
-    inline for (@typeInfo(NodeKind).@"enum".fields) |f| {
-        const count = stats.node_counts[f.value];
+    inline for (@typeInfo(NodeKind).@"enum".field_names, @typeInfo(NodeKind).@"enum".field_values) |field_name, field_value| {
+        const count = stats.node_counts[field_value];
         if (count > 0) {
-            try w.fieldValue(f.name, count);
+            try w.fieldValue(field_name, count);
         }
     }
     try w.endObject();
@@ -520,10 +520,10 @@ fn handleStats(allocator: std.mem.Allocator, gen: *GraphGeneration, params: ?std
     // Edge counts by type
     try w.field("edges");
     try w.beginObject();
-    inline for (@typeInfo(EdgeType).@"enum".fields) |f| {
-        const count = stats.edge_counts[f.value];
+    inline for (@typeInfo(EdgeType).@"enum".field_names, @typeInfo(EdgeType).@"enum".field_values) |field_name, field_value| {
+        const count = stats.edge_counts[field_value];
         if (count > 0) {
-            try w.fieldValue(f.name, count);
+            try w.fieldValue(field_name, count);
         }
     }
     try w.endObject();
@@ -1016,7 +1016,7 @@ fn handleCursorExpand(allocator: std.mem.Allocator, gen: *GraphGeneration, curso
 
         if (direction == .out or direction == .both) {
             for (g.outEdges(current.id)) |eid| {
-                const e = g.edges.items[@intFromEnum(eid)];
+                const e = g.edges.items[@backingInt(eid)];
                 if (edge_types.len > 0 and !edgeTypeInSlice(e.edge_type, edge_types)) continue;
                 if (g.getNode(e.target_id)) |tn| {
                     if (tn.kind == .test_def and !cursor.include_tests) continue;
@@ -1031,7 +1031,7 @@ fn handleCursorExpand(allocator: std.mem.Allocator, gen: *GraphGeneration, curso
         }
         if (direction == .in or direction == .both) {
             for (g.inEdges(current.id)) |eid| {
-                const e = g.edges.items[@intFromEnum(eid)];
+                const e = g.edges.items[@backingInt(eid)];
                 if (edge_types.len > 0 and !edgeTypeInSlice(e.edge_type, edge_types)) continue;
                 if (g.getNode(e.source_id)) |sn| {
                     if (sn.kind == .test_def and !cursor.include_tests) continue;
@@ -1188,8 +1188,8 @@ fn multisetJaccard(a: []const u16, b: []const u16) f64 {
     if (a.len == 0 or b.len == 0) return 0.0;
 
     // Count occurrences using a bounded approach
-    var counts_a: [512]u16 = .{0} ** 512;
-    var counts_b: [512]u16 = .{0} ** 512;
+    var counts_a: [512]u16 = @splat(0);
+    var counts_b: [512]u16 = @splat(0);
     for (a) |k| {
         const idx = k % 512;
         counts_a[idx] +|= 1;
@@ -1437,24 +1437,24 @@ fn writeDuplicateGroups(
 /// Extract source, parse the AST, and build a frequency fingerprint for one node.
 fn buildFuzzyCandidate(allocator: std.mem.Allocator, io: std.Io, g: *const Graph, nid: NodeId, node: Node, structural_hash: u64) duplicates_mod.FuzzyCandidate {
     const src = extractNodeSource(allocator, io, g, &node) orelse
-        return .{ .node_id = nid, .structural_hash = structural_hash, .fingerprint = .{0} ** 512, .valid = false };
+        return .{ .node_id = nid, .structural_hash = structural_hash, .fingerprint = @splat(0), .valid = false };
     defer allocator.free(src);
 
     const lang = node.language orelse
-        return .{ .node_id = nid, .structural_hash = structural_hash, .fingerprint = .{0} ** 512, .valid = false };
+        return .{ .node_id = nid, .structural_hash = structural_hash, .fingerprint = @splat(0), .valid = false };
 
     const ts_lang = switch (lang) {
         .zig => tree_sitter_api.tree_sitter_zig(),
         .rust => tree_sitter_api.tree_sitter_rust(),
     };
     const tree = tree_sitter_api.parseSource(ts_lang, src) orelse
-        return .{ .node_id = nid, .structural_hash = structural_hash, .fingerprint = .{0} ** 512, .valid = false };
+        return .{ .node_id = nid, .structural_hash = structural_hash, .fingerprint = @splat(0), .valid = false };
     defer tree.destroy();
 
     var kind_buf: [4096]u16 = undefined;
     const kinds = flattenKindIds(tree.rootNode(), &kind_buf);
 
-    var fp: duplicates_mod.Fingerprint = .{0} ** 512;
+    var fp: duplicates_mod.Fingerprint = @splat(0);
     for (kinds) |k| {
         fp[k % 512] +|= 1;
     }
@@ -1513,7 +1513,7 @@ fn handleDuplicates(allocator: std.mem.Allocator, io: std.Io, gen: *GraphGenerat
             const m = n.metrics orelse continue;
             if (m.lines < min_lines) continue;
 
-            const nid: NodeId = @enumFromInt(i);
+            const nid: NodeId = @fromBackingInt(@intCast(i));
             try fuzzy_candidates.append(allocator, buildFuzzyCandidate(allocator, io, g, nid, n, m.structural_hash));
         }
 

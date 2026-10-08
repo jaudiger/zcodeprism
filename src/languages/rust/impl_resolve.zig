@@ -56,7 +56,7 @@ pub fn resolveImplementsEdges(
     // so phantom.getOrCreate adding nodes to the graph is harmless.
     const clamped_end = @min(scope_end, graph.nodes.items.len);
     for (buf[0..count]) |info| {
-        const impl_id: NodeId = @enumFromInt(info.idx);
+        const impl_id: NodeId = @fromBackingInt(@intCast(info.idx));
 
         const trait_id = findTraitInGraph(graph, info.trait_name, file_idx, clamped_end, graph_index) orelse blk: {
             var qbuf: [256]u8 = undefined;
@@ -90,12 +90,12 @@ fn findTraitInGraph(graph: *const Graph, name: []const u8, file_idx: usize, scop
     // Same-file scope.
     for (items[file_idx..clamped_end], file_idx..) |n, idx| {
         if (node_utils.isTraitNode(n) and std.mem.eql(u8, n.name, bare)) {
-            return @enumFromInt(idx);
+            return @fromBackingInt(@intCast(idx));
         }
     }
 
     // Imported files: search direct children of each import target via scope_index.
-    const file_id: NodeId = @enumFromInt(file_idx);
+    const file_id: NodeId = @fromBackingInt(@intCast(file_idx));
     {
         var import_match: ?NodeId = null;
         var import_match_count: usize = 0;
@@ -104,7 +104,7 @@ fn findTraitInGraph(graph: *const Graph, name: []const u8, file_idx: usize, scop
                 const n = items[child_idx];
                 if (!node_utils.isTraitNode(n)) continue;
                 if (!std.mem.eql(u8, n.name, bare)) continue;
-                import_match = @enumFromInt(child_idx);
+                import_match = @fromBackingInt(@intCast(child_idx));
                 import_match_count += 1;
                 if (import_match_count > 1) return null;
             }
@@ -118,7 +118,7 @@ fn findTraitInGraph(graph: *const Graph, name: []const u8, file_idx: usize, scop
     for (name_index.findByName(bare)) |idx| {
         const n = items[idx];
         if (!node_utils.isTraitNode(n)) continue;
-        match = @enumFromInt(idx);
+        match = @fromBackingInt(@intCast(idx));
         match_count += 1;
         if (match_count > 1) return null;
     }
@@ -135,7 +135,7 @@ fn findTypeInGraph(graph: *const Graph, name: []const u8, file_idx: usize, scope
     // Same-file scope.
     for (items[file_idx..clamped_end], file_idx..) |n, idx| {
         if (node_utils.isTypeOrAliasNode(n) and std.mem.eql(u8, n.name, name)) {
-            return @enumFromInt(idx);
+            return @fromBackingInt(@intCast(idx));
         }
     }
 
@@ -145,7 +145,7 @@ fn findTypeInGraph(graph: *const Graph, name: []const u8, file_idx: usize, scope
     for (name_index.findByName(name)) |idx| {
         const n = items[idx];
         if (!node_utils.isTypeOrAliasNode(n)) continue;
-        match = @enumFromInt(idx);
+        match = @fromBackingInt(@intCast(idx));
         match_count += 1;
         if (match_count > 1) return null;
     }
@@ -155,7 +155,7 @@ fn findTypeInGraph(graph: *const Graph, name: []const u8, file_idx: usize, scope
 /// Resolve a trait name (bare or scoped) to a qualified dot-separated name
 /// by consulting the file's use declarations.
 fn resolveTraitViaUseDecls(graph: *const Graph, trait_name: []const u8, file_idx: usize, scope_end: usize, buf: *[256]u8) ?[]const u8 {
-    const file_id: NodeId = @enumFromInt(file_idx);
+    const file_id: NodeId = @fromBackingInt(@intCast(file_idx));
     const items = graph.nodes.items;
     const clamped_end = @min(scope_end, items.len);
 

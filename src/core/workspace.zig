@@ -83,11 +83,18 @@ pub fn parseWorkspaceConfig(
     source: [:0]const u8,
     workspace_dir: []const u8,
 ) (WorkspaceError || error{OutOfMemory})!Workspace {
-    const parsed = std.zon.parse.fromSliceAlloc(ZonWorkspace, allocator, source, null, .{}) catch |err| switch (err) {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    var diagnostics: std.zon.parse.Diagnostics = undefined;
+    const parsed = std.zon.parse.fromSlice(ZonWorkspace, .{
+        .gpa = allocator,
+        .arena = arena.allocator(),
+        .source = source,
+        .diagnostics = &diagnostics,
+    }) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         error.ParseZon => return error.InvalidConfig,
     };
-    defer std.zon.parse.free(allocator, parsed);
 
     const effective_name = parsed.name orelse std.fs.path.basename(workspace_dir);
     const name = allocator.dupe(u8, effective_name) catch return error.OutOfMemory;
@@ -211,13 +218,13 @@ pub fn assembleWorkspace(
             var node = original_node;
 
             if (node.parent_id) |pid| {
-                node.parent_id = if (pid == .root) proj_mod_id else @enumFromInt(@intFromEnum(pid) + offset);
+                node.parent_id = if (pid == .root) proj_mod_id else @fromBackingInt(@intCast(@backingInt(pid) + offset));
             } else {
                 node.parent_id = proj_mod_id;
             }
 
             if (node.file_path) |fp| {
-                const prefixed = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ proj.name, fp });
+                const prefixed = try allocator.print("{s}/{s}", .{ proj.name, fp });
                 try graph.addOwnedBuffer(allocator, prefixed);
                 node.file_path = prefixed;
             }
@@ -228,15 +235,15 @@ pub fn assembleWorkspace(
 
         for (project_graphs[i].edges.items) |original_edge| {
             var edge = original_edge;
-            edge.source_id = @enumFromInt(@intFromEnum(edge.source_id) + offset);
-            edge.target_id = @enumFromInt(@intFromEnum(edge.target_id) + offset);
+            edge.source_id = @fromBackingInt(@intCast(@backingInt(edge.source_id) + offset));
+            edge.target_id = @fromBackingInt(@intCast(@backingInt(edge.target_id) + offset));
             _ = try graph.addEdgeIfNew(allocator, edge);
         }
 
         project_ranges[i] = .{
             .name = proj.name,
-            .start_id = @enumFromInt(offset),
-            .end_id = @enumFromInt(graph.nodeCount()),
+            .start_id = @fromBackingInt(@intCast(offset)),
+            .end_id = @fromBackingInt(@intCast(graph.nodeCount())),
         };
 
         // Transfer owned buffers, then dismantle the project graph.
@@ -254,12 +261,12 @@ pub fn splitPrefixedId(
     node_id: NodeId,
 ) ?struct { project_name: []const u8, local_id: NodeId } {
     if (node_id == .root) return null;
-    const raw = @intFromEnum(node_id);
+    const raw = @backingInt(node_id);
     for (assembled.project_ranges) |range| {
-        if (raw >= @intFromEnum(range.start_id) and raw < @intFromEnum(range.end_id)) {
+        if (raw >= @backingInt(range.start_id) and raw < @backingInt(range.end_id)) {
             return .{
                 .project_name = range.name,
-                .local_id = @enumFromInt(raw - @intFromEnum(range.start_id)),
+                .local_id = @fromBackingInt(@intCast(raw - @backingInt(range.start_id))),
             };
         }
     }
@@ -279,7 +286,7 @@ pub fn formatPrefixedId(
         return buf[0..root_str.len];
     }
     if (splitPrefixedId(assembled, node_id)) |split| {
-        return std.fmt.bufPrint(buf, "{s}:{x}", .{ split.project_name, @intFromEnum(node_id) }) catch "";
+        return std.fmt.bufPrint(buf, "{s}:{x}", .{ split.project_name, @backingInt(node_id) }) catch "";
     }
-    return std.fmt.bufPrint(buf, "{x}", .{@intFromEnum(node_id)}) catch "";
+    return std.fmt.bufPrint(buf, "{x}", .{@backingInt(node_id)}) catch "";
 }

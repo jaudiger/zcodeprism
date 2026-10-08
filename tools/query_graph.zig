@@ -80,12 +80,12 @@ fn parseNodeKind(s: []const u8) ?NodeKind {
 
 fn printNodeSummary(stdout: *std.Io.Writer, g: FrozenGraph, id: NodeId) !void {
     const n = g.getNode(id) orelse {
-        try stdout.print("  [{d}] <not found>\n", .{@intFromEnum(id)});
+        try stdout.print("  [{d}] <not found>\n", .{@backingInt(id)});
         return;
     };
     const vis_str: []const u8 = if (n.visibility == .public) "pub" else "prv";
     try stdout.print("  [{d:>3}] {s:<12} {s} \"{s}\"", .{
-        @intFromEnum(id), @tagName(n.kind), vis_str, n.name,
+        @backingInt(id), @tagName(n.kind), vis_str, n.name,
     });
     if (n.file_path) |fp| try stdout.print("  file=\"{s}\"", .{fp});
     if (n.line_start) |ls| {
@@ -102,7 +102,7 @@ fn printNodeSummary(stdout: *std.Io.Writer, g: FrozenGraph, id: NodeId) !void {
 
 fn printNodeDetail(stdout: *std.Io.Writer, nd: query.NodeDetail) !void {
     const n = nd.node;
-    try stdout.print("Node {d}:\n", .{@intFromEnum(nd.id)});
+    try stdout.print("Node {d}:\n", .{@backingInt(nd.id)});
     try stdout.print("  name:       \"{s}\"\n", .{n.name});
     try stdout.print("  kind:       {s}\n", .{@tagName(n.kind)});
     try stdout.print("  visibility: {s}\n", .{@tagName(n.visibility)});
@@ -111,7 +111,7 @@ fn printNodeDetail(stdout: *std.Io.Writer, nd: query.NodeDetail) !void {
     if (n.line_start) |ls| {
         if (n.line_end) |le| try stdout.print("  lines:      {d}-{d}\n", .{ ls, le });
     }
-    if (n.parent_id) |pid| try stdout.print("  parent:     {d}\n", .{@intFromEnum(pid)});
+    if (n.parent_id) |pid| try stdout.print("  parent:     {d}\n", .{@backingInt(pid)});
     if (n.doc) |d| try stdout.print("  doc:        \"{s}\"\n", .{d});
     if (n.signature) |s| try stdout.print("  signature:  \"{s}\"\n", .{s});
     if (n.metrics) |m| {
@@ -136,12 +136,12 @@ fn printNodeDetail(stdout: *std.Io.Writer, nd: query.NodeDetail) !void {
 
 fn printStats(stdout: *std.Io.Writer, stats: query.Stats) !void {
     try stdout.print("--- Node counts ---\n", .{});
-    inline for (@typeInfo(NodeKind).@"enum".fields, 0..) |f, i| {
-        if (stats.node_counts[i] > 0) try stdout.print("  {s}: {d}\n", .{ f.name, stats.node_counts[i] });
+    inline for (@typeInfo(NodeKind).@"enum".field_names, 0..) |field_name, i| {
+        if (stats.node_counts[i] > 0) try stdout.print("  {s}: {d}\n", .{ field_name, stats.node_counts[i] });
     }
     try stdout.print("\n--- Edge counts ---\n", .{});
-    inline for (@typeInfo(EdgeType).@"enum".fields, 0..) |f, i| {
-        if (stats.edge_counts[i] > 0) try stdout.print("  {s}: {d}\n", .{ f.name, stats.edge_counts[i] });
+    inline for (@typeInfo(EdgeType).@"enum".field_names, 0..) |field_name, i| {
+        if (stats.edge_counts[i] > 0) try stdout.print("  {s}: {d}\n", .{ field_name, stats.edge_counts[i] });
     }
     try stdout.print("\nTotal lines: {d}\n", .{stats.total_lines});
 }
@@ -178,7 +178,7 @@ fn cmdAncestors(allocator: std.mem.Allocator, g: FrozenGraph, flags: ParsedFlags
     const ancestors = try query.getAncestors(allocator, g, id);
     defer if (ancestors.len > 0) allocator.free(ancestors);
 
-    try stdout.print("Ancestors of node {d}:\n", .{@intFromEnum(id)});
+    try stdout.print("Ancestors of node {d}:\n", .{@backingInt(id)});
     for (ancestors) |aid| try printNodeSummary(stdout, g, aid);
     if (ancestors.len == 0) try stdout.print("  (root, no ancestors)\n", .{});
 }
@@ -188,7 +188,7 @@ fn cmdImpact(allocator: std.mem.Allocator, g: FrozenGraph, flags: ParsedFlags, s
     const result = try query.getImpact(allocator, g, id, .{});
     defer result.deinit(allocator);
 
-    try stdout.print("Impact of node {d}: {d} dependents\n", .{ @intFromEnum(id), result.total_impacted });
+    try stdout.print("Impact of node {d}: {d} dependents\n", .{ @backingInt(id), result.total_impacted });
     for (result.impacted) |iid| try printNodeSummary(stdout, g, iid);
 }
 
@@ -198,7 +198,7 @@ fn cmdPath(allocator: std.mem.Allocator, g: FrozenGraph, flags: ParsedFlags, std
     const result = try query.findPaths(allocator, g, from, to, .{});
     defer result.deinit(allocator);
 
-    try stdout.print("Paths from {d} to {d}: {d} found\n", .{ @intFromEnum(from), @intFromEnum(to), result.paths.len });
+    try stdout.print("Paths from {d} to {d}: {d} found\n", .{ @backingInt(from), @backingInt(to), result.paths.len });
     for (result.paths, 0..) |p, pi| {
         try stdout.print("\n  Path {d} ({d} nodes):\n", .{ pi + 1, p.node_ids.len });
         for (p.node_ids, 0..) |path_nid, ni| {
@@ -219,13 +219,13 @@ fn cmdEdges(allocator: std.mem.Allocator, g: FrozenGraph, flags: ParsedFlags, st
     });
     defer result.deinit(allocator);
 
-    try stdout.print("Edges for node {d}: {d} total ({d} shown)\n", .{ @intFromEnum(id), result.total_count, result.edges.len });
+    try stdout.print("Edges for node {d}: {d} total ({d} shown)\n", .{ @backingInt(id), result.total_count, result.edges.len });
     for (result.edges) |e| {
         const src_name = if (g.getNode(e.source_id)) |n| n.name else "?";
         const tgt_name = if (g.getNode(e.target_id)) |n| n.name else "?";
         try stdout.print("  [{d}] \"{s}\" --({s})-> [{d}] \"{s}\"\n", .{
-            @intFromEnum(e.source_id), src_name, @tagName(e.edge_type),
-            @intFromEnum(e.target_id), tgt_name,
+            @backingInt(e.source_id), src_name, @tagName(e.edge_type),
+            @backingInt(e.target_id), tgt_name,
         });
     }
 }
@@ -237,7 +237,7 @@ fn cmdNode(allocator: std.mem.Allocator, g: FrozenGraph, flags: ParsedFlags, std
     defer result.deinit(allocator);
 
     if (result.nodes.len == 0) {
-        try stdout.print("Node {d} not found\n", .{@intFromEnum(id)});
+        try stdout.print("Node {d} not found\n", .{@backingInt(id)});
     } else {
         try printNodeDetail(stdout, result.nodes[0]);
     }

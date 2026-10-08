@@ -38,7 +38,7 @@ pub const CursorManager = struct {
         const id_num = self.next_id;
         self.next_id += 1;
 
-        const id_str = try std.fmt.allocPrint(alloc, "cur_{x}", .{id_num});
+        const id_str = try alloc.print("cur_{x}", .{id_num});
 
         var cursor = Cursor.init(alloc, position);
         cursor.scope = if (options.scope) |s| try alloc.dupe(u8, s) else null;

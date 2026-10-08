@@ -60,7 +60,7 @@ pub fn buildImportMap(
     log: Logger,
 ) !void {
     const file_index = &graph_index.files;
-    const file_id: NodeId = @enumFromInt(ctx.scope_start);
+    const file_id: NodeId = @fromBackingInt(@intCast(ctx.scope_start));
     const clamped_end = @min(ctx.scope_end, g.nodes.items.len);
 
     // Resolve mod declarations from graph nodes (these are simple name bindings).
@@ -257,7 +257,7 @@ fn walkScopePath(g: *const Graph, scope_index: *const ScopeIndex, root_id: NodeI
         for (scope_index.childrenOf(scope_id)) |child_idx| {
             const n = g.nodes.items[child_idx];
             if (std.mem.eql(u8, n.name, seg)) {
-                found = @enumFromInt(child_idx);
+                found = @fromBackingInt(@intCast(child_idx));
                 break;
             }
         }
@@ -447,7 +447,7 @@ pub fn buildExportEdges(
     graph_index: *const GraphIndex,
     log: Logger,
 ) !void {
-    const file_id: NodeId = @enumFromInt(ctx.scope_start);
+    const file_id: NodeId = @fromBackingInt(@intCast(ctx.scope_start));
     const scope_index = &graph_index.scope;
 
     for (ctx.imports.items) |*entry| {
@@ -488,7 +488,7 @@ fn resolveReExport(
 
     const scope_index = &graph_index.scope;
     const file_index = &graph_index.files;
-    const file_idx = @intFromEnum(module_file_id);
+    const file_idx = @backingInt(module_file_id);
     if (file_idx >= g.nodes.items.len) return null;
     const file_node = g.nodes.items[file_idx];
     const file_path = file_node.file_path orelse return null;

@@ -79,11 +79,11 @@ test "build on empty nodes succeeds" {
 
 test "build populates all four sub-indexes" {
     // Arrange
-    const file_id: types.NodeId = @enumFromInt(0);
+    const file_id: types.NodeId = @fromBackingInt(@intCast(0));
     const nodes: []const Node = &.{
-        .{ .id = @enumFromInt(0), .name = "src/main.zig", .kind = .file, .language = .zig, .file_path = "src/main.zig" },
-        .{ .id = @enumFromInt(1), .name = "main", .kind = .function, .language = .zig, .parent_id = file_id },
-        .{ .id = @enumFromInt(2), .name = "Config", .kind = .type_def, .language = .zig, .parent_id = file_id },
+        .{ .id = @fromBackingInt(@intCast(0)), .name = "src/main.zig", .kind = .file, .language = .zig, .file_path = "src/main.zig" },
+        .{ .id = @fromBackingInt(@intCast(1)), .name = "main", .kind = .function, .language = .zig, .parent_id = file_id },
+        .{ .id = @fromBackingInt(@intCast(2)), .name = "Config", .kind = .type_def, .language = .zig, .parent_id = file_id },
     };
 
     // Act

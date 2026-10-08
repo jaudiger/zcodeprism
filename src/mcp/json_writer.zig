@@ -55,7 +55,7 @@ pub const JsonWriter = struct {
     /// Write a NodeId as a hex string value.
     pub fn nodeIdHex(self: JsonWriter, id: NodeId) OomError!void {
         var buf: [20]u8 = undefined;
-        const hex = std.fmt.bufPrint(&buf, "{x}", .{@intFromEnum(id)}) catch unreachable;
+        const hex = std.fmt.bufPrint(&buf, "{x}", .{@backingInt(id)}) catch unreachable;
         self.s.write(hex) catch return error.OutOfMemory;
     }
 

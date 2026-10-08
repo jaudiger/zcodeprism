@@ -27,7 +27,7 @@ pub fn loadAndAssemble(
     var fr = file.reader(io, &read_buf);
     const content = try fr.interface.allocRemaining(allocs.scratch, .limited(1024 * 1024));
     defer allocs.scratch.free(content);
-    const content_z = try allocs.scratch.dupeZ(u8, content);
+    const content_z = try allocs.scratch.dupeSentinel(u8, content, 0);
     defer allocs.scratch.free(content_z);
 
     const ws = try workspace_mod.parseWorkspaceConfig(allocs.scratch, content_z, ws_dir);

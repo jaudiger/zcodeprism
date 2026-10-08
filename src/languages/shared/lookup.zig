@@ -51,7 +51,7 @@ pub fn findTypeCrossFile(graph: *const Graph, name: []const u8, ctx: *const Edge
                 const sk = m.sub_kind;
                 if (sk == .impl_block or sk == .type_alias) continue;
             }
-            match = @enumFromInt(child_idx);
+            match = @fromBackingInt(@intCast(child_idx));
             match_count += 1;
         }
     }
@@ -74,7 +74,7 @@ pub fn findFunctionByNameScoped(graph: *const Graph, name: []const u8, scope_sta
             for (scope_index.childrenOf(scope_id)) |child_idx| {
                 const n = graph.nodes.items[child_idx];
                 if (matchesFunctionKind(n.kind, extra_kinds) and std.mem.eql(u8, n.name, name)) {
-                    return @enumFromInt(child_idx);
+                    return @fromBackingInt(@intCast(child_idx));
                 }
             }
             const scope_node = graph.getNode(scope_id) orelse break;
@@ -87,7 +87,7 @@ pub fn findFunctionByNameScoped(graph: *const Graph, name: []const u8, scope_sta
     var match_count: usize = 0;
     for (items[scope_start..end], scope_start..) |n, idx| {
         if (matchesFunctionKind(n.kind, extra_kinds) and std.mem.eql(u8, n.name, name)) {
-            sole_match = @enumFromInt(idx);
+            sole_match = @fromBackingInt(@intCast(idx));
             match_count += 1;
             if (match_count > 1) return null;
         }
@@ -105,7 +105,7 @@ pub fn findTypeByNameScoped(graph: *const Graph, name: []const u8, scope_start: 
             const scope_id = current_scope.?;
             for (scope_index.childrenOf(scope_id)) |child_idx| {
                 const n = graph.nodes.items[child_idx];
-                if (match_fn(n, name)) return @enumFromInt(child_idx);
+                if (match_fn(n, name)) return @fromBackingInt(@intCast(child_idx));
             }
             const scope_node = graph.getNode(scope_id) orelse break;
             current_scope = scope_node.parent_id;
@@ -117,7 +117,7 @@ pub fn findTypeByNameScoped(graph: *const Graph, name: []const u8, scope_start: 
     var match_count: usize = 0;
     for (items[scope_start..end], scope_start..) |n, idx| {
         if (match_fn(n, name)) {
-            sole_match = @enumFromInt(idx);
+            sole_match = @fromBackingInt(@intCast(idx));
             match_count += 1;
             if (match_count > 1) return null;
         }
@@ -141,8 +141,8 @@ pub fn findNodeByNameAndLine(
     for (items[scope_start..end], scope_start..) |n, i| {
         if (n.line_start == null or n.line_start.? != line) continue;
         if (!std.mem.eql(u8, n.name, name)) continue;
-        if (kinds.len == 0) return @enumFromInt(i);
-        for (kinds) |k| if (n.kind == k) return @enumFromInt(i);
+        if (kinds.len == 0) return @fromBackingInt(@intCast(i));
+        for (kinds) |k| if (n.kind == k) return @fromBackingInt(@intCast(i));
     }
     return null;
 }
@@ -156,7 +156,7 @@ pub fn findFunctionByNameAndLine(graph: *const Graph, name: []const u8, line: u3
     for (items[scope_start..end], scope_start..) |n, i| {
         if (n.line_start == null or n.line_start.? != line) continue;
         if (!std.mem.eql(u8, n.name, name)) continue;
-        if (n.kind.isTypeContainer()) return @enumFromInt(i);
+        if (n.kind.isTypeContainer()) return @fromBackingInt(@intCast(i));
     }
     return null;
 }
@@ -166,7 +166,7 @@ pub fn findFieldByName(g: *const Graph, type_id: NodeId, field_name: []const u8,
     for (scope_index.childrenOf(type_id)) |child_idx| {
         const n = g.nodes.items[child_idx];
         if (n.kind == .field and std.mem.eql(u8, n.name, field_name)) {
-            return @enumFromInt(child_idx);
+            return @fromBackingInt(@intCast(child_idx));
         }
     }
     return null;

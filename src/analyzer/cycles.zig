@@ -66,7 +66,7 @@ pub fn findCycles(allocator: std.mem.Allocator, fg: FrozenGraph, options: CycleO
             if (!filter.passesScope(scope_filter, n.file_path)) continue;
             const dense: u32 = @intCast(file_nodes.items.len);
             try node_to_dense.put(allocator, @as(u64, i), dense);
-            try file_nodes.append(allocator, @enumFromInt(i));
+            try file_nodes.append(allocator, @fromBackingInt(@intCast(i)));
         }
     }
 
@@ -137,7 +137,7 @@ fn buildFileOwnerMap(allocator: std.mem.Allocator, g: *const Graph) ![]u32 {
     for (g.nodes.items, 0..) |node, i| {
         if (map[i] != undefined_index) continue;
         const pid = node.parent_id orelse continue;
-        const pi = @intFromEnum(pid);
+        const pi = @backingInt(pid);
         if (pi < n) map[i] = map[pi];
     }
 
@@ -166,10 +166,10 @@ fn buildFileAdjacency(
     defer edge_set.deinit(allocator);
 
     for (file_nodes) |file_id| {
-        const src_dense = node_to_dense.get(@intFromEnum(file_id)).?;
+        const src_dense = node_to_dense.get(@backingInt(file_id)).?;
         const out_edges = g.outEdges(file_id);
         for (out_edges) |eid| {
-            const edge = g.edges.items[@intFromEnum(eid)];
+            const edge = g.edges.items[@backingInt(eid)];
 
             var allowed = false;
             for (allowed_types) |et| {
@@ -180,7 +180,7 @@ fn buildFileAdjacency(
             }
             if (!allowed) continue;
 
-            const tgt_idx = @intFromEnum(edge.target_id);
+            const tgt_idx = @backingInt(edge.target_id);
             if (tgt_idx >= file_of.len) continue;
             const tgt_file_raw = file_of[tgt_idx];
             if (tgt_file_raw == undefined_index) continue;

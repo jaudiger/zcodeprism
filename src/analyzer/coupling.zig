@@ -58,8 +58,8 @@ pub fn findCoupling(allocator: std.mem.Allocator, fg: FrozenGraph, options: Coup
     defer pair_counts.deinit(allocator);
 
     for (g.edges.items) |edge| {
-        const src_idx = @intFromEnum(edge.source_id);
-        const tgt_idx = @intFromEnum(edge.target_id);
+        const src_idx = @backingInt(edge.source_id);
+        const tgt_idx = @backingInt(edge.target_id);
         if (src_idx >= unit_of.len or tgt_idx >= unit_of.len) continue;
 
         const source_unit = unit_of[src_idx];
@@ -67,8 +67,8 @@ pub fn findCoupling(allocator: std.mem.Allocator, fg: FrozenGraph, options: Coup
         if (source_unit == std.math.maxInt(u32) or target_unit == std.math.maxInt(u32)) continue;
         if (source_unit == target_unit) continue;
 
-        const unit_a_node = g.getNode(@enumFromInt(@as(u64, source_unit))) orelse continue;
-        const unit_b_node = g.getNode(@enumFromInt(@as(u64, target_unit))) orelse continue;
+        const unit_a_node = g.getNode(@fromBackingInt(@intCast(@as(u64, source_unit)))) orelse continue;
+        const unit_b_node = g.getNode(@fromBackingInt(@intCast(@as(u64, target_unit)))) orelse continue;
 
         if (!options.include_external) {
             if (unit_a_node.external != .none or unit_b_node.external != .none) continue;
@@ -97,8 +97,8 @@ pub fn findCoupling(allocator: std.mem.Allocator, fg: FrozenGraph, options: Coup
         if (score < options.min_coupling) continue;
 
         const ab = unpackPair(entry.key_ptr.*);
-        const file_a: NodeId = @enumFromInt(@as(u64, ab[0]));
-        const file_b: NodeId = @enumFromInt(@as(u64, ab[1]));
+        const file_a: NodeId = @fromBackingInt(@intCast(@as(u64, ab[0])));
+        const file_b: NodeId = @fromBackingInt(@intCast(@as(u64, ab[1])));
         const node_a = g.getNode(file_a) orelse continue;
         const node_b = g.getNode(file_b) orelse continue;
 
@@ -144,7 +144,7 @@ fn buildFileOwnerMap(allocator: std.mem.Allocator, g: *const Graph) ![]u32 {
     for (g.nodes.items, 0..) |node, i| {
         if (map[i] != std.math.maxInt(u32)) continue;
         const pid = node.parent_id orelse continue;
-        const pi = @intFromEnum(pid);
+        const pi = @backingInt(pid);
         if (pi < n) map[i] = map[pi];
     }
 
@@ -164,7 +164,7 @@ fn buildDirectoryOwnerMap(allocator: std.mem.Allocator, g: *const Graph) ![]u32 
     for (g.nodes.items, 0..) |node, i| {
         if (map[i] != std.math.maxInt(u32)) continue;
         const pid = node.parent_id orelse continue;
-        const pi = @intFromEnum(pid);
+        const pi = @backingInt(pid);
         if (pi < n) map[i] = map[pi];
     }
 

@@ -43,9 +43,9 @@ pub const Layout = struct {
     pub fn init(allocator: std.mem.Allocator, base: []const u8) !Layout {
         const trimmed = std.mem.trimEnd(u8, base, "/");
         const root = if (trimmed.len == 0) "." else trimmed;
-        const bin = try std.fmt.allocPrint(allocator, "{s}/" ++ graph_binary_name, .{root});
+        const bin = try allocator.print("{s}/" ++ graph_binary_name, .{root});
         errdefer allocator.free(bin);
-        const jsonl_path = try std.fmt.allocPrint(allocator, "{s}/" ++ graph_jsonl_name, .{root});
+        const jsonl_path = try allocator.print("{s}/" ++ graph_jsonl_name, .{root});
         return .{
             .allocator = allocator,
             .data_dir = base,
@@ -116,8 +116,7 @@ pub const StorageError = error{
 
 test "Format enum has exactly two variants" {
     comptime {
-        const fields = @typeInfo(Format).@"enum".fields;
-        std.debug.assert(fields.len == 2);
+        std.debug.assert(@typeInfo(Format).@"enum".field_names.len == 2);
     }
 }
 

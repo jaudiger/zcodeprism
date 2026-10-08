@@ -261,5 +261,5 @@ test "stats report both languages present" {
     // Assert
     try std.testing.expect(stats.has_zig);
     try std.testing.expect(stats.has_rust);
-    try std.testing.expect(stats.node_counts[@intFromEnum(NodeKind.file)] >= 2);
+    try std.testing.expect(stats.node_counts[@backingInt(NodeKind.file)] >= 2);
 }

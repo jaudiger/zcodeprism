@@ -96,22 +96,22 @@ test "validateTag accepts valid tags and rejects invalid ones" {
     // Arrange
     const valid_alphanum = "my-snapshot_v2";
     const valid_single = "a";
-    const valid_max_len = "a" ** 64;
+    const valid_max_len: [64]u8 = @splat('a');
     const invalid_empty = "";
     const invalid_slash = "foo/bar";
     const invalid_dot = "v1.0";
     const invalid_space = "has space";
-    const invalid_too_long = "a" ** 65;
+    const invalid_too_long: [65]u8 = @splat('a');
 
     // Act / Assert
     try validateTag(valid_alphanum);
     try validateTag(valid_single);
-    try validateTag(valid_max_len);
+    try validateTag(&valid_max_len);
 
     // Act / Assert
     try std.testing.expectError(error.InvalidTagName, validateTag(invalid_empty));
     try std.testing.expectError(error.InvalidTagName, validateTag(invalid_slash));
     try std.testing.expectError(error.InvalidTagName, validateTag(invalid_dot));
     try std.testing.expectError(error.InvalidTagName, validateTag(invalid_space));
-    try std.testing.expectError(error.TagTooLong, validateTag(invalid_too_long));
+    try std.testing.expectError(error.TagTooLong, validateTag(&invalid_too_long));
 }

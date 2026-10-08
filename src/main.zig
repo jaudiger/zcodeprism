@@ -375,10 +375,10 @@ fn runIndex(allocator: std.mem.Allocator, io: std.Io, stdout: *std.Io.Writer, st
         die(stderr, "failed to resolve project root: {s}\n", .{@errorName(err)});
     defer allocator.free(project_root);
 
-    const cfg = loadProjectConfig(allocator, io) catch |err|
+    const parsed_config = loadProjectConfig(allocator, io) catch |err|
         die(stderr, "failed to load config: {s}\n", .{@errorName(err)});
-    defer config.deinit(cfg, allocator);
-    const full = config.withDefaults(cfg);
+    defer parsed_config.deinit();
+    const full = config.withDefaults(parsed_config.config);
 
     var text_logger = logging.TextStderrLogger.init(io, logging.verbosityToLevel(verbosity));
     const logger = text_logger.logger();
@@ -412,10 +412,10 @@ fn runExport(
     stderr: *std.Io.Writer,
     args: ExportArgs,
 ) void {
-    const cfg = loadProjectConfig(allocator, io) catch |err|
+    const parsed_config = loadProjectConfig(allocator, io) catch |err|
         die(stderr, "failed to load config: {s}\n", .{@errorName(err)});
-    defer config.deinit(cfg, allocator);
-    const full = config.withDefaults(cfg);
+    defer parsed_config.deinit();
+    const full = config.withDefaults(parsed_config.config);
 
     const fmt: commands.@"export".Format = switch (args.format) {
         .ctg => .ctg,
@@ -456,10 +456,10 @@ fn dieExport(stderr: *std.Io.Writer, err: anyerror, snapshot_tag: ?[]const u8) n
 }
 
 fn runSnapshot(allocator: std.mem.Allocator, io: std.Io, stdout: *std.Io.Writer, stderr: *std.Io.Writer, name: []const u8) void {
-    const cfg = loadProjectConfig(allocator, io) catch |err|
+    const parsed_config = loadProjectConfig(allocator, io) catch |err|
         die(stderr, "failed to load config: {s}\n", .{@errorName(err)});
-    defer config.deinit(cfg, allocator);
-    const full = config.withDefaults(cfg);
+    defer parsed_config.deinit();
+    const full = config.withDefaults(parsed_config.config);
 
     commands.snapshot.run(allocator, io, .{ .tag = name, .storage_path = storagePath(full) }) catch |err| switch (err) {
         error.InvalidTagName => die(stderr, "invalid snapshot tag: {s}\n", .{name}),
@@ -472,10 +472,10 @@ fn runSnapshot(allocator: std.mem.Allocator, io: std.Io, stdout: *std.Io.Writer,
 }
 
 fn runDiff(allocator: std.mem.Allocator, io: std.Io, stdout: *std.Io.Writer, stderr: *std.Io.Writer, args: DiffArgs) void {
-    const cfg = loadProjectConfig(allocator, io) catch |err|
+    const parsed_config = loadProjectConfig(allocator, io) catch |err|
         die(stderr, "failed to load config: {s}\n", .{@errorName(err)});
-    defer config.deinit(cfg, allocator);
-    const full = config.withDefaults(cfg);
+    defer parsed_config.deinit();
+    const full = config.withDefaults(parsed_config.config);
 
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);
@@ -494,10 +494,10 @@ fn runServe(allocator: std.mem.Allocator, io: std.Io, stderr: *std.Io.Writer, wo
         die(stderr, "failed to resolve project root: {s}\n", .{@errorName(err)});
     defer allocator.free(project_root);
 
-    const cfg = loadProjectConfig(allocator, io) catch |err|
+    const parsed_config = loadProjectConfig(allocator, io) catch |err|
         die(stderr, "failed to load config: {s}\n", .{@errorName(err)});
-    defer config.deinit(cfg, allocator);
-    const full = config.withDefaults(cfg);
+    defer parsed_config.deinit();
+    const full = config.withDefaults(parsed_config.config);
 
     var text_logger = logging.TextStderrLogger.init(io, logging.verbosityToLevel(verbosity));
     const logger = text_logger.logger();
@@ -516,10 +516,10 @@ fn runServe(allocator: std.mem.Allocator, io: std.Io, stderr: *std.Io.Writer, wo
 }
 
 fn runStatus(allocator: std.mem.Allocator, io: std.Io, stdout: *std.Io.Writer, stderr: *std.Io.Writer, workspace_arg: ?[]const u8) void {
-    const cfg = loadProjectConfig(allocator, io) catch |err|
+    const parsed_config = loadProjectConfig(allocator, io) catch |err|
         die(stderr, "failed to load config: {s}\n", .{@errorName(err)});
-    defer config.deinit(cfg, allocator);
-    const full = config.withDefaults(cfg);
+    defer parsed_config.deinit();
+    const full = config.withDefaults(parsed_config.config);
 
     const result = commands.status.run(allocator, io, .{
         .workspace_path = workspace_arg,
@@ -559,7 +559,7 @@ fn storageFormat(full: config.Config) config.StorageFormat {
     return .binary;
 }
 
-const lang_buf_len = @typeInfo(types.Language).@"enum".fields.len;
+const lang_buf_len = @typeInfo(types.Language).@"enum".field_names.len;
 
 /// Translate the config's optional `languages` list into the runtime
 /// `types.Language` slice consumed by the indexer and enricher. Writes
@@ -587,9 +587,9 @@ fn lspPathsFrom(full: config.Config) lsp_pool.LspServerPaths {
     return paths;
 }
 
-fn loadProjectConfig(allocator: std.mem.Allocator, io: std.Io) !config.Config {
+fn loadProjectConfig(allocator: std.mem.Allocator, io: std.Io) !config.ParsedConfig {
     const file = std.Io.Dir.cwd().openFile(io, ".zcodeprism.zon", .{}) catch |err| {
-        if (err == error.FileNotFound) return config.Config{};
+        if (err == error.FileNotFound) return .{ .config = .{}, .arena = .init(allocator) };
         return err;
     };
     defer file.close(io);
@@ -598,7 +598,7 @@ fn loadProjectConfig(allocator: std.mem.Allocator, io: std.Io) !config.Config {
     var fr = file.reader(io, &read_buf);
     const content = try fr.interface.allocRemaining(allocator, .limited(1024 * 1024));
     defer allocator.free(content);
-    const content_z = try allocator.dupeZ(u8, content);
+    const content_z = try allocator.dupeSentinel(u8, content, 0);
     defer allocator.free(content_z);
 
     return config.parseFromSlice(allocator, content_z);

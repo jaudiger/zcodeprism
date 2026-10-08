@@ -35,7 +35,7 @@ fn setupProjectFixtures(tmp_dir: *std.testing.TmpDir) ![:0]const u8 {
 }
 
 fn formatNodeId(buf: []u8, id: NodeId) []const u8 {
-    const val = @intFromEnum(id);
+    const val = @backingInt(id);
     return std.fmt.bufPrint(buf, "{x}", .{val}) catch unreachable;
 }
 
@@ -322,7 +322,7 @@ test "get_nodes returns all fields for a single id" {
     var id_buf: [20]u8 = undefined;
     const id_str = formatNodeId(&id_buf, node.id);
 
-    const request = try std.fmt.allocPrint(allocator,
+    const request = try allocator.print(
         \\{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"graph.get_nodes","arguments":{{"node_ids":"{s}"}}}}}}
     , .{id_str});
     defer allocator.free(request);
@@ -372,7 +372,7 @@ test "get_nodes with array of ids" {
     const id1 = formatNodeId(&buf1, n1.id);
     const id2 = formatNodeId(&buf2, n2.id);
 
-    const request = try std.fmt.allocPrint(allocator,
+    const request = try allocator.print(
         \\{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"graph.get_nodes","arguments":{{"node_ids":["{s}","{s}"]}}}}}}
     , .{ id1, id2 });
     defer allocator.free(request);
@@ -410,7 +410,7 @@ test "get_nodes with include_source true" {
     var id_buf: [20]u8 = undefined;
     const id_str = formatNodeId(&id_buf, node.id);
 
-    const request = try std.fmt.allocPrint(allocator,
+    const request = try allocator.print(
         \\{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"graph.get_nodes","arguments":{{"node_ids":"{s}","include_source":true}}}}}}
     , .{id_str});
     defer allocator.free(request);
@@ -448,7 +448,7 @@ test "get_nodes for phantom node has external and null source" {
     var phantom_id: ?NodeId = null;
     for (gen.graph.nodes.items, 0..) |n, i| {
         if (n.external != .none) {
-            phantom_id = @enumFromInt(i);
+            phantom_id = @fromBackingInt(@intCast(i));
             break;
         }
     }
@@ -456,7 +456,7 @@ test "get_nodes for phantom node has external and null source" {
     var id_buf: [20]u8 = undefined;
     const id_str = formatNodeId(&id_buf, pid);
 
-    const request = try std.fmt.allocPrint(allocator,
+    const request = try allocator.print(
         \\{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"graph.get_nodes","arguments":{{"node_ids":"{s}","include_source":true}}}}}}
     , .{id_str});
     defer allocator.free(request);
@@ -535,12 +535,12 @@ test "get_nodes string id equals single-element array" {
     var id_buf: [20]u8 = undefined;
     const id_str = formatNodeId(&id_buf, node.id);
 
-    const req_string = try std.fmt.allocPrint(allocator,
+    const req_string = try allocator.print(
         \\{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"graph.get_nodes","arguments":{{"node_ids":"{s}"}}}}}}
     , .{id_str});
     defer allocator.free(req_string);
 
-    const req_array = try std.fmt.allocPrint(allocator,
+    const req_array = try allocator.print(
         \\{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"graph.get_nodes","arguments":{{"node_ids":["{s}"]}}}}}}
     , .{id_str});
     defer allocator.free(req_array);
@@ -583,7 +583,7 @@ test "get_source full returns non-empty source" {
     var id_buf: [20]u8 = undefined;
     const id_str = formatNodeId(&id_buf, node.id);
 
-    const request = try std.fmt.allocPrint(allocator,
+    const request = try allocator.print(
         \\{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"graph.get_source","arguments":{{"node_ids":"{s}"}}}}}}
     , .{id_str});
     defer allocator.free(request);
@@ -624,12 +624,12 @@ test "get_source signature is shorter than full" {
     var id_buf: [20]u8 = undefined;
     const id_str = formatNodeId(&id_buf, node.id);
 
-    const req_full = try std.fmt.allocPrint(allocator,
+    const req_full = try allocator.print(
         \\{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"graph.get_source","arguments":{{"node_ids":"{s}"}}}}}}
     , .{id_str});
     defer allocator.free(req_full);
 
-    const req_sig = try std.fmt.allocPrint(allocator,
+    const req_sig = try allocator.print(
         \\{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"graph.get_source","arguments":{{"node_ids":"{s}","part":"signature"}}}}}}
     , .{id_str});
     defer allocator.free(req_sig);
@@ -672,7 +672,7 @@ test "get_source body does not start with function keyword" {
     var id_buf: [20]u8 = undefined;
     const id_str = formatNodeId(&id_buf, node.id);
 
-    const request = try std.fmt.allocPrint(allocator,
+    const request = try allocator.print(
         \\{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"graph.get_source","arguments":{{"node_ids":"{s}","part":"body"}}}}}}
     , .{id_str});
     defer allocator.free(request);
@@ -713,12 +713,12 @@ test "get_source with context_lines is at least as long as without" {
     var id_buf: [20]u8 = undefined;
     const id_str = formatNodeId(&id_buf, node.id);
 
-    const req_no_ctx = try std.fmt.allocPrint(allocator,
+    const req_no_ctx = try allocator.print(
         \\{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"graph.get_source","arguments":{{"node_ids":"{s}"}}}}}}
     , .{id_str});
     defer allocator.free(req_no_ctx);
 
-    const req_ctx = try std.fmt.allocPrint(allocator,
+    const req_ctx = try allocator.print(
         \\{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"graph.get_source","arguments":{{"node_ids":"{s}","context_lines":2}}}}}}
     , .{id_str});
     defer allocator.free(req_ctx);
@@ -760,7 +760,7 @@ test "get_source for phantom node returns null source" {
     var phantom_id: ?NodeId = null;
     for (gen.graph.nodes.items, 0..) |n, i| {
         if (n.external != .none) {
-            phantom_id = @enumFromInt(i);
+            phantom_id = @fromBackingInt(@intCast(i));
             break;
         }
     }
@@ -768,7 +768,7 @@ test "get_source for phantom node returns null source" {
     var id_buf: [20]u8 = undefined;
     const id_str = formatNodeId(&id_buf, pid);
 
-    const request = try std.fmt.allocPrint(allocator,
+    const request = try allocator.print(
         \\{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"graph.get_source","arguments":{{"node_ids":"{s}"}}}}}}
     , .{id_str});
     defer allocator.free(request);
@@ -807,7 +807,7 @@ test "get_source for file node returns file content" {
     var id_buf: [20]u8 = undefined;
     const id_str = formatNodeId(&id_buf, file_node.id);
 
-    const request = try std.fmt.allocPrint(allocator,
+    const request = try allocator.print(
         \\{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"graph.get_source","arguments":{{"node_ids":"{s}"}}}}}}
     , .{id_str});
     defer allocator.free(request);
@@ -847,7 +847,7 @@ test "get_edges out direction" {
     var id_buf: [20]u8 = undefined;
     const id_str = formatNodeId(&id_buf, node.id);
 
-    const request = try std.fmt.allocPrint(allocator,
+    const request = try allocator.print(
         \\{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"graph.get_edges","arguments":{{"node_ids":"{s}","direction":"out"}}}}}}
     , .{id_str});
     defer allocator.free(request);
@@ -889,7 +889,7 @@ test "get_edges in direction" {
     var id_buf: [20]u8 = undefined;
     const id_str = formatNodeId(&id_buf, node.id);
 
-    const request = try std.fmt.allocPrint(allocator,
+    const request = try allocator.print(
         \\{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"graph.get_edges","arguments":{{"node_ids":"{s}","direction":"in"}}}}}}
     , .{id_str});
     defer allocator.free(request);
@@ -931,12 +931,12 @@ test "get_edges both has at least as many as out only" {
     var id_buf: [20]u8 = undefined;
     const id_str = formatNodeId(&id_buf, node.id);
 
-    const req_out = try std.fmt.allocPrint(allocator,
+    const req_out = try allocator.print(
         \\{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"graph.get_edges","arguments":{{"node_ids":"{s}","direction":"out"}}}}}}
     , .{id_str});
     defer allocator.free(req_out);
 
-    const req_both = try std.fmt.allocPrint(allocator,
+    const req_both = try allocator.print(
         \\{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"graph.get_edges","arguments":{{"node_ids":"{s}","direction":"both"}}}}}}
     , .{id_str});
     defer allocator.free(req_both);
@@ -979,7 +979,7 @@ test "get_edges with type filter and connected node info" {
     var id_buf: [20]u8 = undefined;
     const id_str = formatNodeId(&id_buf, node.id);
 
-    const request = try std.fmt.allocPrint(allocator,
+    const request = try allocator.print(
         \\{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"graph.get_edges","arguments":{{"node_ids":"{s}","edge_type":"calls"}}}}}}
     , .{id_str});
     defer allocator.free(request);
@@ -1027,7 +1027,7 @@ test "get_edges for isolated node returns empty" {
     var isolated_id: ?NodeId = null;
     for (gen.graph.nodes.items, 0..) |n, i| {
         if (n.kind == .field) {
-            const candidate: NodeId = @enumFromInt(i);
+            const candidate: NodeId = @fromBackingInt(@intCast(i));
             var has_edges = false;
             for (gen.graph.edges.items) |e| {
                 if (e.source_id == candidate or e.target_id == candidate) {
@@ -1045,7 +1045,7 @@ test "get_edges for isolated node returns empty" {
     var id_buf: [20]u8 = undefined;
     const id_str = formatNodeId(&id_buf, nid);
 
-    const request = try std.fmt.allocPrint(allocator,
+    const request = try allocator.print(
         \\{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"graph.get_edges","arguments":{{"node_ids":"{s}","direction":"both"}}}}}}
     , .{id_str});
     defer allocator.free(request);
@@ -1086,7 +1086,7 @@ test "path between connected nodes returns non-empty" {
     const from_id = formatNodeId(&buf1, from_node.id);
     const to_id = formatNodeId(&buf2, to_node.id);
 
-    const request = try std.fmt.allocPrint(allocator,
+    const request = try allocator.print(
         \\{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"graph.path","arguments":{{"from_id":"{s}","to_id":"{s}"}}}}}}
     , .{ from_id, to_id });
     defer allocator.free(request);
@@ -1127,7 +1127,7 @@ test "path between unconnected nodes returns empty" {
     const id1 = formatNodeId(&buf1, f1.id);
     const id2 = formatNodeId(&buf2, f2.id);
 
-    const request = try std.fmt.allocPrint(allocator,
+    const request = try allocator.print(
         \\{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"graph.path","arguments":{{"from_id":"{s}","to_id":"{s}"}}}}}}
     , .{ id1, id2 });
     defer allocator.free(request);
@@ -1168,7 +1168,7 @@ test "path with max_depth zero returns empty" {
     const from_id = formatNodeId(&buf1, from_node.id);
     const to_id = formatNodeId(&buf2, to_node.id);
 
-    const request = try std.fmt.allocPrint(allocator,
+    const request = try allocator.print(
         \\{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"graph.path","arguments":{{"from_id":"{s}","to_id":"{s}","max_depth":0}}}}}}
     , .{ from_id, to_id });
     defer allocator.free(request);
@@ -1209,7 +1209,7 @@ test "path with edge_types filter returns only matching edges" {
     const from_id = formatNodeId(&buf1, f_main.id);
     const to_id = formatNodeId(&buf2, f_utils.id);
 
-    const request = try std.fmt.allocPrint(allocator,
+    const request = try allocator.print(
         \\{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"graph.path","arguments":{{"from_id":"{s}","to_id":"{s}","edge_types":["imports"]}}}}}}
     , .{ from_id, to_id });
     defer allocator.free(request);
@@ -1252,7 +1252,7 @@ test "path with non-existent node" {
     var id_buf: [20]u8 = undefined;
     const id_str = formatNodeId(&id_buf, node.id);
 
-    const request = try std.fmt.allocPrint(allocator,
+    const request = try allocator.print(
         \\{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"graph.path","arguments":{{"from_id":"{s}","to_id":"ffffffff"}}}}}}
     , .{id_str});
     defer allocator.free(request);
@@ -1333,7 +1333,7 @@ test "cursor_create with start_node positions there" {
     var id_buf: [20]u8 = undefined;
     const id_str = formatNodeId(&id_buf, node.id);
 
-    const request = try std.fmt.allocPrint(allocator,
+    const request = try allocator.print(
         \\{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"explorer.cursor_create","arguments":{{"start_node_id":"{s}"}}}}}}
     , .{id_str});
     defer allocator.free(request);
@@ -1382,7 +1382,7 @@ test "cursor_move updates position" {
     const cursor_id = r1.inner.value.object.get("cursor_id").?.string;
 
     // Act
-    const move_req = try std.fmt.allocPrint(allocator,
+    const move_req = try allocator.print(
         \\{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"explorer.cursor_move","arguments":{{"cursor_id":"{s}","node_id":"{s}"}}}}}}
     , .{ cursor_id, target_id });
     defer allocator.free(move_req);
@@ -1430,7 +1430,7 @@ test "cursor_close then move fails" {
     const cursor_id = r1.inner.value.object.get("cursor_id").?.string;
 
     // Close cursor
-    const close_req = try std.fmt.allocPrint(allocator,
+    const close_req = try allocator.print(
         \\{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"explorer.cursor_close","arguments":{{"cursor_id":"{s}"}}}}}}
     , .{cursor_id});
     defer allocator.free(close_req);
@@ -1438,7 +1438,7 @@ test "cursor_close then move fails" {
     defer allocator.free(close_resp);
 
     // Act
-    const move_req = try std.fmt.allocPrint(allocator,
+    const move_req = try allocator.print(
         \\{{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{{"name":"explorer.cursor_move","arguments":{{"cursor_id":"{s}","node_id":"{s}"}}}}}}
     , .{ cursor_id, target_id });
     defer allocator.free(move_req);
@@ -1479,7 +1479,7 @@ test "cursor_expand returns subgraph" {
     const start_id = formatNodeId(&id_buf, start_node.id);
 
     // Create cursor at a node with outgoing edges
-    const create_req = try std.fmt.allocPrint(allocator,
+    const create_req = try allocator.print(
         \\{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"explorer.cursor_create","arguments":{{"start_node_id":"{s}"}}}}}}
     , .{start_id});
     defer allocator.free(create_req);
@@ -1491,7 +1491,7 @@ test "cursor_expand returns subgraph" {
     const cursor_id = r1.inner.value.object.get("cursor_id").?.string;
 
     // Act
-    const expand_req = try std.fmt.allocPrint(allocator,
+    const expand_req = try allocator.print(
         \\{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"explorer.cursor_expand","arguments":{{"cursor_id":"{s}","depth":2}}}}}}
     , .{cursor_id});
     defer allocator.free(expand_req);
@@ -1538,7 +1538,7 @@ test "cursor_query with kind filter" {
     const cursor_id = r1.inner.value.object.get("cursor_id").?.string;
 
     // Act
-    const query_req = try std.fmt.allocPrint(allocator,
+    const query_req = try allocator.print(
         \\{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"explorer.cursor_query","arguments":{{"cursor_id":"{s}","kind":"function"}}}}}}
     , .{cursor_id});
     defer allocator.free(query_req);
@@ -1578,7 +1578,7 @@ test "diff identical function with itself" {
     var id_buf: [20]u8 = undefined;
     const id_str = formatNodeId(&id_buf, node.id);
 
-    const request = try std.fmt.allocPrint(allocator,
+    const request = try allocator.print(
         \\{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"explorer.diff","arguments":{{"node_ids":["{s}","{s}"]}}}}}}
     , .{ id_str, id_str });
     defer allocator.free(request);
@@ -1621,7 +1621,7 @@ test "diff two different functions" {
     const id_a = formatNodeId(&buf_a, fn_a.id);
     const id_b = formatNodeId(&buf_b, fn_b.id);
 
-    const request = try std.fmt.allocPrint(allocator,
+    const request = try allocator.print(
         \\{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"explorer.diff","arguments":{{"node_ids":["{s}","{s}"]}}}}}}
     , .{ id_a, id_b });
     defer allocator.free(request);
@@ -1668,7 +1668,7 @@ test "diff N nodes returns NxN matrix" {
     const id2 = formatNodeId(&buf2, fn2.id);
     const id3 = formatNodeId(&buf3, fn3.id);
 
-    const request = try std.fmt.allocPrint(allocator,
+    const request = try allocator.print(
         \\{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"explorer.diff","arguments":{{"node_ids":["{s}","{s}","{s}"]}}}}}}
     , .{ id1, id2, id3 });
     defer allocator.free(request);
@@ -1726,7 +1726,7 @@ test "annotate sets tag and annotations returns it" {
     const cursor_id = r1.inner.value.object.get("cursor_id").?.string;
 
     // Annotate
-    const annotate_req = try std.fmt.allocPrint(allocator,
+    const annotate_req = try allocator.print(
         \\{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"explorer.annotate","arguments":{{"cursor_id":"{s}","node_ids":"{s}","tag":"reviewed"}}}}}}
     , .{ cursor_id, id_str });
     defer allocator.free(annotate_req);
@@ -1736,7 +1736,7 @@ test "annotate sets tag and annotations returns it" {
     defer r2.inner.deinit();
 
     // Act
-    const annot_req = try std.fmt.allocPrint(allocator,
+    const annot_req = try allocator.print(
         \\{{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{{"name":"explorer.annotations","arguments":{{"cursor_id":"{s}"}}}}}}
     , .{cursor_id});
     defer allocator.free(annot_req);
@@ -1788,7 +1788,7 @@ test "annotate with note" {
     const cursor_id = r1.inner.value.object.get("cursor_id").?.string;
 
     // Annotate with note
-    const annotate_req = try std.fmt.allocPrint(allocator,
+    const annotate_req = try allocator.print(
         \\{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"explorer.annotate","arguments":{{"cursor_id":"{s}","node_ids":"{s}","tag":"candidate","note":"needs refactor"}}}}}}
     , .{ cursor_id, id_str });
     defer allocator.free(annotate_req);
@@ -1798,7 +1798,7 @@ test "annotate with note" {
     defer r2.inner.deinit();
 
     // Act
-    const annot_req = try std.fmt.allocPrint(allocator,
+    const annot_req = try allocator.print(
         \\{{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{{"name":"explorer.annotations","arguments":{{"cursor_id":"{s}"}}}}}}
     , .{cursor_id});
     defer allocator.free(annot_req);
@@ -1857,7 +1857,7 @@ test "annotate multiple nodes" {
     const cursor_id = r1.inner.value.object.get("cursor_id").?.string;
 
     // Annotate both nodes
-    const annotate_req = try std.fmt.allocPrint(allocator,
+    const annotate_req = try allocator.print(
         \\{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"explorer.annotate","arguments":{{"cursor_id":"{s}","node_ids":["{s}","{s}"],"tag":"marked"}}}}}}
     , .{ cursor_id, id_a, id_b });
     defer allocator.free(annotate_req);
@@ -1867,7 +1867,7 @@ test "annotate multiple nodes" {
     defer r2.inner.deinit();
 
     // Act
-    const annot_req = try std.fmt.allocPrint(allocator,
+    const annot_req = try allocator.print(
         \\{{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{{"name":"explorer.annotations","arguments":{{"cursor_id":"{s}"}}}}}}
     , .{cursor_id});
     defer allocator.free(annot_req);
@@ -1925,7 +1925,7 @@ test "annotations filter by tag" {
     const cursor_id = r1.inner.value.object.get("cursor_id").?.string;
 
     // Annotate with different tags
-    const ann1_req = try std.fmt.allocPrint(allocator,
+    const ann1_req = try allocator.print(
         \\{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"explorer.annotate","arguments":{{"cursor_id":"{s}","node_ids":"{s}","tag":"alpha"}}}}}}
     , .{ cursor_id, id_a });
     defer allocator.free(ann1_req);
@@ -1934,7 +1934,7 @@ test "annotations filter by tag" {
     defer r2.outer.deinit();
     defer r2.inner.deinit();
 
-    const ann2_req = try std.fmt.allocPrint(allocator,
+    const ann2_req = try allocator.print(
         \\{{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{{"name":"explorer.annotate","arguments":{{"cursor_id":"{s}","node_ids":"{s}","tag":"beta"}}}}}}
     , .{ cursor_id, id_b });
     defer allocator.free(ann2_req);
@@ -1944,7 +1944,7 @@ test "annotations filter by tag" {
     defer r3.inner.deinit();
 
     // Act
-    const query_req = try std.fmt.allocPrint(allocator,
+    const query_req = try allocator.print(
         \\{{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{{"name":"explorer.annotations","arguments":{{"cursor_id":"{s}","tag":"alpha"}}}}}}
     , .{cursor_id});
     defer allocator.free(query_req);
@@ -1993,7 +1993,7 @@ test "annotations on wrong cursor returns empty" {
     defer r1.inner.deinit();
     const cursor_a = r1.inner.value.object.get("cursor_id").?.string;
 
-    const annotate_req = try std.fmt.allocPrint(allocator,
+    const annotate_req = try allocator.print(
         \\{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"explorer.annotate","arguments":{{"cursor_id":"{s}","node_ids":"{s}","tag":"tagged"}}}}}}
     , .{ cursor_a, id_str });
     defer allocator.free(annotate_req);
@@ -2013,7 +2013,7 @@ test "annotations on wrong cursor returns empty" {
     const cursor_b = r3.inner.value.object.get("cursor_id").?.string;
 
     // Act
-    const query_req = try std.fmt.allocPrint(allocator,
+    const query_req = try allocator.print(
         \\{{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{{"name":"explorer.annotations","arguments":{{"cursor_id":"{s}"}}}}}}
     , .{cursor_b});
     defer allocator.free(query_req);
@@ -2500,7 +2500,7 @@ test "impact core function has dependents" {
     var id_buf: [20]u8 = undefined;
     const id_str = formatNodeId(&id_buf, node.id);
 
-    const request = try std.fmt.allocPrint(allocator,
+    const request = try allocator.print(
         \\{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"analysis.impact","arguments":{{"node_ids":"{s}"}}}}}}
     , .{id_str});
     defer allocator.free(request);

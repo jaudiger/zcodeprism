@@ -64,7 +64,7 @@ test "visitor-populated metrics are preserved" {
     computeAllSourceMetrics(&g, source, 0, g.nodeCount());
 
     // Assert
-    const m = g.getNode(@enumFromInt(1)).?.metrics.?;
+    const m = g.getNode(@fromBackingInt(@intCast(1))).?.metrics.?;
     try std.testing.expectEqual(@as(u16, 2), m.complexity);
     try std.testing.expectEqual(@as(u16, 1), m.branches);
     try std.testing.expectEqual(@as(u32, 3), m.lines);
@@ -98,7 +98,7 @@ test "default metrics when visitor did not populate" {
     computeAllSourceMetrics(&g, source, 0, g.nodeCount());
 
     // Assert
-    const m = g.getNode(@enumFromInt(1)).?.metrics.?;
+    const m = g.getNode(@fromBackingInt(@intCast(1))).?.metrics.?;
     try std.testing.expectEqual(@as(u16, 0), m.complexity);
     try std.testing.expectEqual(@as(u32, 1), m.lines);
     try std.testing.expect(m.structural_hash != 0);
@@ -128,10 +128,10 @@ test "structural hash is deterministic, normalizes identifiers, and reflects str
     computeAllSourceMetrics(&g, src, 0, g.nodeCount());
     computeAllSourceMetrics(&g2, src, 0, g2.nodeCount());
 
-    const hash_foo = g.getNode(@enumFromInt(1)).?.metrics.?.structural_hash;
-    const hash_bar = g.getNode(@enumFromInt(2)).?.metrics.?.structural_hash;
-    const hash_baz = g.getNode(@enumFromInt(3)).?.metrics.?.structural_hash;
-    const hash_foo_rerun = g2.getNode(@enumFromInt(1)).?.metrics.?.structural_hash;
+    const hash_foo = g.getNode(@fromBackingInt(@intCast(1))).?.metrics.?.structural_hash;
+    const hash_bar = g.getNode(@fromBackingInt(@intCast(2))).?.metrics.?.structural_hash;
+    const hash_baz = g.getNode(@fromBackingInt(@intCast(3))).?.metrics.?.structural_hash;
+    const hash_foo_rerun = g2.getNode(@fromBackingInt(@intCast(1))).?.metrics.?.structural_hash;
 
     // Assert
     try std.testing.expectEqual(hash_foo, hash_bar);
@@ -167,9 +167,9 @@ test "structural hash is unaffected by comment and whitespace changes" {
     computeAllSourceMetrics(&g2, src_commented, 0, g2.nodeCount());
     computeAllSourceMetrics(&g3, src_reindented, 0, g3.nodeCount());
 
-    const hash_plain = g1.getNode(@enumFromInt(1)).?.metrics.?.structural_hash;
-    const hash_commented = g2.getNode(@enumFromInt(1)).?.metrics.?.structural_hash;
-    const hash_reindented = g3.getNode(@enumFromInt(1)).?.metrics.?.structural_hash;
+    const hash_plain = g1.getNode(@fromBackingInt(@intCast(1))).?.metrics.?.structural_hash;
+    const hash_commented = g2.getNode(@fromBackingInt(@intCast(1))).?.metrics.?.structural_hash;
+    const hash_reindented = g3.getNode(@fromBackingInt(@intCast(1))).?.metrics.?.structural_hash;
 
     // Assert
     try std.testing.expectEqual(hash_plain, hash_commented);

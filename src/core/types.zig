@@ -155,8 +155,9 @@ pub fn formatHash(hash: ContentHash) [hex_len]u8 {
 
 /// Parse a string into any enum type by matching against field names.
 pub fn parseEnum(comptime E: type, name: []const u8) ?E {
-    inline for (@typeInfo(E).@"enum".fields) |f| {
-        if (std.mem.eql(u8, name, f.name)) return @enumFromInt(f.value);
+    const info = @typeInfo(E).@"enum";
+    inline for (info.field_names, info.field_values) |field_name, field_value| {
+        if (std.mem.eql(u8, name, field_name)) return @fromBackingInt(@intCast(field_value));
     }
     return null;
 }
@@ -164,7 +165,7 @@ pub fn parseEnum(comptime E: type, name: []const u8) ?E {
 /// Parse a NodeId from a string in the given radix.
 pub fn parseNodeId(s: []const u8, radix: u8) ?NodeId {
     const v = std.fmt.parseInt(u64, s, radix) catch return null;
-    return @enumFromInt(v);
+    return @fromBackingInt(@intCast(v));
 }
 
 test "NodeId is 8 bytes" {
@@ -181,8 +182,7 @@ test "EdgeId is 8 bytes" {
 
 test "NodeKind has exactly 13 variants" {
     comptime {
-        const fields = @typeInfo(NodeKind).@"enum".fields;
-        std.debug.assert(fields.len == 13);
+        std.debug.assert(@typeInfo(NodeKind).@"enum".field_names.len == 13);
     }
 }
 
@@ -204,8 +204,7 @@ test "isTypeContainer returns true for type_def, enum_def, union_def" {
 
 test "EdgeType has exactly 9 variants" {
     comptime {
-        const fields = @typeInfo(EdgeType).@"enum".fields;
-        std.debug.assert(fields.len == 9);
+        std.debug.assert(@typeInfo(EdgeType).@"enum".field_names.len == 9);
     }
 }
 
@@ -217,8 +216,7 @@ test "EdgeSource is 1 byte or less" {
 
 test "Visibility has exactly 2 variants" {
     comptime {
-        const fields = @typeInfo(Visibility).@"enum".fields;
-        std.debug.assert(fields.len == 2);
+        std.debug.assert(@typeInfo(Visibility).@"enum".field_names.len == 2);
     }
 }
 

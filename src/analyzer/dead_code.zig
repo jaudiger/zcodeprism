@@ -77,12 +77,12 @@ pub fn findDeadCode(allocator: std.mem.Allocator, fg: FrozenGraph, options: Dead
 
         if (!filter.passesScope(scope_filter, n.file_path)) continue;
 
-        const node_id: NodeId = @enumFromInt(i);
+        const node_id: NodeId = @fromBackingInt(@intCast(i));
         const in_edges = g.inEdges(node_id);
         var has_ref = false;
 
         for (in_edges) |eid| {
-            const et = g.edges.items[@intFromEnum(eid)].edge_type;
+            const et = g.edges.items[@backingInt(eid)].edge_type;
             const is_ref = if (n.kind == .field)
                 et == .accesses_field
             else

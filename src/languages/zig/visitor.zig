@@ -116,10 +116,10 @@ pub fn buildEdges(allocator: std.mem.Allocator, io: std.Io, source: []const u8, 
     defer tree.destroy();
     const root = tree.rootNode();
 
-    const file_id: NodeId = @enumFromInt(file_idx);
+    const file_id: NodeId = @fromBackingInt(@intCast(file_idx));
 
     var ctx = cf.EdgeContext{
-        .scope_start = @intFromEnum(file_id),
+        .scope_start = @backingInt(file_id),
         .scope_end = scope_end,
     };
     defer ctx.deinit(allocator);
@@ -657,7 +657,7 @@ fn processContainerField(allocator: std.mem.Allocator, ctx: *const VisitorContex
 /// like `const Graph = graph_mod.Graph` where "graph_mod" is an import sibling.
 /// Scopes the search to the parent's subtree since nodes are appended in order.
 fn isImportSibling(g: *const Graph, parent_id: NodeId, name: []const u8) bool {
-    const start = @intFromEnum(parent_id);
+    const start = @backingInt(parent_id);
     for (g.nodes.items[start..]) |n| {
         if (n.kind == .import_decl and
             n.parent_id != null and n.parent_id.? == parent_id and
@@ -687,7 +687,7 @@ test "simple fixture produces nodes for every declaration kind" {
     var found_error_def = false;
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {
-        const n = g.getNode(@enumFromInt(i)) orelse continue;
+        const n = g.getNode(@fromBackingInt(@intCast(i))) orelse continue;
         if (n.kind == .function and n.visibility == .public) found_pub_fn = true;
         if (n.kind == .function and n.visibility == .private) found_priv_fn = true;
         if (n.kind == .type_def) found_type_def = true;
@@ -714,7 +714,7 @@ test "file node is always first" {
     try parse(std.testing.allocator, std.testing.io, fixtures.zig.simple, &g, "test/fixtures/zig/simple.zig", Logger.noop);
 
     // Assert
-    const first = g.getNode(@enumFromInt(0)).?;
+    const first = g.getNode(@fromBackingInt(@intCast(0))).?;
     try std.testing.expectEqual(NodeKind.file, first.kind);
 }
 
@@ -727,7 +727,7 @@ test "file node has line_end" {
     try parse(std.testing.allocator, std.testing.io, fixtures.zig.simple, &g, null, Logger.noop);
 
     // Assert
-    const file_node = g.getNode(@enumFromInt(0)).?;
+    const file_node = g.getNode(@fromBackingInt(@intCast(0))).?;
     try std.testing.expect(file_node.line_end != null);
     try std.testing.expect(file_node.line_end.? > 1);
 }
@@ -744,7 +744,7 @@ test "struct methods are children" {
     var found_method = false;
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {
-        const n = g.getNode(@enumFromInt(i)) orelse continue;
+        const n = g.getNode(@fromBackingInt(@intCast(i))) orelse continue;
         if (n.kind == .function and n.parent_id != null) {
             if (g.getNode(n.parent_id.?)) |parent| {
                 if (parent.kind == .type_def) {
@@ -769,7 +769,7 @@ test "doc comment attached to function" {
     var found_doc = false;
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {
-        const n = g.getNode(@enumFromInt(i)) orelse continue;
+        const n = g.getNode(@fromBackingInt(@intCast(i))) orelse continue;
         if (n.kind == .function and n.doc != null) {
             found_doc = true;
             break;
@@ -788,7 +788,7 @@ test "empty file produces single file node" {
 
     // Assert
     try std.testing.expectEqual(@as(usize, 1), g.nodeCount());
-    const n = g.getNode(@enumFromInt(0)).?;
+    const n = g.getNode(@fromBackingInt(@intCast(0))).?;
     try std.testing.expectEqual(NodeKind.file, n.kind);
 }
 
@@ -815,7 +815,7 @@ test "no_pub file has no public declarations" {
     // Assert
     var i: usize = 1;
     while (i < g.nodeCount()) : (i += 1) {
-        const n = g.getNode(@enumFromInt(i)) orelse continue;
+        const n = g.getNode(@fromBackingInt(@intCast(i))) orelse continue;
         try std.testing.expectEqual(Visibility.private, n.visibility);
     }
 }
@@ -831,7 +831,7 @@ test "language is always zig" {
     // Assert
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {
-        const n = g.getNode(@enumFromInt(i)) orelse continue;
+        const n = g.getNode(@fromBackingInt(@intCast(i))) orelse continue;
         try std.testing.expectEqual(Language.zig, n.language);
     }
 }
@@ -848,7 +848,7 @@ test "file_struct fixture: @This aliases skipped" {
     var found_self = false;
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {
-        const n = g.getNode(@enumFromInt(i)) orelse continue;
+        const n = g.getNode(@fromBackingInt(@intCast(i))) orelse continue;
         if (std.mem.eql(u8, n.name, "Self")) {
             found_self = true;
             break;
@@ -869,7 +869,7 @@ test "generic_type fixture: type-returning functions promoted to types" {
     var found_promoted_type = false;
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {
-        const n = g.getNode(@enumFromInt(i)) orelse continue;
+        const n = g.getNode(@fromBackingInt(@intCast(i))) orelse continue;
         if (n.kind.isTypeContainer() and n.parent_id != null) {
             if (g.getNode(n.parent_id.?)) |parent| {
                 if (parent.kind == .file) {
@@ -894,7 +894,7 @@ test "deeply_nested fixture: types at multiple nesting levels" {
     var max_depth: u32 = 0;
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {
-        const n = g.getNode(@enumFromInt(i)) orelse continue;
+        const n = g.getNode(@fromBackingInt(@intCast(i))) orelse continue;
         var depth: u32 = 0;
         var pid = n.parent_id;
         while (pid) |p| : (depth += 1) {
@@ -917,7 +917,7 @@ test "function signatures extracted correctly" {
     var found_sig = false;
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {
-        const n = g.getNode(@enumFromInt(i)) orelse continue;
+        const n = g.getNode(@fromBackingInt(@intCast(i))) orelse continue;
         if (n.kind == .function and n.signature != null) {
             const sig = n.signature.?;
             if (std.mem.startsWith(u8, sig, "pub fn") or std.mem.startsWith(u8, sig, "fn")) {
@@ -941,7 +941,7 @@ test "import_decl has signature with path" {
     var found = false;
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {
-        const n = g.getNode(@enumFromInt(i)) orelse continue;
+        const n = g.getNode(@fromBackingInt(@intCast(i))) orelse continue;
         if (n.kind == .import_decl and n.signature != null) {
             found = true;
             break;
@@ -959,7 +959,7 @@ test "module doc comment attached to file node" {
     try parse(std.testing.allocator, std.testing.io, fixtures.zig.simple, &g, null, Logger.noop);
 
     // Assert
-    const file_node = g.getNode(@enumFromInt(0)).?;
+    const file_node = g.getNode(@fromBackingInt(@intCast(0))).?;
     try std.testing.expect(file_node.doc != null);
 }
 
@@ -974,7 +974,7 @@ test "fields are private" {
     // Assert
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {
-        const n = g.getNode(@enumFromInt(i)) orelse continue;
+        const n = g.getNode(@fromBackingInt(@intCast(i))) orelse continue;
         if (n.kind == .field) {
             try std.testing.expectEqual(Visibility.private, n.visibility);
         }
@@ -993,7 +993,7 @@ test "error_def has signature and error_set_names from AST" {
     var found = false;
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {
-        const n = g.getNode(@enumFromInt(i)) orelse continue;
+        const n = g.getNode(@fromBackingInt(@intCast(i))) orelse continue;
         if (n.kind == .error_def and std.mem.eql(u8, n.name, "ParseError")) {
             try std.testing.expect(n.signature != null);
             const zm = zig_meta.metaOf(n).?;
@@ -1020,7 +1020,7 @@ test "line numbers are 1-based" {
     // Assert
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {
-        const n = g.getNode(@enumFromInt(i)) orelse continue;
+        const n = g.getNode(@fromBackingInt(@intCast(i))) orelse continue;
         if (n.line_start) |ls| try std.testing.expect(ls >= 1);
     }
 }
@@ -1037,7 +1037,7 @@ test "local_type_param fixture: method calls via local-type params" {
     var found_processor = false;
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {
-        const n = g.getNode(@enumFromInt(i)) orelse continue;
+        const n = g.getNode(@fromBackingInt(@intCast(i))) orelse continue;
         if (n.kind == .type_def and std.mem.eql(u8, n.name, "Processor")) {
             found_processor = true;
             break;
@@ -1058,7 +1058,7 @@ test "generic_type fixture: enum-returning generic promoted to enum_def" {
     var found = false;
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {
-        const n = g.getNode(@enumFromInt(i)) orelse continue;
+        const n = g.getNode(@fromBackingInt(@intCast(i))) orelse continue;
         if (n.kind == .enum_def and std.mem.eql(u8, n.name, "StatusEnum")) {
             found = true;
             break;
@@ -1079,7 +1079,7 @@ test "generic_type fixture: union-returning generic promoted to union_def" {
     var found = false;
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {
-        const n = g.getNode(@enumFromInt(i)) orelse continue;
+        const n = g.getNode(@fromBackingInt(@intCast(i))) orelse continue;
         if (n.kind == .union_def and std.mem.eql(u8, n.name, "ValueUnion")) {
             found = true;
             break;
@@ -1101,7 +1101,7 @@ test "generic_type fixture: type signature preserved on promoted types" {
     var found = false;
     var i: usize = 0;
     while (i < g.nodeCount()) : (i += 1) {
-        const n = g.getNode(@enumFromInt(i)) orelse continue;
+        const n = g.getNode(@fromBackingInt(@intCast(i))) orelse continue;
         if (n.kind.isTypeContainer() and n.signature != null) {
             if (std.mem.indexOf(u8, n.signature.?, "comptime") != null) {
                 found = true;

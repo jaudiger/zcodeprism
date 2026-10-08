@@ -117,26 +117,26 @@ pub fn main(init: std.process.Init) !void {
     try stdout.print("Edges: {}\n\n", .{graph.edges.items.len});
 
     // Count by kind.
-    var kind_counts: [@typeInfo(NodeKind).@"enum".fields.len]u32 = .{0} ** @typeInfo(NodeKind).@"enum".fields.len;
+    var kind_counts: [@typeInfo(NodeKind).@"enum".field_names.len]u32 = @splat(0);
     for (graph.nodes.items) |n| {
-        kind_counts[@intFromEnum(n.kind)] += 1;
+        kind_counts[@backingInt(n.kind)] += 1;
     }
     try stdout.print("--- Node counts by kind ---\n", .{});
-    inline for (@typeInfo(NodeKind).@"enum".fields, 0..) |f, i| {
+    inline for (@typeInfo(NodeKind).@"enum".field_names, 0..) |field_name, i| {
         if (kind_counts[i] > 0) {
-            try stdout.print("  {s}: {}\n", .{ f.name, kind_counts[i] });
+            try stdout.print("  {s}: {}\n", .{ field_name, kind_counts[i] });
         }
     }
 
     // Count by edge type.
-    var edge_counts: [@typeInfo(EdgeType).@"enum".fields.len]u32 = .{0} ** @typeInfo(EdgeType).@"enum".fields.len;
+    var edge_counts: [@typeInfo(EdgeType).@"enum".field_names.len]u32 = @splat(0);
     for (graph.edges.items) |e| {
-        edge_counts[@intFromEnum(e.edge_type)] += 1;
+        edge_counts[@backingInt(e.edge_type)] += 1;
     }
     try stdout.print("\n--- Edge counts by type ---\n", .{});
-    inline for (@typeInfo(EdgeType).@"enum".fields, 0..) |f, i| {
+    inline for (@typeInfo(EdgeType).@"enum".field_names, 0..) |field_name, i| {
         if (edge_counts[i] > 0) {
-            try stdout.print("  {s}: {}\n", .{ f.name, edge_counts[i] });
+            try stdout.print("  {s}: {}\n", .{ field_name, edge_counts[i] });
         }
     }
 
@@ -145,7 +145,7 @@ pub fn main(init: std.process.Init) !void {
     for (graph.nodes.items) |n| {
         const vis_str: []const u8 = if (n.visibility == .public) "pub" else "prv";
         try stdout.print("  [{d:>3}] {s:<12} {s} \"{s}\"", .{
-            @intFromEnum(n.id),
+            @backingInt(n.id),
             @tagName(n.kind),
             vis_str,
             n.name,
@@ -165,7 +165,7 @@ pub fn main(init: std.process.Init) !void {
             }
         }
         if (n.parent_id) |pid| {
-            try stdout.print("  parent={}", .{@intFromEnum(pid)});
+            try stdout.print("  parent={}", .{@backingInt(pid)});
         }
         if (n.file_path) |fp| {
             try stdout.print("  file=\"{s}\"", .{fp});
@@ -211,7 +211,7 @@ pub fn main(init: std.process.Init) !void {
         if (n.kind == .file) {
             file_of[i] = i;
         } else if (n.parent_id) |pid| {
-            const pid_idx = @intFromEnum(pid);
+            const pid_idx = @backingInt(pid);
             file_of[i] = if (pid_idx < file_of.len) file_of[pid_idx] else NO_FILE;
         } else {
             file_of[i] = NO_FILE;
@@ -235,8 +235,8 @@ pub fn main(init: std.process.Init) !void {
         for (graph.edges.items) |e| {
             const src_name = if (graph.getNode(e.source_id)) |n| n.name else "?";
             const tgt_name = if (graph.getNode(e.target_id)) |n| n.name else "?";
-            const src_id_idx = @intFromEnum(e.source_id);
-            const tgt_id_idx = @intFromEnum(e.target_id);
+            const src_id_idx = @backingInt(e.source_id);
+            const tgt_id_idx = @backingInt(e.target_id);
             const src_file_idx = if (src_id_idx < file_of.len) file_of[src_id_idx] else NO_FILE;
             const tgt_file_idx = if (tgt_id_idx < file_of.len) file_of[tgt_id_idx] else NO_FILE;
             const src_file_name = fileDisplayName(&graph, src_file_idx);
@@ -245,12 +245,12 @@ pub fn main(init: std.process.Init) !void {
             const is_cross_file = src_file_idx != tgt_file_idx;
 
             try stdout.print("  {d} ({s} @ {s}) --[{s}/{s}]--> {d} ({s} @ {s})", .{
-                @intFromEnum(e.source_id),
+                @backingInt(e.source_id),
                 src_name,
                 src_file_name,
                 @tagName(e.edge_type),
                 @tagName(e.source),
-                @intFromEnum(e.target_id),
+                @backingInt(e.target_id),
                 tgt_name,
                 tgt_file_name,
             });
@@ -303,7 +303,7 @@ pub fn main(init: std.process.Init) !void {
                     const tgt_ord = std.mem.order(u8, tgt_a, tgt_b);
                     if (tgt_ord != .eq) return tgt_ord == .lt;
 
-                    return @intFromEnum(a.key.edge_type) < @intFromEnum(b.key.edge_type);
+                    return @backingInt(a.key.edge_type) < @backingInt(b.key.edge_type);
                 }
             }.lessThan);
 

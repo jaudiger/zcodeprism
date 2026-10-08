@@ -395,7 +395,7 @@ fn processParameterTypeEdges(
                     const n = g.nodes.items[ci];
                     if (n.kind == .parameter) {
                         param_graph_idx += 1;
-                        break :blk @enumFromInt(ci);
+                        break :blk @fromBackingInt(@intCast(ci));
                     }
                     param_graph_idx += 1;
                 }
@@ -628,7 +628,7 @@ fn emitFieldAccessOverAlias(
     scope_id: NodeId,
     field_name: []const u8,
 ) !bool {
-    const node = sctx.base.graph.nodes.items[@intFromEnum(scope_id)];
+    const node = sctx.base.graph.nodes.items[@backingInt(scope_id)];
     if (node.kind != .constant) return false;
     const zm = zig_meta.metaOf(&node) orelse return false;
     const arm_names = zm.comptime_switch_arm_names orelse return false;
@@ -780,7 +780,7 @@ fn resolveCalleeNodeId(sctx: *const ScanContext, fn_ref: ts.Node) ?NodeId {
                     for (sctx.base.graph_index.scope.childrenOf(type_id)) |child_idx| {
                         const n = sctx.base.graph.nodes.items[child_idx];
                         if (n.kind == .function and std.mem.eql(u8, n.name, leaf_name)) {
-                            return @enumFromInt(child_idx);
+                            return @fromBackingInt(@intCast(child_idx));
                         }
                     }
                 }
@@ -799,7 +799,7 @@ fn resolveParamType(sctx: *const ScanContext, callee_id: NodeId, param_index: u3
         const n = sctx.base.graph.nodes.items[ci];
         if (n.kind != .parameter) continue;
         if (pi == param_index) {
-            return sctx.field_types.get(@enumFromInt(ci));
+            return sctx.field_types.get(@fromBackingInt(@intCast(ci)));
         }
         pi += 1;
     }
@@ -972,7 +972,7 @@ fn resolveLocalChainWithDepth(
 
         const is_last = seg_idx == chain.len - 1;
         const matched_id = findChildByName(sctx.base.graph, &sctx.base.graph_index.scope, current_scope, segment) orelse return false;
-        const matched_node = sctx.base.graph.nodes.items[@intFromEnum(matched_id)];
+        const matched_node = sctx.base.graph.nodes.items[@backingInt(matched_id)];
 
         if (is_last and matched_node.kind == .function) {
             _ = try sctx.base.graph.addEdgeIfNew(allocator, .{
@@ -1017,7 +1017,7 @@ fn tryExpandComptimeAlias(
 ) error{OutOfMemory}!?bool {
     if (chain.len == 0) return null;
     if (depth >= max_alias_depth) return null;
-    const node = sctx.base.graph.nodes.items[@intFromEnum(scope_id)];
+    const node = sctx.base.graph.nodes.items[@backingInt(scope_id)];
     if (node.kind != .constant) return null;
     const zm = zig_meta.metaOf(&node) orelse return null;
     const arm_names = zm.comptime_switch_arm_names orelse return null;
@@ -1078,7 +1078,7 @@ fn resolveChainToTypeWithDepth(
             return resolved;
         }
         const child_id = findChildByName(g, scope_index, current, segment) orelse return null;
-        const child_node = g.nodes.items[@intFromEnum(child_id)];
+        const child_node = g.nodes.items[@backingInt(child_id)];
         if (child_node.kind.isTypeContainer()) {
             current = child_id;
         } else if (child_node.kind == .field) {
@@ -1109,7 +1109,7 @@ fn tryExpandComptimeAliasToType(
 ) ?NodeId {
     if (chain.len == 0) return null;
     if (depth >= max_alias_depth) return null;
-    const node = g.nodes.items[@intFromEnum(scope_id)];
+    const node = g.nodes.items[@backingInt(scope_id)];
     if (node.kind != .constant) return null;
     const zm = zig_meta.metaOf(&node) orelse return null;
     const arm_names = zm.comptime_switch_arm_names orelse return null;
@@ -1135,7 +1135,7 @@ fn findChildByName(
 ) ?NodeId {
     for (scope_index.childrenOf(scope_id)) |child_idx| {
         if (std.mem.eql(u8, g.nodes.items[child_idx].name, name)) {
-            return @enumFromInt(child_idx);
+            return @fromBackingInt(@intCast(child_idx));
         }
     }
     return null;
@@ -1328,7 +1328,7 @@ fn resolveCallResultType(
                 for (graph_index.scope.childrenOf(type_id)) |child_idx| {
                     const n = g.nodes.items[child_idx];
                     if (n.kind == .function and std.mem.eql(u8, n.name, method_name)) {
-                        fn_id = @enumFromInt(child_idx);
+                        fn_id = @fromBackingInt(@intCast(child_idx));
                         break;
                     }
                 }
@@ -1560,7 +1560,7 @@ fn handleFieldQualifiedType(allocator: std.mem.Allocator, fctx: *const FieldScan
         for (fctx.graph_index.scope.childrenOf(target_file_id)) |child_idx| {
             const n = fctx.g.nodes.items[child_idx];
             if (isTypeReference(n, type_name)) {
-                const tid: NodeId = @enumFromInt(child_idx);
+                const tid: NodeId = @fromBackingInt(@intCast(child_idx));
                 _ = try fctx.g.addEdgeIfNew(allocator, .{
                     .source_id = fctx.owner_id,
                     .target_id = tid,
@@ -1686,7 +1686,7 @@ fn findTestByName(g: *const Graph, name: []const u8, scope_start: usize, scope_e
     const scoped_nodes = g.nodes.items[scope_start..scope_end];
     for (scoped_nodes, scope_start..) |n, i| {
         if (n.kind == .test_def and std.mem.eql(u8, n.name, name)) {
-            return @enumFromInt(i);
+            return @fromBackingInt(@intCast(i));
         }
     }
     return null;

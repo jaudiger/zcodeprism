@@ -33,7 +33,7 @@ const EnrichResult = lang_support.EnrichResult;
 const Server = mcp.server.Server;
 const IndexAllocators = indexer.IndexAllocators;
 
-const zero_hash: types.ContentHash = .{0} ** types.hash_len;
+const zero_hash: types.ContentHash = @splat(0);
 
 /// All fields are borrowed and must outlive the service.
 pub const ReindexContext = struct {

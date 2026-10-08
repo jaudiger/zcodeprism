@@ -117,7 +117,7 @@ fn renderNodeShape(
             // fn_N["fn: name"]. For methods use "fn: Parent.name".
             try out.appendSlice(allocator, "[\"fn: ");
             if (n.parent_id) |pid| {
-                const parent = g.nodes.items[@intFromEnum(pid)];
+                const parent = g.nodes.items[@backingInt(pid)];
                 if (parent.kind == .type_def or parent.kind == .union_def) {
                     try appendEscaped(out, allocator, parent.name);
                     try out.append(allocator, '.');
@@ -270,15 +270,15 @@ pub fn buildGhostNodes(
         for (ids, 0..) |maybe_id, src_idx| {
             if (maybe_id == null) continue;
             if (!inScope(g.nodes.items[src_idx].file_path, scope)) continue;
-            for (g.outEdges(@enumFromInt(src_idx))) |eid| {
-                const e = g.edges.items[@intFromEnum(eid)];
-                try checkTarget(g, ids, scope, @intFromEnum(e.target_id), &ghost_counter, ghost_map, allocator);
+            for (g.outEdges(@fromBackingInt(@intCast(src_idx)))) |eid| {
+                const e = g.edges.items[@backingInt(eid)];
+                try checkTarget(g, ids, scope, @backingInt(e.target_id), &ghost_counter, ghost_map, allocator);
             }
         }
     } else {
         for (g.edges.items) |e| {
-            const src_idx = @intFromEnum(e.source_id);
-            const tgt_idx = @intFromEnum(e.target_id);
+            const src_idx = @backingInt(e.source_id);
+            const tgt_idx = @backingInt(e.target_id);
             if (src_idx >= g.nodes.items.len) continue;
             if (!inScope(g.nodes.items[src_idx].file_path, scope)) continue;
             if (ids[src_idx] == null) continue;
@@ -433,12 +433,12 @@ fn collectMermaidEdges(
             }
 
             const src_order = prefixOrder(src_id.prefix) * @as(u64, 1 << 32) + src_id.num;
-            for (ctx.g.outEdges(@enumFromInt(src_idx))) |eid| {
-                const e = ctx.g.edges.items[@intFromEnum(eid)];
+            for (ctx.g.outEdges(@fromBackingInt(@intCast(src_idx)))) |eid| {
+                const e = ctx.g.edges.items[@backingInt(eid)];
                 try appendMermaidEdge(&entries, allocator, ctx, phantom_lookup, filter, ghost_map, .{
                     .edge_type = e.edge_type,
                     .src_idx = src_idx,
-                    .tgt_idx = @intFromEnum(e.target_id),
+                    .tgt_idx = @backingInt(e.target_id),
                     .src_order = src_order,
                 });
             }
@@ -446,8 +446,8 @@ fn collectMermaidEdges(
     } else {
         for (ctx.g.edges.items) |e| {
             if (e.edge_type == .similar_to or e.edge_type == .exports) continue;
-            const src_idx = @intFromEnum(e.source_id);
-            const tgt_idx = @intFromEnum(e.target_id);
+            const src_idx = @backingInt(e.source_id);
+            const tgt_idx = @backingInt(e.target_id);
             if (src_idx >= ctx.g.nodes.items.len or tgt_idx >= ctx.g.nodes.items.len) continue;
 
             const src_id = ctx.ids[src_idx] orelse continue;
@@ -645,8 +645,8 @@ fn collectClassEntries(
 
     std.mem.sort(ClassEntry, entries.items, {}, struct {
         fn lessThan(_: void, a: ClassEntry, b: ClassEntry) bool {
-            const a_ord = @intFromEnum(a.style);
-            const b_ord = @intFromEnum(b.style);
+            const a_ord = @backingInt(a.style);
+            const b_ord = @backingInt(b.style);
             if (a_ord != b_ord) return a_ord < b_ord;
             return a.sort_order < b.sort_order;
         }
@@ -711,7 +711,7 @@ pub fn renderClassAssignments(
     };
 
     for (style_names, 0..) |style_name, style_idx| {
-        const target_style: StyleClass = @enumFromInt(style_idx);
+        const target_style: StyleClass = @fromBackingInt(@intCast(style_idx));
 
         var id_strings = std.ArrayList(u8).empty;
         defer id_strings.deinit(allocator);

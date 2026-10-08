@@ -318,9 +318,9 @@ fn internEdgeRefs(allocator: std.mem.Allocator, st: *StringTable, g: *const Grap
 fn writeNodeRecord(buf: []u8, base: usize, n: Node, refs: NodeRefs) void {
     @memset(buf[base..][0..NODE_RECORD_SIZE], 0);
 
-    std.mem.writeInt(u64, buf[base..][0..8], @intFromEnum(n.id), .little);
+    std.mem.writeInt(u64, buf[base..][0..8], @backingInt(n.id), .little);
     if (n.parent_id) |pid| {
-        std.mem.writeInt(u64, buf[base + 8 ..][0..8], @intFromEnum(pid), .little);
+        std.mem.writeInt(u64, buf[base + 8 ..][0..8], @backingInt(pid), .little);
     }
     if (n.line_start) |ls| {
         std.mem.writeInt(u32, buf[base + 16 ..][0..4], ls, .little);
@@ -366,8 +366,8 @@ fn writeNodeRecord(buf: []u8, base: usize, n: Node, refs: NodeRefs) void {
 }
 
 fn writeEdgeRecord(buf: []u8, base: usize, e: Edge, refs: [2]StringRef) void {
-    std.mem.writeInt(u64, buf[base..][0..8], @intFromEnum(e.source_id), .little);
-    std.mem.writeInt(u64, buf[base + 8 ..][0..8], @intFromEnum(e.target_id), .little);
+    std.mem.writeInt(u64, buf[base..][0..8], @backingInt(e.source_id), .little);
+    std.mem.writeInt(u64, buf[base + 8 ..][0..8], @backingInt(e.target_id), .little);
     writeStringRef(buf, base + 16, refs[0]);
     writeStringRef(buf, base + 24, refs[1]);
 }
@@ -551,12 +551,12 @@ pub fn load(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !Graph {
         } else null;
 
         g.nodes.appendAssumeCapacity(.{
-            .id = @enumFromInt(std.mem.readInt(u64, buf[base..][0..8], .little)),
+            .id = @fromBackingInt(@intCast(std.mem.readInt(u64, buf[base..][0..8], .little))),
             .name = name,
             .kind = kind,
             .language = language,
             .file_path = file_path,
-            .parent_id = if (has_parent) @as(NodeId, @enumFromInt(std.mem.readInt(u64, buf[base + 8 ..][0..8], .little))) else null,
+            .parent_id = if (has_parent) @as(NodeId, @fromBackingInt(@intCast(std.mem.readInt(u64, buf[base + 8 ..][0..8], .little)))) else null,
             .line_start = if (has_line_start) std.mem.readInt(u32, buf[base + 16 ..][0..4], .little) else null,
             .line_end = if (has_line_end) std.mem.readInt(u32, buf[base + 20 ..][0..4], .little) else null,
             .col_start = if (has_col_start) std.mem.readInt(u32, buf[base + 24 ..][0..4], .little) else null,
@@ -584,8 +584,8 @@ pub fn load(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !Graph {
         const es_str = try resolveStr(st_data, es_ref);
 
         g.edges.appendAssumeCapacity(.{
-            .source_id = @enumFromInt(src_id),
-            .target_id = @enumFromInt(tgt_id),
+            .source_id = @fromBackingInt(@intCast(src_id)),
+            .target_id = @fromBackingInt(@intCast(tgt_id)),
             .edge_type = std.meta.stringToEnum(EdgeType, et_str) orelse return error.InvalidFormat,
             .source = std.meta.stringToEnum(EdgeSource, es_str) orelse return error.InvalidFormat,
         });
@@ -719,7 +719,7 @@ fn createTestGraph(allocator: std.mem.Allocator) !Graph {
         .line_end = 50,
         .col_start = 7,
         .col_end = 14,
-        .parent_id = @enumFromInt(0),
+        .parent_id = @fromBackingInt(@intCast(0)),
         .doc = "/// Process the input data.",
         .signature = "pub fn process(data: []const u8) !void",
         .content_hash = "abcdefghijklmnop".*,
@@ -747,21 +747,21 @@ fn createTestGraph(allocator: std.mem.Allocator) !Graph {
         .file_path = "src/main.zig",
         .line_start = 55,
         .line_end = 70,
-        .parent_id = @enumFromInt(0),
+        .parent_id = @fromBackingInt(@intCast(0)),
     });
 
     // Edge 0: function uses type
     _ = try g.addEdgeIfNew(allocator, .{
-        .source_id = @enumFromInt(1),
-        .target_id = @enumFromInt(2),
+        .source_id = @fromBackingInt(@intCast(1)),
+        .target_id = @fromBackingInt(@intCast(2)),
         .edge_type = .uses_type,
         .source = .tree_sitter,
     });
 
     // Edge 1: file exports function
     _ = try g.addEdgeIfNew(allocator, .{
-        .source_id = @enumFromInt(0),
-        .target_id = @enumFromInt(1),
+        .source_id = @fromBackingInt(@intCast(0)),
+        .target_id = @fromBackingInt(@intCast(1)),
         .edge_type = .exports,
         .source = .tree_sitter,
     });
@@ -780,7 +780,7 @@ test "binary round-trip preserves nodes, edges, and metrics" {
     defer tmp.cleanup();
     const path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(path);
-    const file_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/test.bin", .{path});
+    const file_path = try std.testing.allocator.print("{s}/test.bin", .{path});
     defer std.testing.allocator.free(file_path);
 
     // Act
@@ -813,8 +813,8 @@ test "binary round-trip preserves nodes, edges, and metrics" {
     }
 
     // Assert
-    const original_metrics = g.getNode(@enumFromInt(1)).?.metrics.?;
-    const loaded_metrics = loaded.getNode(@enumFromInt(1)).?.metrics.?;
+    const original_metrics = g.getNode(@fromBackingInt(@intCast(1))).?.metrics.?;
+    const loaded_metrics = loaded.getNode(@fromBackingInt(@intCast(1))).?.metrics.?;
     try std.testing.expectEqual(original_metrics.complexity, loaded_metrics.complexity);
     try std.testing.expectEqual(original_metrics.lines, loaded_metrics.lines);
     try std.testing.expectEqual(original_metrics.fan_in, loaded_metrics.fan_in);
@@ -835,7 +835,7 @@ test "binary header has correct magic, version, and counts" {
     defer tmp.cleanup();
     const path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(path);
-    const file_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/test.bin", .{path});
+    const file_path = try std.testing.allocator.print("{s}/test.bin", .{path});
     defer std.testing.allocator.free(file_path);
 
     // Act
@@ -875,7 +875,7 @@ test "binary save/load empty graph" {
     defer tmp.cleanup();
     const path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(path);
-    const file_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/test.bin", .{path});
+    const file_path = try std.testing.allocator.print("{s}/test.bin", .{path});
     defer std.testing.allocator.free(file_path);
 
     // Act
@@ -905,7 +905,7 @@ test "binary save/load single node" {
     defer tmp.cleanup();
     const path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(path);
-    const file_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/test.bin", .{path});
+    const file_path = try std.testing.allocator.print("{s}/test.bin", .{path});
     defer std.testing.allocator.free(file_path);
 
     // Act
@@ -937,7 +937,7 @@ test "binary preserves phantom nodes" {
     defer tmp.cleanup();
     const path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(path);
-    const file_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/test.bin", .{path});
+    const file_path = try std.testing.allocator.print("{s}/test.bin", .{path});
     defer std.testing.allocator.free(file_path);
 
     // Act
@@ -968,7 +968,7 @@ test "binary preserves null optional fields" {
     defer tmp.cleanup();
     const path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(path);
-    const file_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/test.bin", .{path});
+    const file_path = try std.testing.allocator.print("{s}/test.bin", .{path});
     defer std.testing.allocator.free(file_path);
 
     // Act
@@ -1007,7 +1007,7 @@ test "binary preserves long strings" {
     defer tmp.cleanup();
     const path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(path);
-    const file_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/test.bin", .{path});
+    const file_path = try std.testing.allocator.print("{s}/test.bin", .{path});
     defer std.testing.allocator.free(file_path);
 
     // Act
@@ -1039,7 +1039,7 @@ test "binary preserves ZigMeta" {
     defer tmp.cleanup();
     const path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(path);
-    const file_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/test.bin", .{path});
+    const file_path = try std.testing.allocator.print("{s}/test.bin", .{path});
     defer std.testing.allocator.free(file_path);
 
     // Act
@@ -1069,7 +1069,7 @@ test "binary preserves null lang_meta" {
     defer tmp.cleanup();
     const path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(path);
-    const file_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/test.bin", .{path});
+    const file_path = try std.testing.allocator.print("{s}/test.bin", .{path});
     defer std.testing.allocator.free(file_path);
 
     // Act
@@ -1100,7 +1100,7 @@ test "binary round-trip preserves union_def kind" {
     defer tmp.cleanup();
     const path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(path);
-    const file_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/test.bin", .{path});
+    const file_path = try std.testing.allocator.print("{s}/test.bin", .{path});
     defer std.testing.allocator.free(file_path);
 
     // Act
@@ -1138,7 +1138,7 @@ test "binary round-trip preserves is_packed metadata" {
     defer tmp.cleanup();
     const path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(path);
-    const file_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/test.bin", .{path});
+    const file_path = try std.testing.allocator.print("{s}/test.bin", .{path});
     defer std.testing.allocator.free(file_path);
 
     // Act
@@ -1148,11 +1148,11 @@ test "binary round-trip preserves is_packed metadata" {
     defer loaded.deinit(std.testing.allocator);
 
     // Assert
-    const packed_meta = zig_meta_mod.metaOf(loaded.getNode(@enumFromInt(0)).?).?;
+    const packed_meta = zig_meta_mod.metaOf(loaded.getNode(@fromBackingInt(@intCast(0))).?).?;
     try std.testing.expect(packed_meta.is_packed);
     try std.testing.expect(!packed_meta.is_extern);
 
-    const extern_meta = zig_meta_mod.metaOf(loaded.getNode(@enumFromInt(1)).?).?;
+    const extern_meta = zig_meta_mod.metaOf(loaded.getNode(@fromBackingInt(@intCast(1))).?).?;
     try std.testing.expect(extern_meta.is_extern);
     try std.testing.expect(!extern_meta.is_packed);
 }
@@ -1168,7 +1168,7 @@ test "append adds new nodes" {
     defer tmp.cleanup();
     const path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(path);
-    const file_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/test.bin", .{path});
+    const file_path = try std.testing.allocator.print("{s}/test.bin", .{path});
     defer std.testing.allocator.free(file_path);
 
     // Save initial 3 nodes
@@ -1210,7 +1210,7 @@ test "compaction after append" {
     defer tmp.cleanup();
     const path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(path);
-    const file_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/test.bin", .{path});
+    const file_path = try std.testing.allocator.print("{s}/test.bin", .{path});
     defer std.testing.allocator.free(file_path);
 
     // Save initial graph
@@ -1258,7 +1258,7 @@ test "load rejects truncated file with table regions past EOF" {
     defer tmp.cleanup();
     const path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(path);
-    const file_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/malformed.bin", .{path});
+    const file_path = try std.testing.allocator.print("{s}/malformed.bin", .{path});
     defer std.testing.allocator.free(file_path);
 
     const file = try tmp.dir.createFile(std.testing.io, "malformed.bin", .{});
@@ -1280,7 +1280,7 @@ test "load rejects corrupt string ref past string table" {
     defer tmp.cleanup();
     const path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(path);
-    const file_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/malformed.bin", .{path});
+    const file_path = try std.testing.allocator.print("{s}/malformed.bin", .{path});
     defer std.testing.allocator.free(file_path);
 
     const fg = try g.freeze(std.testing.allocator);
@@ -1310,7 +1310,7 @@ test "load rejects invalid enum string" {
     defer tmp.cleanup();
     const path = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
     defer std.testing.allocator.free(path);
-    const file_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/malformed.bin", .{path});
+    const file_path = try std.testing.allocator.print("{s}/malformed.bin", .{path});
     defer std.testing.allocator.free(file_path);
 
     const fg = try g.freeze(std.testing.allocator);

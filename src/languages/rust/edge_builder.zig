@@ -555,7 +555,7 @@ fn scanFieldTypesRecursive(
                     const pos = child.startPoint();
                     try wl.append(allocator, .{
                         .source_node_id = owner_id,
-                        .file_path = graph.nodes.items[@intFromEnum(owner_id)].file_path orelse "",
+                        .file_path = graph.nodes.items[@backingInt(owner_id)].file_path orelse "",
                         .line = pos.row,
                         .col = pos.column,
                         .query_kind = .definition,
@@ -597,7 +597,7 @@ fn resolveScopedFieldType(
         const pos = leafIdentifierPos(scoped_node, k);
         try wl.append(allocator, .{
             .source_node_id = owner_id,
-            .file_path = graph.nodes.items[@intFromEnum(owner_id)].file_path orelse "",
+            .file_path = graph.nodes.items[@backingInt(owner_id)].file_path orelse "",
             .line = pos.row,
             .col = pos.column,
             .query_kind = .type_definition,
@@ -648,7 +648,7 @@ fn resolveScopedFieldType(
         const pos = leafIdentifierPos(scoped_node, k);
         try wl.append(allocator, .{
             .source_node_id = owner_id,
-            .file_path = graph.nodes.items[@intFromEnum(owner_id)].file_path orelse "",
+            .file_path = graph.nodes.items[@backingInt(owner_id)].file_path orelse "",
             .line = pos.row,
             .col = pos.column,
             .query_kind = .type_definition,
@@ -971,7 +971,7 @@ fn applyStructBaseSpread(
         if (!is_explicit) {
             _ = try sctx.base.graph.addEdgeIfNew(allocator, .{
                 .source_id = sctx.base.caller_id,
-                .target_id = @enumFromInt(child_idx),
+                .target_id = @fromBackingInt(@intCast(child_idx)),
                 .edge_type = .accesses_field,
             });
         }
@@ -1329,11 +1329,11 @@ fn findMethodInImplBlocks(g: *const Graph, type_id: NodeId, name: []const u8, gr
         if (m.sub_kind != .impl_block) continue;
         if (!std.mem.eql(u8, sib.name, type_name)) continue;
 
-        const impl_id: NodeId = @enumFromInt(sibling_idx);
+        const impl_id: NodeId = @fromBackingInt(@intCast(sibling_idx));
         for (scope_index.childrenOf(impl_id)) |child_idx| {
             const child = g.nodes.items[child_idx];
             if (std.mem.eql(u8, child.name, name)) {
-                return @enumFromInt(child_idx);
+                return @fromBackingInt(@intCast(child_idx));
             }
         }
     }
@@ -1355,7 +1355,7 @@ fn findMethodInTypeOrImpls(
     for (scope_index.childrenOf(type_id)) |child_idx| {
         const n = graph.nodes.items[child_idx];
         if (n.kind == .function and std.mem.eql(u8, n.name, method_name)) {
-            return @enumFromInt(child_idx);
+            return @fromBackingInt(@intCast(child_idx));
         }
     }
 
@@ -1365,11 +1365,11 @@ fn findMethodInTypeOrImpls(
         if (n.kind != .type_def or !std.mem.eql(u8, n.name, type_name)) continue;
         const m = rust_meta.metaOf(&n) orelse continue;
         if (m.sub_kind == .impl_block) {
-            const impl_id: NodeId = @enumFromInt(idx);
+            const impl_id: NodeId = @fromBackingInt(@intCast(idx));
             for (scope_index.childrenOf(impl_id)) |child_idx| {
                 const child = items[child_idx];
                 if (child.kind == .function and std.mem.eql(u8, child.name, method_name)) {
-                    return @enumFromInt(child_idx);
+                    return @fromBackingInt(@intCast(child_idx));
                 }
             }
         }
@@ -1412,7 +1412,7 @@ fn findTypeDefByNameScoped(graph: *const Graph, name: []const u8, scope_start: u
     var match_count: usize = 0;
     for (items[scope_start..end], scope_start..) |n, idx| {
         if (isTypeDefNode(n) and std.mem.eql(u8, n.name, name)) {
-            sole_match = @enumFromInt(idx);
+            sole_match = @fromBackingInt(@intCast(idx));
             match_count += 1;
             if (match_count > 1) return null;
         }
@@ -1444,7 +1444,7 @@ fn findImplNode(graph: *const Graph, line: u32, scope_start: usize, scope_end: u
     for (items[scope_start..end], scope_start..) |n, idx| {
         if (n.kind != .type_def or n.line_start == null or n.line_start.? != line) continue;
         const m = rust_meta.metaOf(&n) orelse continue;
-        if (m.sub_kind == .impl_block) return @enumFromInt(idx);
+        if (m.sub_kind == .impl_block) return @fromBackingInt(@intCast(idx));
     }
     return null;
 }

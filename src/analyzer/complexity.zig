@@ -64,7 +64,7 @@ pub fn findComplex(allocator: std.mem.Allocator, fg: FrozenGraph, options: Compl
             m.complexity;
 
         const entry = ComplexityEntry{
-            .node_id = @enumFromInt(i),
+            .node_id = @fromBackingInt(@intCast(i)),
             .name = n.name,
             .file_path = n.file_path,
             .complexity = score,

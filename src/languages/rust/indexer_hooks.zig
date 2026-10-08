@@ -267,7 +267,7 @@ pub fn resolvePhantoms(
     _ = build_config;
     _ = source;
 
-    const file_id: NodeId = @enumFromInt(file_idx);
+    const file_id: NodeId = @fromBackingInt(@intCast(file_idx));
     const file_path = graph.nodes.items[file_idx].file_path;
     const clamped_end = @min(scope_end, graph.nodes.items.len);
 
@@ -297,7 +297,7 @@ pub fn resolvePhantoms(
         const site = usageSiteFromNode(n, file_path, crate);
 
         // Ensure the root crate phantom exists and has a file-level edge.
-        const import_decl_id: NodeId = @enumFromInt(node_idx);
+        const import_decl_id: NodeId = @fromBackingInt(@intCast(node_idx));
         {
             var found = false;
             for (seen_crates[0..crate_count]) |entry| {
@@ -571,7 +571,7 @@ fn collectModulePrefixImports(
     importer_path: ?[]const u8,
     prefix_buf: []PrefixEntry,
 ) usize {
-    const file_id: NodeId = @enumFromInt(file_idx);
+    const file_id: NodeId = @fromBackingInt(@intCast(file_idx));
     var count: usize = 0;
 
     for (graph.nodes.items[file_idx..clamped_end]) |n| {

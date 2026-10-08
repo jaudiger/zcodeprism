@@ -47,8 +47,8 @@ pub fn propagateErrorSets(allocator: std.mem.Allocator, graph: *Graph, logger: L
 
         for (graph.edges.items) |e| {
             if (e.edge_type != .uses_type) continue;
-            if (e.target_id != @as(NodeId, @enumFromInt(i))) continue;
-            const src_idx = @intFromEnum(e.source_id);
+            if (e.target_id != @as(NodeId, @fromBackingInt(@intCast(i)))) continue;
+            const src_idx = @backingInt(e.source_id);
             if (src_idx >= graph.nodes.items.len) continue;
             if (graph.nodes.items[src_idx].kind != .function) continue;
 
@@ -109,7 +109,7 @@ pub fn propagateErrorSets(allocator: std.mem.Allocator, graph: *Graph, logger: L
     // Write inferred_errors back to nodes.
     var it = fn_errors.iterator();
     while (it.next()) |entry| {
-        const idx = @intFromEnum(entry.key_ptr.*);
+        const idx = @backingInt(entry.key_ptr.*);
         if (idx >= graph.nodes.items.len) continue;
         const n = &graph.nodes.items[idx];
         if (zig_meta.metaOfMut(n)) |zm| {
@@ -231,31 +231,31 @@ test "propagateErrorSets covers direct, multi-hop, union, and no-call boundaries
     try propagateErrorSets(allocator, &g, Logger.noop);
 
     // Assert
-    const a_errors = zig_meta.metaOf(&g.nodes.items[@intFromEnum(fn_a)]).?.inferred_errors.?;
+    const a_errors = zig_meta.metaOf(&g.nodes.items[@backingInt(fn_a)]).?.inferred_errors.?;
     try std.testing.expectEqual(@as(usize, 1), a_errors.len);
     try std.testing.expectEqualStrings("X", a_errors[0]);
 
-    const b_errors = zig_meta.metaOf(&g.nodes.items[@intFromEnum(fn_b)]).?.inferred_errors.?;
+    const b_errors = zig_meta.metaOf(&g.nodes.items[@backingInt(fn_b)]).?.inferred_errors.?;
     try std.testing.expectEqual(@as(usize, 1), b_errors.len);
     try std.testing.expectEqualStrings("X", b_errors[0]);
 
-    const c_errors = zig_meta.metaOf(&g.nodes.items[@intFromEnum(fn_c)]).?.inferred_errors.?;
+    const c_errors = zig_meta.metaOf(&g.nodes.items[@backingInt(fn_c)]).?.inferred_errors.?;
     try std.testing.expectEqual(@as(usize, 1), c_errors.len);
 
-    const d_errors = zig_meta.metaOf(&g.nodes.items[@intFromEnum(fn_d)]).?.inferred_errors.?;
+    const d_errors = zig_meta.metaOf(&g.nodes.items[@backingInt(fn_d)]).?.inferred_errors.?;
     try std.testing.expectEqual(@as(usize, 1), d_errors.len);
 
-    const e_errors = zig_meta.metaOf(&g.nodes.items[@intFromEnum(fn_e)]).?.inferred_errors.?;
+    const e_errors = zig_meta.metaOf(&g.nodes.items[@backingInt(fn_e)]).?.inferred_errors.?;
     try std.testing.expectEqual(@as(usize, 2), e_errors.len);
 
     try std.testing.expectEqual(
         @as(?[]const []const u8, null),
-        zig_meta.metaOf(&g.nodes.items[@intFromEnum(fn_f)]).?.inferred_errors,
+        zig_meta.metaOf(&g.nodes.items[@backingInt(fn_f)]).?.inferred_errors,
     );
 
     try std.testing.expectEqual(
         @as(?[]const []const u8, null),
-        zig_meta.metaOf(&g.nodes.items[@intFromEnum(fn_g)]).?.inferred_errors,
+        zig_meta.metaOf(&g.nodes.items[@backingInt(fn_g)]).?.inferred_errors,
     );
 }
 
@@ -287,7 +287,7 @@ test "propagateErrorSets unions two error_def seeds on the same function" {
     try propagateErrorSets(allocator, &g, Logger.noop);
 
     // Assert
-    const errors = zig_meta.metaOf(&g.nodes.items[@intFromEnum(fn_x)]).?.inferred_errors.?;
+    const errors = zig_meta.metaOf(&g.nodes.items[@backingInt(fn_x)]).?.inferred_errors.?;
     try std.testing.expectEqual(@as(usize, 2), errors.len);
 }
 
@@ -321,7 +321,7 @@ test "propagateErrorSets does not duplicate when caller already has callee error
     try propagateErrorSets(allocator, &g, Logger.noop);
 
     // Assert
-    const b_errors = zig_meta.metaOf(&g.nodes.items[@intFromEnum(fn_b)]).?.inferred_errors.?;
+    const b_errors = zig_meta.metaOf(&g.nodes.items[@backingInt(fn_b)]).?.inferred_errors.?;
     try std.testing.expectEqual(@as(usize, 2), b_errors.len);
 }
 
@@ -348,7 +348,7 @@ test "propagateErrorSets deduplicates names across multiple call hops" {
     try propagateErrorSets(allocator, &g, Logger.noop);
 
     // Assert
-    const b_errors = zig_meta.metaOf(&g.nodes.items[@intFromEnum(fn_b)]).?.inferred_errors.?;
+    const b_errors = zig_meta.metaOf(&g.nodes.items[@backingInt(fn_b)]).?.inferred_errors.?;
     try std.testing.expectEqual(@as(usize, 1), b_errors.len);
 }
 
@@ -383,7 +383,7 @@ test "propagateErrorSets does not duplicate under large fan-in" {
 
     // Assert
     for (callers) |c| {
-        const errors = zig_meta.metaOf(&g.nodes.items[@intFromEnum(c)]).?.inferred_errors.?;
+        const errors = zig_meta.metaOf(&g.nodes.items[@backingInt(c)]).?.inferred_errors.?;
         try std.testing.expectEqual(@as(usize, 10), errors.len);
     }
 }

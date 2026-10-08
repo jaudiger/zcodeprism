@@ -38,24 +38,36 @@ pub const Config = struct {
     memory: ?MemoryConfig = null,
 };
 
+pub const ParsedConfig = struct {
+    config: Config,
+    arena: std.heap.ArenaAllocator,
+
+    pub fn deinit(self: ParsedConfig) void {
+        self.arena.deinit();
+    }
+};
+
 pub const ParseError = error{
     InvalidConfig,
     OutOfMemory,
 };
 
 /// Parse a `.zcodeprism.zon` file from its raw text content.
-pub fn parseFromSlice(allocator: std.mem.Allocator, source: [:0]const u8) ParseError!Config {
-    return std.zon.parse.fromSliceAlloc(Config, allocator, source, null, .{
+pub fn parseFromSlice(allocator: std.mem.Allocator, source: [:0]const u8) ParseError!ParsedConfig {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    errdefer arena.deinit();
+    var diagnostics: std.zon.parse.Diagnostics = undefined;
+    const cfg = std.zon.parse.fromSlice(Config, .{
+        .gpa = allocator,
+        .arena = arena.allocator(),
+        .source = source,
+        .diagnostics = &diagnostics,
         .ignore_unknown_fields = true,
     }) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         error.ParseZon => return error.InvalidConfig,
     };
-}
-
-/// Free all memory owned by a parsed Config.
-pub fn deinit(cfg: Config, allocator: std.mem.Allocator) void {
-    std.zon.parse.free(allocator, cfg);
+    return .{ .config = cfg, .arena = arena };
 }
 
 /// Fill in default values for any field left null.
@@ -119,8 +131,9 @@ test "parses valid config" {
     ;
 
     // Act
-    const cfg = try parseFromSlice(std.testing.allocator, source);
-    defer deinit(cfg, std.testing.allocator);
+    const parsed = try parseFromSlice(std.testing.allocator, source);
+    defer parsed.deinit();
+    const cfg = parsed.config;
 
     // Assert
     try std.testing.expect(cfg.exclude_paths != null);
@@ -142,8 +155,9 @@ test "applies defaults for missing fields" {
         \\    .languages = .{ .zig },
         \\}
     ;
-    const cfg = try parseFromSlice(std.testing.allocator, source);
-    defer deinit(cfg, std.testing.allocator);
+    const parsed = try parseFromSlice(std.testing.allocator, source);
+    defer parsed.deinit();
+    const cfg = parsed.config;
 
     // Act
     const full = withDefaults(cfg);
@@ -172,8 +186,9 @@ test "empty config file" {
     const source: [:0]const u8 = ".{}";
 
     // Act
-    const cfg = try parseFromSlice(std.testing.allocator, source);
-    defer deinit(cfg, std.testing.allocator);
+    const parsed = try parseFromSlice(std.testing.allocator, source);
+    defer parsed.deinit();
+    const cfg = parsed.config;
 
     // Assert
     try std.testing.expectEqual(@as(?[]const []const u8, null), cfg.exclude_paths);
@@ -193,8 +208,9 @@ test "config with unknown fields" {
     ;
 
     // Act
-    const cfg = try parseFromSlice(std.testing.allocator, source);
-    defer deinit(cfg, std.testing.allocator);
+    const parsed = try parseFromSlice(std.testing.allocator, source);
+    defer parsed.deinit();
+    const cfg = parsed.config;
 
     // Assert
     try std.testing.expect(cfg.languages != null);
@@ -207,8 +223,8 @@ test "all fields are optional" {
     // Assert
     comptime {
         const info = @typeInfo(Config);
-        for (info.@"struct".fields) |f| {
-            std.debug.assert(@typeInfo(f.type) == .optional);
+        for (info.@"struct".field_types) |field_type| {
+            std.debug.assert(@typeInfo(field_type) == .optional);
         }
     }
     try std.testing.expectEqual(@as(?[]const []const u8, null), cfg.exclude_paths);

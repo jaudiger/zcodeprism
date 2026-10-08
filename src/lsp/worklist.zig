@@ -86,7 +86,7 @@ test "LspWorklist append and read back" {
 
     // Act
     try wl.append(allocator, .{
-        .source_node_id = @enumFromInt(5),
+        .source_node_id = @fromBackingInt(@intCast(5)),
         .file_path = "src/main.zig",
         .line = 10,
         .col = 4,
@@ -94,7 +94,7 @@ test "LspWorklist append and read back" {
         .hint_name = "doStuff",
     });
     try wl.append(allocator, .{
-        .source_node_id = @enumFromInt(7),
+        .source_node_id = @fromBackingInt(@intCast(7)),
         .file_path = "src/main.zig",
         .line = 20,
         .col = 8,
@@ -129,14 +129,14 @@ test "LspWorklist phantom_hovers are separate from entries" {
 
     // Act
     try wl.append(allocator, .{
-        .source_node_id = @enumFromInt(1),
+        .source_node_id = @fromBackingInt(@intCast(1)),
         .file_path = "src/a.zig",
         .line = 0,
         .col = 0,
         .query_kind = .definition,
     });
     try wl.appendPhantomHover(allocator, .{
-        .source_node_id = @enumFromInt(42),
+        .source_node_id = @fromBackingInt(@intCast(42)),
         .file_path = "src/b.zig",
         .line = 5,
         .col = 2,
@@ -154,6 +154,6 @@ test "LspWorklist phantom_hovers are separate from entries" {
 
 test "QueryKind has exactly 4 variants" {
     comptime {
-        std.debug.assert(@typeInfo(QueryKind).@"enum".fields.len == 4);
+        std.debug.assert(@typeInfo(QueryKind).@"enum".field_names.len == 4);
     }
 }

@@ -127,9 +127,9 @@ pub const StatsOptions = struct {
 /// Aggregated statistics over (a subset of) the graph.
 pub const Stats = struct {
     /// Count of nodes for each NodeKind.
-    node_counts: [node_kind_count]u32 = [_]u32{0} ** node_kind_count,
+    node_counts: [node_kind_count]u32 = @splat(0),
     /// Count of edges for each EdgeType.
-    edge_counts: [edge_type_count]u32 = [_]u32{0} ** edge_type_count,
+    edge_counts: [edge_type_count]u32 = @splat(0),
     /// Total source lines across matched nodes.
     total_lines: u64 = 0,
     /// Whether any matched node has a given language.
@@ -140,8 +140,8 @@ pub const Stats = struct {
     dep_count: u32 = 0,
 };
 
-const node_kind_count = @typeInfo(NodeKind).@"enum".fields.len;
-const edge_type_count = @typeInfo(EdgeType).@"enum".fields.len;
+const node_kind_count = @typeInfo(NodeKind).@"enum".field_names.len;
+const edge_type_count = @typeInfo(EdgeType).@"enum".field_names.len;
 
 /// Options for `getImpact`.
 pub const ImpactOptions = struct {
@@ -277,7 +277,7 @@ fn nodeMatchesSearch(
         const out = g.outEdges(node_id);
         var found = false;
         for (out) |eid| {
-            if (g.edges.items[@intFromEnum(eid)].edge_type == et) {
+            if (g.edges.items[@backingInt(eid)].edge_type == et) {
                 found = true;
                 break;
             }
@@ -293,8 +293,8 @@ fn edgeMatchesGetEdgesFilter(g: *const Graph, e: Edge, options: GetEdgesOptions)
         if (e.edge_type != et) return false;
     }
     if (!options.include_external) {
-        const src_idx = @intFromEnum(e.source_id);
-        const tgt_idx = @intFromEnum(e.target_id);
+        const src_idx = @backingInt(e.source_id);
+        const tgt_idx = @backingInt(e.target_id);
         if (src_idx < g.nodes.items.len and isNodeExternal(g.nodes.items[src_idx])) return false;
         if (tgt_idx < g.nodes.items.len and isNodeExternal(g.nodes.items[tgt_idx])) return false;
     }
@@ -374,7 +374,7 @@ pub fn search(allocator: std.mem.Allocator, fg: FrozenGraph, options: SearchOpti
     // Measure
     var total_matches: u32 = 0;
     for (g.nodes.items, 0..) |n, i| {
-        if (nodeMatchesSearch(g, n, @enumFromInt(i), compiled_re, effective_scope, options)) {
+        if (nodeMatchesSearch(g, n, @fromBackingInt(@intCast(i)), compiled_re, effective_scope, options)) {
             total_matches += 1;
         }
     }
@@ -391,11 +391,11 @@ pub fn search(allocator: std.mem.Allocator, fg: FrozenGraph, options: SearchOpti
     var skipped: u32 = 0;
     var collected: usize = 0;
     for (g.nodes.items, 0..) |n, i| {
-        if (nodeMatchesSearch(g, n, @enumFromInt(i), compiled_re, effective_scope, options)) {
+        if (nodeMatchesSearch(g, n, @fromBackingInt(@intCast(i)), compiled_re, effective_scope, options)) {
             if (skipped < options.offset) {
                 skipped += 1;
             } else {
-                result[collected] = @enumFromInt(i);
+                result[collected] = @fromBackingInt(@intCast(i));
                 collected += 1;
                 if (collected >= result_count) break;
             }
@@ -432,8 +432,8 @@ pub fn findPaths(allocator: std.mem.Allocator, fg: FrozenGraph, from: NodeId, to
     var queue = std.ArrayList(QueueEntry).empty;
     defer queue.deinit(allocator);
 
-    const from_raw = @intFromEnum(from);
-    const to_raw = @intFromEnum(to);
+    const from_raw = @backingInt(from);
+    const to_raw = @backingInt(to);
 
     try visited.put(allocator, from_raw, null);
     try queue.append(allocator, .{ .node = from_raw, .depth = 0 });
@@ -447,9 +447,9 @@ pub fn findPaths(allocator: std.mem.Allocator, fg: FrozenGraph, from: NodeId, to
 
         if (entry.depth >= max_depth) continue;
 
-        const out = g.outEdges(@enumFromInt(entry.node));
+        const out = g.outEdges(@fromBackingInt(@intCast(entry.node)));
         for (out) |eid| {
-            const edge = g.edges.items[@intFromEnum(eid)];
+            const edge = g.edges.items[@backingInt(eid)];
 
             if (options.edge_types) |allowed| {
                 var ok = false;
@@ -462,7 +462,7 @@ pub fn findPaths(allocator: std.mem.Allocator, fg: FrozenGraph, from: NodeId, to
                 if (!ok) continue;
             }
 
-            const target_raw = @intFromEnum(edge.target_id);
+            const target_raw = @backingInt(edge.target_id);
             if (visited.contains(target_raw)) continue;
 
             try visited.put(allocator, target_raw, .{
@@ -491,7 +491,7 @@ pub fn findPaths(allocator: std.mem.Allocator, fg: FrozenGraph, from: NodeId, to
 
     var current: u64 = to_raw;
     while (true) {
-        try path_nodes.append(allocator, @enumFromInt(current));
+        try path_nodes.append(allocator, @fromBackingInt(@intCast(current)));
         const info = visited.get(current).? orelse break;
         try path_edges.append(allocator, info.edge_type);
         current = info.parent;
@@ -520,7 +520,7 @@ pub fn computeStats(allocator: std.mem.Allocator, fg: FrozenGraph, options: Stat
 
     for (g.nodes.items) |n| {
         if (!nodePassesStatsFilter(n, effective_scope, options)) continue;
-        stats.node_counts[@intFromEnum(n.kind)] += 1;
+        stats.node_counts[@backingInt(n.kind)] += 1;
         if (n.metrics) |m| {
             stats.total_lines += m.lines;
         }
@@ -536,14 +536,14 @@ pub fn computeStats(allocator: std.mem.Allocator, fg: FrozenGraph, options: Stat
     }
 
     for (g.edges.items) |e| {
-        const src_idx = @intFromEnum(e.source_id);
-        const tgt_idx = @intFromEnum(e.target_id);
+        const src_idx = @backingInt(e.source_id);
+        const tgt_idx = @backingInt(e.target_id);
         if (src_idx >= g.nodes.items.len or tgt_idx >= g.nodes.items.len) continue;
         const src_node = g.nodes.items[src_idx];
         const tgt_node = g.nodes.items[tgt_idx];
         if (!nodePassesStatsFilter(src_node, effective_scope, options)) continue;
         if (!nodePassesStatsFilter(tgt_node, effective_scope, options)) continue;
-        stats.edge_counts[@intFromEnum(e.edge_type)] += 1;
+        stats.edge_counts[@backingInt(e.edge_type)] += 1;
     }
 
     return stats;
@@ -586,7 +586,7 @@ pub fn getImpact(allocator: std.mem.Allocator, fg: FrozenGraph, node_id: NodeId,
     var queue = std.ArrayList(QEntry).empty;
     defer queue.deinit(allocator);
 
-    const start_raw = @intFromEnum(node_id);
+    const start_raw = @backingInt(node_id);
     try visited.put(allocator, start_raw, {});
     try queue.append(allocator, .{ .node = start_raw, .depth = 0 });
 
@@ -597,9 +597,9 @@ pub fn getImpact(allocator: std.mem.Allocator, fg: FrozenGraph, node_id: NodeId,
 
         if (entry.depth >= options.max_depth) continue;
 
-        const in_edges = g.inEdges(@enumFromInt(entry.node));
+        const in_edges = g.inEdges(@fromBackingInt(@intCast(entry.node)));
         for (in_edges) |eid| {
-            const edge = g.edges.items[@intFromEnum(eid)];
+            const edge = g.edges.items[@backingInt(eid)];
 
             var allowed = false;
             for (allowed_types) |et| {
@@ -610,7 +610,7 @@ pub fn getImpact(allocator: std.mem.Allocator, fg: FrozenGraph, node_id: NodeId,
             }
             if (!allowed) continue;
 
-            const source_raw = @intFromEnum(edge.source_id);
+            const source_raw = @backingInt(edge.source_id);
             if (visited.contains(source_raw)) continue;
 
             try visited.put(allocator, source_raw, {});
@@ -629,7 +629,7 @@ pub fn getImpact(allocator: std.mem.Allocator, fg: FrozenGraph, node_id: NodeId,
     var it = visited.iterator();
     while (it.next()) |entry| {
         if (entry.key_ptr.* == start_raw) continue;
-        result[pos] = @enumFromInt(entry.key_ptr.*);
+        result[pos] = @fromBackingInt(@intCast(entry.key_ptr.*));
         pos += 1;
     }
     std.debug.assert(pos == impacted_count);
@@ -685,13 +685,13 @@ pub fn getEdges(allocator: std.mem.Allocator, fg: FrozenGraph, node_ids: []const
 
         if (options.direction == .out or options.direction == .both) {
             for (g.outEdges(query_nid)) |eid| {
-                const e = g.edges.items[@intFromEnum(eid)];
+                const e = g.edges.items[@backingInt(eid)];
                 if (edgeMatchesGetEdgesFilter(g, e, options)) total_count += 1;
             }
         }
         if (options.direction == .in or options.direction == .both) {
             for (g.inEdges(query_nid)) |eid| {
-                const e = g.edges.items[@intFromEnum(eid)];
+                const e = g.edges.items[@backingInt(eid)];
                 if (edgeMatchesGetEdgesFilter(g, e, options)) total_count += 1;
             }
         }
@@ -713,7 +713,7 @@ pub fn getEdges(allocator: std.mem.Allocator, fg: FrozenGraph, node_ids: []const
 
         if (options.direction == .out or options.direction == .both) {
             for (g.outEdges(query_nid)) |eid| {
-                const e = g.edges.items[@intFromEnum(eid)];
+                const e = g.edges.items[@backingInt(eid)];
                 if (!edgeMatchesGetEdgesFilter(g, e, options)) continue;
                 if (skipped < options.offset) {
                     skipped += 1;
@@ -726,7 +726,7 @@ pub fn getEdges(allocator: std.mem.Allocator, fg: FrozenGraph, node_ids: []const
         }
         if (options.direction == .in or options.direction == .both) {
             for (g.inEdges(query_nid)) |eid| {
-                const e = g.edges.items[@intFromEnum(eid)];
+                const e = g.edges.items[@backingInt(eid)];
                 if (!edgeMatchesGetEdgesFilter(g, e, options)) continue;
                 if (skipped < options.offset) {
                     skipped += 1;
@@ -760,26 +760,26 @@ fn buildTestGraph(allocator: std.mem.Allocator) !Graph {
     var g = Graph.init("test-project");
 
     _ = try g.addNode(allocator, .{ .id = .root, .name = "test-project", .kind = .directory });
-    _ = try g.addNode(allocator, .{ .id = .root, .name = "src/parser.zig", .kind = .file, .language = .zig, .visibility = .public, .parent_id = @enumFromInt(0), .file_path = "src/parser.zig" });
-    _ = try g.addNode(allocator, .{ .id = .root, .name = "parse", .kind = .function, .language = .zig, .visibility = .public, .parent_id = @enumFromInt(1), .file_path = "src/parser.zig", .line_start = 10, .line_end = 19, .metrics = .{ .lines = 10, .complexity = 5 } });
-    _ = try g.addNode(allocator, .{ .id = .root, .name = "Token", .kind = .type_def, .language = .zig, .visibility = .public, .parent_id = @enumFromInt(1), .file_path = "src/parser.zig", .line_start = 1, .line_end = 4, .metrics = .{ .lines = 4 } });
-    _ = try g.addNode(allocator, .{ .id = .root, .name = "helper", .kind = .function, .language = .zig, .visibility = .private, .parent_id = @enumFromInt(1), .file_path = "src/parser.zig", .line_start = 20, .line_end = 22, .metrics = .{ .lines = 3, .complexity = 2 } });
-    _ = try g.addNode(allocator, .{ .id = .root, .name = "src/main.zig", .kind = .file, .language = .zig, .visibility = .public, .parent_id = @enumFromInt(0), .file_path = "src/main.zig" });
-    _ = try g.addNode(allocator, .{ .id = .root, .name = "main", .kind = .function, .language = .zig, .visibility = .public, .parent_id = @enumFromInt(5), .file_path = "src/main.zig", .line_start = 1, .line_end = 20, .metrics = .{ .lines = 20, .complexity = 8 } });
-    _ = try g.addNode(allocator, .{ .id = .root, .name = "test_parse", .kind = .test_def, .language = .zig, .visibility = .private, .parent_id = @enumFromInt(1), .file_path = "src/parser.zig", .line_start = 25, .line_end = 29, .metrics = .{ .lines = 5 } });
+    _ = try g.addNode(allocator, .{ .id = .root, .name = "src/parser.zig", .kind = .file, .language = .zig, .visibility = .public, .parent_id = @fromBackingInt(@intCast(0)), .file_path = "src/parser.zig" });
+    _ = try g.addNode(allocator, .{ .id = .root, .name = "parse", .kind = .function, .language = .zig, .visibility = .public, .parent_id = @fromBackingInt(@intCast(1)), .file_path = "src/parser.zig", .line_start = 10, .line_end = 19, .metrics = .{ .lines = 10, .complexity = 5 } });
+    _ = try g.addNode(allocator, .{ .id = .root, .name = "Token", .kind = .type_def, .language = .zig, .visibility = .public, .parent_id = @fromBackingInt(@intCast(1)), .file_path = "src/parser.zig", .line_start = 1, .line_end = 4, .metrics = .{ .lines = 4 } });
+    _ = try g.addNode(allocator, .{ .id = .root, .name = "helper", .kind = .function, .language = .zig, .visibility = .private, .parent_id = @fromBackingInt(@intCast(1)), .file_path = "src/parser.zig", .line_start = 20, .line_end = 22, .metrics = .{ .lines = 3, .complexity = 2 } });
+    _ = try g.addNode(allocator, .{ .id = .root, .name = "src/main.zig", .kind = .file, .language = .zig, .visibility = .public, .parent_id = @fromBackingInt(@intCast(0)), .file_path = "src/main.zig" });
+    _ = try g.addNode(allocator, .{ .id = .root, .name = "main", .kind = .function, .language = .zig, .visibility = .public, .parent_id = @fromBackingInt(@intCast(5)), .file_path = "src/main.zig", .line_start = 1, .line_end = 20, .metrics = .{ .lines = 20, .complexity = 8 } });
+    _ = try g.addNode(allocator, .{ .id = .root, .name = "test_parse", .kind = .test_def, .language = .zig, .visibility = .private, .parent_id = @fromBackingInt(@intCast(1)), .file_path = "src/parser.zig", .line_start = 25, .line_end = 29, .metrics = .{ .lines = 5 } });
     _ = try g.addNode(allocator, .{ .id = .root, .name = "std.mem.Allocator", .kind = .type_def, .language = .zig, .visibility = .public, .external = .{ .stdlib = {} } });
 
-    _ = try g.addEdgeIfNew(allocator, .{ .source_id = @enumFromInt(2), .target_id = @enumFromInt(3), .edge_type = .uses_type });
-    _ = try g.addEdgeIfNew(allocator, .{ .source_id = @enumFromInt(6), .target_id = @enumFromInt(2), .edge_type = .calls });
-    _ = try g.addEdgeIfNew(allocator, .{ .source_id = @enumFromInt(2), .target_id = @enumFromInt(8), .edge_type = .uses_type, .source = .phantom });
-    _ = try g.addEdgeIfNew(allocator, .{ .source_id = @enumFromInt(6), .target_id = @enumFromInt(8), .edge_type = .uses_type, .source = .phantom });
-    _ = try g.addEdgeIfNew(allocator, .{ .source_id = @enumFromInt(7), .target_id = @enumFromInt(2), .edge_type = .uses_value });
+    _ = try g.addEdgeIfNew(allocator, .{ .source_id = @fromBackingInt(@intCast(2)), .target_id = @fromBackingInt(@intCast(3)), .edge_type = .uses_type });
+    _ = try g.addEdgeIfNew(allocator, .{ .source_id = @fromBackingInt(@intCast(6)), .target_id = @fromBackingInt(@intCast(2)), .edge_type = .calls });
+    _ = try g.addEdgeIfNew(allocator, .{ .source_id = @fromBackingInt(@intCast(2)), .target_id = @fromBackingInt(@intCast(8)), .edge_type = .uses_type, .source = .phantom });
+    _ = try g.addEdgeIfNew(allocator, .{ .source_id = @fromBackingInt(@intCast(6)), .target_id = @fromBackingInt(@intCast(8)), .edge_type = .uses_type, .source = .phantom });
+    _ = try g.addEdgeIfNew(allocator, .{ .source_id = @fromBackingInt(@intCast(7)), .target_id = @fromBackingInt(@intCast(2)), .edge_type = .uses_value });
 
     return g;
 }
 
 fn nid(v: u64) NodeId {
-    return @enumFromInt(v);
+    return @fromBackingInt(@intCast(v));
 }
 
 test "search by name regex, kind, visibility, and language individually" {
@@ -1117,8 +1117,8 @@ test "getImpact returns reverse-dependency set using default edges" {
     var found_main = false;
     var found_test_parse = false;
     for (core.impacted) |id| {
-        if (@intFromEnum(id) == 6) found_main = true;
-        if (@intFromEnum(id) == 7) found_test_parse = true;
+        if (@backingInt(id) == 6) found_main = true;
+        if (@backingInt(id) == 7) found_test_parse = true;
     }
     try testing.expect(found_main);
     try testing.expect(found_test_parse);
@@ -1152,10 +1152,10 @@ test "stats on full graph counts nodes, edges, and lines" {
     const stats = try computeStats(testing.allocator, fg, .{ .include_tests = true, .include_external = true });
 
     // Assert
-    try testing.expect(stats.node_counts[@intFromEnum(NodeKind.function)] >= 3);
-    try testing.expect(stats.node_counts[@intFromEnum(NodeKind.type_def)] >= 2);
-    try testing.expect(stats.edge_counts[@intFromEnum(EdgeType.calls)] >= 1);
-    try testing.expect(stats.edge_counts[@intFromEnum(EdgeType.uses_type)] >= 1);
+    try testing.expect(stats.node_counts[@backingInt(NodeKind.function)] >= 3);
+    try testing.expect(stats.node_counts[@backingInt(NodeKind.type_def)] >= 2);
+    try testing.expect(stats.edge_counts[@backingInt(EdgeType.calls)] >= 1);
+    try testing.expect(stats.edge_counts[@backingInt(EdgeType.uses_type)] >= 1);
     try testing.expect(stats.total_lines > 0);
 }
 
@@ -1169,7 +1169,7 @@ test "stats with scope restricts counts" {
     const stats = try computeStats(testing.allocator, fg, .{ .scope = "src/main" });
 
     // Assert
-    try testing.expectEqual(@as(u32, 1), stats.node_counts[@intFromEnum(NodeKind.function)]);
+    try testing.expectEqual(@as(u32, 1), stats.node_counts[@backingInt(NodeKind.function)]);
 }
 
 test "stats on empty graph returns all zeros" {
@@ -1267,9 +1267,9 @@ test "getEdges filters by direction, edge_type, and include_external" {
 
 test "type invariants" {
     comptime {
-        std.debug.assert(@typeInfo(ExternalFilter).@"enum".fields.len == 3);
+        std.debug.assert(@typeInfo(ExternalFilter).@"enum".field_names.len == 3);
         const s = Stats{};
-        std.debug.assert(s.node_counts.len == @typeInfo(NodeKind).@"enum".fields.len);
-        std.debug.assert(s.edge_counts.len == @typeInfo(EdgeType).@"enum".fields.len);
+        std.debug.assert(s.node_counts.len == @typeInfo(NodeKind).@"enum".field_names.len);
+        std.debug.assert(s.edge_counts.len == @typeInfo(EdgeType).@"enum".field_names.len);
     }
 }

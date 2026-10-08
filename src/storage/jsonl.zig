@@ -26,7 +26,7 @@ fn writeNodeLine(writer: *std.Io.Writer, n: Node) !void {
     try stream.objectField("_type");
     try stream.write("node");
     try stream.objectField("id");
-    try stream.write(@intFromEnum(n.id));
+    try stream.write(@backingInt(n.id));
     try stream.objectField("name");
     try stream.write(n.name);
     try stream.objectField("kind");
@@ -47,7 +47,7 @@ fn writeNodeLine(writer: *std.Io.Writer, n: Node) !void {
     try stream.write(@tagName(n.visibility));
     try stream.objectField("parent_id");
     if (n.parent_id) |pid| {
-        try stream.write(@intFromEnum(pid));
+        try stream.write(@backingInt(pid));
     } else {
         try stream.write(null);
     }
@@ -93,9 +93,9 @@ fn writeEdgeLine(writer: *std.Io.Writer, e: Edge) !void {
     try stream.objectField("_type");
     try stream.write("edge");
     try stream.objectField("source_id");
-    try stream.write(@intFromEnum(e.source_id));
+    try stream.write(@backingInt(e.source_id));
     try stream.objectField("target_id");
-    try stream.write(@intFromEnum(e.target_id));
+    try stream.write(@backingInt(e.target_id));
     try stream.objectField("edge_type");
     try stream.write(@tagName(e.edge_type));
     try stream.objectField("source");
@@ -190,7 +190,7 @@ fn parseNodeFromJson(allocator: std.mem.Allocator, g: *Graph, obj: std.json.Obje
 
     const parent_id: ?NodeId = if (obj.get("parent_id")) |v| blk: {
         const i = jsonOptInt(v) orelse break :blk null;
-        break :blk @enumFromInt(@as(u64, @intCast(i)));
+        break :blk @fromBackingInt(@intCast(@as(u64, @intCast(i))));
     } else null;
 
     const line_start: ?u32 = if (obj.get("line_start")) |v| blk: {
@@ -260,8 +260,8 @@ fn parseEdgeFromJson(allocator: std.mem.Allocator, g: *Graph, obj: std.json.Obje
     if (src_id >= g.nodes.items.len or tgt_id >= g.nodes.items.len) return false;
 
     try g.edges.append(allocator, .{
-        .source_id = @enumFromInt(src_id),
-        .target_id = @enumFromInt(tgt_id),
+        .source_id = @fromBackingInt(@intCast(src_id)),
+        .target_id = @fromBackingInt(@intCast(tgt_id)),
         .edge_type = edge_type,
         .source = edge_source,
     });
@@ -270,13 +270,13 @@ fn parseEdgeFromJson(allocator: std.mem.Allocator, g: *Graph, obj: std.json.Obje
 
 /// Comptime lookup table mapping each EdgeType discriminant to its alphabetical rank.
 const edge_type_sort_rank = blk: {
-    const fields = @typeInfo(EdgeType).@"enum".fields;
-    const n = fields.len;
+    const field_names = @typeInfo(EdgeType).@"enum".field_names;
+    const n = field_names.len;
     var ranks: [n]u8 = undefined;
-    for (fields, 0..) |f, i| {
+    for (field_names, 0..) |field_name, i| {
         var rank: u8 = 0;
-        for (fields) |other| {
-            if (std.mem.order(u8, other.name, f.name) == .lt) {
+        for (field_names) |other_name| {
+            if (std.mem.order(u8, other_name, field_name) == .lt) {
                 rank += 1;
             }
         }
@@ -287,13 +287,13 @@ const edge_type_sort_rank = blk: {
 
 /// Canonical edge ordering: by edge_type alphabetical rank, then source_id, then target_id.
 fn edgeLessThan(_: void, a: Edge, b: Edge) bool {
-    const ra = edge_type_sort_rank[@intFromEnum(a.edge_type)];
-    const rb = edge_type_sort_rank[@intFromEnum(b.edge_type)];
+    const ra = edge_type_sort_rank[@backingInt(a.edge_type)];
+    const rb = edge_type_sort_rank[@backingInt(b.edge_type)];
     if (ra != rb) return ra < rb;
-    const as = @intFromEnum(a.source_id);
-    const bs = @intFromEnum(b.source_id);
+    const as = @backingInt(a.source_id);
+    const bs = @backingInt(b.source_id);
     if (as != bs) return as < bs;
-    return @intFromEnum(a.target_id) < @intFromEnum(b.target_id);
+    return @backingInt(a.target_id) < @backingInt(b.target_id);
 }
 
 /// Export a graph to JSONL format, writing one JSON object per line.
@@ -392,7 +392,7 @@ fn createTestGraph(allocator: std.mem.Allocator) !Graph {
         .file_path = "src/main.zig",
         .line_start = 10,
         .line_end = 50,
-        .parent_id = @enumFromInt(0),
+        .parent_id = @fromBackingInt(@intCast(0)),
         .doc = "/// Process the input data.",
         .signature = "pub fn process(data: []const u8) !void",
         .content_hash = "abcdefghijklmnop".*,
@@ -416,16 +416,16 @@ fn createTestGraph(allocator: std.mem.Allocator) !Graph {
 
     // Edge 0: function uses type
     _ = try g.addEdgeIfNew(allocator, .{
-        .source_id = @enumFromInt(1),
-        .target_id = @enumFromInt(2),
+        .source_id = @fromBackingInt(@intCast(1)),
+        .target_id = @fromBackingInt(@intCast(2)),
         .edge_type = .uses_type,
         .source = .tree_sitter,
     });
 
     // Edge 1: file exports function
     _ = try g.addEdgeIfNew(allocator, .{
-        .source_id = @enumFromInt(0),
-        .target_id = @enumFromInt(1),
+        .source_id = @fromBackingInt(@intCast(0)),
+        .target_id = @fromBackingInt(@intCast(1)),
         .edge_type = .exports,
         .source = .tree_sitter,
     });

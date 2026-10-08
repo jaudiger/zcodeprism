@@ -447,20 +447,20 @@ test "creates uses_type edge from signature and body" {
 
     // Assert
     const distance_id = for (g.nodes.items, 0..) |n, i| {
-        if (n.kind == .function and std.mem.eql(u8, n.name, "distance")) break @as(NodeId, @enumFromInt(i));
+        if (n.kind == .function and std.mem.eql(u8, n.name, "distance")) break @as(NodeId, @fromBackingInt(@intCast(i)));
     } else return error.NodeNotFound;
 
     const point_id = for (g.nodes.items, 0..) |n, i| {
         if (n.kind == .type_def and std.mem.eql(u8, n.name, "Point") and
             (if (rust_meta.metaOf(&n)) |m| m.sub_kind != .impl_block else true))
-            break @as(NodeId, @enumFromInt(i));
+            break @as(NodeId, @fromBackingInt(@intCast(i)));
     } else return error.NodeNotFound;
 
     try std.testing.expect(helpers.hasEdge(&g, distance_id, point_id, .uses_type));
 
     // Assert
     const literal_id = for (g.nodes.items, 0..) |n, i| {
-        if (n.kind == .function and std.mem.eql(u8, n.name, "creates_point_literal")) break @as(NodeId, @enumFromInt(i));
+        if (n.kind == .function and std.mem.eql(u8, n.name, "creates_point_literal")) break @as(NodeId, @fromBackingInt(@intCast(i)));
     } else return error.NodeNotFound;
 
     try std.testing.expect(helpers.hasEdge(&g, literal_id, point_id, .uses_type));
@@ -923,7 +923,7 @@ test "attributed tuple variant has one field with type signature and attribute i
 
     // Assert
     const variant_id = for (g.nodes.items, 0..) |n, i| {
-        if (n.kind == .field and std.mem.eql(u8, n.name, "IoError")) break @as(NodeId, @enumFromInt(i));
+        if (n.kind == .field and std.mem.eql(u8, n.name, "IoError")) break @as(NodeId, @fromBackingInt(@intCast(i)));
     } else unreachable;
 
     var child_count: usize = 0;
@@ -956,7 +956,7 @@ test "tuple variant with multiple fields and attributes has correct indices" {
 
     // Assert
     const variant_id = for (g.nodes.items, 0..) |n, i| {
-        if (n.kind == .field and std.mem.eql(u8, n.name, "Custom")) break @as(NodeId, @enumFromInt(i));
+        if (n.kind == .field and std.mem.eql(u8, n.name, "Custom")) break @as(NodeId, @fromBackingInt(@intCast(i)));
     } else unreachable;
 
     var found_0 = false;
@@ -981,7 +981,7 @@ test "tuple variant without attributes has no lang_meta on fields" {
 
     // Assert
     const variant_id = for (g.nodes.items, 0..) |n, i| {
-        if (n.kind == .field and std.mem.eql(u8, n.name, "Plain")) break @as(NodeId, @enumFromInt(i));
+        if (n.kind == .field and std.mem.eql(u8, n.name, "Plain")) break @as(NodeId, @fromBackingInt(@intCast(i)));
     } else unreachable;
 
     for (g.nodes.items) |n| {
@@ -1005,7 +1005,7 @@ test "tuple struct field attribute stored in lang_meta" {
 
     // Assert
     const wrapper_id = for (g.nodes.items, 0..) |n, i| {
-        if (n.kind == .type_def and std.mem.eql(u8, n.name, "Wrapper")) break @as(NodeId, @enumFromInt(i));
+        if (n.kind == .type_def and std.mem.eql(u8, n.name, "Wrapper")) break @as(NodeId, @fromBackingInt(@intCast(i)));
     } else unreachable;
 
     for (g.nodes.items) |n| {
@@ -1106,11 +1106,11 @@ test "generic return type creates uses_type edge" {
 
     // Assert
     const tokenize_id = for (g.nodes.items, 0..) |n, i| {
-        if (n.kind == .function and std.mem.eql(u8, n.name, "tokenize")) break @as(NodeId, @enumFromInt(i));
+        if (n.kind == .function and std.mem.eql(u8, n.name, "tokenize")) break @as(NodeId, @fromBackingInt(@intCast(i)));
     } else return error.NodeNotFound;
 
     const token_id = for (g.nodes.items, 0..) |n, i| {
-        if (n.kind == .type_def and std.mem.eql(u8, n.name, "Token")) break @as(NodeId, @enumFromInt(i));
+        if (n.kind == .type_def and std.mem.eql(u8, n.name, "Token")) break @as(NodeId, @fromBackingInt(@intCast(i)));
     } else return error.NodeNotFound;
 
     try std.testing.expect(helpers.hasEdge(&g, tokenize_id, token_id, .uses_type));
@@ -1129,18 +1129,18 @@ test "struct and enum field types create uses_type for local types" {
     , &g);
 
     const color_id = for (g.nodes.items, 0..) |n, i| {
-        if (n.kind == .type_def and std.mem.eql(u8, n.name, "Color")) break @as(NodeId, @enumFromInt(i));
+        if (n.kind == .type_def and std.mem.eql(u8, n.name, "Color")) break @as(NodeId, @fromBackingInt(@intCast(i)));
     } else return error.NodeNotFound;
 
     // Assert
     const pixel_id = for (g.nodes.items, 0..) |n, i| {
-        if (n.kind == .type_def and std.mem.eql(u8, n.name, "Pixel")) break @as(NodeId, @enumFromInt(i));
+        if (n.kind == .type_def and std.mem.eql(u8, n.name, "Pixel")) break @as(NodeId, @fromBackingInt(@intCast(i)));
     } else return error.NodeNotFound;
     try std.testing.expect(helpers.hasEdge(&g, pixel_id, color_id, .uses_type));
 
     // Assert
     const container_id = for (g.nodes.items, 0..) |n, i| {
-        if (n.kind == .enum_def and std.mem.eql(u8, n.name, "Container")) break @as(NodeId, @enumFromInt(i));
+        if (n.kind == .enum_def and std.mem.eql(u8, n.name, "Container")) break @as(NodeId, @fromBackingInt(@intCast(i)));
     } else return error.NodeNotFound;
     try std.testing.expect(helpers.hasEdge(&g, container_id, color_id, .uses_type));
 }
@@ -1155,15 +1155,15 @@ test "Self shorthand struct init creates accesses_field edges to fields" {
 
     const new_id = for (g.nodes.items, 0..) |n, i| {
         if (n.kind == .function and std.mem.eql(u8, n.name, "new") and
-            n.parent_id != null) break @as(NodeId, @enumFromInt(i));
+            n.parent_id != null) break @as(NodeId, @fromBackingInt(@intCast(i)));
     } else return error.NodeNotFound;
 
     const x_id = for (g.nodes.items, 0..) |n, i| {
-        if (n.kind == .field and std.mem.eql(u8, n.name, "x")) break @as(NodeId, @enumFromInt(i));
+        if (n.kind == .field and std.mem.eql(u8, n.name, "x")) break @as(NodeId, @fromBackingInt(@intCast(i)));
     } else return error.NodeNotFound;
 
     const y_id = for (g.nodes.items, 0..) |n, i| {
-        if (n.kind == .field and std.mem.eql(u8, n.name, "y")) break @as(NodeId, @enumFromInt(i));
+        if (n.kind == .field and std.mem.eql(u8, n.name, "y")) break @as(NodeId, @fromBackingInt(@intCast(i)));
     } else return error.NodeNotFound;
 
     // Assert
@@ -1180,11 +1180,11 @@ test "let-bound struct literal field access creates accesses_field edge" {
     try parseWithEdges(std.testing.allocator, fixtures.rust.simple, &g);
 
     const fn_id = for (g.nodes.items, 0..) |n, i| {
-        if (n.kind == .function and std.mem.eql(u8, n.name, "field_access_after_binding")) break @as(NodeId, @enumFromInt(i));
+        if (n.kind == .function and std.mem.eql(u8, n.name, "field_access_after_binding")) break @as(NodeId, @fromBackingInt(@intCast(i)));
     } else return error.NodeNotFound;
 
     const x_id = for (g.nodes.items, 0..) |n, i| {
-        if (n.kind == .field and std.mem.eql(u8, n.name, "x")) break @as(NodeId, @enumFromInt(i));
+        if (n.kind == .field and std.mem.eql(u8, n.name, "x")) break @as(NodeId, @fromBackingInt(@intCast(i)));
     } else return error.NodeNotFound;
 
     // Assert
@@ -1207,8 +1207,8 @@ test "uses_value edge for static initializer naming a function" {
     var callback_id: ?NodeId = null;
     var handler_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, i| {
-        if (n.kind == .function and std.mem.eql(u8, n.name, "callback")) callback_id = @enumFromInt(i);
-        if (n.kind == .constant and std.mem.eql(u8, n.name, "HANDLER")) handler_id = @enumFromInt(i);
+        if (n.kind == .function and std.mem.eql(u8, n.name, "callback")) callback_id = @fromBackingInt(@intCast(i));
+        if (n.kind == .constant and std.mem.eql(u8, n.name, "HANDLER")) handler_id = @fromBackingInt(@intCast(i));
     }
     try std.testing.expect(callback_id != null);
     try std.testing.expect(handler_id != null);
@@ -1234,8 +1234,8 @@ test "uses_value edge for bare function passed as call argument" {
     var helper_id: ?NodeId = null;
     var invokes_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, i| {
-        if (n.kind == .function and std.mem.eql(u8, n.name, "helper")) helper_id = @enumFromInt(i);
-        if (n.kind == .function and std.mem.eql(u8, n.name, "invokes")) invokes_id = @enumFromInt(i);
+        if (n.kind == .function and std.mem.eql(u8, n.name, "helper")) helper_id = @fromBackingInt(@intCast(i));
+        if (n.kind == .function and std.mem.eql(u8, n.name, "invokes")) invokes_id = @fromBackingInt(@intCast(i));
     }
     try std.testing.expect(helper_id != null);
     try std.testing.expect(invokes_id != null);

@@ -60,7 +60,7 @@ pub fn hasPhantomEdge(g: *const Graph, source: NodeId) bool {
 /// Used to distinguish same-named nodes across different files.
 pub fn findNodeInFile(g: *const Graph, name: []const u8, kind: NodeKind, ancestor_id: NodeId) ?NodeId {
     for (g.nodes.items, 0..) |n, i| {
-        const nid: NodeId = @enumFromInt(i);
+        const nid: NodeId = @fromBackingInt(@intCast(i));
         if (n.kind == kind and std.mem.eql(u8, n.name, name) and isDescendantOf(g, nid, ancestor_id)) return nid;
     }
     return null;

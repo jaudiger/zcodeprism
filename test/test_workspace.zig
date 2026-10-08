@@ -207,9 +207,10 @@ test "validateWorkspace rejects empty name, name over 32 chars, and non-existent
         .name = "ws",
         .projects = &[_]WorkspaceProject{.{ .name = "", .path = "." }},
     };
+    const long_project_name: [65]u8 = @splat('a');
     const long_name = Workspace{
         .name = "ws",
-        .projects = &[_]WorkspaceProject{.{ .name = "a" ** 65, .path = "." }},
+        .projects = &[_]WorkspaceProject{.{ .name = &long_project_name, .path = "." }},
     };
     const bad_path = Workspace{
         .name = "ws",
@@ -360,10 +361,10 @@ test "stats counts all projects without scope and one project with scope" {
     const alpha_stats = try zcodeprism.query.computeStats(allocator, ws_fg, .{ .scope = "alpha/" });
 
     // Assert
-    try std.testing.expectEqual(@as(u32, 2), all_stats.node_counts[@intFromEnum(NodeKind.file)]);
-    try std.testing.expectEqual(@as(u32, 2), all_stats.node_counts[@intFromEnum(NodeKind.function)]);
-    try std.testing.expectEqual(@as(u32, 1), alpha_stats.node_counts[@intFromEnum(NodeKind.file)]);
-    try std.testing.expectEqual(@as(u32, 1), alpha_stats.node_counts[@intFromEnum(NodeKind.function)]);
+    try std.testing.expectEqual(@as(u32, 2), all_stats.node_counts[@backingInt(NodeKind.file)]);
+    try std.testing.expectEqual(@as(u32, 2), all_stats.node_counts[@backingInt(NodeKind.function)]);
+    try std.testing.expectEqual(@as(u32, 1), alpha_stats.node_counts[@backingInt(NodeKind.file)]);
+    try std.testing.expectEqual(@as(u32, 1), alpha_stats.node_counts[@backingInt(NodeKind.function)]);
 }
 
 test "file paths are prefixed with project name" {
@@ -410,14 +411,14 @@ test "project_ranges has one entry per project with non-overlapping spans" {
     try std.testing.expectEqual(@as(usize, 2), assembled.project_ranges.len);
     try std.testing.expectEqualStrings("alpha", assembled.project_ranges[0].name);
     try std.testing.expectEqualStrings("beta", assembled.project_ranges[1].name);
-    try std.testing.expect(@intFromEnum(assembled.project_ranges[0].end_id) <= @intFromEnum(assembled.project_ranges[1].start_id));
+    try std.testing.expect(@backingInt(assembled.project_ranges[0].end_id) <= @backingInt(assembled.project_ranges[1].start_id));
 }
 
 test "workspace types have expected fields and error count" {
     comptime {
         const err_info = @typeInfo(WorkspaceError);
         std.debug.assert(err_info == .error_set);
-        std.debug.assert(err_info.error_set.?.len == 5);
+        std.debug.assert(err_info.error_set.error_names.?.len == 5);
 
         std.debug.assert(@hasField(Workspace, "name"));
         std.debug.assert(@hasField(Workspace, "projects"));

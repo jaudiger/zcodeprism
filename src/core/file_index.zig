@@ -17,7 +17,7 @@ pub const FileIndex = struct {
         for (nodes, 0..) |n, i| {
             if (n.kind == .file) {
                 const key = n.file_path orelse n.name;
-                try fi.map.put(allocator, key, @enumFromInt(i));
+                try fi.map.put(allocator, key, @fromBackingInt(@intCast(i)));
             }
         }
         return fi;
@@ -37,9 +37,9 @@ pub const FileIndex = struct {
 test "findByName returns file NodeIds and null for absent paths" {
     // Arrange
     const nodes: []const Node = &.{
-        .{ .id = @enumFromInt(0), .name = "src/main.zig", .kind = .file, .language = .zig, .file_path = "src/main.zig" },
-        .{ .id = @enumFromInt(1), .name = "fn_a", .kind = .function, .language = .zig, .file_path = "src/main.zig" },
-        .{ .id = @enumFromInt(2), .name = "src/lib.zig", .kind = .file, .language = .zig, .file_path = "src/lib.zig" },
+        .{ .id = @fromBackingInt(@intCast(0)), .name = "src/main.zig", .kind = .file, .language = .zig, .file_path = "src/main.zig" },
+        .{ .id = @fromBackingInt(@intCast(1)), .name = "fn_a", .kind = .function, .language = .zig, .file_path = "src/main.zig" },
+        .{ .id = @fromBackingInt(@intCast(2)), .name = "src/lib.zig", .kind = .file, .language = .zig, .file_path = "src/lib.zig" },
     };
 
     // Act
@@ -47,8 +47,8 @@ test "findByName returns file NodeIds and null for absent paths" {
     defer idx.deinit(std.testing.allocator);
 
     // Assert
-    try std.testing.expectEqual(@as(u64, 0), @intFromEnum(idx.findByName("src/main.zig").?));
-    try std.testing.expectEqual(@as(u64, 2), @intFromEnum(idx.findByName("src/lib.zig").?));
+    try std.testing.expectEqual(@as(u64, 0), @backingInt(idx.findByName("src/main.zig").?));
+    try std.testing.expectEqual(@as(u64, 2), @backingInt(idx.findByName("src/lib.zig").?));
     try std.testing.expectEqual(@as(?NodeId, null), idx.findByName("nonexistent.zig"));
     try std.testing.expectEqual(@as(?NodeId, null), idx.findByName("fn_a"));
 }
@@ -56,7 +56,7 @@ test "findByName returns file NodeIds and null for absent paths" {
 test "build uses name as fallback when file_path is null" {
     // Arrange
     const nodes: []const Node = &.{
-        .{ .id = @enumFromInt(0), .name = "virtual.zig", .kind = .file, .language = .zig },
+        .{ .id = @fromBackingInt(@intCast(0)), .name = "virtual.zig", .kind = .file, .language = .zig },
     };
     var idx = try FileIndex.build(std.testing.allocator, nodes);
     defer idx.deinit(std.testing.allocator);
@@ -77,8 +77,8 @@ test "build on empty nodes returns empty index" {
 test "build skips non-file nodes" {
     // Arrange
     const nodes: []const Node = &.{
-        .{ .id = @enumFromInt(0), .name = "main", .kind = .function, .language = .zig, .file_path = "src/main.zig" },
-        .{ .id = @enumFromInt(1), .name = "MyStruct", .kind = .type_def, .language = .zig },
+        .{ .id = @fromBackingInt(@intCast(0)), .name = "main", .kind = .function, .language = .zig, .file_path = "src/main.zig" },
+        .{ .id = @fromBackingInt(@intCast(1)), .name = "MyStruct", .kind = .type_def, .language = .zig },
     };
 
     // Act

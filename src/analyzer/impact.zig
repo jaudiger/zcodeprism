@@ -53,7 +53,7 @@ pub fn analyzeImpact(allocator: std.mem.Allocator, fg: FrozenGraph, node_ids: []
     // Seed all starting nodes at depth 0.
     for (node_ids) |nid| {
         if (g.getNode(nid) == null) continue;
-        const raw = @intFromEnum(nid);
+        const raw = @backingInt(nid);
         const gop = try visited.getOrPut(allocator, raw);
         if (!gop.found_existing) {
             try queue.append(allocator, .{ .node = raw, .depth = 0 });
@@ -67,9 +67,9 @@ pub fn analyzeImpact(allocator: std.mem.Allocator, fg: FrozenGraph, node_ids: []
         front += 1;
 
         if (entry.depth < options.max_depth) {
-            const in_edges = g.inEdges(@enumFromInt(entry.node));
+            const in_edges = g.inEdges(@fromBackingInt(@intCast(entry.node)));
             for (in_edges) |eid| {
-                const edge = g.edges.items[@intFromEnum(eid)];
+                const edge = g.edges.items[@backingInt(eid)];
 
                 var allowed = false;
                 for (allowed_types) |et| {
@@ -80,7 +80,7 @@ pub fn analyzeImpact(allocator: std.mem.Allocator, fg: FrozenGraph, node_ids: []
                 }
                 if (!allowed) continue;
 
-                const source_raw = @intFromEnum(edge.source_id);
+                const source_raw = @backingInt(edge.source_id);
                 if (visited.contains(source_raw)) continue;
 
                 try visited.put(allocator, source_raw, {});
@@ -91,7 +91,7 @@ pub fn analyzeImpact(allocator: std.mem.Allocator, fg: FrozenGraph, node_ids: []
 
     // Remove seed nodes from the impact set.
     for (node_ids) |nid| {
-        _ = visited.remove(@intFromEnum(nid));
+        _ = visited.remove(@backingInt(nid));
     }
 
     if (options.include_parent_chain) {
@@ -104,13 +104,13 @@ pub fn analyzeImpact(allocator: std.mem.Allocator, fg: FrozenGraph, node_ids: []
             ki += 1;
         }
         for (keys_buf[0..ki]) |raw| {
-            var parent_opt: ?NodeId = if (g.getNode(@enumFromInt(raw))) |n| n.parent_id else null;
+            var parent_opt: ?NodeId = if (g.getNode(@fromBackingInt(@intCast(raw)))) |n| n.parent_id else null;
             while (parent_opt) |pid| {
                 if (pid == .root) break;
-                const praw = @intFromEnum(pid);
+                const praw = @backingInt(pid);
                 var is_seed = false;
                 for (node_ids) |sid| {
-                    if (@intFromEnum(sid) == praw) {
+                    if (@backingInt(sid) == praw) {
                         is_seed = true;
                         break;
                     }
@@ -133,7 +133,7 @@ pub fn analyzeImpact(allocator: std.mem.Allocator, fg: FrozenGraph, node_ids: []
     var pos: usize = 0;
     var it = visited.iterator();
     while (it.next()) |entry| {
-        const id: NodeId = @enumFromInt(entry.key_ptr.*);
+        const id: NodeId = @fromBackingInt(@intCast(entry.key_ptr.*));
         const n = g.getNode(id).?;
         dependents[pos] = .{
             .node_id = id,

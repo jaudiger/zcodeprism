@@ -761,7 +761,7 @@ test "scoped field type creates phantom uses_type edge" {
     var app_error_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, i| {
         if (n.kind == .enum_def and std.mem.eql(u8, n.name, "AppError")) {
-            app_error_id = @enumFromInt(i);
+            app_error_id = @fromBackingInt(@intCast(i));
             break;
         }
     }

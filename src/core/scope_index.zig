@@ -16,7 +16,7 @@ pub const ScopeIndex = struct {
 
     /// Return the child node indices for a given parent.
     pub fn childrenOf(self: *const ScopeIndex, parent_id: NodeId) []const u64 {
-        const key = @intFromEnum(parent_id);
+        const key = @backingInt(parent_id);
         const range = self.map.get(key) orelse return &.{};
         return self.storage[range.start .. range.start + range.len];
     }
@@ -33,7 +33,7 @@ pub const ScopeIndex = struct {
         var total_children: usize = 0;
         for (nodes[offset..]) |n| {
             if (n.parent_id) |pid| {
-                const key = @intFromEnum(pid);
+                const key = @backingInt(pid);
                 const gop = try map.getOrPut(allocator, key);
                 if (!gop.found_existing) gop.value_ptr.* = .{ .start = 0, .len = 0 };
                 gop.value_ptr.len += 1;
@@ -61,7 +61,7 @@ pub const ScopeIndex = struct {
         // Fill pass: write child indices into storage; len tracks write position.
         for (nodes[offset..], offset..) |n, i| {
             if (n.parent_id) |pid| {
-                const key = @intFromEnum(pid);
+                const key = @backingInt(pid);
                 const range = map.getPtr(key).?;
                 storage[range.start + range.len] = i;
                 range.len += 1;
@@ -93,24 +93,24 @@ pub const ScopeIndex = struct {
             if (count.* > 1) return;
             const n = nodes[child_idx];
             if (std.mem.eql(u8, n.name, name)) {
-                result.* = @enumFromInt(child_idx);
+                result.* = @fromBackingInt(@intCast(child_idx));
                 count.* += 1;
                 if (count.* > 1) return;
             }
-            self.findDescendantImpl(nodes, @enumFromInt(child_idx), name, result, count);
+            self.findDescendantImpl(nodes, @fromBackingInt(@intCast(child_idx)), name, result, count);
         }
     }
 };
 
 test "childrenOf returns direct children and excludes grandchildren" {
     // Arrange
-    const file_id: NodeId = @enumFromInt(0);
-    const struct_id: NodeId = @enumFromInt(1);
+    const file_id: NodeId = @fromBackingInt(@intCast(0));
+    const struct_id: NodeId = @fromBackingInt(@intCast(1));
     const nodes: []const Node = &.{
-        .{ .id = @enumFromInt(0), .name = "file", .kind = .file, .language = .zig },
-        .{ .id = @enumFromInt(1), .name = "MyStruct", .kind = .type_def, .language = .zig, .parent_id = file_id },
-        .{ .id = @enumFromInt(2), .name = "fn_a", .kind = .function, .language = .zig, .parent_id = file_id },
-        .{ .id = @enumFromInt(3), .name = "method", .kind = .function, .language = .zig, .parent_id = struct_id },
+        .{ .id = @fromBackingInt(@intCast(0)), .name = "file", .kind = .file, .language = .zig },
+        .{ .id = @fromBackingInt(@intCast(1)), .name = "MyStruct", .kind = .type_def, .language = .zig, .parent_id = file_id },
+        .{ .id = @fromBackingInt(@intCast(2)), .name = "fn_a", .kind = .function, .language = .zig, .parent_id = file_id },
+        .{ .id = @fromBackingInt(@intCast(3)), .name = "method", .kind = .function, .language = .zig, .parent_id = struct_id },
     };
 
     // Act
@@ -125,7 +125,7 @@ test "childrenOf returns direct children and excludes grandchildren" {
     try std.testing.expectEqual(@as(usize, 1), struct_children.len);
     try std.testing.expectEqual(@as(u64, 3), struct_children[0]);
 
-    try std.testing.expectEqual(@as(usize, 0), idx.childrenOf(@enumFromInt(99)).len);
+    try std.testing.expectEqual(@as(usize, 0), idx.childrenOf(@fromBackingInt(@intCast(99))).len);
     try std.testing.expectEqual(@as(usize, 3), idx.storage.len);
 }
 
@@ -141,8 +141,8 @@ test "build on empty nodes returns empty index" {
 test "build on parentless nodes returns empty index" {
     // Arrange
     const nodes: []const Node = &.{
-        .{ .id = @enumFromInt(0), .name = "a", .kind = .file, .language = .zig },
-        .{ .id = @enumFromInt(1), .name = "b", .kind = .file, .language = .zig },
+        .{ .id = @fromBackingInt(@intCast(0)), .name = "a", .kind = .file, .language = .zig },
+        .{ .id = @fromBackingInt(@intCast(1)), .name = "b", .kind = .file, .language = .zig },
     };
 
     // Act
@@ -155,11 +155,11 @@ test "build on parentless nodes returns empty index" {
 
 test "build with offset skips earlier nodes" {
     // Arrange
-    const parent: NodeId = @enumFromInt(0);
+    const parent: NodeId = @fromBackingInt(@intCast(0));
     const nodes: []const Node = &.{
-        .{ .id = @enumFromInt(0), .name = "file", .kind = .file, .language = .zig },
-        .{ .id = @enumFromInt(1), .name = "skipped", .kind = .function, .language = .zig, .parent_id = parent },
-        .{ .id = @enumFromInt(2), .name = "included", .kind = .function, .language = .zig, .parent_id = parent },
+        .{ .id = @fromBackingInt(@intCast(0)), .name = "file", .kind = .file, .language = .zig },
+        .{ .id = @fromBackingInt(@intCast(1)), .name = "skipped", .kind = .function, .language = .zig, .parent_id = parent },
+        .{ .id = @fromBackingInt(@intCast(2)), .name = "included", .kind = .function, .language = .zig, .parent_id = parent },
     };
 
     // Act
@@ -174,14 +174,14 @@ test "build with offset skips earlier nodes" {
 
 test "findUniqueDescendant finds nested match and rejects ambiguity" {
     // Arrange
-    const file_id: NodeId = @enumFromInt(0);
-    const struct_id: NodeId = @enumFromInt(1);
+    const file_id: NodeId = @fromBackingInt(@intCast(0));
+    const struct_id: NodeId = @fromBackingInt(@intCast(1));
     const nodes: []const Node = &.{
-        .{ .id = @enumFromInt(0), .name = "file", .kind = .file, .language = .zig },
-        .{ .id = @enumFromInt(1), .name = "MyStruct", .kind = .type_def, .language = .zig, .parent_id = file_id },
-        .{ .id = @enumFromInt(2), .name = "target", .kind = .function, .language = .zig, .parent_id = struct_id },
-        .{ .id = @enumFromInt(3), .name = "dup", .kind = .function, .language = .zig, .parent_id = file_id },
-        .{ .id = @enumFromInt(4), .name = "dup", .kind = .function, .language = .zig, .parent_id = struct_id },
+        .{ .id = @fromBackingInt(@intCast(0)), .name = "file", .kind = .file, .language = .zig },
+        .{ .id = @fromBackingInt(@intCast(1)), .name = "MyStruct", .kind = .type_def, .language = .zig, .parent_id = file_id },
+        .{ .id = @fromBackingInt(@intCast(2)), .name = "target", .kind = .function, .language = .zig, .parent_id = struct_id },
+        .{ .id = @fromBackingInt(@intCast(3)), .name = "dup", .kind = .function, .language = .zig, .parent_id = file_id },
+        .{ .id = @fromBackingInt(@intCast(4)), .name = "dup", .kind = .function, .language = .zig, .parent_id = struct_id },
     };
     var idx = try ScopeIndex.build(std.testing.allocator, nodes, 0);
     defer idx.deinit(std.testing.allocator);
@@ -189,7 +189,7 @@ test "findUniqueDescendant finds nested match and rejects ambiguity" {
     // Act / Assert
     const found = idx.findUniqueDescendant(nodes, file_id, "target");
     try std.testing.expect(found != null);
-    try std.testing.expectEqual(@as(u64, 2), @intFromEnum(found.?));
+    try std.testing.expectEqual(@as(u64, 2), @backingInt(found.?));
 
     try std.testing.expectEqual(@as(?NodeId, null), idx.findUniqueDescendant(nodes, file_id, "nonexistent"));
     try std.testing.expectEqual(@as(?NodeId, null), idx.findUniqueDescendant(nodes, file_id, "dup"));

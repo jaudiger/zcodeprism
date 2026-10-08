@@ -52,10 +52,10 @@ test "simple fixture: edge creation" {
     var manhattan_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
         if (n.kind == .function and std.mem.eql(u8, n.name, "isWithinRadius")) {
-            iwr_id = @enumFromInt(idx);
+            iwr_id = @fromBackingInt(@intCast(idx));
         }
         if (n.kind == .function and std.mem.eql(u8, n.name, "manhattan")) {
-            manhattan_id = @enumFromInt(idx);
+            manhattan_id = @fromBackingInt(@intCast(idx));
         }
     }
     try std.testing.expect(iwr_id != null);
@@ -91,10 +91,10 @@ test "simple fixture: edge creation" {
     var iswarm_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
         if (n.kind == .enum_def and std.mem.eql(u8, n.name, "Color")) {
-            color_id = @enumFromInt(idx);
+            color_id = @fromBackingInt(@intCast(idx));
         }
         if (n.kind == .function and std.mem.eql(u8, n.name, "isWarm")) {
-            iswarm_id = @enumFromInt(idx);
+            iswarm_id = @fromBackingInt(@intCast(idx));
         }
     }
     try std.testing.expect(color_id != null);
@@ -114,10 +114,10 @@ test "simple fixture: edge creation" {
     var point_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
         if (n.kind == .test_def and std.mem.eql(u8, n.name, "point manhattan distance")) {
-            test_id = @enumFromInt(idx);
+            test_id = @fromBackingInt(@intCast(idx));
         }
         if (n.kind == .type_def and std.mem.eql(u8, n.name, "Point")) {
-            point_id = @enumFromInt(idx);
+            point_id = @fromBackingInt(@intCast(idx));
         }
     }
     try std.testing.expect(test_id != null);
@@ -146,10 +146,10 @@ test "file struct fixture: edge creation" {
     var validate_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
         if (n.kind == .function and std.mem.eql(u8, n.name, "isValid")) {
-            isValid_id = @enumFromInt(idx);
+            isValid_id = @fromBackingInt(@intCast(idx));
         }
         if (n.kind == .function and std.mem.eql(u8, n.name, "validate")) {
-            validate_id = @enumFromInt(idx);
+            validate_id = @fromBackingInt(@intCast(idx));
         }
     }
     try std.testing.expect(isValid_id != null);
@@ -169,10 +169,10 @@ test "file struct fixture: edge creation" {
     var init_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
         if (n.kind == .test_def and std.mem.eql(u8, n.name, "basic")) {
-            basic_test_id = @enumFromInt(idx);
+            basic_test_id = @fromBackingInt(@intCast(idx));
         }
         if (n.kind == .function and std.mem.eql(u8, n.name, "init")) {
-            init_id = @enumFromInt(idx);
+            init_id = @fromBackingInt(@intCast(idx));
         }
     }
     try std.testing.expect(basic_test_id != null);
@@ -201,10 +201,10 @@ test "generic type fixture: edge creation" {
     var callee_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
         if (n.kind == .function and std.mem.eql(u8, n.name, "isEmpty")) {
-            caller_id = @enumFromInt(idx);
+            caller_id = @fromBackingInt(@intCast(idx));
         }
         if (n.kind == .function and std.mem.eql(u8, n.name, "count")) {
-            callee_id = @enumFromInt(idx);
+            callee_id = @fromBackingInt(@intCast(idx));
         }
     }
     try std.testing.expect(caller_id != null);
@@ -223,7 +223,7 @@ test "generic type fixture: edge creation" {
     var container_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
         if (n.kind == .type_def and std.mem.eql(u8, n.name, "Container")) {
-            container_id = @enumFromInt(idx);
+            container_id = @fromBackingInt(@intCast(idx));
             break;
         }
     }
@@ -234,7 +234,7 @@ test "generic type fixture: edge creation" {
         if (n.kind == .function and std.mem.eql(u8, n.name, "init") and
             n.parent_id != null and n.parent_id.? == container_id.?)
         {
-            init_id = @enumFromInt(idx);
+            init_id = @fromBackingInt(@intCast(idx));
             break;
         }
     }
@@ -246,7 +246,7 @@ test "generic type fixture: edge creation" {
         if (n.kind == .type_def and std.mem.eql(u8, n.name, "Entry") and
             n.parent_id != null and n.parent_id.? == container_id.?)
         {
-            entry_id = @enumFromInt(idx);
+            entry_id = @fromBackingInt(@intCast(idx));
             break;
         }
     }
@@ -267,7 +267,7 @@ test "generic type fixture: edge creation" {
         if (n.kind == .function and std.mem.eql(u8, n.name, "reset") and
             n.parent_id != null and n.parent_id.? == container_id.?)
         {
-            reset_id = @enumFromInt(idx);
+            reset_id = @fromBackingInt(@intCast(idx));
             break;
         }
     }
@@ -299,8 +299,8 @@ test "test block creates calls edge to local function" {
     var test_id: ?NodeId = null;
     var helper_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
-        if (n.kind == .test_def) test_id = @enumFromInt(idx);
-        if (n.kind == .function and std.mem.eql(u8, n.name, "helper")) helper_id = @enumFromInt(idx);
+        if (n.kind == .test_def) test_id = @fromBackingInt(@intCast(idx));
+        if (n.kind == .function and std.mem.eql(u8, n.name, "helper")) helper_id = @fromBackingInt(@intCast(idx));
     }
     try std.testing.expect(test_id != null);
     try std.testing.expect(helper_id != null);
@@ -333,8 +333,8 @@ test "test block creates calls edge to method via dot syntax" {
     var test_id: ?NodeId = null;
     var bar_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
-        if (n.kind == .test_def) test_id = @enumFromInt(idx);
-        if (n.kind == .function and std.mem.eql(u8, n.name, "bar")) bar_id = @enumFromInt(idx);
+        if (n.kind == .test_def) test_id = @fromBackingInt(@intCast(idx));
+        if (n.kind == .function and std.mem.eql(u8, n.name, "bar")) bar_id = @fromBackingInt(@intCast(idx));
     }
     try std.testing.expect(test_id != null);
     try std.testing.expect(bar_id != null);
@@ -367,7 +367,7 @@ test "test block with no local calls has no edges" {
     var test_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
         if (n.kind == .test_def) {
-            test_id = @enumFromInt(idx);
+            test_id = @fromBackingInt(@intCast(idx));
             break;
         }
     }
@@ -400,10 +400,10 @@ test "decl-reference test edges are attributed to correct node" {
     var fn_alpha_id: ?NodeId = null;
     var fn_beta_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
-        if (n.kind == .test_def and std.mem.eql(u8, n.name, "alpha")) test_alpha_id = @enumFromInt(idx);
-        if (n.kind == .test_def and std.mem.eql(u8, n.name, "beta")) test_beta_id = @enumFromInt(idx);
-        if (n.kind == .function and std.mem.eql(u8, n.name, "alpha")) fn_alpha_id = @enumFromInt(idx);
-        if (n.kind == .function and std.mem.eql(u8, n.name, "beta")) fn_beta_id = @enumFromInt(idx);
+        if (n.kind == .test_def and std.mem.eql(u8, n.name, "alpha")) test_alpha_id = @fromBackingInt(@intCast(idx));
+        if (n.kind == .test_def and std.mem.eql(u8, n.name, "beta")) test_beta_id = @fromBackingInt(@intCast(idx));
+        if (n.kind == .function and std.mem.eql(u8, n.name, "alpha")) fn_alpha_id = @fromBackingInt(@intCast(idx));
+        if (n.kind == .function and std.mem.eql(u8, n.name, "beta")) fn_beta_id = @fromBackingInt(@intCast(idx));
     }
     try std.testing.expect(test_alpha_id != null);
     try std.testing.expect(test_beta_id != null);
@@ -450,9 +450,9 @@ test "test block does not leak calls from nested function" {
     var helper_id: ?NodeId = null;
     var inner_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
-        if (n.kind == .test_def and std.mem.eql(u8, n.name, "outer")) test_id = @enumFromInt(idx);
-        if (n.kind == .function and std.mem.eql(u8, n.name, "helper")) helper_id = @enumFromInt(idx);
-        if (n.kind == .function and std.mem.eql(u8, n.name, "inner")) inner_id = @enumFromInt(idx);
+        if (n.kind == .test_def and std.mem.eql(u8, n.name, "outer")) test_id = @fromBackingInt(@intCast(idx));
+        if (n.kind == .function and std.mem.eql(u8, n.name, "helper")) helper_id = @fromBackingInt(@intCast(idx));
+        if (n.kind == .function and std.mem.eql(u8, n.name, "inner")) inner_id = @fromBackingInt(@intCast(idx));
     }
     try std.testing.expect(test_id != null);
     try std.testing.expect(helper_id != null);
@@ -510,9 +510,9 @@ test "function does not leak calls from nested function" {
     var target_id: ?NodeId = null;
     var nested_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
-        if (n.kind == .function and std.mem.eql(u8, n.name, "outer")) outer_id = @enumFromInt(idx);
-        if (n.kind == .function and std.mem.eql(u8, n.name, "target")) target_id = @enumFromInt(idx);
-        if (n.kind == .function and std.mem.eql(u8, n.name, "nested")) nested_id = @enumFromInt(idx);
+        if (n.kind == .function and std.mem.eql(u8, n.name, "outer")) outer_id = @fromBackingInt(@intCast(idx));
+        if (n.kind == .function and std.mem.eql(u8, n.name, "target")) target_id = @fromBackingInt(@intCast(idx));
+        if (n.kind == .function and std.mem.eql(u8, n.name, "nested")) nested_id = @fromBackingInt(@intCast(idx));
     }
     try std.testing.expect(outer_id != null);
     try std.testing.expect(target_id != null);
@@ -562,10 +562,10 @@ test "nested function gets its own calls edge not parent's" {
     var alpha_id: ?NodeId = null;
     var beta_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
-        if (n.kind == .function and std.mem.eql(u8, n.name, "parent")) parent_id = @enumFromInt(idx);
-        if (n.kind == .function and std.mem.eql(u8, n.name, "child")) child_id = @enumFromInt(idx);
-        if (n.kind == .function and std.mem.eql(u8, n.name, "alpha")) alpha_id = @enumFromInt(idx);
-        if (n.kind == .function and std.mem.eql(u8, n.name, "beta")) beta_id = @enumFromInt(idx);
+        if (n.kind == .function and std.mem.eql(u8, n.name, "parent")) parent_id = @fromBackingInt(@intCast(idx));
+        if (n.kind == .function and std.mem.eql(u8, n.name, "child")) child_id = @fromBackingInt(@intCast(idx));
+        if (n.kind == .function and std.mem.eql(u8, n.name, "alpha")) alpha_id = @fromBackingInt(@intCast(idx));
+        if (n.kind == .function and std.mem.eql(u8, n.name, "beta")) beta_id = @fromBackingInt(@intCast(idx));
     }
     try std.testing.expect(parent_id != null);
     try std.testing.expect(child_id != null);
@@ -615,9 +615,9 @@ test "function does not leak uses_type from nested function" {
     var nested_id: ?NodeId = null;
     var mytype_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
-        if (n.kind == .function and std.mem.eql(u8, n.name, "outer")) outer_id = @enumFromInt(idx);
-        if (n.kind == .function and std.mem.eql(u8, n.name, "nested")) nested_id = @enumFromInt(idx);
-        if (std.mem.eql(u8, n.name, "MyType")) mytype_id = @enumFromInt(idx);
+        if (n.kind == .function and std.mem.eql(u8, n.name, "outer")) outer_id = @fromBackingInt(@intCast(idx));
+        if (n.kind == .function and std.mem.eql(u8, n.name, "nested")) nested_id = @fromBackingInt(@intCast(idx));
+        if (std.mem.eql(u8, n.name, "MyType")) mytype_id = @fromBackingInt(@intCast(idx));
     }
     try std.testing.expect(outer_id != null);
     try std.testing.expect(nested_id != null);
@@ -659,8 +659,8 @@ test "uses_type edge for type alias in parameter" {
     var useBar_id: ?NodeId = null;
     var bar_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
-        if (n.kind == .function and std.mem.eql(u8, n.name, "useBar")) useBar_id = @enumFromInt(idx);
-        if (std.mem.eql(u8, n.name, "Bar")) bar_id = @enumFromInt(idx);
+        if (n.kind == .function and std.mem.eql(u8, n.name, "useBar")) useBar_id = @fromBackingInt(@intCast(idx));
+        if (std.mem.eql(u8, n.name, "Bar")) bar_id = @fromBackingInt(@intCast(idx));
     }
     try std.testing.expect(useBar_id != null);
     try std.testing.expect(bar_id != null);
@@ -692,8 +692,8 @@ test "uses_type edge for type alias in return type" {
     var doStuff_id: ?NodeId = null;
     var err_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
-        if (n.kind == .function and std.mem.eql(u8, n.name, "doStuff")) doStuff_id = @enumFromInt(idx);
-        if (std.mem.eql(u8, n.name, "Err")) err_id = @enumFromInt(idx);
+        if (n.kind == .function and std.mem.eql(u8, n.name, "doStuff")) doStuff_id = @fromBackingInt(@intCast(idx));
+        if (std.mem.eql(u8, n.name, "Err")) err_id = @fromBackingInt(@intCast(idx));
     }
     try std.testing.expect(doStuff_id != null);
     try std.testing.expect(err_id != null);
@@ -726,9 +726,9 @@ test "uses_type edge not created for non-type constant" {
     var limit_id: ?NodeId = null;
     var max_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
-        if (n.kind == .function and std.mem.eql(u8, n.name, "process")) process_id = @enumFromInt(idx);
-        if (std.mem.eql(u8, n.name, "Limit")) limit_id = @enumFromInt(idx);
-        if (std.mem.eql(u8, n.name, "max")) max_id = @enumFromInt(idx);
+        if (n.kind == .function and std.mem.eql(u8, n.name, "process")) process_id = @fromBackingInt(@intCast(idx));
+        if (std.mem.eql(u8, n.name, "Limit")) limit_id = @fromBackingInt(@intCast(idx));
+        if (std.mem.eql(u8, n.name, "max")) max_id = @fromBackingInt(@intCast(idx));
     }
     try std.testing.expect(process_id != null);
     try std.testing.expect(limit_id != null);
@@ -765,9 +765,9 @@ test "uses_type edge for aliased type works alongside direct type" {
     var direct_id: ?NodeId = null;
     var alias_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
-        if (n.kind == .function and std.mem.eql(u8, n.name, "both")) both_id = @enumFromInt(idx);
-        if (std.mem.eql(u8, n.name, "Direct")) direct_id = @enumFromInt(idx);
-        if (std.mem.eql(u8, n.name, "Alias")) alias_id = @enumFromInt(idx);
+        if (n.kind == .function and std.mem.eql(u8, n.name, "both")) both_id = @fromBackingInt(@intCast(idx));
+        if (std.mem.eql(u8, n.name, "Direct")) direct_id = @fromBackingInt(@intCast(idx));
+        if (std.mem.eql(u8, n.name, "Alias")) alias_id = @fromBackingInt(@intCast(idx));
     }
     try std.testing.expect(both_id != null);
     try std.testing.expect(direct_id != null);
@@ -804,8 +804,8 @@ test "uses_type edge from struct literal construction in body" {
     var makeDefault_id: ?NodeId = null;
     var config_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
-        if (n.kind == .function and std.mem.eql(u8, n.name, "makeDefault")) makeDefault_id = @enumFromInt(idx);
-        if (n.kind == .type_def and std.mem.eql(u8, n.name, "Config")) config_id = @enumFromInt(idx);
+        if (n.kind == .function and std.mem.eql(u8, n.name, "makeDefault")) makeDefault_id = @fromBackingInt(@intCast(idx));
+        if (n.kind == .type_def and std.mem.eql(u8, n.name, "Config")) config_id = @fromBackingInt(@intCast(idx));
     }
     try std.testing.expect(makeDefault_id != null);
     try std.testing.expect(config_id != null);
@@ -844,8 +844,8 @@ test "uses_type edge from static method call in body" {
     var create_id: ?NodeId = null;
     var builder_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
-        if (n.kind == .function and std.mem.eql(u8, n.name, "create")) create_id = @enumFromInt(idx);
-        if (n.kind == .type_def and std.mem.eql(u8, n.name, "Builder")) builder_id = @enumFromInt(idx);
+        if (n.kind == .function and std.mem.eql(u8, n.name, "create")) create_id = @fromBackingInt(@intCast(idx));
+        if (n.kind == .type_def and std.mem.eql(u8, n.name, "Builder")) builder_id = @fromBackingInt(@intCast(idx));
     }
     try std.testing.expect(create_id != null);
     try std.testing.expect(builder_id != null);
@@ -878,8 +878,8 @@ test "no duplicate uses_type edge when type appears in signature and body" {
     var process_id: ?NodeId = null;
     var item_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
-        if (n.kind == .function and std.mem.eql(u8, n.name, "process")) process_id = @enumFromInt(idx);
-        if (n.kind == .type_def and std.mem.eql(u8, n.name, "Item")) item_id = @enumFromInt(idx);
+        if (n.kind == .function and std.mem.eql(u8, n.name, "process")) process_id = @fromBackingInt(@intCast(idx));
+        if (n.kind == .type_def and std.mem.eql(u8, n.name, "Item")) item_id = @fromBackingInt(@intCast(idx));
     }
     try std.testing.expect(process_id != null);
     try std.testing.expect(item_id != null);
@@ -913,8 +913,8 @@ test "uses_type edge from type passed as comptime argument" {
     var doWork_id: ?NodeId = null;
     var payload_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
-        if (n.kind == .function and std.mem.eql(u8, n.name, "doWork")) doWork_id = @enumFromInt(idx);
-        if (n.kind == .type_def and std.mem.eql(u8, n.name, "Payload")) payload_id = @enumFromInt(idx);
+        if (n.kind == .function and std.mem.eql(u8, n.name, "doWork")) doWork_id = @fromBackingInt(@intCast(idx));
+        if (n.kind == .type_def and std.mem.eql(u8, n.name, "Payload")) payload_id = @fromBackingInt(@intCast(idx));
     }
     try std.testing.expect(doWork_id != null);
     try std.testing.expect(payload_id != null);
@@ -950,8 +950,8 @@ test "uses_type edge from type in generic container instantiation" {
     var build_id: ?NodeId = null;
     var element_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
-        if (n.kind == .function and std.mem.eql(u8, n.name, "build")) build_id = @enumFromInt(idx);
-        if (n.kind == .type_def and std.mem.eql(u8, n.name, "Element")) element_id = @enumFromInt(idx);
+        if (n.kind == .function and std.mem.eql(u8, n.name, "build")) build_id = @fromBackingInt(@intCast(idx));
+        if (n.kind == .type_def and std.mem.eql(u8, n.name, "Element")) element_id = @fromBackingInt(@intCast(idx));
     }
     try std.testing.expect(build_id != null);
     try std.testing.expect(element_id != null);
@@ -987,9 +987,9 @@ test "no uses_type edge for non-type identifier argument" {
     var helper_id: ?NodeId = null;
     var max_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
-        if (n.kind == .function and std.mem.eql(u8, n.name, "run")) run_id = @enumFromInt(idx);
-        if (n.kind == .function and std.mem.eql(u8, n.name, "helper")) helper_id = @enumFromInt(idx);
-        if (n.kind == .constant and std.mem.eql(u8, n.name, "max")) max_id = @enumFromInt(idx);
+        if (n.kind == .function and std.mem.eql(u8, n.name, "run")) run_id = @fromBackingInt(@intCast(idx));
+        if (n.kind == .function and std.mem.eql(u8, n.name, "helper")) helper_id = @fromBackingInt(@intCast(idx));
+        if (n.kind == .constant and std.mem.eql(u8, n.name, "max")) max_id = @fromBackingInt(@intCast(idx));
     }
     try std.testing.expect(run_id != null);
     try std.testing.expect(helper_id != null);
@@ -1030,12 +1030,12 @@ test "local-type parameter edges" {
     var externalParam_id: ?NodeId = null;
     var scale_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
-        if (n.kind == .function and std.mem.eql(u8, n.name, "processPoint")) processPoint_id = @enumFromInt(idx);
-        if (n.kind == .function and std.mem.eql(u8, n.name, "manhattan")) manhattan_id = @enumFromInt(idx);
-        if (n.kind == .function and std.mem.eql(u8, n.name, "multiParam")) multiParam_id = @enumFromInt(idx);
-        if (n.kind == .function and std.mem.eql(u8, n.name, "pointerParam")) pointerParam_id = @enumFromInt(idx);
-        if (n.kind == .function and std.mem.eql(u8, n.name, "externalParam")) externalParam_id = @enumFromInt(idx);
-        if (n.kind == .function and std.mem.eql(u8, n.name, "scale")) scale_id = @enumFromInt(idx);
+        if (n.kind == .function and std.mem.eql(u8, n.name, "processPoint")) processPoint_id = @fromBackingInt(@intCast(idx));
+        if (n.kind == .function and std.mem.eql(u8, n.name, "manhattan")) manhattan_id = @fromBackingInt(@intCast(idx));
+        if (n.kind == .function and std.mem.eql(u8, n.name, "multiParam")) multiParam_id = @fromBackingInt(@intCast(idx));
+        if (n.kind == .function and std.mem.eql(u8, n.name, "pointerParam")) pointerParam_id = @fromBackingInt(@intCast(idx));
+        if (n.kind == .function and std.mem.eql(u8, n.name, "externalParam")) externalParam_id = @fromBackingInt(@intCast(idx));
+        if (n.kind == .function and std.mem.eql(u8, n.name, "scale")) scale_id = @fromBackingInt(@intCast(idx));
     }
     try std.testing.expect(processPoint_id != null);
     try std.testing.expect(manhattan_id != null);
@@ -1106,8 +1106,8 @@ test "duplicate method names: scope resolution" {
     var alpha_id: ?NodeId = null;
     var beta_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
-        if (n.kind == .type_def and std.mem.eql(u8, n.name, "Alpha")) alpha_id = @enumFromInt(idx);
-        if (n.kind == .type_def and std.mem.eql(u8, n.name, "Beta")) beta_id = @enumFromInt(idx);
+        if (n.kind == .type_def and std.mem.eql(u8, n.name, "Alpha")) alpha_id = @fromBackingInt(@intCast(idx));
+        if (n.kind == .type_def and std.mem.eql(u8, n.name, "Beta")) beta_id = @fromBackingInt(@intCast(idx));
     }
     try std.testing.expect(alpha_id != null);
     try std.testing.expect(beta_id != null);
@@ -1140,15 +1140,15 @@ test "duplicate method names: scope resolution" {
     var alpha_init_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
         if (n.kind == .function and std.mem.eql(u8, n.name, "deinit")) {
-            if (n.parent_id != null and n.parent_id.? == alpha_id.?) alpha_deinit_id = @enumFromInt(idx);
-            if (n.parent_id != null and n.parent_id.? == beta_id.?) beta_deinit_id = @enumFromInt(idx);
+            if (n.parent_id != null and n.parent_id.? == alpha_id.?) alpha_deinit_id = @fromBackingInt(@intCast(idx));
+            if (n.parent_id != null and n.parent_id.? == beta_id.?) beta_deinit_id = @fromBackingInt(@intCast(idx));
         }
-        if (n.kind == .function and std.mem.eql(u8, n.name, "reset")) reset_id = @enumFromInt(idx);
-        if (n.kind == .function and std.mem.eql(u8, n.name, "clear")) clear_id = @enumFromInt(idx);
+        if (n.kind == .function and std.mem.eql(u8, n.name, "reset")) reset_id = @fromBackingInt(@intCast(idx));
+        if (n.kind == .function and std.mem.eql(u8, n.name, "clear")) clear_id = @fromBackingInt(@intCast(idx));
         if (n.kind == .function and std.mem.eql(u8, n.name, "init") and
             n.parent_id != null and n.parent_id.? == alpha_id.?)
         {
-            alpha_init_id = @enumFromInt(idx);
+            alpha_init_id = @fromBackingInt(@intCast(idx));
         }
     }
     try std.testing.expect(alpha_deinit_id != null);
@@ -1207,7 +1207,7 @@ test "external method collision: no false edges" {
     var resource_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
         if (n.kind == .type_def and std.mem.eql(u8, n.name, "Resource")) {
-            resource_id = @enumFromInt(idx);
+            resource_id = @fromBackingInt(@intCast(idx));
             break;
         }
     }
@@ -1222,16 +1222,16 @@ test "external method collision: no false edges" {
         if (n.kind == .function and std.mem.eql(u8, n.name, "init") and
             n.parent_id != null and n.parent_id.? == resource_id.?)
         {
-            resource_init_id = @enumFromInt(idx);
+            resource_init_id = @fromBackingInt(@intCast(idx));
         }
         if (n.kind == .function and std.mem.eql(u8, n.name, "deinit") and
             n.parent_id != null and n.parent_id.? == resource_id.?)
         {
-            resource_deinit_id = @enumFromInt(idx);
+            resource_deinit_id = @fromBackingInt(@intCast(idx));
         }
-        if (n.kind == .function and std.mem.eql(u8, n.name, "externalInit")) external_init_id = @enumFromInt(idx);
-        if (n.kind == .function and std.mem.eql(u8, n.name, "externalDeinit")) external_deinit_id = @enumFromInt(idx);
-        if (n.kind == .function and std.mem.eql(u8, n.name, "createLocalResource")) create_id = @enumFromInt(idx);
+        if (n.kind == .function and std.mem.eql(u8, n.name, "externalInit")) external_init_id = @fromBackingInt(@intCast(idx));
+        if (n.kind == .function and std.mem.eql(u8, n.name, "externalDeinit")) external_deinit_id = @fromBackingInt(@intCast(idx));
+        if (n.kind == .function and std.mem.eql(u8, n.name, "createLocalResource")) create_id = @fromBackingInt(@intCast(idx));
     }
     try std.testing.expect(resource_init_id != null);
     try std.testing.expect(resource_deinit_id != null);
@@ -1291,8 +1291,8 @@ test "generic dual self: Self filtering and resolution" {
     var stack_id: ?NodeId = null;
     var queue_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
-        if (n.kind == .type_def and std.mem.eql(u8, n.name, "Stack")) stack_id = @enumFromInt(idx);
-        if (n.kind == .type_def and std.mem.eql(u8, n.name, "Queue")) queue_id = @enumFromInt(idx);
+        if (n.kind == .type_def and std.mem.eql(u8, n.name, "Stack")) stack_id = @fromBackingInt(@intCast(idx));
+        if (n.kind == .type_def and std.mem.eql(u8, n.name, "Queue")) queue_id = @fromBackingInt(@intCast(idx));
     }
     try std.testing.expect(stack_id != null);
     try std.testing.expect(queue_id != null);
@@ -1303,11 +1303,11 @@ test "generic dual self: Self filtering and resolution" {
     var flush_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
         if (n.kind == .function and std.mem.eql(u8, n.name, "deinit")) {
-            if (n.parent_id != null and n.parent_id.? == stack_id.?) stack_deinit_id = @enumFromInt(idx);
-            if (n.parent_id != null and n.parent_id.? == queue_id.?) queue_deinit_id = @enumFromInt(idx);
+            if (n.parent_id != null and n.parent_id.? == stack_id.?) stack_deinit_id = @fromBackingInt(@intCast(idx));
+            if (n.parent_id != null and n.parent_id.? == queue_id.?) queue_deinit_id = @fromBackingInt(@intCast(idx));
         }
-        if (n.kind == .function and std.mem.eql(u8, n.name, "clear")) clear_id = @enumFromInt(idx);
-        if (n.kind == .function and std.mem.eql(u8, n.name, "flush")) flush_id = @enumFromInt(idx);
+        if (n.kind == .function and std.mem.eql(u8, n.name, "clear")) clear_id = @fromBackingInt(@intCast(idx));
+        if (n.kind == .function and std.mem.eql(u8, n.name, "flush")) flush_id = @fromBackingInt(@intCast(idx));
     }
     try std.testing.expect(stack_deinit_id != null);
     try std.testing.expect(queue_deinit_id != null);
@@ -1370,8 +1370,8 @@ test "generic type: self-reference prevention" {
     var container_id: ?NodeId = null;
     var result_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
-        if (n.kind == .type_def and std.mem.eql(u8, n.name, "Container")) container_id = @enumFromInt(idx);
-        if (n.kind == .union_def and std.mem.eql(u8, n.name, "Result")) result_id = @enumFromInt(idx);
+        if (n.kind == .type_def and std.mem.eql(u8, n.name, "Container")) container_id = @fromBackingInt(@intCast(idx));
+        if (n.kind == .union_def and std.mem.eql(u8, n.name, "Result")) result_id = @fromBackingInt(@intCast(idx));
     }
     try std.testing.expect(container_id != null);
     try std.testing.expect(result_id != null);
@@ -1449,8 +1449,8 @@ test "uses_type edges can target union_def nodes" {
     var fn_id: ?NodeId = null;
     var union_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, idx| {
-        if (n.kind == .function and std.mem.eql(u8, n.name, "process")) fn_id = @enumFromInt(idx);
-        if (n.kind == .union_def and std.mem.eql(u8, n.name, "Value")) union_id = @enumFromInt(idx);
+        if (n.kind == .function and std.mem.eql(u8, n.name, "process")) fn_id = @fromBackingInt(@intCast(idx));
+        if (n.kind == .union_def and std.mem.eql(u8, n.name, "Value")) union_id = @fromBackingInt(@intCast(idx));
     }
     try std.testing.expect(fn_id != null);
     try std.testing.expect(union_id != null);
@@ -1676,7 +1676,7 @@ test "conditional expressions classified as constant with comptime_conditional" 
         var system_id: ?NodeId = null;
         for (g.nodes.items, 0..) |n, idx| {
             if (std.mem.eql(u8, n.name, "system")) {
-                system_id = @enumFromInt(idx);
+                system_id = @fromBackingInt(@intCast(idx));
                 break;
             }
         }
@@ -1727,7 +1727,7 @@ test "conditional expressions classified as constant with comptime_conditional" 
         var backend_id: ?NodeId = null;
         for (g.nodes.items, 0..) |n, idx| {
             if (std.mem.eql(u8, n.name, "backend")) {
-                backend_id = @enumFromInt(idx);
+                backend_id = @fromBackingInt(@intCast(idx));
                 break;
             }
         }
@@ -1771,7 +1771,7 @@ test "conditional expressions classified as constant with comptime_conditional" 
         var config_id: ?NodeId = null;
         for (g.nodes.items, 0..) |n, idx| {
             if (std.mem.eql(u8, n.name, "Config")) {
-                config_id = @enumFromInt(idx);
+                config_id = @fromBackingInt(@intCast(idx));
                 break;
             }
         }
@@ -1828,7 +1828,7 @@ test "error set variant names captured in signature" {
     for (g.nodes.items, 0..) |*n, idx| {
         if (std.mem.eql(u8, n.name, "FileError")) {
             file_error_node = n;
-            file_error_id = @enumFromInt(idx);
+            file_error_id = @fromBackingInt(@intCast(idx));
         }
     }
     try std.testing.expect(file_error_node != null);
@@ -2034,8 +2034,8 @@ test "self.field access in file-struct method creates accesses_field edge" {
     var getvalue_id: ?NodeId = null;
     var value_field_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, i| {
-        if (n.kind == .function and std.mem.eql(u8, n.name, "getValue")) getvalue_id = @enumFromInt(i);
-        if (n.kind == .field and std.mem.eql(u8, n.name, "value")) value_field_id = @enumFromInt(i);
+        if (n.kind == .function and std.mem.eql(u8, n.name, "getValue")) getvalue_id = @fromBackingInt(@intCast(i));
+        if (n.kind == .field and std.mem.eql(u8, n.name, "value")) value_field_id = @fromBackingInt(@intCast(i));
     }
     try std.testing.expect(getvalue_id != null);
     try std.testing.expect(value_field_id != null);
@@ -2062,8 +2062,8 @@ test "anonymous struct with type annotation creates accesses_field edge" {
     var anon_init_id: ?NodeId = null;
     var value_field_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, i| {
-        if (n.kind == .function and std.mem.eql(u8, n.name, "anonymousInit")) anon_init_id = @enumFromInt(i);
-        if (n.kind == .field and std.mem.eql(u8, n.name, "value")) value_field_id = @enumFromInt(i);
+        if (n.kind == .function and std.mem.eql(u8, n.name, "anonymousInit")) anon_init_id = @fromBackingInt(@intCast(i));
+        if (n.kind == .field and std.mem.eql(u8, n.name, "value")) value_field_id = @fromBackingInt(@intCast(i));
     }
     try std.testing.expect(anon_init_id != null);
     try std.testing.expect(value_field_id != null);
@@ -2098,8 +2098,8 @@ test "uses_value edge for address-of in struct-level vtable initializer" {
     var noop_log_id: ?NodeId = null;
     var vtable_const_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, i| {
-        if (n.kind == .function and std.mem.eql(u8, n.name, "noopLog")) noop_log_id = @enumFromInt(i);
-        if (n.kind == .constant and std.mem.eql(u8, n.name, "noop_vtable")) vtable_const_id = @enumFromInt(i);
+        if (n.kind == .function and std.mem.eql(u8, n.name, "noopLog")) noop_log_id = @fromBackingInt(@intCast(i));
+        if (n.kind == .constant and std.mem.eql(u8, n.name, "noop_vtable")) vtable_const_id = @fromBackingInt(@intCast(i));
     }
     try std.testing.expect(noop_log_id != null);
     try std.testing.expect(vtable_const_id != null);
@@ -2133,8 +2133,8 @@ test "uses_value edge for bare function passed as call argument" {
     var helper_id: ?NodeId = null;
     var invokes_id: ?NodeId = null;
     for (g.nodes.items, 0..) |n, i| {
-        if (n.kind == .function and std.mem.eql(u8, n.name, "helper")) helper_id = @enumFromInt(i);
-        if (n.kind == .function and std.mem.eql(u8, n.name, "invokes")) invokes_id = @enumFromInt(i);
+        if (n.kind == .function and std.mem.eql(u8, n.name, "helper")) helper_id = @fromBackingInt(@intCast(i));
+        if (n.kind == .function and std.mem.eql(u8, n.name, "invokes")) invokes_id = @fromBackingInt(@intCast(i));
     }
     try std.testing.expect(helper_id != null);
     try std.testing.expect(invokes_id != null);

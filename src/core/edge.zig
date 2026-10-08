@@ -49,7 +49,7 @@ test "edge types are correctly stored" {
     for (edge_types) |et| {
         const e = Edge{
             .source_id = .root,
-            .target_id = @enumFromInt(1),
+            .target_id = @fromBackingInt(@intCast(1)),
             .edge_type = et,
         };
         try std.testing.expectEqual(et, e.edge_type);
@@ -64,7 +64,7 @@ test "edge sources are correctly stored" {
     for (sources) |src| {
         const e = Edge{
             .source_id = .root,
-            .target_id = @enumFromInt(1),
+            .target_id = @fromBackingInt(@intCast(1)),
             .edge_type = .calls,
             .source = src,
         };
@@ -76,7 +76,7 @@ test "edge default source is tree_sitter" {
     // Arrange
     const e = Edge{
         .source_id = .root,
-        .target_id = @enumFromInt(1),
+        .target_id = @fromBackingInt(@intCast(1)),
         .edge_type = .calls,
     };
 

@@ -103,16 +103,16 @@ pub const LspConnection = struct {
 /// `PATH`). When a slot is set, that absolute or PATH-relative command
 /// replaces the default for `acquire`.
 pub const LspServerPaths = struct {
-    paths: [lang_count]?[]const u8 = .{null} ** lang_count,
+    paths: [lang_count]?[]const u8 = @splat(null),
 
-    const lang_count = @typeInfo(Language).@"enum".fields.len;
+    const lang_count = @typeInfo(Language).@"enum".field_names.len;
 
     pub fn set(self: *LspServerPaths, language: Language, command: ?[]const u8) void {
-        self.paths[@intFromEnum(language)] = command;
+        self.paths[@backingInt(language)] = command;
     }
 
     pub fn get(self: LspServerPaths, language: Language) ?[]const u8 {
-        return self.paths[@intFromEnum(language)];
+        return self.paths[@backingInt(language)];
     }
 };
 
@@ -129,11 +129,11 @@ pub const PoolOptions = struct {
 /// stored state (connections, opened URIs) is freed with whatever
 /// allocator the eventual `deinit` receives.
 pub const LspPool = struct {
-    connections: [lang_count]?*LspConnection = .{null} ** lang_count,
+    connections: [lang_count]?*LspConnection = @splat(null),
     idle_timeout_ns: u64,
     server_paths: LspServerPaths,
 
-    const lang_count = @typeInfo(Language).@"enum".fields.len;
+    const lang_count = @typeInfo(Language).@"enum".field_names.len;
 
     pub fn init(options: PoolOptions) LspPool {
         return .{
@@ -163,7 +163,7 @@ pub const LspPool = struct {
     ) !*LspConnection {
         self.reapIdle(allocator, io);
 
-        const idx = @intFromEnum(language);
+        const idx = @backingInt(language);
         if (self.connections[idx]) |conn| {
             conn.state = .ready;
             conn.touch(io);
@@ -193,7 +193,7 @@ pub const LspPool = struct {
     }
 
     pub fn release(self: *LspPool, io: std.Io, language: Language) void {
-        const idx = @intFromEnum(language);
+        const idx = @backingInt(language);
         if (self.connections[idx]) |conn| {
             conn.state = .idle;
             conn.touch(io);
@@ -223,7 +223,7 @@ pub const LspPool = struct {
         new_text: []const u8,
         language_id: []const u8,
     ) void {
-        const idx = @intFromEnum(language);
+        const idx = @backingInt(language);
         const conn = self.connections[idx] orelse return;
         conn.openFile(allocator, io, uri, new_text, language_id) catch {};
     }
@@ -235,7 +235,7 @@ pub const LspPool = struct {
         io: std.Io,
         uri: []const u8,
     ) void {
-        const idx = @intFromEnum(language);
+        const idx = @backingInt(language);
         const conn = self.connections[idx] orelse return;
         conn.closeFile(allocator, io, uri);
     }

@@ -132,26 +132,26 @@ pub fn main(init: std.process.Init) !void {
     try stdout.print("Edges: {}\n\n", .{graph.edges.items.len});
 
     // Count by kind.
-    var kind_counts: [@typeInfo(NodeKind).@"enum".fields.len]u32 = .{0} ** @typeInfo(NodeKind).@"enum".fields.len;
+    var kind_counts: [@typeInfo(NodeKind).@"enum".field_names.len]u32 = @splat(0);
     for (graph.nodes.items) |n| {
-        kind_counts[@intFromEnum(n.kind)] += 1;
+        kind_counts[@backingInt(n.kind)] += 1;
     }
     try stdout.print("--- Node counts by kind ---\n", .{});
-    inline for (@typeInfo(NodeKind).@"enum".fields, 0..) |f, i| {
+    inline for (@typeInfo(NodeKind).@"enum".field_names, 0..) |field_name, i| {
         if (kind_counts[i] > 0) {
-            try stdout.print("  {s}: {}\n", .{ f.name, kind_counts[i] });
+            try stdout.print("  {s}: {}\n", .{ field_name, kind_counts[i] });
         }
     }
 
     // Count by edge type.
-    var edge_counts: [@typeInfo(EdgeType).@"enum".fields.len]u32 = .{0} ** @typeInfo(EdgeType).@"enum".fields.len;
+    var edge_counts: [@typeInfo(EdgeType).@"enum".field_names.len]u32 = @splat(0);
     for (graph.edges.items) |e| {
-        edge_counts[@intFromEnum(e.edge_type)] += 1;
+        edge_counts[@backingInt(e.edge_type)] += 1;
     }
     try stdout.print("\n--- Edge counts by type ---\n", .{});
-    inline for (@typeInfo(EdgeType).@"enum".fields, 0..) |f, i| {
+    inline for (@typeInfo(EdgeType).@"enum".field_names, 0..) |field_name, i| {
         if (edge_counts[i] > 0) {
-            try stdout.print("  {s}: {}\n", .{ f.name, edge_counts[i] });
+            try stdout.print("  {s}: {}\n", .{ field_name, edge_counts[i] });
         }
     }
 
@@ -160,7 +160,7 @@ pub fn main(init: std.process.Init) !void {
     for (graph.nodes.items) |n| {
         const vis_str: []const u8 = if (n.visibility == .public) "pub" else "prv";
         try stdout.print("  [{d:>3}] {s:<12} {s} \"{s}\"", .{
-            @intFromEnum(n.id),
+            @backingInt(n.id),
             @tagName(n.kind),
             vis_str,
             n.name,
@@ -180,7 +180,7 @@ pub fn main(init: std.process.Init) !void {
             }
         }
         if (n.parent_id) |pid| {
-            try stdout.print("  parent={}", .{@intFromEnum(pid)});
+            try stdout.print("  parent={}", .{@backingInt(pid)});
         }
         if (n.doc != null) {
             try stdout.print("  [has doc]", .{});
@@ -200,11 +200,11 @@ pub fn main(init: std.process.Init) !void {
             const src_name = if (graph.getNode(e.source_id)) |n| n.name else "?";
             const tgt_name = if (graph.getNode(e.target_id)) |n| n.name else "?";
             try stdout.print("  {d} ({s}) --[{s}/{s}]--> {d} ({s})\n", .{
-                @intFromEnum(e.source_id),
+                @backingInt(e.source_id),
                 src_name,
                 @tagName(e.edge_type),
                 @tagName(e.source),
-                @intFromEnum(e.target_id),
+                @backingInt(e.target_id),
                 tgt_name,
             });
         }

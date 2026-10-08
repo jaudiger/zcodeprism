@@ -97,7 +97,7 @@ pub fn encodeBinary(meta: RustMeta, buf: []u8) usize {
     if (meta.is_extern) flags |= 0x08;
     if (meta.is_default) flags |= 0x10;
     buf[1] = flags;
-    buf[2] = @intFromEnum(meta.sub_kind);
+    buf[2] = @backingInt(meta.sub_kind);
     const abi_len: u8 = if (meta.abi) |a| @intCast(a.len) else 0;
     buf[3] = abi_len;
     const vs_len: u8 = if (meta.visibility_scope) |vs| @intCast(vs.len) else 0;
@@ -145,6 +145,17 @@ pub fn decodeBinaryAndAttach(allocator: std.mem.Allocator, graph: *Graph, bytes:
     const derives_len: usize = bytes[5];
     const attrs_len: usize = bytes[6];
     const inner_attrs_len: usize = bytes[7];
+    const sub_kind: RustSubKind = switch (bytes[2]) {
+        0 => .none,
+        1 => .trait_,
+        2 => .impl_block,
+        3 => .macro_rules,
+        4 => .type_alias,
+        5 => .static_item,
+        6 => .fn_signature,
+        7 => .associated_type,
+        else => return error.InvalidFormat,
+    };
     const abi_end = header_size + abi_len;
     const vs_end = abi_end + vs_len;
     const derives_end = vs_end + derives_len;
@@ -155,7 +166,7 @@ pub fn decodeBinaryAndAttach(allocator: std.mem.Allocator, graph: *Graph, bytes:
         .is_const = flags & 0x04 != 0,
         .is_extern = flags & 0x08 != 0,
         .is_default = flags & 0x10 != 0,
-        .sub_kind = @enumFromInt(bytes[2]),
+        .sub_kind = sub_kind,
         .abi = if (abi_len > 0) bytes[header_size..abi_end] else null,
         .visibility_scope = if (vs_len > 0) bytes[abi_end..vs_end] else null,
         .derives = if (derives_len > 0) bytes[vs_end..derives_end] else null,
@@ -210,8 +221,9 @@ fn getBoolOr(obj: std.json.ObjectMap, key: []const u8, default: bool) bool {
 fn parseEnumString(comptime E: type, obj: std.json.ObjectMap, key: []const u8, default: E) E {
     const v = obj.get(key) orelse return default;
     if (v != .string) return default;
-    inline for (@typeInfo(E).@"enum".fields) |f| {
-        if (std.mem.eql(u8, v.string, f.name)) return @enumFromInt(f.value);
+    const info = @typeInfo(E).@"enum";
+    inline for (info.field_names, info.field_values) |field_name, field_value| {
+        if (std.mem.eql(u8, v.string, field_name)) return @fromBackingInt(@intCast(field_value));
     }
     return default;
 }
@@ -256,8 +268,7 @@ pub fn ffiConvention(meta: RustMeta) ?[]const u8 {
 
 test "RustSubKind has exactly 8 variants" {
     comptime {
-        const fields = @typeInfo(RustSubKind).@"enum".fields;
-        std.debug.assert(fields.len == 8);
+        std.debug.assert(@typeInfo(RustSubKind).@"enum".field_names.len == 8);
     }
 }
 
@@ -329,6 +340,15 @@ test "binary encode/decode round-trip" {
     try std.testing.expectEqualStrings("Debug,Clone", decoded.derives.?);
     try std.testing.expectEqualStrings("#[cfg(test)]", decoded.attributes.?);
     try std.testing.expectEqualStrings("#![no_std]", decoded.inner_attributes.?);
+}
+
+test "decodeBinary rejects invalid sub-kind tags" {
+    const allocator = std.testing.allocator;
+    var g = Graph.init("/tmp/test");
+    defer g.deinit(allocator);
+
+    const bytes = [_]u8{ binary_tag, 0, 8, 0, 0, 0, 0, 0 };
+    try std.testing.expectError(error.InvalidFormat, decodeBinaryAndAttach(allocator, &g, &bytes));
 }
 
 test "binarySize matches actual encoded length" {

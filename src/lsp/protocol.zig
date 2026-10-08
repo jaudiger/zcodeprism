@@ -87,8 +87,8 @@ pub const SymbolKind = enum(u8) {
     _,
 
     pub fn fromInt(n: i64) SymbolKind {
-        if (n < 1 or n > 255) return @enumFromInt(0);
-        return @enumFromInt(@as(u8, @intCast(n)));
+        if (n < 1 or n > 255) return @fromBackingInt(@intCast(0));
+        return @fromBackingInt(@intCast(@as(u8, @intCast(n))));
     }
 };
 
@@ -378,7 +378,7 @@ test "SymbolKind fromInt maps known values" {
     try std.testing.expectEqual(SymbolKind.function, SymbolKind.fromInt(12));
     try std.testing.expectEqual(SymbolKind.type_parameter, SymbolKind.fromInt(26));
     // Out-of-range values map to the zero sentinel.
-    try std.testing.expectEqual(@as(u8, 0), @intFromEnum(SymbolKind.fromInt(0)));
-    try std.testing.expectEqual(@as(u8, 0), @intFromEnum(SymbolKind.fromInt(-1)));
-    try std.testing.expectEqual(@as(u8, 0), @intFromEnum(SymbolKind.fromInt(300)));
+    try std.testing.expectEqual(@as(u8, 0), @backingInt(SymbolKind.fromInt(0)));
+    try std.testing.expectEqual(@as(u8, 0), @backingInt(SymbolKind.fromInt(-1)));
+    try std.testing.expectEqual(@as(u8, 0), @backingInt(SymbolKind.fromInt(300)));
 }

@@ -44,7 +44,7 @@ pub const Adjacency = struct {
     ///
     /// Returns an empty slice when `node_id` is out of bounds.
     pub fn outEdges(self: *const Adjacency, node_id: NodeId) []const EdgeId {
-        const idx = @intFromEnum(node_id);
+        const idx = @backingInt(node_id);
         if (idx >= self.out_spans.len) return &.{};
         const span = self.out_spans[idx];
         return self.out_edges[span.offset..][0..span.len];
@@ -54,7 +54,7 @@ pub const Adjacency = struct {
     ///
     /// Returns an empty slice when `node_id` is out of bounds.
     pub fn inEdges(self: *const Adjacency, node_id: NodeId) []const EdgeId {
-        const idx = @intFromEnum(node_id);
+        const idx = @backingInt(node_id);
         if (idx >= self.in_spans.len) return &.{};
         const span = self.in_spans[idx];
         return self.in_edges[span.offset..][0..span.len];
@@ -64,7 +64,7 @@ pub const Adjacency = struct {
     ///
     /// Returns an empty slice when `node_id` is out of bounds.
     pub fn childrenOf(self: *const Adjacency, node_id: NodeId) []const NodeId {
-        const idx = @intFromEnum(node_id);
+        const idx = @backingInt(node_id);
         if (idx >= self.children_spans.len) return &.{};
         const span = self.children_spans[idx];
         return self.children_storage[span.offset..][0..span.len];
@@ -97,13 +97,13 @@ pub const Adjacency = struct {
         var pos: usize = 0;
         if (direction == .out or direction == .both) {
             for (self.outEdges(node_id)) |eid| {
-                result[pos] = edges[@intFromEnum(eid)].target_id;
+                result[pos] = edges[@backingInt(eid)].target_id;
                 pos += 1;
             }
         }
         if (direction == .in or direction == .both) {
             for (self.inEdges(node_id)) |eid| {
-                result[pos] = edges[@intFromEnum(eid)].source_id;
+                result[pos] = edges[@backingInt(eid)].source_id;
                 pos += 1;
             }
         }
@@ -159,8 +159,8 @@ pub fn buildAdjacency(
     @memset(children_counts, 0);
 
     for (edges) |e| {
-        const src: u32 = @intCast(@intFromEnum(e.source_id));
-        const tgt: u32 = @intCast(@intFromEnum(e.target_id));
+        const src: u32 = @intCast(@backingInt(e.source_id));
+        const tgt: u32 = @intCast(@backingInt(e.target_id));
         if (src < node_count) out_counts[src] += 1;
         if (tgt < node_count) in_counts[tgt] += 1;
     }
@@ -174,7 +174,7 @@ pub fn buildAdjacency(
     var total_children: u32 = 0;
     for (nodes) |n| {
         if (n.parent_id) |pid| {
-            const pidx: u32 = @intCast(@intFromEnum(pid));
+            const pidx: u32 = @intCast(@backingInt(pid));
             if (pidx < node_count) {
                 children_counts[pidx] += 1;
                 total_children += 1;
@@ -240,10 +240,10 @@ pub fn buildAdjacency(
     // Fill: place edge/child IDs into their spans
 
     for (edges, 0..) |e, edge_idx| {
-        const eid: EdgeId = @enumFromInt(edge_idx);
+        const eid: EdgeId = @fromBackingInt(@intCast(edge_idx));
 
         // Outgoing
-        const src: u32 = @intCast(@intFromEnum(e.source_id));
+        const src: u32 = @intCast(@backingInt(e.source_id));
         if (src < node_count) {
             const span = &out_spans[src];
             out_edges_arr[span.offset + span.len] = eid;
@@ -251,7 +251,7 @@ pub fn buildAdjacency(
         }
 
         // Incoming
-        const tgt: u32 = @intCast(@intFromEnum(e.target_id));
+        const tgt: u32 = @intCast(@backingInt(e.target_id));
         if (tgt < node_count) {
             const span = &in_spans[tgt];
             in_edges_arr[span.offset + span.len] = eid;
@@ -262,10 +262,10 @@ pub fn buildAdjacency(
     // Children
     for (nodes, 0..) |n, i| {
         if (n.parent_id) |pid| {
-            const pidx: u32 = @intCast(@intFromEnum(pid));
+            const pidx: u32 = @intCast(@backingInt(pid));
             if (pidx < node_count) {
                 const span = &children_spans[pidx];
-                children_storage[span.offset + span.len] = @enumFromInt(i);
+                children_storage[span.offset + span.len] = @fromBackingInt(@intCast(i));
                 span.len += 1;
             }
         }
@@ -332,14 +332,14 @@ test "single node no edges" {
 test "outEdges returns correct edge ids" {
     // Arrange
     const nodes: []const Node = &.{
-        .{ .id = @enumFromInt(0), .name = "a", .kind = .function, .language = .zig },
-        .{ .id = @enumFromInt(1), .name = "b", .kind = .function, .language = .zig },
-        .{ .id = @enumFromInt(2), .name = "c", .kind = .function, .language = .zig },
+        .{ .id = @fromBackingInt(@intCast(0)), .name = "a", .kind = .function, .language = .zig },
+        .{ .id = @fromBackingInt(@intCast(1)), .name = "b", .kind = .function, .language = .zig },
+        .{ .id = @fromBackingInt(@intCast(2)), .name = "c", .kind = .function, .language = .zig },
     };
     const edges: []const Edge = &.{
-        .{ .source_id = @enumFromInt(0), .target_id = @enumFromInt(1), .edge_type = .calls },
-        .{ .source_id = @enumFromInt(0), .target_id = @enumFromInt(2), .edge_type = .calls },
-        .{ .source_id = @enumFromInt(1), .target_id = @enumFromInt(2), .edge_type = .calls },
+        .{ .source_id = @fromBackingInt(@intCast(0)), .target_id = @fromBackingInt(@intCast(1)), .edge_type = .calls },
+        .{ .source_id = @fromBackingInt(@intCast(0)), .target_id = @fromBackingInt(@intCast(2)), .edge_type = .calls },
+        .{ .source_id = @fromBackingInt(@intCast(1)), .target_id = @fromBackingInt(@intCast(2)), .edge_type = .calls },
     };
 
     // Act
@@ -347,28 +347,28 @@ test "outEdges returns correct edge ids" {
     defer adj.deinit(std.testing.allocator);
 
     // Assert
-    const out_0 = adj.outEdges(@enumFromInt(0));
+    const out_0 = adj.outEdges(@fromBackingInt(@intCast(0)));
     try std.testing.expectEqual(@as(usize, 2), out_0.len);
-    try std.testing.expectEqual(@as(u64, 0), @intFromEnum(out_0[0]));
-    try std.testing.expectEqual(@as(u64, 1), @intFromEnum(out_0[1]));
+    try std.testing.expectEqual(@as(u64, 0), @backingInt(out_0[0]));
+    try std.testing.expectEqual(@as(u64, 1), @backingInt(out_0[1]));
 
-    const out_1 = adj.outEdges(@enumFromInt(1));
+    const out_1 = adj.outEdges(@fromBackingInt(@intCast(1)));
     try std.testing.expectEqual(@as(usize, 1), out_1.len);
-    try std.testing.expectEqual(@as(u64, 2), @intFromEnum(out_1[0]));
+    try std.testing.expectEqual(@as(u64, 2), @backingInt(out_1[0]));
 
-    const out_2 = adj.outEdges(@enumFromInt(2));
+    const out_2 = adj.outEdges(@fromBackingInt(@intCast(2)));
     try std.testing.expectEqual(@as(usize, 0), out_2.len);
 }
 
 test "inEdges returns correct edge ids" {
     // Arrange
     const nodes: []const Node = &.{
-        .{ .id = @enumFromInt(0), .name = "a", .kind = .function, .language = .zig },
-        .{ .id = @enumFromInt(1), .name = "b", .kind = .function, .language = .zig },
+        .{ .id = @fromBackingInt(@intCast(0)), .name = "a", .kind = .function, .language = .zig },
+        .{ .id = @fromBackingInt(@intCast(1)), .name = "b", .kind = .function, .language = .zig },
     };
     const edges: []const Edge = &.{
-        .{ .source_id = @enumFromInt(0), .target_id = @enumFromInt(1), .edge_type = .calls },
-        .{ .source_id = @enumFromInt(0), .target_id = @enumFromInt(1), .edge_type = .uses_type },
+        .{ .source_id = @fromBackingInt(@intCast(0)), .target_id = @fromBackingInt(@intCast(1)), .edge_type = .calls },
+        .{ .source_id = @fromBackingInt(@intCast(0)), .target_id = @fromBackingInt(@intCast(1)), .edge_type = .uses_type },
     };
 
     // Act
@@ -376,23 +376,23 @@ test "inEdges returns correct edge ids" {
     defer adj.deinit(std.testing.allocator);
 
     // Assert
-    const in_0 = adj.inEdges(@enumFromInt(0));
+    const in_0 = adj.inEdges(@fromBackingInt(@intCast(0)));
     try std.testing.expectEqual(@as(usize, 0), in_0.len);
 
-    const in_1 = adj.inEdges(@enumFromInt(1));
+    const in_1 = adj.inEdges(@fromBackingInt(@intCast(1)));
     try std.testing.expectEqual(@as(usize, 2), in_1.len);
-    try std.testing.expectEqual(@as(u64, 0), @intFromEnum(in_1[0]));
-    try std.testing.expectEqual(@as(u64, 1), @intFromEnum(in_1[1]));
+    try std.testing.expectEqual(@as(u64, 0), @backingInt(in_1[0]));
+    try std.testing.expectEqual(@as(u64, 1), @backingInt(in_1[1]));
 }
 
 test "childrenOf returns correct child ids" {
     // Arrange
-    const parent: NodeId = @enumFromInt(0);
+    const parent: NodeId = @fromBackingInt(@intCast(0));
     const nodes: []const Node = &.{
-        .{ .id = @enumFromInt(0), .name = "parent", .kind = .type_def, .language = .zig },
-        .{ .id = @enumFromInt(1), .name = "child1", .kind = .function, .language = .zig, .parent_id = parent },
-        .{ .id = @enumFromInt(2), .name = "child2", .kind = .function, .language = .zig, .parent_id = parent },
-        .{ .id = @enumFromInt(3), .name = "other", .kind = .function, .language = .zig },
+        .{ .id = @fromBackingInt(@intCast(0)), .name = "parent", .kind = .type_def, .language = .zig },
+        .{ .id = @fromBackingInt(@intCast(1)), .name = "child1", .kind = .function, .language = .zig, .parent_id = parent },
+        .{ .id = @fromBackingInt(@intCast(2)), .name = "child2", .kind = .function, .language = .zig, .parent_id = parent },
+        .{ .id = @fromBackingInt(@intCast(3)), .name = "other", .kind = .function, .language = .zig },
     };
     const edges: []const Edge = &.{};
 
@@ -403,11 +403,11 @@ test "childrenOf returns correct child ids" {
     // Assert
     const children = adj.childrenOf(parent);
     try std.testing.expectEqual(@as(usize, 2), children.len);
-    try std.testing.expectEqual(@as(u64, 1), @intFromEnum(children[0]));
-    try std.testing.expectEqual(@as(u64, 2), @intFromEnum(children[1]));
+    try std.testing.expectEqual(@as(u64, 1), @backingInt(children[0]));
+    try std.testing.expectEqual(@as(u64, 2), @backingInt(children[1]));
 
     // Node 3 has no children
-    try std.testing.expectEqual(@as(usize, 0), adj.childrenOf(@enumFromInt(3)).len);
+    try std.testing.expectEqual(@as(usize, 0), adj.childrenOf(@fromBackingInt(@intCast(3))).len);
 }
 
 test "out-of-bounds node id returns empty" {
@@ -422,26 +422,26 @@ test "out-of-bounds node id returns empty" {
     defer adj.deinit(std.testing.allocator);
 
     // Assert
-    try std.testing.expectEqual(@as(usize, 0), adj.outEdges(@enumFromInt(99)).len);
-    try std.testing.expectEqual(@as(usize, 0), adj.inEdges(@enumFromInt(99)).len);
-    try std.testing.expectEqual(@as(usize, 0), adj.childrenOf(@enumFromInt(99)).len);
+    try std.testing.expectEqual(@as(usize, 0), adj.outEdges(@fromBackingInt(@intCast(99))).len);
+    try std.testing.expectEqual(@as(usize, 0), adj.inEdges(@fromBackingInt(@intCast(99))).len);
+    try std.testing.expectEqual(@as(usize, 0), adj.childrenOf(@fromBackingInt(@intCast(99))).len);
 }
 
 test "edges with OOB node ids are excluded from adjacency" {
     // Arrange
     const nodes: []const Node = &.{
-        .{ .id = @enumFromInt(0), .name = "a", .kind = .function, .language = .zig },
-        .{ .id = @enumFromInt(1), .name = "b", .kind = .function, .language = .zig },
+        .{ .id = @fromBackingInt(@intCast(0)), .name = "a", .kind = .function, .language = .zig },
+        .{ .id = @fromBackingInt(@intCast(1)), .name = "b", .kind = .function, .language = .zig },
     };
     const edges: []const Edge = &.{
         // Valid edge: 0 -> 1
-        .{ .source_id = @enumFromInt(0), .target_id = @enumFromInt(1), .edge_type = .calls },
+        .{ .source_id = @fromBackingInt(@intCast(0)), .target_id = @fromBackingInt(@intCast(1)), .edge_type = .calls },
         // OOB source: 99 -> 1
-        .{ .source_id = @enumFromInt(99), .target_id = @enumFromInt(1), .edge_type = .calls },
+        .{ .source_id = @fromBackingInt(@intCast(99)), .target_id = @fromBackingInt(@intCast(1)), .edge_type = .calls },
         // OOB target: 0 -> 99
-        .{ .source_id = @enumFromInt(0), .target_id = @enumFromInt(99), .edge_type = .uses_type },
+        .{ .source_id = @fromBackingInt(@intCast(0)), .target_id = @fromBackingInt(@intCast(99)), .edge_type = .uses_type },
         // Both OOB: 50 -> 99
-        .{ .source_id = @enumFromInt(50), .target_id = @enumFromInt(99), .edge_type = .imports },
+        .{ .source_id = @fromBackingInt(@intCast(50)), .target_id = @fromBackingInt(@intCast(99)), .edge_type = .imports },
     };
 
     // Act
@@ -450,9 +450,9 @@ test "edges with OOB node ids are excluded from adjacency" {
 
     // Assert
     // Node 0 has 2 outgoing: edge 0 (0->1, valid) and edge 2 (0->99, OOB target).
-    try std.testing.expectEqual(@as(usize, 2), adj.outEdges(@enumFromInt(0)).len);
+    try std.testing.expectEqual(@as(usize, 2), adj.outEdges(@fromBackingInt(@intCast(0))).len);
     // Node 1 has 2 incoming: edge 0 (0->1, valid) and edge 1 (99->1, OOB source).
-    try std.testing.expectEqual(@as(usize, 2), adj.inEdges(@enumFromInt(1)).len);
+    try std.testing.expectEqual(@as(usize, 2), adj.inEdges(@fromBackingInt(@intCast(1))).len);
 
     // Flat arrays are sized to counted totals, not raw edge_count (4).
     // total_out = out_counts[0]+out_counts[1] = 2+0 = 2

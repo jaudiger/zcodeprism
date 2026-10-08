@@ -102,7 +102,7 @@ pub fn ffiConvention(node: Node) ?[]const u8 {
 
 test "dispatch covers every Language variant" {
     comptime {
-        const variants = @typeInfo(Language).@"enum".fields.len;
+        const variants = @typeInfo(Language).@"enum".field_names.len;
         std.debug.assert(variants == 2);
     }
 }

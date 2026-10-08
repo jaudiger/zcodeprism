@@ -12,7 +12,7 @@ pub fn computeFanOut(graph: *Graph) void {
     resetFanOut(graph);
     for (graph.edges.items) |e| {
         if (!e.edge_type.isFanEdge()) continue;
-        const idx = @intFromEnum(e.source_id);
+        const idx = @backingInt(e.source_id);
         if (idx >= graph.nodes.items.len) continue;
         const n = &graph.nodes.items[idx];
         if (n.metrics) |*m| {
@@ -27,7 +27,7 @@ pub fn computeFanIn(graph: *Graph) void {
     resetFanIn(graph);
     for (graph.edges.items) |e| {
         if (!e.edge_type.isFanEdge()) continue;
-        const idx = @intFromEnum(e.target_id);
+        const idx = @backingInt(e.target_id);
         if (idx >= graph.nodes.items.len) continue;
         const n = &graph.nodes.items[idx];
         if (n.metrics) |*m| {
@@ -64,8 +64,8 @@ test "fan_out counts outgoing calls edges" {
     computeFanOut(&g);
 
     // Assert
-    try std.testing.expectEqual(@as(u16, 2), g.nodes.items[@intFromEnum(a)].metrics.?.fan_out);
-    try std.testing.expectEqual(@as(u16, 0), g.nodes.items[@intFromEnum(b)].metrics.?.fan_out);
+    try std.testing.expectEqual(@as(u16, 2), g.nodes.items[@backingInt(a)].metrics.?.fan_out);
+    try std.testing.expectEqual(@as(u16, 0), g.nodes.items[@backingInt(b)].metrics.?.fan_out);
 }
 
 test "fan_in counts incoming calls edges" {
@@ -84,8 +84,8 @@ test "fan_in counts incoming calls edges" {
     computeFanIn(&g);
 
     // Assert
-    try std.testing.expectEqual(@as(u16, 2), g.nodes.items[@intFromEnum(a)].metrics.?.fan_in);
-    try std.testing.expectEqual(@as(u16, 0), g.nodes.items[@intFromEnum(b)].metrics.?.fan_in);
+    try std.testing.expectEqual(@as(u16, 2), g.nodes.items[@backingInt(a)].metrics.?.fan_in);
+    try std.testing.expectEqual(@as(u16, 0), g.nodes.items[@backingInt(b)].metrics.?.fan_in);
 }
 
 test "fan metrics ignore import edges" {
@@ -103,8 +103,8 @@ test "fan metrics ignore import edges" {
     computeFanIn(&g);
 
     // Assert
-    try std.testing.expectEqual(@as(u16, 0), g.nodes.items[@intFromEnum(a)].metrics.?.fan_out);
-    try std.testing.expectEqual(@as(u16, 0), g.nodes.items[@intFromEnum(b)].metrics.?.fan_in);
+    try std.testing.expectEqual(@as(u16, 0), g.nodes.items[@backingInt(a)].metrics.?.fan_out);
+    try std.testing.expectEqual(@as(u16, 0), g.nodes.items[@backingInt(b)].metrics.?.fan_in);
 }
 
 test "fan metrics count uses_type edges" {
@@ -122,8 +122,8 @@ test "fan metrics count uses_type edges" {
     computeFanIn(&g);
 
     // Assert
-    try std.testing.expectEqual(@as(u16, 1), g.nodes.items[@intFromEnum(a)].metrics.?.fan_out);
-    try std.testing.expectEqual(@as(u16, 1), g.nodes.items[@intFromEnum(b)].metrics.?.fan_in);
+    try std.testing.expectEqual(@as(u16, 1), g.nodes.items[@backingInt(a)].metrics.?.fan_out);
+    try std.testing.expectEqual(@as(u16, 1), g.nodes.items[@backingInt(b)].metrics.?.fan_in);
 }
 
 test "fan metrics are idempotent" {
@@ -141,7 +141,7 @@ test "fan metrics are idempotent" {
     computeFanOut(&g);
 
     // Assert
-    try std.testing.expectEqual(@as(u16, 1), g.nodes.items[@intFromEnum(a)].metrics.?.fan_out);
+    try std.testing.expectEqual(@as(u16, 1), g.nodes.items[@backingInt(a)].metrics.?.fan_out);
 }
 
 test "fan metrics skip nodes without metrics" {
@@ -159,6 +159,6 @@ test "fan metrics skip nodes without metrics" {
     computeFanIn(&g);
 
     // Assert
-    try std.testing.expectEqual(@as(?@import("../core/metrics.zig").Metrics, null), g.nodes.items[@intFromEnum(a)].metrics);
-    try std.testing.expectEqual(@as(u16, 1), g.nodes.items[@intFromEnum(b)].metrics.?.fan_in);
+    try std.testing.expectEqual(@as(?@import("../core/metrics.zig").Metrics, null), g.nodes.items[@backingInt(a)].metrics);
+    try std.testing.expectEqual(@as(u16, 1), g.nodes.items[@backingInt(b)].metrics.?.fan_in);
 }

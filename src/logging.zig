@@ -108,7 +108,7 @@ pub const Logger = struct {
     }
 
     fn dispatch(self: Logger, level: Level, msg: []const u8, fields: []const Field) void {
-        if (@intFromEnum(level) < self.min_level) return;
+        if (@backingInt(level) < self.min_level) return;
         self.vtable.log(self.ptr, level, self.scope, msg, fields);
     }
 
@@ -165,7 +165,7 @@ pub const TextStderrLogger = struct {
             .ptr = @ptrCast(self),
             .vtable = &vtable,
             .scope = "",
-            .min_level = @intFromEnum(self.min_level),
+            .min_level = @backingInt(self.min_level),
         };
     }
 
@@ -187,7 +187,7 @@ pub const TextStderrLogger = struct {
 
         w.print("{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z {s}", .{
             yd.year,
-            @as(u32, @intFromEnum(md.month)),
+            @as(u32, @backingInt(md.month)),
             @as(u32, md.day_index) + 1,
             ds.getHoursIntoDay(),
             ds.getMinutesIntoHour(),
@@ -217,11 +217,11 @@ pub const TextStderrLogger = struct {
 
 test "Level has correct integer values" {
     comptime {
-        std.debug.assert(@intFromEnum(Level.trace) == 0);
-        std.debug.assert(@intFromEnum(Level.debug) == 1);
-        std.debug.assert(@intFromEnum(Level.info) == 2);
-        std.debug.assert(@intFromEnum(Level.warn) == 3);
-        std.debug.assert(@intFromEnum(Level.err) == 4);
+        std.debug.assert(@backingInt(Level.trace) == 0);
+        std.debug.assert(@backingInt(Level.debug) == 1);
+        std.debug.assert(@backingInt(Level.info) == 2);
+        std.debug.assert(@backingInt(Level.warn) == 3);
+        std.debug.assert(@backingInt(Level.err) == 4);
     }
 }
 
@@ -320,7 +320,7 @@ test "Logger filters by min_level" {
         .ptr = @ptrCast(&call_count),
         .vtable = &spy_vtable,
         .scope = "",
-        .min_level = @intFromEnum(Level.warn),
+        .min_level = @backingInt(Level.warn),
     };
 
     // Act
@@ -340,7 +340,7 @@ test "TextStderrLogger.init sets min_level" {
     const log = text_logger.logger();
 
     // Assert
-    try std.testing.expectEqual(@as(u8, @intFromEnum(Level.info)), log.min_level);
+    try std.testing.expectEqual(@as(u8, @backingInt(Level.info)), log.min_level);
 }
 
 test "TextStderrLogger.logger returns correct vtable and scope" {
@@ -351,7 +351,7 @@ test "TextStderrLogger.logger returns correct vtable and scope" {
     const log = text_logger.logger().withScope("test");
 
     // Assert
-    try std.testing.expectEqual(@as(u8, @intFromEnum(Level.debug)), log.min_level);
+    try std.testing.expectEqual(@as(u8, @backingInt(Level.debug)), log.min_level);
     try std.testing.expectEqualStrings("test", log.scope);
     try std.testing.expect(log.vtable == &TextStderrLogger.vtable);
 }

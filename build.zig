@@ -81,7 +81,7 @@ pub fn build(b: *std.Build) void {
     // Run step
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| run_cmd.addArgs(args);
+    run_cmd.addPassthruArgs();
     const run_step = b.step("run", "Run the CLI");
     run_step.dependOn(&run_cmd.step);
 
@@ -110,8 +110,8 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run unit tests");
 
     // kcov arguments for coverage mode
-    const kcov_args: []const ?[]const u8 = &.{
-        "kcov", "--include-pattern=src/", "kcov-output", null,
+    const kcov_args: []const []const u8 = &.{
+        "kcov", "--include-pattern=src/", "kcov-output",
     };
 
     // Test fixtures module
@@ -360,10 +360,15 @@ fn addTestStep(
     test_step: *std.Build.Step,
     test_artifact: *std.Build.Step.Compile,
     cov: bool,
-    kcov_args: []const ?[]const u8,
+    kcov_args: []const []const u8,
 ) void {
-    if (cov) test_artifact.setExecCmd(kcov_args);
-    test_step.dependOn(&b.addRunArtifact(test_artifact).step);
+    if (cov) {
+        const coverage_run = b.addSystemCommand(kcov_args);
+        coverage_run.addArtifactArg2(test_artifact, .{});
+        test_step.dependOn(&coverage_run.step);
+    } else {
+        test_step.dependOn(&b.addRunArtifact(test_artifact).step);
+    }
 }
 
 fn addTool(
@@ -372,7 +377,7 @@ fn addTool(
     source: []const u8,
     description: []const u8,
     target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.lang.Optimize,
     lib_mod: *std.Build.Module,
     tool_utils_mod: *std.Build.Module,
 ) *std.Build.Module {
@@ -387,7 +392,7 @@ fn addTool(
     b.installArtifact(exe);
     const run = b.addRunArtifact(exe);
     run.step.dependOn(b.getInstallStep());
-    if (b.args) |args| run.addArgs(args);
+    run.addPassthruArgs();
     const step = b.step(name, description);
     step.dependOn(&run.step);
     return mod;

@@ -25,7 +25,7 @@ pub fn buildFileNodeMap(allocator: std.mem.Allocator, graph: *const Graph) error
     for (graph.nodes.items, 0..) |n, i| {
         if (n.kind != .file) continue;
         const fp = n.file_path orelse continue;
-        try map.put(allocator, fp, @enumFromInt(i));
+        try map.put(allocator, fp, @fromBackingInt(@intCast(i)));
     }
     return map;
 }
@@ -45,7 +45,7 @@ pub fn resolveDefinitionToRelPath(uri: []const u8, project_root: []const u8) ?[]
 /// Returns the file node itself when no declaration spans the line.
 pub fn findDeclarationAtLine(graph: *const Graph, file_node_id: NodeId, def_line: u32) NodeId {
     const graph_line: u32 = def_line + 1;
-    const file_idx = @intFromEnum(file_node_id);
+    const file_idx = @backingInt(file_node_id);
     const file_path = graph.nodes.items[file_idx].file_path orelse return file_node_id;
 
     var best: NodeId = file_node_id;
@@ -207,7 +207,7 @@ fn processHoverEntry(
     handleHover: ?*const fn (std.mem.Allocator, *Graph, usize, protocol.Hover, *EnrichResult) error{OutOfMemory}!void,
     logger: Logger,
 ) error{OutOfMemory}!void {
-    const src_idx = @intFromEnum(entry.source_node_id);
+    const src_idx = @backingInt(entry.source_node_id);
     if (src_idx >= graph.nodes.items.len) return;
     result.hover_queries += 1;
     const hover = (client.textDocumentHover(allocator, io, uri, entry.line, entry.col) catch {
@@ -364,7 +364,7 @@ pub fn enrichPhantoms(
     logger: Logger,
 ) error{OutOfMemory}!void {
     for (phantom_hovers) |entry| {
-        const src_idx = @intFromEnum(entry.source_node_id);
+        const src_idx = @backingInt(entry.source_node_id);
         if (src_idx >= graph.nodes.items.len) continue;
         if (graph.nodes.items[src_idx].signature != null) continue;
 

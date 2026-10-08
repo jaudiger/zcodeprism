@@ -318,18 +318,18 @@ pub fn findContainingFunction(graph: *const Graph, file_id: NodeId, line: u32, k
     if (kind_index) |ki| {
         for (ki.findByKind(.function)) |i| {
             const n = graph.nodes.items[i];
-            if (!isDescendantOf(graph, @enumFromInt(i), file_id)) continue;
+            if (!isDescendantOf(graph, @fromBackingInt(@intCast(i)), file_id)) continue;
             const ls = n.line_start orelse continue;
             const le = n.line_end orelse continue;
-            if (line >= ls and line <= le) return @enumFromInt(i);
+            if (line >= ls and line <= le) return @fromBackingInt(@intCast(i));
         }
     } else {
         for (graph.nodes.items, 0..) |n, i| {
             if (n.kind != .function) continue;
-            if (!isDescendantOf(graph, @enumFromInt(i), file_id)) continue;
+            if (!isDescendantOf(graph, @fromBackingInt(@intCast(i)), file_id)) continue;
             const ls = n.line_start orelse continue;
             const le = n.line_end orelse continue;
-            if (line >= ls and line <= le) return @enumFromInt(i);
+            if (line >= ls and line <= le) return @fromBackingInt(@intCast(i));
         }
     }
     return null;

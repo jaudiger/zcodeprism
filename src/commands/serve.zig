@@ -15,7 +15,7 @@ const Server = mcp.server.Server;
 const WatcherService = watcher_service_mod.WatcherService;
 const ReindexContext = watcher_service_mod.ReindexContext;
 
-const zero_hash: types.ContentHash = .{0} ** types.hash_len;
+const zero_hash: types.ContentHash = @splat(0);
 
 /// Options for `serve`.
 pub const Options = struct {

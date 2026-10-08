@@ -165,7 +165,7 @@ pub fn resolveVarTargetThroughReturnType(
         for (scope_index.childrenOf(scope_id)) |child_idx| {
             const n = g.nodes.items[child_idx];
             if (!std.mem.eql(u8, n.name, segment)) continue;
-            matched = @enumFromInt(child_idx);
+            matched = @fromBackingInt(@intCast(child_idx));
             break;
         }
         if (matched == null) {
@@ -218,7 +218,7 @@ pub fn resolveQualifiedCall(
         for (scope_index.childrenOf(current_scope_id)) |child_idx| {
             const n = g.nodes.items[child_idx];
             if (!std.mem.eql(u8, n.name, segment)) continue;
-            matched_id = @enumFromInt(child_idx);
+            matched_id = @fromBackingInt(@intCast(child_idx));
             break;
         }
 

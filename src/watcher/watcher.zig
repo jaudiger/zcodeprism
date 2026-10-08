@@ -122,7 +122,7 @@ const KqueueBackend = struct {
     }
 
     fn registerOne(self: *KqueueBackend, allocator: std.mem.Allocator, path: []const u8) !void {
-        const path_z = try allocator.dupeZ(u8, path);
+        const path_z = try allocator.dupeSentinel(u8, path, 0);
         defer allocator.free(path_z);
         const fd = std.c.open(path_z, .{ .DIRECTORY = true });
         if (fd < 0) return;
@@ -233,7 +233,7 @@ const InotifyBackend = struct {
 
     fn registerOne(self: *InotifyBackend, allocator: std.mem.Allocator, path: []const u8) void {
         const mask: u32 = std.os.linux.IN.MODIFY | std.os.linux.IN.CREATE | std.os.linux.IN.DELETE | std.os.linux.IN.MOVE;
-        const path_z = allocator.dupeZ(u8, path) catch return;
+        const path_z = allocator.dupeSentinel(u8, path, 0) catch return;
         defer allocator.free(path_z);
         _ = std.c.inotify_add_watch(self.inotify_fd, path_z, mask);
         self.watch_count += 1;

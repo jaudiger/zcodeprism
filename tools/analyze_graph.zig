@@ -74,7 +74,7 @@ fn cmdComplexity(allocator: std.mem.Allocator, g: FrozenGraph, flags: ParsedFlag
     for (result.nodes, 0..) |entry, i| {
         try stdout.print("  {d}. [{d}] \"{s}\"  C={d}", .{
             i + 1,
-            @intFromEnum(entry.node_id),
+            @backingInt(entry.node_id),
             entry.name,
             entry.complexity,
         });
@@ -95,7 +95,7 @@ fn cmdDeadCode(allocator: std.mem.Allocator, g: FrozenGraph, flags: ParsedFlags,
     try stdout.print("Dead code ({d} symbols):\n\n", .{result.total_count});
     for (result.nodes) |entry| {
         try stdout.print("  [{d}] {s} {s} \"{s}\"", .{
-            @intFromEnum(entry.node_id),
+            @backingInt(entry.node_id),
             @tagName(entry.visibility),
             @tagName(entry.kind),
             entry.name,
@@ -122,7 +122,7 @@ fn cmdDuplicates(allocator: std.mem.Allocator, g: FrozenGraph, flags: ParsedFlag
             group.members.len,
         });
         for (group.members) |member| {
-            try stdout.print("    [{d}] \"{s}\"", .{ @intFromEnum(member.node_id), member.name });
+            try stdout.print("    [{d}] \"{s}\"", .{ @backingInt(member.node_id), member.name });
             if (member.file_path) |fp| try stdout.print("  file=\"{s}\"", .{fp});
             try stdout.print("\n", .{});
         }
@@ -141,7 +141,7 @@ fn cmdCycles(allocator: std.mem.Allocator, g: FrozenGraph, flags: ParsedFlags, s
     for (result.cycles, 0..) |cycle, ci| {
         try stdout.print("\n  Cycle {d} ({d} files):\n", .{ ci + 1, cycle.nodes.len });
         for (cycle.nodes) |cn| {
-            try stdout.print("    [{d}] \"{s}\"", .{ @intFromEnum(cn.node_id), cn.name });
+            try stdout.print("    [{d}] \"{s}\"", .{ @backingInt(cn.node_id), cn.name });
             if (cn.file_path) |fp| try stdout.print("  file=\"{s}\"", .{fp});
             try stdout.print("\n", .{});
         }
@@ -196,7 +196,7 @@ fn cmdImpact(allocator: std.mem.Allocator, g: FrozenGraph, flags: ParsedFlags, s
     try stdout.print("Impact analysis: {d} dependents\n\n", .{result.total_impacted});
     for (result.dependents) |dep| {
         try stdout.print("  [{d}] {s} \"{s}\"", .{
-            @intFromEnum(dep.node_id),
+            @backingInt(dep.node_id),
             @tagName(dep.kind),
             dep.name,
         });

@@ -328,9 +328,9 @@ fn collectCtgEdges(
 
             const src_order = prefixOrder(src_id.prefix) * @as(u64, 1 << 32) + src_id.num;
 
-            for (ctx.g.outEdges(@enumFromInt(src_idx))) |eid| {
-                const e = ctx.g.edges.items[@intFromEnum(eid)];
-                const tgt_idx = @intFromEnum(e.target_id);
+            for (ctx.g.outEdges(@fromBackingInt(@intCast(src_idx)))) |eid| {
+                const e = ctx.g.edges.items[@backingInt(eid)];
+                const tgt_idx = @backingInt(e.target_id);
                 if (tgt_idx >= ctx.g.nodes.items.len) continue;
 
                 try appendEdgeEntry(&entries, allocator, ctx, phantom_lookup, filter, .{
@@ -343,8 +343,8 @@ fn collectCtgEdges(
         }
     } else {
         for (ctx.g.edges.items) |e| {
-            const src_idx = @intFromEnum(e.source_id);
-            const tgt_idx = @intFromEnum(e.target_id);
+            const src_idx = @backingInt(e.source_id);
+            const tgt_idx = @backingInt(e.target_id);
             if (src_idx >= ctx.g.nodes.items.len or tgt_idx >= ctx.g.nodes.items.len) continue;
 
             const src_id = ctx.ids[src_idx] orelse continue;

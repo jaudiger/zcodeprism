@@ -164,7 +164,7 @@ pub fn indexDirectory(
 
     // Load build configs for each language whose build files exist on disk.
     const all_langs = registry_mod.Registry.allLanguages();
-    var build_configs: [registry_mod.language_count]?lang.BuildConfig = .{null} ** registry_mod.language_count;
+    var build_configs: [registry_mod.language_count]?lang.BuildConfig = @splat(null);
     defer for (&build_configs) |*slot| {
         if (slot.*) |*bc| bc.deinit(allocs.scratch);
     };
@@ -417,7 +417,7 @@ fn buildDirectoryNodes(
         defer kind_idx.deinit(allocs.scratch);
         for (kind_idx.findByKind(.directory)) |i| {
             const n = graph.nodes.items[i];
-            const nid: NodeId = @enumFromInt(i);
+            const nid: NodeId = @fromBackingInt(@intCast(i));
             if (n.file_path) |fp| {
                 try dir_map.put(allocs.scratch, fp, nid);
             } else {
@@ -563,7 +563,7 @@ fn resolveImportEdges(
     relpath_map: *const std.StringHashMapUnmanaged(usize),
 ) !void {
     for (infos) |fi| {
-        const file_id: NodeId = @enumFromInt(fi.node_idx);
+        const file_id: NodeId = @fromBackingInt(@intCast(fi.node_idx));
         const file_node = graph.nodes.items[fi.node_idx];
         const importer_path = file_node.file_path;
 
@@ -577,7 +577,7 @@ fn resolveImportEdges(
             if (target_idx) |tidx| {
                 _ = try graph.addEdgeIfNew(graph_alloc, .{
                     .source_id = file_id,
-                    .target_id = @enumFromInt(infos[tidx].node_idx),
+                    .target_id = @fromBackingInt(@intCast(infos[tidx].node_idx)),
                     .edge_type = .imports,
                 });
             }
@@ -746,7 +746,7 @@ fn buildModuleContainsEdges(
         const file_node = graph.nodes.items[fi.node_idx];
         const fp = file_node.file_path orelse continue;
         const mod_id = module_file_map.get(fp) orelse continue;
-        const file_id: NodeId = @enumFromInt(fi.node_idx);
+        const file_id: NodeId = @fromBackingInt(@intCast(fi.node_idx));
         _ = try graph.addEdgeIfNew(graph_alloc, .{
             .source_id = mod_id,
             .target_id = file_id,

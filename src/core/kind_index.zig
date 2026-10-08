@@ -5,20 +5,20 @@ const types = @import("types.zig");
 const Node = node_mod.Node;
 const NodeKind = types.NodeKind;
 
-const kind_count = @typeInfo(NodeKind).@"enum".fields.len;
+const kind_count = @typeInfo(NodeKind).@"enum".field_names.len;
 
 /// Pre-built index mapping NodeKind to their graph indices.
 /// Uses a fixed-size array (one slot per kind) instead of a hash map
 /// since NodeKind is a small enum with known cardinality.
 pub const KindIndex = struct {
-    ranges: [kind_count]Range = [_]Range{.{}} ** kind_count,
+    ranges: [kind_count]Range = @splat(.{}),
     storage: []usize = &.{},
 
     const Range = struct { start: u32 = 0, len: u32 = 0 };
 
     /// Return all node indices with the given kind.
     pub fn findByKind(self: *const KindIndex, kind: NodeKind) []const usize {
-        const range = self.ranges[@intFromEnum(kind)];
+        const range = self.ranges[@backingInt(kind)];
         if (range.len == 0) return &.{};
         return self.storage[range.start .. range.start + range.len];
     }
@@ -26,9 +26,9 @@ pub const KindIndex = struct {
     /// Build the kind index from a node array using the MAF pattern.
     pub fn build(allocator: std.mem.Allocator, nodes: []const Node) !KindIndex {
         // Measure: count nodes per kind.
-        var counts: [kind_count]u32 = [_]u32{0} ** kind_count;
+        var counts: [kind_count]u32 = @splat(0);
         for (nodes) |n| {
-            counts[@intFromEnum(n.kind)] += 1;
+            counts[@backingInt(n.kind)] += 1;
         }
 
         var total: usize = 0;
@@ -53,7 +53,7 @@ pub const KindIndex = struct {
         // Fill: place node indices into their kind slots.
         var write_pos = offsets;
         for (nodes, 0..) |n, i| {
-            const k = @intFromEnum(n.kind);
+            const k = @backingInt(n.kind);
             storage[write_pos[k]] = i;
             write_pos[k] += 1;
         }
@@ -81,9 +81,9 @@ pub const KindIndex = struct {
 test "findByKind returns correct indices and empty for absent kinds" {
     // Arrange
     const nodes: []const Node = &.{
-        .{ .id = @enumFromInt(0), .name = "a", .kind = .function, .language = .zig },
-        .{ .id = @enumFromInt(1), .name = "b", .kind = .type_def, .language = .zig },
-        .{ .id = @enumFromInt(2), .name = "c", .kind = .function, .language = .zig },
+        .{ .id = @fromBackingInt(@intCast(0)), .name = "a", .kind = .function, .language = .zig },
+        .{ .id = @fromBackingInt(@intCast(1)), .name = "b", .kind = .type_def, .language = .zig },
+        .{ .id = @fromBackingInt(@intCast(2)), .name = "c", .kind = .function, .language = .zig },
     };
 
     // Act
@@ -122,19 +122,19 @@ test "build on empty nodes returns empty index" {
 test "every NodeKind variant is indexed" {
     // Arrange
     const nodes: []const Node = &.{
-        .{ .id = @enumFromInt(0), .name = "f", .kind = .file, .language = .zig },
-        .{ .id = @enumFromInt(1), .name = "m", .kind = .module, .language = .zig },
-        .{ .id = @enumFromInt(2), .name = "fn", .kind = .function, .language = .zig },
-        .{ .id = @enumFromInt(3), .name = "st", .kind = .type_def, .language = .zig },
-        .{ .id = @enumFromInt(4), .name = "en", .kind = .enum_def, .language = .zig },
-        .{ .id = @enumFromInt(5), .name = "fi", .kind = .field, .language = .zig },
-        .{ .id = @enumFromInt(6), .name = "c", .kind = .constant, .language = .zig },
-        .{ .id = @enumFromInt(7), .name = "t", .kind = .test_def, .language = .zig },
-        .{ .id = @enumFromInt(8), .name = "e", .kind = .error_def, .language = .zig },
-        .{ .id = @enumFromInt(9), .name = "i", .kind = .import_decl, .language = .zig },
-        .{ .id = @enumFromInt(10), .name = "u", .kind = .union_def, .language = .zig },
-        .{ .id = @enumFromInt(11), .name = "d", .kind = .directory, .language = .zig },
-        .{ .id = @enumFromInt(12), .name = "p", .kind = .parameter, .language = .zig },
+        .{ .id = @fromBackingInt(@intCast(0)), .name = "f", .kind = .file, .language = .zig },
+        .{ .id = @fromBackingInt(@intCast(1)), .name = "m", .kind = .module, .language = .zig },
+        .{ .id = @fromBackingInt(@intCast(2)), .name = "fn", .kind = .function, .language = .zig },
+        .{ .id = @fromBackingInt(@intCast(3)), .name = "st", .kind = .type_def, .language = .zig },
+        .{ .id = @fromBackingInt(@intCast(4)), .name = "en", .kind = .enum_def, .language = .zig },
+        .{ .id = @fromBackingInt(@intCast(5)), .name = "fi", .kind = .field, .language = .zig },
+        .{ .id = @fromBackingInt(@intCast(6)), .name = "c", .kind = .constant, .language = .zig },
+        .{ .id = @fromBackingInt(@intCast(7)), .name = "t", .kind = .test_def, .language = .zig },
+        .{ .id = @fromBackingInt(@intCast(8)), .name = "e", .kind = .error_def, .language = .zig },
+        .{ .id = @fromBackingInt(@intCast(9)), .name = "i", .kind = .import_decl, .language = .zig },
+        .{ .id = @fromBackingInt(@intCast(10)), .name = "u", .kind = .union_def, .language = .zig },
+        .{ .id = @fromBackingInt(@intCast(11)), .name = "d", .kind = .directory, .language = .zig },
+        .{ .id = @fromBackingInt(@intCast(12)), .name = "p", .kind = .parameter, .language = .zig },
     };
 
     // Act
@@ -142,8 +142,8 @@ test "every NodeKind variant is indexed" {
     defer idx.deinit(std.testing.allocator);
 
     // Assert
-    inline for (@typeInfo(NodeKind).@"enum".fields) |field| {
-        const kind: NodeKind = @enumFromInt(field.value);
+    inline for (@typeInfo(NodeKind).@"enum".field_values) |field_value| {
+        const kind: NodeKind = @fromBackingInt(@intCast(field_value));
         try std.testing.expectEqual(@as(usize, 1), idx.findByKind(kind).len);
     }
 }

@@ -122,11 +122,11 @@ pub const Graph = struct {
     /// Append a node and return its assigned NodeId. Overwrites the node's
     /// `id` field. Multi-line signatures are collapsed to a single line.
     pub fn addNode(self: *Graph, allocator: std.mem.Allocator, node: Node) !NodeId {
-        const id: NodeId = @enumFromInt(self.nodes.items.len);
+        const id: NodeId = @fromBackingInt(@intCast(self.nodes.items.len));
         var stored = node;
         stored.id = id;
         // parent_id must be strictly less than the child's own id by construction.
-        if (stored.parent_id) |pid| std.debug.assert(@intFromEnum(pid) < @intFromEnum(id));
+        if (stored.parent_id) |pid| std.debug.assert(@backingInt(pid) < @backingInt(id));
         if (stored.signature) |sig| {
             if (std.mem.indexOfAny(u8, sig, "\n\r") != null) {
                 const normalized = try collapseWhitespace(allocator, sig);
@@ -218,7 +218,7 @@ pub const Graph = struct {
     /// addNode call that triggers reallocation -- do not hold it across
     /// mutations.
     pub fn getNode(self: *const Graph, id: NodeId) ?*const Node {
-        const index = @intFromEnum(id);
+        const index = @backingInt(id);
         if (index >= self.nodes.items.len) return null;
         return &self.nodes.items[index];
     }
@@ -238,7 +238,7 @@ pub const Graph = struct {
     /// that need to distinguish "no parent" from "not found" should check
     /// getNode() first.
     pub fn getParent(self: *const Graph, node_id: NodeId) ?NodeId {
-        const index = @intFromEnum(node_id);
+        const index = @backingInt(node_id);
         if (index >= self.nodes.items.len) return null;
         return self.nodes.items[index].parent_id;
     }
@@ -290,7 +290,7 @@ pub const Graph = struct {
         for (children) |child_idx| {
             const n = self.nodes.items[child_idx];
             if (!n.kind.isTypeContainer()) continue;
-            if (std.mem.eql(u8, n.name, type_name)) return @enumFromInt(child_idx);
+            if (std.mem.eql(u8, n.name, type_name)) return @fromBackingInt(@intCast(child_idx));
         }
         return null;
     }
@@ -412,9 +412,9 @@ test "addNode returns sequential ids" {
     const id3 = try g.addNode(std.testing.allocator, n3);
 
     // Assert
-    try std.testing.expectEqual(@as(u64, 0), @intFromEnum(id1));
-    try std.testing.expectEqual(@as(u64, 1), @intFromEnum(id2));
-    try std.testing.expectEqual(@as(u64, 2), @intFromEnum(id3));
+    try std.testing.expectEqual(@as(u64, 0), @backingInt(id1));
+    try std.testing.expectEqual(@as(u64, 1), @backingInt(id2));
+    try std.testing.expectEqual(@as(u64, 2), @backingInt(id3));
 }
 
 test "addEdgeIfNew creates edge between existing nodes" {
@@ -565,7 +565,7 @@ test "getNode returns null for non-existent id" {
 
     // Act / Assert
     try std.testing.expectEqual(@as(?*const Node, null), g.getNode(.root));
-    try std.testing.expectEqual(@as(?*const Node, null), g.getNode(@enumFromInt(99)));
+    try std.testing.expectEqual(@as(?*const Node, null), g.getNode(@fromBackingInt(@intCast(99))));
 }
 
 test "getChildren returns empty for missing parent" {
@@ -576,7 +576,7 @@ test "getChildren returns empty for missing parent" {
 
     // Act / Assert
     try std.testing.expectEqual(@as(usize, 0), fg.getChildren(.root).len);
-    try std.testing.expectEqual(@as(usize, 0), fg.getChildren(@enumFromInt(99)).len);
+    try std.testing.expectEqual(@as(usize, 0), fg.getChildren(@fromBackingInt(@intCast(99))).len);
 }
 
 test "neighbors on empty graph returns empty" {
